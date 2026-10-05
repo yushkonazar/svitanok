@@ -34,6 +34,31 @@ function item(over: Partial<Item> & { id: string; title: string }): Item {
 }
 
 describe('computeSlots - правила S-P-11', () => {
+  it('wake-up is a transparent moment, not a forty-minute busy block', () => {
+    const out = computeSlots({
+      date: DATE,
+      events: [],
+      items: [
+        item({ id: 'wake', title: 'Прокинутися', kind: 'moment', hard_at: '08:00' }),
+        item({ id: 'work', title: 'Робота', hard_at: '08:00', hard_end: '12:20' }),
+      ],
+    });
+    expect(out.placed).toMatchObject([
+      { id: 'wake', window_start: '08:00', window_end: '08:01', floating: true },
+      { id: 'work', window_start: '08:00', window_end: '12:20' },
+    ]);
+    expect(formatDraft(DATE, out, [])).not.toContain('08:01');
+    expect(out.flexible).toHaveLength(0);
+  });
+  it('does not invent a time for an unresolved fixed block', () => {
+    const out = computeSlots({
+      date: DATE,
+      events: [],
+      items: [item({ id: 'work', title: 'Робота', hard_at: '13:20', flexible: true })],
+    });
+    expect(out.placed).toHaveLength(0);
+    expect(out.flexible[0]?.why).toContain('уточнення');
+  });
   it('невідомий перетин із подією календаря потребує рішення власника', () => {
     const out = computeSlots({
       date: DATE,

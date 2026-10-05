@@ -179,12 +179,45 @@ export async function runDayPlanChain(env, params, step, io) {
           .slice(0, 4)
       : [];
     const excludedIds = new Set();
+    const uncertainEnd = intentText.match(
+      /(?:до|закінч\p{L}*\s+(?:о|близько))\s*(\d{1,2}:\d{2})\s*[–—-]\s*(\d{1,2}:\d{2})/iu,
+    );
+    if (uncertainEnd) {
+      const index = items.findLastIndex((i) => i.role === 'work' || /робот|прац/iu.test(i.title));
+      const uncertainItem = items[index];
+      if (uncertainItem && !questions.some((q) => q.item === index && q.field === 'hard_end')) {
+        uncertainItem.hard_end = null;
+        questions.unshift({
+          item: index,
+          field: 'hard_end',
+          q: 'До котрої запланувати роботу?',
+          options: [uncertainEnd[1], uncertainEnd[2]],
+        });
+      }
+    }
+    for (let index = 0; index < items.length && questions.length < 4; index += 1) {
+      const item = items[index];
+      if (!item) continue;
+      if (
+        !item.hard_at &&
+        (item.kind === 'moment' ||
+          (item.role === 'work' && item.hard_end && !config.habits.work_start_at)) &&
+        !questions.some((q) => q.item === index && q.field === 'hard_at')
+      ) {
+        questions.push({
+          item: index,
+          field: 'hard_at',
+          q: `О котрій починається «${item.title}»?`,
+          options: ['08:00', '09:00', 'не знаю'],
+        });
+      }
+    }
     // Працівник має питати тривалість для глибоких блоків і виїздів. Це
     // критичне правило дублюємо в ядрі: якщо модель пропустила уточнення,
     // не дозволяємо типовій оцінці непомітно перетворитися на готовий розклад.
     const durationAsked = new Set(
       questions
-        .filter((q) => q?.field !== 'choice' && Number.isInteger(q?.item))
+        .filter((q) => (q?.field == null || q.field === 'duration') && Number.isInteger(q?.item))
         .map((q) => q.item),
     );
     for (let itemIndex = 0; itemIndex < items.length && questions.length < 4; itemIndex += 1) {
@@ -193,7 +226,7 @@ export async function runDayPlanChain(env, params, step, io) {
       if (
         item.est_min != null ||
         item.flexible ||
-        !['deep', 'errand'].includes(item.kind) ||
+        !['deep', 'errand', 'move'].includes(item.kind) ||
         durationAsked.has(itemIndex)
       )
         continue;
@@ -480,7 +513,7 @@ export function normalizeIntent(output, intentText) {
         .split(/[\n;,]|\s+і\s+/)
         .map((s) => s.trim())
         .filter(Boolean)
-        .map((title) => ({ title, kind: 'routine' }));
+        .map((title) => ({ title, kind: 'routine', flexible: true }));
   // id від працівника не приймаємо: replaceItems робить INSERT OR REPLACE за
   // id, і чужий id «перетягнув» би рядок іншої дати разом із reminder_id.
   if (raw.length > ITEMS_MAX)
@@ -542,7 +575,14 @@ export function applyAnswer(items, questions, answer, qiDefault = 0) {
   if (!target) return items;
   const field = String(q?.field ?? 'duration');
   if (!answer) {
-    if (field === 'duration') target.flexible = true;
+    target.flexible = true;
+    if (
+      field === 'hard_end' ||
+      field === 'hard_at' ||
+      field === 'not_before' ||
+      field === 'not_after'
+    )
+      target[field] = null;
     return items;
   }
   const option =
@@ -555,8 +595,13 @@ export function applyAnswer(items, questions, answer, qiDefault = 0) {
     field === 'not_before' ||
     field === 'not_after'
   ) {
-    const time = /(?:^|\D)(\d{1,2}:\d{2})(?:\D|$)/.exec(option)?.[1] ?? option.trim();
+    let time = /(?:^|\D)(\d{1,2}:\d{2})(?:\D|$)/.exec(option)?.[1] ?? option.trim();
+    if (/^\d{1,2}$/.test(time)) time = `${time.padStart(2, '0')}:00`;
     if (hhmmToMin(time) != null) target[field] = time;
+    else {
+      target[field] = null;
+      target.flexible = true;
+    }
     return items;
   }
   const min = parseDurationMin(option);

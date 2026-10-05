@@ -568,7 +568,7 @@ describe('handleBrainCallback: v:-тапи', () => {
   }
 
   it('✅ → транскрипт іде в тред, а сама картка голосового стає явним статусом', async () => {
-    const { tg, brain } = makeFlowFetchStub();
+    const { tg, brain } = makeFlowFetchStub({ deepgramTranscript: 'Підсумуй мої справи' });
     const { env, db } = makeFlowEnv();
     const id = await present(env, db);
 
@@ -582,7 +582,7 @@ describe('handleBrainCallback: v:-тапи', () => {
     expect(brain[0]!.path).toBe('/run');
     expect(brain[0]!.body).toMatchObject({
       profile: 'chat',
-      input: { text: 'нагадай про зустріч' },
+      input: { text: 'Підсумуй мої справи' },
     });
     // Результат видимий у початковій картці; немає окремого «прийняв» чи
     // залежності від кольору inline-кнопки в різних Telegram-клієнтах.
@@ -602,7 +602,7 @@ describe('handleBrainCallback: v:-тапи', () => {
   });
 
   it('defer: тост повертається ДО довгої роботи, робота чекає виклику', async () => {
-    const { brain } = makeFlowFetchStub();
+    const { brain } = makeFlowFetchStub({ deepgramTranscript: 'Підсумуй мої справи' });
     const { env, db } = makeFlowEnv();
     const id = await present(env, db);
 
@@ -620,6 +620,50 @@ describe('handleBrainCallback: v:-тапи', () => {
 
     await deferred[0]!();
     expect(brain).toHaveLength(1);
+  });
+
+  it('confirmed voice starts the guided day planner instead of the generic chat engine', async () => {
+    const { brain } = makeFlowFetchStub({ deepgramTranscript: 'План на завтра: робота до 19:00' });
+    const created: unknown[] = [];
+    const { env, db } = makeFlowEnv('on', {
+      DAY_PLAN: {
+        create: async (request: unknown) => void created.push(request),
+      } as Env['DAY_PLAN'],
+    });
+    const id = await present(env, db);
+    await handleBrainCallback(env, { data: `v:${id}:ok`, chatId: 555, messageId: 101 }, NOW);
+    expect(brain).toHaveLength(0);
+    expect(created).toHaveLength(1);
+    expect(created[0]).toMatchObject({
+      params: { oneShot: true, initialIntent: 'робота до 19:00', date: '2026-08-29' },
+    });
+  });
+
+  it('confirmed voice approval preserves the pending planner context', async () => {
+    const { brain } = makeFlowFetchStub({ deepgramTranscript: 'Так' });
+    const events: unknown[] = [];
+    const { env, db } = makeFlowEnv('on', {
+      DAY_PLAN: {
+        create: async () => undefined,
+        get: async () => ({ sendEvent: async (ev: unknown) => void events.push(ev) }),
+      } as Env['DAY_PLAN'],
+    });
+    db.prepare(
+      `INSERT INTO chains (id,kind,workflow_id,state_json,status,created_at,updated_at) VALUES ('plan-1','day-plan','plan-1',?, 'waiting',?,?)`,
+    ).run(
+      JSON.stringify({ date: '2026-08-29', awaiting: 'accept', thread_id: 'dm', chat_id: 555 }),
+      new Date(NOW).toISOString(),
+      new Date(NOW).toISOString(),
+    );
+    const id = await present(env, db);
+    await handleBrainCallback(env, { data: `v:${id}:ok`, chatId: 555, messageId: 101 }, NOW);
+    expect(brain).toHaveLength(0);
+    expect(events).toEqual([
+      expect.objectContaining({
+        type: 'accept',
+        payload: expect.objectContaining({ choice: 'accept' }),
+      }),
+    ]);
   });
 
   it('збій «Розпізнати» повертає ряд у гру і лишає кнопку живою', async () => {

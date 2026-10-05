@@ -165,6 +165,34 @@ async function post(env: Env, path: string, runId: string, body: unknown) {
 }
 
 describe('POST /internal/instruction', () => {
+  it('renders status Markdown and never lets a late status overwrite the final buttons', async () => {
+    const { env } = setup();
+    const { tg } = stubTelegram();
+    const status = await post(env, '/internal/status', 'r1', {
+      message_id: 42,
+      text: 'Готую **план**',
+    });
+    expect(status.status).toBe(200);
+    const rendered = tg.find((c) => c.method === 'editMessageText')?.form as Record<
+      string,
+      unknown
+    >;
+    expect(rendered.parse_mode).toBe('HTML');
+    expect(rendered.text).toBe('Готую <b>план</b>');
+    const delivered = await post(env, '/internal/deliver', 'r1', {
+      text: 'План готовий',
+      buttons: [[{ text: 'Затвердити', callback_data: 'c:plan-1:accept' }]],
+    });
+    expect(delivered.status).toBe(200);
+    const before = tg.length;
+    const late = await post(env, '/internal/status', 'r1', {
+      message_id: 42,
+      text: 'Пізній статус',
+    });
+    expect(await late.json()).toMatchObject({ suppressed: 'final-delivered' });
+    expect(tg).toHaveLength(before);
+    expect(tg.every((c) => !('final_run_id' in c.form))).toBe(true);
+  });
   it('агент з D1: імʼя, хеш тіла, тіло; персона - 400 not-a-worker', async () => {
     const { env } = setup();
     stubTelegram();

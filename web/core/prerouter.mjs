@@ -122,6 +122,7 @@ import { BACKUP_STATE_KEY } from './backup-state/contract.mjs';
 import { BACKUP_MAX_ATTEMPTS } from './backup/task.mjs';
 import { startDayPlanChain } from './day-plan/chain.mjs';
 import { getDayPlan } from './day-plan/store.mjs';
+import { resolveSecurityHint } from './hints/daily-hint.mjs';
 
 export const THREAD_DM = 'dm';
 /** Скільки транскрипта показуємо в «Я почув»: одне повідомлення з кнопками
@@ -481,22 +482,39 @@ export function parseNewCommand(text) {
 
 /** Explicit day-plan phrasing enters the guided planner, not a one-shot model guess. */
 /** @param {string} text @param {number} nowMs */
-function parseDayPlanRequest(text, nowMs) {
+export function parseDayPlanRequest(text, nowMs) {
   const source = String(text ?? '').trim();
   const match =
     source.match(
-      /^(?:(?:склади|побудуй|зроби)\s+)?план(?:\s+дня|\s+на\s+(?:день|сьогодні|завтра))(?:\s*[:—-]\s*|\s+)?(.*)$/iu,
+      /^(?:(?:склади|побудуй|зроби)\s+)?план(?:\s+дня|\s+на\s+(?:день|сьогодні|завтра|\d{4}-\d{2}-\d{2}|\d{1,2}[./]\d{1,2}(?:[./]\d{4})?))(?:\s*[:—-]\s*|\s+)?(.*)$/iu,
     ) ??
     source.match(/^розплануй\s+(?:мій\s+)?(?:день|сьогодні|завтра)(?:\s*[:—-]\s*|\s+)?(.*)$/iu) ??
     source.match(/^склади\s+план(?:\s+(?:сьогодні|завтра))?(?:\s*[:—-]\s*|\s+)?(.*)$/iu);
   if (!match) return null;
-  const date = /\bзавтра\b/iu.test(source)
+  const today = kyivDateKey(new Date(nowMs));
+  const namedDate = source.match(
+    /(?:^|\s)на\s+(\d{4}-\d{2}-\d{2}|\d{1,2}[./]\d{1,2}(?:[./]\d{4})?)(?=$|[\s:])/u,
+  )?.[1];
+  let date = /(?:^|[^\p{L}])завтра(?=$|[^\p{L}])/iu.test(source)
     ? addDaysToDateKey(kyivDateKey(new Date(nowMs)), 1)
-    : kyivDateKey(new Date(nowMs));
+    : today;
+  if (namedDate) {
+    const parts = namedDate.split(/[./]/);
+    date =
+      parts.length > 1
+        ? `${parts[2] ?? today.slice(0, 4)}-${String(parts[1]).padStart(2, '0')}-${String(parts[0]).padStart(2, '0')}`
+        : namedDate;
+    const parsedDate = new Date(`${date}T00:00:00Z`);
+    if (!Number.isFinite(parsedDate.getTime()) || parsedDate.toISOString().slice(0, 10) !== date)
+      throw new Error('Уточни дату плану: такої дати немає.');
+  }
   return {
     date,
     intent: String(match[1] ?? '')
-      .replace(/^на\s+(?:сьогодні|завтра)\s*[:—-]?\s*/iu, '')
+      .replace(
+        /^на\s+(?:сьогодні|завтра|\d{4}-\d{2}-\d{2}|\d{1,2}[./]\d{1,2}(?:[./]\d{4})?)\s*[:—-]?\s*/iu,
+        '',
+      )
       .trim(),
   };
 }
@@ -567,8 +585,9 @@ const HELP_TEXT = [
  * @param {Env} env
  * @param {{ kind?: string, chatId?: number | null, threadId?: number | string | null, text?: unknown, messageId?: number | null, fromId?: number | string | null, voice?: { fileId: string, durationS: number, fileSize: number | null } | null, document?: { fileId: string, fileName: string, mimeType: string | null, fileSize: number | null } | null }} parsed
  * @param {number} [nowMs]
+ * @param {{ messageId?: number | null, text?: string } | null} [voiceStatus]
  */
-export async function prerouteMessage(env, parsed, nowMs = Date.now()) {
+export async function prerouteMessage(env, parsed, nowMs = Date.now(), voiceStatus = null) {
   const mode = env.ASSISTANT_V2;
   if (mode !== 'shadow' && mode !== 'on') return false;
   if (parsed.kind !== 'message' || parsed.chatId == null) return false;
@@ -843,7 +862,13 @@ export async function prerouteMessage(env, parsed, nowMs = Date.now()) {
     }
   }
 
-  const dayPlanRequest = parseDayPlanRequest(text, nowMs);
+  let dayPlanRequest;
+  try {
+    dayPlanRequest = parseDayPlanRequest(text, nowMs);
+  } catch {
+    await reply(env, target, 'Уточни дату плану: такої дати немає.', nowMs);
+    return true;
+  }
   if (dayPlanRequest) {
     try {
       await startInteractiveDayPlan(env, target, dayPlanRequest.date, dayPlanRequest.intent, nowMs);
@@ -864,7 +889,7 @@ export async function prerouteMessage(env, parsed, nowMs = Date.now()) {
     return true;
   }
 
-  await routeThreadText(env, target, threadKey, text, nowMs);
+  await routeThreadText(env, target, threadKey, text, nowMs, voiceStatus);
   return true;
 }
 
@@ -1013,8 +1038,9 @@ async function resolveT2Word(env, target, threadKey, text, nowMs) {
  * @param {string} threadKey
  * @param {string} text
  * @param {number} nowMs
+ * @param {{ messageId?: number | null, text?: string } | null} [voiceStatus]
  */
-async function routeThreadText(env, target, threadKey, text, nowMs) {
+async function routeThreadText(env, target, threadKey, text, nowMs, voiceStatus = null) {
   if (STOP_RE.test(text)) {
     await stopThread(env, target, threadKey, nowMs);
     return;
@@ -1024,7 +1050,16 @@ async function routeThreadText(env, target, threadKey, text, nowMs) {
   // «звіт зараз» (S-9-5) - профіль weekly-review за запитом: той самий шлях
   // (черга, статусник, ретраї), інша інструкція й модель.
   const route = WEEKLY_NOW_RE.test(text) ? 'weekly-review' : classifyRoute(text);
-  await startOrQueueThreadText(env, target, threadKey, text, route, nowMs);
+  await startOrQueueThreadText(
+    env,
+    target,
+    threadKey,
+    text,
+    route,
+    nowMs,
+    voiceStatus?.messageId,
+    voiceStatus?.text,
+  );
 }
 
 /**
@@ -1524,6 +1559,17 @@ export async function handleBrainCallback(env, parsed, nowMs = Date.now(), defer
   // Receipt chips survive feature-mode changes; their safe no-op response
   // must not depend on whether the V2 router is currently enabled.
   if (data === 'm:done') return 'Це вже вирішено.';
+  const security = data.match(/^m:sc:(\d{4}-\d{2}-\d{2}):(done|later|mute)$/);
+  if (security) {
+    const text = await resolveSecurityHint(
+      env,
+      String(security[1]),
+      /** @type {'done'|'later'|'mute'} */ (security[2]),
+      nowMs,
+    );
+    await replaceCallbackMessage(env, parsed, text);
+    return text.startsWith('✅') ? 'Готово.' : text;
+  }
   if (env.ASSISTANT_V2 !== 'shadow' && env.ASSISTANT_V2 !== 'on') return null;
   const tripChoice = data.match(/^m:tb:([0-9a-f-]{36}):([a-z_]{2,20}):([0-7]):([0-9a-f]{5})$/i);
   if (tripChoice) return tripBriefChoiceToast(env, parsed, tripChoice, nowMs, defer);
@@ -3362,21 +3408,29 @@ async function voiceCallbackToast(env, parsed, id, choice, nowMs, defer) {
         if (STOP_RE.test(text)) {
           await stopThread(env, target, threadKey, nowMs);
           await replaceCallbackMessage(env, parsed, '🎙 Голосове прийнято.\nЗупинив.');
-        } else if (parsed.messageId != null) {
-          const route = WEEKLY_NOW_RE.test(text) ? 'weekly-review' : classifyRoute(text);
-          await startOrQueueThreadText(
-            env,
-            target,
-            threadKey,
-            text,
-            route,
-            nowMs,
-            parsed.messageId,
-            accepted,
-          );
         } else {
-          await reply(env, target, accepted, nowMs);
-          await routeThreadText(env, target, threadKey, text, nowMs);
+          // A confirmed transcript is an owner message, including workflow
+          // answers and commands. Never bypass the deterministic prerouter.
+          await replaceCallbackMessage(env, parsed, accepted);
+          const handled = await prerouteMessage(
+            env,
+            {
+              kind: 'message',
+              chatId: target.chatId,
+              threadId: target.threadId,
+              fromId: env.TELEGRAM_OWNER_USER_ID,
+              text: env.ASSISTANT_V2 === 'shadow' ? `v2:${text}` : text,
+            },
+            nowMs,
+            { messageId: parsed.messageId, text: accepted },
+          );
+          if (!handled)
+            await reply(
+              env,
+              target,
+              'Цю команду надішли текстом. Доступні можливості — /help.',
+              nowMs,
+            );
         }
       } catch (/** @type {any} */ e) {
         console.error('prerouter: підтверджений транскрипт не поїхав', e?.message);

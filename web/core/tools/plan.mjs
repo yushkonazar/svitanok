@@ -163,8 +163,8 @@ export async function runPlanDraft(env, args, nowMs) {
 }
 
 /**
- * plan.accept (T0 з «↩»): нагадування на блоки; calendar=true - пропозиції
- * T1 на кожен новий блок (S-P-12, виконавець календаря - етап 7).
+ * plan.accept: після погодження створює нагадування й календарні блоки.
+ * calendar=false явно залишає план без календаря; taint вимагає підтвердження.
  * @param {Env} env
  * @param {{ date?: string, calendar?: boolean }} args
  * @param {number} nowMs
@@ -175,6 +175,18 @@ export async function runPlanAccept(env, args, nowMs, ctx = {}) {
   const date = resolvePlanDate(args.date, nowMs);
   const plan = await getDayPlan(env, date);
   if (!plan) throw new Error(`на ${date} немає чернетки - спершу plan.intent`);
+  const pendingItems = await listItems(env, date);
+  const unresolved = pendingItems.filter(
+    (item) =>
+      item.status !== 'done' &&
+      item.status !== 'dropped' &&
+      !item.optional &&
+      (!item.window_start || !item.window_end),
+  );
+  if (unresolved.length)
+    throw new Error(
+      `Спершу уточни час: ${unresolved.map((item) => item.title).join(', ')}. План ще не записано в календар.`,
+    );
   // Адреса як у collection.export: chat прогону, а без нього - DM власника
   // для треду 'dm' і група для теми (ревʼю 05.09: група замість DM - помилка).
   const threadKey = ctx.threadId == null ? null : String(ctx.threadId);
@@ -188,7 +200,7 @@ export async function runPlanAccept(env, args, nowMs, ctx = {}) {
   });
   /** @type {{ added: number, proposed: number, failed: string[] }} */
   let calendar = { added: 0, proposed: 0, failed: [] };
-  if (args.calendar === true) {
+  if (args.calendar !== false) {
     calendar = await calendarizeBlocks(
       env,
       date,
@@ -273,7 +285,7 @@ export async function runPlanUpdate(env, args, nowMs) {
     const expectedTitle =
       item.floating && item.est_min ? `${item.title} · ≈${item.est_min} хв у вікні` : item.title;
     if (
-      event.title !== expectedTitle ||
+      (event.title !== expectedTitle && event.title !== item.title) ||
       !item.window_start ||
       !item.window_end ||
       event.startMs !== kyivMs(date, item.window_start) ||
@@ -490,7 +502,7 @@ export async function calendarizeBlocks(env, date, rows, nowMs, to, send, tainte
         {
           kind: 'calendar.event',
           payload: {
-            title: r.floating && r.est_min ? `${r.title} · ≈${r.est_min} хв у вікні` : r.title,
+            title: r.title,
             startIso: new Date(startMs).toISOString(),
             endIso: new Date(endMs).toISOString(),
             transparent: Boolean(r.floating),

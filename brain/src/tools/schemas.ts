@@ -711,7 +711,7 @@ export const BRAIN_TOOLS: readonly BrainToolDef[] = [
   tool({
     coreName: 'plan.accept',
     description:
-      'Прийняти лише явно затверджений власником план на date. Нагадування — тільки для пунктів із notify:true; calendar=true записує блоки в календар. Плаваючі блоки не позначають час зайнятим. T0 з «↩».',
+      'Прийняти лише явно затверджений власником план на date разом із записом блоків у календар (типово calendar=true). calendar=false — лише якщо власник явно попросив не записувати календар. Нагадування тільки для notify:true; плаваючі блоки не позначають час зайнятим. T0 з «↩».',
     args: z.object({ date: z.string().max(16).optional(), calendar: z.boolean().optional() }),
     write: true,
   }),

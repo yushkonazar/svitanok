@@ -182,7 +182,7 @@ export function taintEscalates(kind, payload) {
     return Array.isArray(carry) && carry.length > 0;
   }
   // План дня сам собою локальний; назовні його виводить лише calendar=true.
-  if (kind === 'plan.accept') return payload?.calendar === true;
+  if (kind === 'plan.accept') return payload?.calendar !== false;
   // Бажання без посилання нікуди не ходить.
   if (kind === 'wishes.create') return typeof payload?.url === 'string' && payload.url !== '';
   // Нагадування собі одноразове - T0; барʼєр ставить саме ПОВТОР.

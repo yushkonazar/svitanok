@@ -553,7 +553,7 @@ export const EXECUTORS = {
     async execute(env, payload, nowMs, ctx) {
       const { result, prev } = await runPlanAccept(
         env,
-        { date: payload.date, calendar: payload.calendar === true },
+        { date: payload.date, calendar: payload.calendar !== false },
         nowMs,
         ctx,
       );

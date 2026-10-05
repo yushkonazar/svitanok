@@ -307,6 +307,7 @@ async function sendRow(env, row) {
   // fallback_send - наш прапорець, не поле Bot API: зрізаємо до виклику.
   const fallbackSend = payload.fallback_send === true;
   delete payload.fallback_send;
+  delete payload.final_run_id;
   // plain_text - теж службове: оригінал Markdown для фолбеку розмітки, щоб
   // власник не побачив голі <b>-теги замість тексту.
   const plainText = typeof payload.plain_text === 'string' ? payload.plain_text : null;

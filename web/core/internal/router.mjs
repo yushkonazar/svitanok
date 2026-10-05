@@ -480,6 +480,7 @@ async function handleDeliver(env, ctx, runId, body, nowMs) {
       // reports/сесії лишається Markdown.
       parts: renderMdParts(deliverText),
       payload: {
+        final_run_id: runId,
         ...(buttons.length ? { reply_markup: { inline_keyboard: buttons } } : {}),
         // Research summaries often contain source URLs; previews can obscure
         // the actual choices (for example, restaurant results).
@@ -591,13 +592,24 @@ async function handleStatus(env, ctx, runId, body, nowMs) {
   const info = await registryRunInfo(env, runId);
   const chatId = info?.chatId ?? assistantHomeTarget(env)?.chatId ?? null;
   if (chatId == null) return json({ ok: false, error: 'chat-not-configured' }, 500);
+  // Final delivery owns the card. Late status requests must not erase its
+  // keyboard or overwrite the answer, even while telemetry is still finishing.
+  if (
+    env.DB &&
+    (await env.DB.prepare(
+      "SELECT 1 AS delivered FROM outbox WHERE json_extract(payload_json, '$.final_run_id') = ? LIMIT 1",
+    )
+      .bind(runId)
+      .first())
+  )
+    return json({ ok: true, queued: 0, suppressed: 'final-delivered' });
   await dropPendingEdits(env, chatId, body.message_id);
   const { queued } = await enqueueOutbox(
     env,
     {
       chatId,
       kind: 'edit',
-      payload: { message_id: body.message_id, text: body.text },
+      payload: { message_id: body.message_id, ...renderMdParts(body.text).at(-1) },
     },
     nowMs,
   );

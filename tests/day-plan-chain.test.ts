@@ -155,6 +155,70 @@ const WORKER_INTENT = {
   },
 };
 describe('runDayPlanChain', () => {
+  it('keeps every work segment, asks about the uncertain end and writes once after approval', async () => {
+    const { env, db } = setup();
+    const chainId = await startDayPlanChain(env, DATE, NOW);
+    const { step } = fakeStep({
+      worker: [
+        {
+          payload: {
+            output: {
+              items: [
+                { title: '**Прокинутися близько 08:00**', kind: 'routine', hard_at: '08:00' },
+                { title: 'Робота', role: 'work', hard_at: '08:30', hard_end: '12:20' },
+                { title: 'Перезмінка', hard_at: '12:20', hard_end: '13:20' },
+                {
+                  title: 'Робота після перезмінки до 19:00–20:00',
+                  role: 'work',
+                  hard_at: '13:20',
+                  hard_end: '20:00',
+                },
+                { title: 'Дорога додому', kind: 'move', est_min: 30, after: 3 },
+                { title: 'Навчання', kind: 'deep', est_min: 60, after: 4 },
+              ],
+            },
+          },
+        },
+      ],
+      answer: [{ payload: { text: '19:00' } }],
+      accept: [{ payload: { choice: 'accept' } }],
+    });
+    const { io, sent } = fakeIo(db, chainId, { readCalendar: async () => [] });
+    await runDayPlanChain(
+      env,
+      {
+        chainId,
+        date: DATE,
+        oneShot: true,
+        initialIntent:
+          'Прокинутися о 08:00, робота до 12:20, перезмінка, потім робота до 19:00–20:00, додому, навчання',
+      },
+      step,
+      io,
+    );
+    expect(sent[0]?.text).toContain('До котрої');
+    const rows = await listItems(env, DATE);
+    expect(rows).toHaveLength(6);
+    expect(rows.find((r) => r.title === 'Прокинутися')).toMatchObject({
+      kind: 'moment',
+      window_start: '08:00',
+      window_end: '08:01',
+      floating: 1,
+    });
+    expect(rows.find((r) => r.title === 'Робота')).toMatchObject({
+      window_start: '08:30',
+      window_end: '12:20',
+    });
+    expect(rows.find((r) => r.title === 'Робота після перезмінки')).toMatchObject({
+      window_start: '13:20',
+      window_end: '19:00',
+    });
+    expect(rows.find((r) => r.title === 'Навчання')).toMatchObject({ window_start: '19:30' });
+    expect(sent.some((s) => s.buttons.includes(`c:${chainId}:accept`))).toBe(true);
+    expect(sent.filter((s) => s.text.includes('План погоджено. У календарі'))).toHaveLength(1);
+    expect(rows.every((r) => r.event_id)).toBe(true);
+    expect(sent.map((s) => s.text).join('\n')).not.toContain('**');
+  });
   it('повний шлях: питання → намір → уточнення → чернетка → ✅ з календарем → ранок → огляд', async () => {
     const { db, env } = setup();
     const chainId = await startDayPlanChain(env, DATE, NOW);
@@ -250,7 +314,8 @@ describe('runDayPlanChain', () => {
     expect(startWorker.mock.calls.map((c) => c[0])).toEqual(['intent']);
     // Без уточнень - одразу чернетка.
     expect(sent[1]?.text.split('\n')[0]).toBe('План на 07.09');
-    expect(sent[1]?.text).toContain('• 08:00-08:40 презентація · за порядком');
+    expect(sent[1]?.text).toContain('презентація (тривалість не визначена)');
+    expect(sent[1]?.buttons.join(' ')).not.toContain('Затвердити');
     expect(sent[1]?.text).toContain('• 10:00 Зустріч (календар)');
     expect(db.prepare(`SELECT count(*) AS n FROM reminders`).get()).toEqual({ n: 0 });
     expect(await listItems(env, '2026-09-08')).toHaveLength(0);
@@ -266,8 +331,12 @@ describe('runDayPlanChain', () => {
     await expect(startDayPlanChain(env, DATE, NOW, { oneShot: true })).rejects.toThrow(
       'уже відкритий',
     );
-    const firstStep = fakeStep({});
-    const firstIo = fakeIo(db, firstId, { workerOk: false });
+    const firstStep = fakeStep({
+      worker: [
+        { payload: { output: { items: [{ title: 'пошта', kind: 'routine', est_min: 30 }] } } },
+      ],
+    });
+    const firstIo = fakeIo(db, firstId);
     expect(
       await runDayPlanChain(
         env,
@@ -350,7 +419,7 @@ describe('runDayPlanChain', () => {
         ([, init]) => JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>,
       );
     expect(requests).toHaveLength(4);
-    const meal = requests.find((body) => String(body.summary).startsWith('Сніданок · ≈25 хв'));
+    const meal = requests.find((body) => String(body.summary) === 'Сніданок');
     expect(meal).toMatchObject({ transparency: 'transparent', reminders: { useDefault: false } });
     expect(db.prepare('SELECT count(*) AS n FROM reminders').get()).toEqual({ n: 0 });
   });
@@ -594,7 +663,7 @@ describe('helpers ланцюга', () => {
     expect(study?.window_start).toBeNull();
   });
 
-  it('реєстр ланцюгів бачить план лише в waiting intent/answer; подія іде в інстанс DAY_PLAN за id', async () => {
+  it('реєстр бачить очікування наміру, уточнення й погодження; подія йде в DAY_PLAN', async () => {
     const { env, wf } = setup();
     const chainId = await startDayPlanChain(env, DATE, NOW);
     expect(await findAwaitingChain(env)).toBeNull();
@@ -605,7 +674,7 @@ describe('helpers ланцюга', () => {
       awaiting: 'intent',
     });
     await setChainState(env, chainId, { status: 'waiting', awaiting: 'accept' });
-    expect(await findAwaitingChain(env)).toBeNull();
+    expect(await findAwaitingChain(env)).toMatchObject({ id: chainId, awaiting: 'accept' });
     await sendChainEvent(env, chainId, 'accept', { choice: 'accept' });
     expect(wf.events).toEqual([
       { id: chainId, ev: { type: 'accept', payload: { choice: 'accept' } } },

@@ -53,7 +53,7 @@ export async function sendChainEvent(env, chainId, type, payload) {
 }
 
 /** Стани плану дня, що годуються текстом. */
-const DAY_PLAN_TEXT_AWAITS = ['intent', 'answer'];
+const DAY_PLAN_TEXT_AWAITS = ['intent', 'answer', 'accept'];
 /** Стани TableChain, у яких власник відповідає текстом безумовно (назва/номер, час, імена). */
 export const TABLE_TEXT_AWAITS = ['venue_text', 'phone', 'time', 'invitees'];
 /** Стани TableChain з кнопками, де текст теж приймається, але лише певної форми. */
@@ -137,6 +137,21 @@ function looksLikePhone(text) {
  */
 export function textEvent(kind, awaiting, text) {
   if (kind === 'day-plan') {
+    if (awaiting === 'accept') {
+      const decision = text
+        .trim()
+        .replace(/[.!]+$/, '')
+        .toLowerCase();
+      if (
+        /^(?:так|погоджую|підтверджую|затверджую|затвердити|записуй|додай у календар|так,? записуй)$/.test(
+          decision,
+        )
+      )
+        return dayPlanChoiceEvent('accept');
+      if (/^(?:пізніше|не зараз|ні)$/.test(decision)) return dayPlanChoiceEvent('later');
+      if (/^(?:змінити|зміни|редагувати)$/.test(decision)) return dayPlanChoiceEvent('edit');
+      return null;
+    }
     return DAY_PLAN_TEXT_AWAITS.includes(awaiting) ? { type: awaiting, payload: { text } } : null;
   }
   if (kind === 'trip') {
