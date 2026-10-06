@@ -179,6 +179,8 @@ async function demoGate<T>(ready: () => T, empty: () => T): Promise<T> {
 export interface StatsResult {
   stats: Stats;
   demo: boolean;
+  /** Server countdowns belong to this snapshot, not subsequent optimistic cache writes. */
+  receivedAtMs?: number;
 }
 
 /**
@@ -188,8 +190,8 @@ export interface StatsResult {
 export async function fetchStats(): Promise<StatsResult> {
   if (!inTelegram())
     return demoGate(
-      () => ({ stats: demoStats(), demo: true }),
-      () => ({ stats: EMPTY_STATS, demo: true }),
+      () => ({ stats: demoStats(), demo: true, receivedAtMs: Date.now() }),
+      () => ({ stats: EMPTY_STATS, demo: true, receivedAtMs: Date.now() }),
     );
 
   const res = await fetch('/api/stats', { cache: 'no-store', headers: authHeaders() });
@@ -200,7 +202,7 @@ export async function fetchStats(): Promise<StatsResult> {
   if (!parsed.success) {
     throw new Error('Формат статистики змінився — оновіть застосунок');
   }
-  return { stats: parsed.data, demo: false };
+  return { stats: parsed.data, demo: false, receivedAtMs: Date.now() };
 }
 
 function demoStats(): Stats {
