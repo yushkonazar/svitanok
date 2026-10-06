@@ -1017,11 +1017,15 @@
   overflow-anchor: none;
 }
 .checkin-adaptive-flow,
-.checkin-adaptive-card {
+.checkin-adaptive-card,
+.checkin-adaptive-stage {
   display: flex;
   flex-direction: column;
   gap: 20px;
   min-width: 0;
+}
+.checkin-adaptive-stage {
+  scroll-margin-top: 16px;
 }
 .checkin-followup {
   display: flex;
@@ -1041,9 +1045,24 @@
   background: rgba(255, 255, 255, 0.025);
 }
 .checkin-option-group summary {
+  position: relative;
+  padding-right: 30px;
+  min-height: 24px;
   cursor: pointer;
   font-size: 14px;
   font-weight: 600;
+}
+.checkin-group-count {
+  position: absolute;
+  right: 0;
+  top: 0;
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-a2);
+  font-variant-numeric: tabular-nums;
 }
 .adaptive-stats-grid {
   display: grid;

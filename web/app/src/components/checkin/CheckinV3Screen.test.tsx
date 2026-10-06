@@ -3,16 +3,23 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import { AdaptiveFlow } from './CheckinV3Screen.tsx';
 import { adaptivePreferences, clearHiddenV3 } from '../../../../core/checkin/adaptive.mjs';
-vi.mock('../../telegram.ts', () => ({ inTelegram: () => false, haptic: vi.fn() }));
+import { setVerticalSwipes } from '../../telegram.ts';
+vi.mock('../../telegram.ts', () => ({
+  inTelegram: () => false,
+  haptic: vi.fn(),
+  setVerticalSwipes: vi.fn(),
+}));
 afterEach(cleanup);
 function Flow({
   initial = {},
   previousEvening = {},
   pending = false,
+  slot = 'morning',
 }: {
   initial?: Record<string, unknown>;
   previousEvening?: Record<string, unknown>;
   pending?: boolean;
+  slot?: 'morning' | 'afternoon' | 'evening';
 }) {
   const [answers, setAnswers] = useState<Record<string, unknown>>({
     questionVersion: 3,
@@ -22,13 +29,13 @@ function Flow({
   return (
     <>
       <AdaptiveFlow
-        slot="morning"
+        slot={slot}
         date="2026-10-06"
         answers={answers}
         morning={{}}
         p={adaptivePreferences(null)}
         context={context}
-        onChange={(k, v) => setAnswers((a) => clearHiddenV3('morning', { ...a, [k]: v }, context))}
+        onChange={(k, v) => setAnswers((a) => clearHiddenV3(slot, { ...a, [k]: v }, context))}
         onConfirm={() => {}}
         pending={pending}
       />
@@ -110,4 +117,55 @@ it('keeps the current card, open groups and focus across saving and timer redraw
   expect(screen.getByRole('heading', { name: 'Твій контекст' })).toBeInTheDocument();
   expect(scroll).not.toHaveBeenCalled();
   scroll.mockRestore();
+});
+
+it('keeps one in-place afternoon option and releases pointer focus before changing details', () => {
+  render(<Flow slot="afternoon" initial={{ energy: 2, mood: 2 }} />);
+  const summary = screen.getByText('Люди');
+  fireEvent.click(summary);
+  const option = screen.getByRole('button', { name: 'Приємне спілкування' });
+  const group = option.closest('details')!;
+  option.focus();
+  fireEvent.click(option, { detail: 1 });
+  expect(option).not.toHaveFocus();
+  expect(screen.getAllByRole('button', { name: 'Приємне спілкування' })).toEqual([option]);
+  expect(group).toHaveAttribute('open');
+  expect(group.querySelector('.checkin-group-count')).toHaveTextContent('1');
+  // Safari may keep focus on the opened summary instead of the tapped button.
+  summary.focus();
+  fireEvent.click(option, { detail: 1 });
+  expect(summary).not.toHaveFocus();
+  expect(screen.getAllByRole('button', { name: 'Приємне спілкування' })).toEqual([option]);
+  expect(screen.getByRole('region', { name: 'Мало сил — який це стан?' })).toBeInTheDocument();
+});
+
+it('scrolls once on explicit card navigation, never on answers or background save redraws', () => {
+  const previous = HTMLElement.prototype.scrollIntoView;
+  const scroll = vi.fn();
+  HTMLElement.prototype.scrollIntoView = scroll;
+  try {
+    const view = render(<Flow slot="afternoon" initial={{ energy: 3, mood: 3 }} />);
+    expect(scroll).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Далі →' }));
+    expect(scroll).toHaveBeenCalledTimes(1);
+    expect(scroll).toHaveBeenLastCalledWith({ block: 'start', behavior: 'auto' });
+    fireEvent.click(screen.getByText('Справи й розвиток'));
+    const work = screen.getByRole('button', { name: 'Робота' });
+    work.focus();
+    fireEvent.click(work);
+    view.rerender(<Flow slot="afternoon" initial={{ energy: 3, mood: 3 }} pending />);
+    view.rerender(<Flow slot="afternoon" initial={{ energy: 3, mood: 3 }} />);
+    expect(work).toHaveFocus();
+    expect(scroll).toHaveBeenCalledTimes(1);
+  } finally {
+    HTMLElement.prototype.scrollIntoView = previous;
+  }
+});
+
+it('suspends the native Telegram pull gesture only while the answer flow is open', () => {
+  vi.mocked(setVerticalSwipes).mockClear();
+  const view = render(<Flow slot="afternoon" />);
+  expect(setVerticalSwipes).toHaveBeenLastCalledWith(false);
+  view.unmount();
+  expect(setVerticalSwipes).toHaveBeenLastCalledWith(true);
 });

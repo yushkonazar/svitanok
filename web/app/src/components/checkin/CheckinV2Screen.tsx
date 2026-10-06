@@ -150,25 +150,36 @@ export function FieldInput({
       {field.help && <p className="renewal-chart-note">{field.help}</p>}
       {adaptive && options.some(([label]) => label.includes(' :: ')) ? (
         <div className="flex flex-col gap-3" aria-labelledby={`${id}-label`}>
-          <div className="flex flex-wrap gap-2">
-            {options.filter(([, v]) => selected(v)).map(([label, v]) => option(label, v))}
-          </div>
           {[
             ...new Set(
               options
                 .filter(([label]) => label.includes(' :: '))
                 .map(([label]) => label.split(' :: ')[0]),
             ),
-          ].map((group) => (
-            <details key={group} className="checkin-option-group">
-              <summary>{group}</summary>
-              <div className="flex flex-wrap gap-2 mt-3">
-                {options
-                  .filter(([label]) => label.startsWith(group + ' :: '))
-                  .map(([label, v]) => option(label, v))}
-              </div>
-            </details>
-          ))}
+          ].map((group) => {
+            const count = options.filter(
+              ([label, v]) => label.startsWith(group + ' :: ') && selected(v),
+            ).length;
+            return (
+              <details key={group} className="checkin-option-group">
+                <summary>
+                  {group}
+                  <span
+                    className="checkin-group-count"
+                    aria-hidden={!count}
+                    aria-label={count ? `Обрано: ${count}` : undefined}
+                  >
+                    {count || ''}
+                  </span>
+                </summary>
+                <div className="flex flex-wrap gap-2 mt-3">
+                  {options
+                    .filter(([label]) => label.startsWith(group + ' :: '))
+                    .map(([label, v]) => option(label, v))}
+                </div>
+              </details>
+            );
+          })}
           <div className="flex flex-wrap gap-2">
             {options
               .filter(([label]) => !label.includes(' :: '))
