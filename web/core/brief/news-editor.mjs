@@ -1,11 +1,13 @@
 import { requirePaidGemini } from '../adapters/gemini.mjs';
 import { quotaUsed, bumpQuota, QUOTA_LIMITS } from '../quota/quota.mjs';
+import { callOpenAiNewsEditor } from './news-openai.mjs';
 export const NEWS_EDITOR_MODEL = 'gemini-3.1-flash-lite';
 const NEWS_GEMINI_LIMIT = QUOTA_LIMITS.gemini_usd ?? 10;
 /** One short, tool-free request; only public news text. Never sends check-in or finance data.
  * @param {Env} env @param {{prompt:string,systemPrompt:string,jsonSchema:KvBlob,maxOutputTokens?:number}} input
  * @param {typeof fetch} [fetchImpl] @returns {Promise<KvBlob>} */
 export async function callNewsEditor(env, input, fetchImpl = fetch) {
+  if (env.OPENAI_API_KEY) return callOpenAiNewsEditor(env, input, fetchImpl);
   let attempted = false;
   if (!env.GEMINI_API_KEY || env.GEMINI_TIER !== 'paid')
     return { ok: false, error: 'not-configured' };

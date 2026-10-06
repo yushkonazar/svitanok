@@ -111,11 +111,14 @@ export async function buildNewsSnapshot(env, nowMs, fetchImpl, options = {}) {
   const allowed = settings.news?.sources ?? DEFAULT_NEWS_SOURCES;
   const configKey = JSON.stringify({
     catalogVersion: 3,
+    editorService: env.OPENAI_API_KEY ? 'openai' : 'gemini',
     translationService: env.GOOGLE_TRANSLATE_API_KEY
       ? 'google'
-      : env.GEMINI_API_KEY && env.GEMINI_TIER === 'paid'
-        ? 'gemini'
-        : 'unconfigured',
+      : env.OPENAI_API_KEY
+        ? 'openai'
+        : env.GEMINI_API_KEY && env.GEMINI_TIER === 'paid'
+          ? 'gemini'
+          : 'unconfigured',
     allowed,
     interval,
     muted: settings.mutedTopics,
@@ -143,7 +146,9 @@ export async function buildNewsSnapshot(env, nowMs, fetchImpl, options = {}) {
     !options.force &&
     elapsed <
       (old.localization?.pending &&
-      (env.GOOGLE_TRANSLATE_API_KEY || (env.GEMINI_API_KEY && env.GEMINI_TIER === 'paid'))
+      (env.GOOGLE_TRANSLATE_API_KEY ||
+        env.OPENAI_API_KEY ||
+        (env.GEMINI_API_KEY && env.GEMINI_TIER === 'paid'))
         ? Math.min(interval, 30 * 60000)
         : interval)
   )

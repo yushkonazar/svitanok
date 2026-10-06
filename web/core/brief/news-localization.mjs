@@ -94,7 +94,7 @@ export async function translateNewsBatch(env, input, fetchImpl = fetch) {
   return fallback.ok
     ? {
         ...fallback,
-        provider: 'gemini-fallback',
+        provider: fallback.provider === 'openai' ? 'openai-fallback' : 'gemini-fallback',
         characters: 0,
         editorCalls: fallback.attempted ? 1 : 0,
       }

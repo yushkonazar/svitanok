@@ -289,6 +289,8 @@ interface Env {
   LLM_HOST_SECRET?: string;
   /** Existing Cloud Translation key, shared with the briefing for public RSS text. */
   GOOGLE_TRANSLATE_API_KEY?: string;
+  /** Existing project key; public RSS editor only, with its own monthly quota. */
+  OPENAI_API_KEY?: string;
   NEWS_REFRESH?: import('@cloudflare/workers-types').DurableObjectNamespace<
     import('./core/brief/news-refresh-do.mjs').NewsRefreshDO
   >;

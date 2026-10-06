@@ -26,6 +26,9 @@ if (mode === 'prepare') {
   console.log('Ephemeral transfer key pair created. Submit only public.txt to the setup workflow.');
 } else {
   const bundle = JSON.parse(readFileSync(join(folder, 'news-translation-transfer.json'), 'utf8'));
+  const secretName = bundle.secretName ?? 'GOOGLE_TRANSLATE_API_KEY';
+  if (!['GOOGLE_TRANSLATE_API_KEY', 'OPENAI_API_KEY'].includes(secretName))
+    throw new Error('Unsupported news service');
   if (bundle.algorithm !== 'RSA-OAEP-SHA256' || typeof bundle.ciphertext !== 'string')
     throw new Error('Invalid encrypted package');
   const value = privateDecrypt(
@@ -45,7 +48,7 @@ if (mode === 'prepare') {
         'node_modules/wrangler/bin/wrangler.js',
         'secret',
         'put',
-        'GOOGLE_TRANSLATE_API_KEY',
+        secretName,
         '--config',
         'web/wrangler.jsonc',
       ],
@@ -58,7 +61,7 @@ if (mode === 'prepare') {
     if (applied.error || applied.status !== 0)
       throw new Error(`Local Worker secret setup failed (exit ${applied.status ?? 'timeout'})`);
     console.log(
-      'Existing Google translator configured with local Worker authorization. No plaintext files or credential output.',
+      'Existing news service configured with local Worker authorization. No plaintext files or credential output.',
     );
   } finally {
     value.fill(0);

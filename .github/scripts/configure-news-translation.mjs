@@ -1,22 +1,33 @@
-// Reuse the existing briefing translation key in the same project's news Worker.
+// Reuse only the existing translation/editor keys in the same project's news Worker.
 // Neither response bodies nor credentials are logged.
 import { constants, createPublicKey, publicEncrypt } from 'node:crypto';
 import { writeFileSync } from 'node:fs';
-const translationKey = (process.env.GOOGLE_TRANSLATE_API_KEY ?? '').trim();
+const secretName = process.env.TRANSFER_SECRET || 'GOOGLE_TRANSLATE_API_KEY';
+if (!['GOOGLE_TRANSLATE_API_KEY', 'OPENAI_API_KEY'].includes(secretName))
+  throw new Error('Unsupported news service');
+const translationKey = (process.env[secretName] ?? '').trim();
 const cloudflareToken = (process.env.CF_API_TOKEN ?? '').trim();
 const cloudflareAccount = (process.env.CF_ACCOUNT_ID ?? '').trim();
 if (!translationKey || !cloudflareToken || !cloudflareAccount)
   throw new Error('Required existing secret is missing');
-const check = await fetch('https://translation.googleapis.com/language/translate/v2', {
-  method: 'POST',
-  signal: AbortSignal.timeout(15000),
-  headers: { 'content-type': 'application/json', 'x-goog-api-key': translationKey },
-  body: JSON.stringify({ q: ['A new telescope was launched.'], target: 'uk', format: 'text' }),
-});
-if (!check.ok) throw new Error(`Existing Google translator check failed: HTTP ${check.status}`);
-const translated = await check.json();
-if (!/[іїєґа-я]/i.test(translated.data?.translations?.[0]?.translatedText ?? ''))
-  throw new Error('Translator did not return Ukrainian text');
+if (secretName === 'GOOGLE_TRANSLATE_API_KEY') {
+  const check = await fetch('https://translation.googleapis.com/language/translate/v2', {
+    method: 'POST',
+    signal: AbortSignal.timeout(15000),
+    headers: { 'content-type': 'application/json', 'x-goog-api-key': translationKey },
+    body: JSON.stringify({ q: ['A new telescope was launched.'], target: 'uk', format: 'text' }),
+  });
+  if (!check.ok) throw new Error(`Existing Google translator check failed: HTTP ${check.status}`);
+  const translated = await check.json();
+  if (!/[іїєґа-я]/i.test(translated.data?.translations?.[0]?.translatedText ?? ''))
+    throw new Error('Translator did not return Ukrainian text');
+} else {
+  const check = await fetch('https://api.openai.com/v1/models/gpt-4.1-mini-2025-04-14', {
+    signal: AbortSignal.timeout(15000),
+    headers: { authorization: `Bearer ${translationKey}` },
+  });
+  if (!check.ok) throw new Error(`Existing news editor check failed: HTTP ${check.status}`);
+}
 const transferPublicKey = (process.env.TRANSFER_PUBLIC_KEY ?? '').trim();
 if (transferPublicKey) {
   if (transferPublicKey.length > 2048 || !/^[A-Za-z0-9+/]+=*$/.test(transferPublicKey))
@@ -34,10 +45,14 @@ if (transferPublicKey) {
   );
   writeFileSync(
     'news-translation-transfer.json',
-    JSON.stringify({ algorithm: 'RSA-OAEP-SHA256', ciphertext: encrypted.toString('base64') }),
+    JSON.stringify({
+      secretName,
+      algorithm: 'RSA-OAEP-SHA256',
+      ciphertext: encrypted.toString('base64'),
+    }),
   );
   console.log(
-    'Translator verified. Only an encrypted transfer package was written; apply with local Worker authorization.',
+    'News service verified. Only an encrypted transfer package was written; apply with local Worker authorization.',
   );
 } else {
   const configure = await fetch(
@@ -47,7 +62,7 @@ if (transferPublicKey) {
       signal: AbortSignal.timeout(15000),
       headers: { authorization: `Bearer ${cloudflareToken}`, 'content-type': 'application/json' },
       body: JSON.stringify({
-        name: 'GOOGLE_TRANSLATE_API_KEY',
+        name: secretName,
         text: translationKey,
         type: 'secret_text',
       }),
@@ -57,6 +72,6 @@ if (transferPublicKey) {
   const result = await configure.json();
   if (!result.success) throw new Error('Worker translation setup was not acknowledged');
   console.log(
-    'Existing Google translator verified; news Worker configured. No credential values logged.',
+    'Existing news service verified; news Worker configured. No credential values logged.',
   );
 }
