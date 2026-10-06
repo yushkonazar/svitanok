@@ -1,4 +1,4 @@
-import { ObservationReview } from './ObservationReview.tsx';
+import { AdaptiveReview } from './AdaptiveReview.tsx';
 import { useState } from 'react';
 import { PageHeading } from '../ui/PageHeading.tsx';
 import { useStats } from '../../api/hooks.ts';
@@ -30,7 +30,7 @@ export function StatsScreen() {
         accent="Твій ритм."
         description="Від щоденних відповідей до змін, які можна помітити."
       />
-      <ObservationReview s={s} days={days} setDays={setDays} />
+      <AdaptiveReview s={s} days={days} setDays={setDays} />
       <details className="renewal-card">
         <summary className="cursor-pointer text-sm font-bold">Інтереси й робота Світанку</summary>
         <div className="mt-5 flex flex-col gap-6">

@@ -56,6 +56,111 @@ beforeEach(() => {
 afterEach(() => vi.useRealTimers());
 
 describe('POST /api/event — checkin, locked-контракт', () => {
+  it('v3 validates the new core and ignores forged branch/time metadata', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-10-06T09:00:00Z'));
+    kv.set(
+      'settings',
+      JSON.stringify({
+        checkin: {
+          version: 3,
+          schedule: { morning: '05:00', afternoon: '18:00', evening: '22:00', end: '04:00' },
+        },
+      }),
+    );
+    const initData = await buildInitData(OWNER, BOT_TOKEN);
+    const partial = await postCheckin({
+      type: 'checkin',
+      questionVersion: 3,
+      slot: 'morning',
+      dateKey: '2026-10-06',
+      energy: 3,
+      confirmed: true,
+      initData,
+    });
+    expect(partial.status).toBe(422);
+    expect(putCalls).toHaveLength(0);
+    const response = await postCheckin({
+      type: 'checkin',
+      questionVersion: 3,
+      slot: 'morning',
+      dateKey: '2026-10-06',
+      sleepModeV3: 'none',
+      energy: 3,
+      mood: 3,
+      activitiesV3: ['personal'],
+      companyV3: ['alone'],
+      priorityV3: 'rest',
+      developmentPlanV3: 'none',
+      sleepBlockersV3: ['time'],
+      confirmedAtV3: '1900-01-01',
+      shownBranchesV3: ['sleep-poor'],
+      confirmed: true,
+      initData,
+    });
+    expect(response.status).toBe(200);
+    const value = JSON.parse(kv.get('stats')!).checkins['2026-10-06'].morning;
+    expect(value.confirmedAtV3).toBe('2026-10-06T09:00:00.000Z');
+    expect(value.sleepBlockersV3).toBeUndefined();
+    expect(value.shownBranchesV3).not.toContain('sleep-poor');
+  });
+  it('v3 assigns an after-midnight confirmation to the preceding evening', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-10-06T21:30:00Z'));
+    kv.set(
+      'settings',
+      JSON.stringify({
+        checkin: {
+          version: 3,
+          schedule: { morning: '05:00', afternoon: '18:00', evening: '22:00', end: '04:00' },
+        },
+      }),
+    );
+    const initData = await buildInitData(OWNER, BOT_TOKEN);
+    const response = await postCheckin({
+      type: 'checkin',
+      questionVersion: 3,
+      slot: 'evening',
+      dateKey: '2026-10-06',
+      energy: 3,
+      mood: 4,
+      satisfactionV3: 4,
+      activitiesV3: ['rest'],
+      companyV3: ['partner'],
+      priorityOutcomeV3: 'changed',
+      developmentActualV3: 'none',
+      freeTimeV3: '1_2h',
+      napV3: 'no',
+      confirmed: true,
+      initData,
+    });
+    expect(response.status).toBe(200);
+    const records = JSON.parse(kv.get('stats')!).checkins;
+    expect(records['2026-10-06'].evening.questionVersion).toBe(3);
+    expect(records['2026-10-07']).toBeUndefined();
+  });
+  it('an old client cannot silently write a previous question version after upgrade', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-10-06T09:00:00Z'));
+    kv.set(
+      'settings',
+      JSON.stringify({
+        checkin: {
+          version: 3,
+          schedule: { morning: '05:00', afternoon: '18:00', evening: '22:00', end: '04:00' },
+        },
+      }),
+    );
+    const initData = await buildInitData(OWNER, BOT_TOKEN);
+    const response = await postCheckin({
+      type: 'checkin',
+      questionVersion: 2,
+      energy: 3,
+      initData,
+    });
+    expect(response.status).toBe(409);
+    expect(putCalls).toHaveLength(0);
+  });
   it('v2 refuses partial confirmation and round-trips a complete explicit core', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-10-04T08:00:00Z'));

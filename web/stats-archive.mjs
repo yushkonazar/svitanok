@@ -1,3 +1,4 @@
+import { adaptiveDay, adaptiveMetrics } from './core/checkin/adaptive-observations.mjs';
 // Холодний архів місячних згорток.
 //
 // ⚠️ ЦЕ ПРО ВТРАТУ ДАНИХ, а не про майбутній графік. Стор ріже історію капами:
@@ -21,6 +22,21 @@ import { observationDay } from './core/checkin/observations.mjs';
 /** Store v2 means with their denominators, separately from legacy scales.
  * @param {KvBlob} target @param {string} date @param {KvBlob} rec */
 function appendObservations(target, date, rec) {
+  const metrics = adaptiveMetrics([adaptiveDay(date, rec)]);
+  if (Object.keys(metrics).length) {
+    const v3 = target.observationsV3 ?? { metrics: {} };
+    for (const [key, value] of Object.entries(metrics)) {
+      const prior = v3.metrics[key] ?? { n: 0, counts: {}, sum: 0, numericN: 0, average: null };
+      prior.n += value.n;
+      prior.sum += value.sum ?? 0;
+      prior.numericN += value.numericN ?? 0;
+      prior.average = prior.numericN ? round1(prior.sum / prior.numericN) : null;
+      for (const [id, count] of Object.entries(value.counts))
+        prior.counts[id] = (prior.counts[id] ?? 0) + Number(count);
+      v3.metrics[key] = prior;
+    }
+    target.observationsV3 = v3;
+  }
   const d = observationDay(date, rec);
   const count = ['morning', 'afternoon', 'evening'].filter(
     (slot) => /** @type {KvBlob} */ (d)[slot].confirmed,

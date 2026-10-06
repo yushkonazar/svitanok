@@ -56,9 +56,11 @@ export function ObservationChart({
     new Date(s).toLocaleDateString('uk-UA', {
       day: 'numeric',
       month: 'short',
+      ...(s.includes('T') ? { hour: '2-digit' as const, minute: '2-digit' as const } : {}),
       timeZone: 'Europe/Kyiv',
     });
-  const fmt = (n: number) => n.toLocaleString('uk-UA', { maximumFractionDigits: 4 });
+  const fmt = (n: number) =>
+    n.toLocaleString('uk-UA', { maximumFractionDigits: unit === 'год' || unit === '/5' ? 1 : 4 });
   return (
     <div className="renewal-observation">
       <div className="flex items-baseline justify-between gap-2" aria-live="polite">
