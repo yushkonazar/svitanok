@@ -5,12 +5,20 @@ import { AdaptiveFlow } from './CheckinV3Screen.tsx';
 import { adaptivePreferences, clearHiddenV3 } from '../../../../core/checkin/adaptive.mjs';
 vi.mock('../../telegram.ts', () => ({ inTelegram: () => false, haptic: vi.fn() }));
 afterEach(cleanup);
-function Flow({ initial = {} }: { initial?: Record<string, unknown> }) {
+function Flow({
+  initial = {},
+  previousEvening = {},
+  pending = false,
+}: {
+  initial?: Record<string, unknown>;
+  previousEvening?: Record<string, unknown>;
+  pending?: boolean;
+}) {
   const [answers, setAnswers] = useState<Record<string, unknown>>({
     questionVersion: 3,
     ...initial,
   });
-  const context = { morning: {}, previous: {}, previousEvening: {}, activities: [] };
+  const context = { morning: {}, previous: {}, previousEvening, activities: [] };
   return (
     <>
       <AdaptiveFlow
@@ -22,7 +30,7 @@ function Flow({ initial = {} }: { initial?: Record<string, unknown> }) {
         context={context}
         onChange={(k, v) => setAnswers((a) => clearHiddenV3('morning', { ...a, [k]: v }, context))}
         onConfirm={() => {}}
-        pending={false}
+        pending={pending}
       />
       <output data-testid="answers">{JSON.stringify(answers)}</output>
     </>
@@ -68,4 +76,38 @@ it('groups activities without a module picker and treats alone as exclusive', ()
   fireEvent.click(screen.getByRole('button', { name: 'Сам' }));
   expect(screen.getByTestId('answers').textContent).toContain('"companyV3":["alone"]');
   expect(screen.queryByText('+ Додати деталі')).not.toBeInTheDocument();
+});
+
+it('keeps sleep clarifications in place when the lower clarification gets an answer', () => {
+  render(<Flow previousEvening={{ bedtimePlanV3: '23:00' }} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Основний сон' }));
+  fireEvent.click(screen.getByRole('button', { name: '2 · Радше погано' }));
+  const bedtime = screen.getByRole('region', { name: 'Відхід до сну' });
+  const sleep = screen.getByRole('region', { name: 'Що завадило цьому сну?' });
+  expect(screen.getAllByRole('region')).toEqual([bedtime, sleep]);
+  fireEvent.click(screen.getByRole('button', { name: 'Пробудження' }));
+  expect(screen.getAllByRole('region')).toEqual([bedtime, sleep]);
+});
+
+it('keeps the current card, open groups and focus across saving and timer redraws', () => {
+  const scroll = vi.spyOn(window, 'scrollTo').mockImplementation(() => {});
+  const initial = { sleepModeV3: 'none', energy: 3, mood: 3 };
+  const view = render(<Flow initial={initial} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Далі →' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Далі →' }));
+  const summary = screen.getByText('Справи й розвиток');
+  fireEvent.click(summary);
+  const group = summary.closest('details')!;
+  const work = screen.getByRole('button', { name: 'Робота' });
+  work.focus();
+  fireEvent.click(work);
+  const card = view.container.querySelector('.checkin-adaptive-card');
+  view.rerender(<Flow initial={initial} pending />);
+  view.rerender(<Flow initial={initial} />);
+  expect(view.container.querySelector('.checkin-adaptive-card')).toBe(card);
+  expect(group).toHaveAttribute('open');
+  expect(work).toHaveFocus();
+  expect(screen.getByRole('heading', { name: 'Твій контекст' })).toBeInTheDocument();
+  expect(scroll).not.toHaveBeenCalled();
+  scroll.mockRestore();
 });

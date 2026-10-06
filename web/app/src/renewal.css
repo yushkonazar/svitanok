@@ -981,6 +981,11 @@
 }
 
 /* Adaptive check-in: bounded inline detail and compact, consistent summaries. */
+.checkin-screen {
+  /* Inline details change height. Never anchor the viewport to the buttons
+     or inactive slots below them while the user is scrolling the document. */
+  overflow-anchor: none;
+}
 .checkin-adaptive-flow,
 .checkin-adaptive-card {
   display: flex;
@@ -1042,11 +1047,9 @@
 @keyframes checkin-reveal {
   from {
     opacity: 0;
-    transform: translateY(4px);
   }
   to {
     opacity: 1;
-    transform: none;
   }
 }
 @media (prefers-reduced-motion: reduce) {

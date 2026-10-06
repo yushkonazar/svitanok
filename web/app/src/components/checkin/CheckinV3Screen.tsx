@@ -76,7 +76,11 @@ export function AdaptiveFlow({
 }) {
   const [step, setStep] = useState(0);
   const core = CHECKIN_CARDS_V3[slot] ?? [];
-  const branches = followupsV3(slot, answers, context);
+  // Selection prioritizes answered details; presentation must not move them
+  // past each other as answers arrive while the user is scrolling.
+  const branches = followupsV3(slot, answers, context).sort(
+    (a, b) => FOLLOWUP_CARDS_V3.indexOf(a) - FOLLOWUP_CARDS_V3.indexOf(b),
+  );
   const card = core[step];
   const owner = (id: string) =>
     id.startsWith('sleep') || id === 'bedtime'
@@ -380,7 +384,7 @@ export function CheckinV3Screen() {
     );
   }
   return (
-    <div className="flex flex-col gap-5">
+    <div className="checkin-screen flex flex-col gap-5">
       <PageHeading
         eyebrow="ПАУЗА ДЛЯ СЕБЕ"
         title="Помітити себе."
