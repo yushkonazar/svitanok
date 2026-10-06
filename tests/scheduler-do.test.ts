@@ -331,6 +331,19 @@ describe('SchedulerDO — прапорець і реєстр', () => {
     const [job] = await jobsOf(scheduler);
     expect(job?.period).toBe(15);
   });
+
+  it('скорочення періоду не лишає новини чекати старого тригодинного due', async () => {
+    const { scheduler, ctx } = makeDo(
+      { ASSISTANT_V2: 'shadow' },
+      { news: { periodMin: 180, shadowSafe: true, run: async () => {} } },
+    );
+    await scheduler.watchdogTick(T0);
+    scheduler.tasks = { news: { periodMin: 5, shadowSafe: true, run: async () => {} } } as never;
+    await scheduler.watchdogTick(T0 + 60_000);
+    const [job] = await jobsOf(scheduler);
+    expect(job?.due_at).toBe(new Date(T0 + 60_000 + MIN5).toISOString());
+    expect(ctx.alarm).toBe(T0 + 60_000 + MIN5);
+  });
 });
 
 describe('SchedulerDO — окрема telemetry тіка', () => {

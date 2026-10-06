@@ -65,7 +65,7 @@ import { refreshNewsSnapshot } from '../brief/news-snapshot.mjs';
 
 /** @type {Record<string, SchedulerTaskDef>} */
 export const SCHEDULER_TASKS = {
-  'mini-app-news': { periodMin: 180, run: refreshNewsSnapshot },
+  'mini-app-news': { periodMin: 5, run: refreshNewsSnapshot }, // Snapshot gates 3/6/12h and bounded translation retries.
   // Носій заміру джитера і канарка shadow-режиму: єдина задача, що
   // ВИКОНУЄТЬСЯ (а не логується) і в shadow — без побічних ефектів.
   heartbeat: {

@@ -2,7 +2,7 @@
  * Changed concepts have new keys. No inferred answer or composite health score. */
 /** @typedef {{id:string,label:string,type:'one'|'multi'|'number'|'duration'|'text'|'datetime'|'time'|'categories',options?:[string,string|number][],min?:number,max?:number,limit?:number,optional?:boolean,when?:{key:string,values?:unknown[],positive?:boolean,notValues?:unknown[]},help?:string,period?:string}} Field */
 /** @typedef {{id:string,title:string,module?:string,fields:Field[],help?:string}} Card */
-/** @typedef {{modules:string[],schedule:{morning:string,afternoon:string,evening:string,end:string},habits:{id:string,name:string,days:number[]}[],categories:{id:string,name:string,group:string}[],hiddenCategories:string[]}} CheckinPreferences */
+/** @typedef {{version?:3,modules:string[],schedule:{morning:string,afternoon:string,evening:string,end:string},habits:{id:string,name:string,days:number[]}[],categories:{id:string,name:string,group:string}[],hiddenCategories:string[]}} CheckinPreferences */
 export const CHECKIN_MODULES = [
   ['sleep', 'Сон детальніше'],
   ['learning', 'Навчання'],
@@ -74,6 +74,7 @@ export function normalizeCheckinPreferences(raw) {
   const defaults = DEFAULT_CHECKIN_PREFERENCES;
   const ids = CHECKIN_MODULES.map(([id]) => id);
   return {
+    ...(r.version === 3 ? { version: 3 } : {}),
     modules: Array.isArray(r.modules)
       ? [...new Set(r.modules.filter((/** @type {string} */ id) => ids.includes(id)))]
       : [...defaults.modules],
@@ -129,9 +130,12 @@ export function checkinClock(minute, prefs) {
     b = minuteOf(s.afternoon) ?? 840,
     c = minuteOf(s.evening) ?? 1200,
     d = minuteOf(s.end) ?? 120;
+  const morningEnd = p.version === 3 && a < 780 && b > 780 ? 780 : b;
+  if (p.version === 3 && minute >= morningEnd && minute < b)
+    return { slot: null, endsIn: null, nextIn: b - minute, previousDay: false, schedule: s };
   const overnight = d <= a;
   const slot =
-    minute >= a && minute < b
+    minute >= a && minute < morningEnd
       ? 'morning'
       : minute >= b && minute < c
         ? 'afternoon'
@@ -140,7 +144,7 @@ export function checkinClock(minute, prefs) {
           : null;
   const end =
     slot === 'morning'
-      ? b
+      ? morningEnd
       : slot === 'afternoon'
         ? c
         : slot === 'evening'

@@ -1,3 +1,5 @@
+import { refreshMonoAccount } from './core/finance/bank-refresh.mjs';
+import { MonoTooSoonError } from './core/adapters/mono.mjs';
 import { buildFinanceReport, validateReportRange } from './core/finance/reporting.mjs';
 import { json, readJsonBody } from './http-core.mjs';
 import { checkOwnerRead, checkPrimaryOwner, mutationInitData } from './auth-core.mjs';
@@ -25,7 +27,10 @@ export async function handleFinance(request, env) {
     const from = url.searchParams.get('from'),
       to = url.searchParams.get('to');
     let result;
-    if (!body && (from != null || to != null)) {
+    if (body?.type === 'bank-refresh') {
+      await refreshMonoAccount(env, body.payload?.accountId, nowMs);
+      result = await readFinanceWorkspace(env, nowMs);
+    } else if (!body && (from != null || to != null)) {
       if (!from || !to) throw new FinanceValidation('Вкажи початок і кінець періоду');
       validateReportRange(from, to, nowMs);
       result = buildFinanceReport(
@@ -39,6 +44,17 @@ export async function handleFinance(request, env) {
     response.headers.set('cache-control', 'private, no-store');
     return response;
   } catch (error) {
+    if (error instanceof MonoTooSoonError) {
+      const response = json(
+        {
+          ok: false,
+          error: 'Monobank дозволяє оновлення раз на хвилину. Спробуй через 60 секунд.',
+        },
+        429,
+      );
+      response.headers.set('Retry-After', '60');
+      return response;
+    }
     if (error instanceof FinanceConflict) return json({ ok: false, error: error.message }, 409);
     if (
       error instanceof FinanceValidation ||

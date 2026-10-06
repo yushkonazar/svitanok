@@ -1,0 +1,42 @@
+name: configure news translation
+on:
+  workflow_dispatch:
+    inputs:
+      transfer_secret:
+        description: 'Existing project service to configure'
+        type: choice
+        options: [GOOGLE_TRANSLATE_API_KEY, OPENAI_API_KEY]
+        default: GOOGLE_TRANSLATE_API_KEY
+      transfer_public_key:
+        description: 'Optional RSA public key (base64 DER); encrypted transfer for local Worker authorization'
+        required: false
+        default: ''
+permissions: {}
+concurrency:
+  group: configure-news-translation
+  cancel-in-progress: false
+jobs:
+  configure:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: validate existing translator and configure Worker
+        env:
+          GOOGLE_TRANSLATE_API_KEY: ${{ secrets.GOOGLE_TRANSLATE_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          TRANSFER_SECRET: ${{ inputs.transfer_secret }}
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          TRANSFER_PUBLIC_KEY: ${{ inputs.transfer_public_key }}
+        run: node .github/scripts/configure-news-translation.mjs
+      - name: encrypted transfer for local authorized setup
+        if: inputs.transfer_public_key != ''
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: news-translation-encrypted-transfer
+          path: news-translation-transfer.json
+          if-no-files-found: error
+          retention-days: 1

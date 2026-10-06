@@ -658,8 +658,8 @@ export function ObservationReview({
           </div>
         </details>
         <p className="renewal-chart-note mt-4">
-          Час не дорівнює якості. «Не було нового матеріалу» не стає нулем. Прогноз завершення Mate
-          Academy без навчального плану не будується.
+          Час не дорівнює якості. «Не було нового матеріалу» не стає нулем. Прогноз завершення курсу
+          без навчального плану не будується.
         </p>
       </section>
       {contextScope === 'learning' && <DayContext key={`learning:${selected}`} day={chosen} open />}
@@ -768,14 +768,16 @@ export function ObservationReview({
               ([d, r]) =>
                 d >= a.from &&
                 d <= to &&
-                Object.values(r).some((v) => v && v.questionVersion !== 2),
+                Object.values(r).some((v) => v && ![2, 3].includes(v.questionVersion ?? 0)),
             )
             .reverse()
             .map(([d, r]) => (
               <details key={d} className="renewal-inset">
                 <summary className="cursor-pointer text-sm">{dateLabel(d)}</summary>
                 {Object.entries(r)
-                  .filter(([, answers]) => answers && answers.questionVersion !== 2)
+                  .filter(
+                    ([, answers]) => answers && ![2, 3].includes(answers.questionVersion ?? 0),
+                  )
                   .map(([slot, answers]) => (
                     <div key={slot} className="mt-3">
                       <b>{slotNames[slot as CheckinSlot]}</b>

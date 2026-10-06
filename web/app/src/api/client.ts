@@ -41,12 +41,53 @@ export async function fetchNewsSnapshot() {
   if (!res.ok) throw new Error('Не вдалося оновити стрічку. Показано останній брифінг.');
   return newsSnapshotSchema.parse(await res.json());
 }
+export async function postNewsAction(
+  action:
+    | { type: 'refresh' | 'seen' }
+    | { type: 'feedback'; url: string; kind: 'like' | 'less' | 'clear' },
+) {
+  if (!inTelegram()) return { ok: true, demo: true };
+  const response = await fetch('/api/news', {
+    method: 'POST',
+    headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+    body: JSON.stringify(action),
+  });
+  throwIfSessionExpired(response);
+  if (!response.ok) throw new Error('Не вдалося оновити новини. Спробуй ще раз.');
+  return (await response.json()) as {
+    ok: boolean;
+    skipped?: string;
+    updated?: boolean;
+    retryAfterSeconds?: number;
+    feedback?: Record<string, 'like' | 'less' | 'clear'>;
+    lastSeenAt?: string;
+    demo?: boolean;
+  };
+}
 
 export async function fetchFinance() {
   if (!inTelegram()) return { finance: readFinanceDemo(), demo: true };
   const res = await fetch('/api/finance', { headers: authHeaders() });
   throwIfSessionExpired(res);
   if (!res.ok) throw new Error('Не вдалося завантажити фінанси. Спробуй знову.');
+  return { finance: financeSchema.parse(await res.json()), demo: false };
+}
+export async function refreshFinanceBank(accountId: string) {
+  if (!inTelegram()) return fetchFinance();
+  const res = await fetch('/api/finance', {
+    method: 'POST',
+    headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ type: 'bank-refresh', payload: { accountId } }),
+  });
+  throwIfSessionExpired(res);
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new Error(
+      typeof body?.error === 'string'
+        ? body.error
+        : 'Не вдалося звірити операції з Monobank. Спробуй ще раз.',
+    );
+  }
   return { finance: financeSchema.parse(await res.json()), demo: false };
 }
 export async function fetchFinanceReport(from: string, to: string) {

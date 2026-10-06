@@ -1,3 +1,10 @@
+import {
+  cleanCheckinV3,
+  clearHiddenV3,
+  coreCompleteV3,
+  adaptiveContext,
+  checkinGapV3,
+} from './core/checkin/adaptive.mjs';
 // HTTP-ендпоінти дашборда (Фаза 5, модуляризація worker.js, план A2 §5).
 //
 // ЩО ТУТ: усе, що Mini App викликає напряму — голос за тему, запис події,
@@ -155,6 +162,7 @@ export async function applyEvent(/** @type {Env} */ env, /** @type {any} */ body
     // ігноруємо свідомо — він тут лише підказка для UI.
     const h = kyivHour();
     const prefs = (await loadSettings(env)).checkin;
+    if (prefs?.version === 3 && body.questionVersion !== 3) return { locked: false, expired: true };
     const clock = checkinClock(kyivMinuteOfDay(), prefs);
     const slot = clock.slot;
     // Тиха зона (02:00–07:59) — жоден блок не відкритий, писати нічого.
@@ -186,6 +194,19 @@ export async function applyEvent(/** @type {Env} */ env, /** @type {any} */ body
   const checkinLocked =
     body.type === 'checkin' && !!loaded.checkins?.[dateKey]?.[ev.slot]?.confirmed;
   if (checkinLocked) return { locked: true, expired: false }; // нічого не зміниться — не палимо KV-запис даремно
+  if (body.type === 'checkin' && body.confirmed && body.questionVersion === 3) {
+    const cleaned = cleanCheckinV3(ev.slot, ev);
+    const prior = loaded.checkins?.[dateKey]?.[ev.slot];
+    const candidate = { ...(prior?.questionVersion === 3 ? prior : {}), ...cleaned.set };
+    for (const key of cleaned.clear) delete candidate[key];
+    if (
+      !coreCompleteV3(
+        ev.slot,
+        clearHiddenV3(ev.slot, candidate, adaptiveContext(loaded.checkins, dateKey, ev.slot)),
+      )
+    )
+      return { locked: false, expired: false, incomplete: true };
+  }
   if (
     body.type === 'checkin' &&
     body.confirmed &&
@@ -387,5 +408,7 @@ export async function handleStats(/** @type {Request} */ request, /** @type {Env
   // всі три заповнені (Статистика показує правильно — вона сканує вікно днів).
   // Удень (h>=6) ключі збігаються, тож поведінка не міняється.
   stats.checkinToday = store.checkins?.[stats.checkinDate] ?? null;
+  stats.checkinGapIn =
+    prefs?.version === 3 ? checkinGapV3(stats.checkinToday, clock.slot, Date.now()) : 0;
   return json(stats);
 }

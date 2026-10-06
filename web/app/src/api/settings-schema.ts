@@ -13,6 +13,7 @@ export const quietSchema = z.object({
   to: hhmm.default('08:00'),
 });
 export const checkinPreferencesSchema = z.object({
+  version: z.literal(3).optional(),
   modules: z.array(z.string()),
   schedule: z.object({ morning: hhmm, afternoon: hhmm, evening: hhmm, end: hhmm }),
   habits: z.array(

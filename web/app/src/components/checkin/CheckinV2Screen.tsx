@@ -1,3 +1,4 @@
+import { fieldVisibleV3, validValueV3 } from '../../../../core/checkin/adaptive.mjs';
 import { useEffect, useId, useRef, useState } from 'react';
 import { useStats, useSaveCheckin, useSettings } from '../../api/hooks.ts';
 import { resetCheckinDemo } from '../../api/checkin-demo.ts';
@@ -78,7 +79,8 @@ export function FieldInput({
 }) {
   const id = useId(),
     [limitMessage, setLimitMessage] = useState('');
-  if (!fieldVisible(field, answers)) return null;
+  const adaptive = answers.questionVersion === 3;
+  if (!(adaptive ? fieldVisibleV3(field, answers) : fieldVisible(field, answers))) return null;
   const value = answers[field.id];
   const pick = (v: string | number) => {
     haptic('light');
@@ -92,11 +94,18 @@ export function FieldInput({
         );
         return;
       }
-      if (['none', 'unknown', 'noplan'].includes(String(v))) {
+      if (
+        ['none', 'unknown', 'noplan', ...(adaptive ? ['alone', 'private'] : [])].includes(String(v))
+      ) {
         onChange(field.id, [v]);
         return;
       }
-      const kept = old.filter((x) => !['none', 'unknown', 'noplan'].includes(String(x)));
+      const kept = old.filter(
+        (x) =>
+          !['none', 'unknown', 'noplan', ...(adaptive ? ['alone', 'private'] : [])].includes(
+            String(x),
+          ),
+      );
       if (kept.length >= (field.limit ?? 2)) {
         setLimitMessage(
           `Можна обрати до ${field.limit ?? 2}. Зніми попередній вибір, щоб додати інший.`,
@@ -116,7 +125,7 @@ export function FieldInput({
       className="checkin-choice"
       data-selected={selected(v)}
     >
-      {label}
+      {label.split(' :: ').at(-1)}
     </button>
   );
   const activityOptions = [...ACTIVITIES, ...p.categories].filter(
@@ -139,7 +148,45 @@ export function FieldInput({
         {field.optional && <span className="text-xs font-normal text-tx3"> · за бажанням</span>}
       </label>
       {field.help && <p className="renewal-chart-note">{field.help}</p>}
-      {field.type === 'categories' ? (
+      {adaptive && options.some(([label]) => label.includes(' :: ')) ? (
+        <div className="flex flex-col gap-3" aria-labelledby={`${id}-label`}>
+          {[
+            ...new Set(
+              options
+                .filter(([label]) => label.includes(' :: '))
+                .map(([label]) => label.split(' :: ')[0]),
+            ),
+          ].map((group) => {
+            const count = options.filter(
+              ([label, v]) => label.startsWith(group + ' :: ') && selected(v),
+            ).length;
+            return (
+              <details key={group} className="checkin-option-group">
+                <summary>
+                  {group}
+                  <span
+                    className="checkin-group-count"
+                    aria-hidden={!count}
+                    aria-label={count ? `Обрано: ${count}` : undefined}
+                  >
+                    {count || ''}
+                  </span>
+                </summary>
+                <div className="flex flex-wrap gap-2 mt-3">
+                  {options
+                    .filter(([label]) => label.startsWith(group + ' :: '))
+                    .map(([label, v]) => option(label, v))}
+                </div>
+              </details>
+            );
+          })}
+          <div className="flex flex-wrap gap-2">
+            {options
+              .filter(([label]) => !label.includes(' :: '))
+              .map(([label, v]) => option(label, v))}
+          </div>
+        </div>
+      ) : field.type === 'categories' ? (
         <div className="flex flex-col gap-4" aria-labelledby={`${id}-label`}>
           {ACTIVITY_GROUPS.map((g) => (
             <div key={g}>
@@ -225,25 +272,27 @@ export function FieldInput({
             </label>
           </div>
           <div className="flex flex-wrap gap-2 mt-3">
-            {(field.id === 'sleepMinutesV2' ? [240, 360, 420, 480, 540] : [0, 15, 30, 60, 120]).map(
-              (n) => (
-                <button
-                  type="button"
-                  key={n}
-                  className="renewal-pill"
-                  aria-pressed={value === n}
-                  onClick={() => onChange(field.id, n)}
-                >
-                  {n >= 60 ? `${n / 60} год` : `${n} хв`}
-                </button>
-              ),
-            )}
+            {(field.id.startsWith('sleepMinutes')
+              ? [240, 360, 420, 480, 540]
+              : [0, 15, 30, 60, 120]
+            ).map((n) => (
+              <button
+                type="button"
+                key={n}
+                className="renewal-pill"
+                aria-pressed={value === n}
+                onClick={() => onChange(field.id, n)}
+              >
+                {n >= 60 ? `${n / 60} год` : `${n} хв`}
+              </button>
+            ))}
           </div>
-          {value != null && !validFieldValue(field, value) && (
-            <p role="alert" className="text-neg text-sm">
-              Вкажи цілу тривалість від 0 до 24 годин.
-            </p>
-          )}
+          {value != null &&
+            !(adaptive ? validValueV3(field, value) : validFieldValue(field, value)) && (
+              <p role="alert" className="text-neg text-sm">
+                Вкажи цілу тривалість від {field.min ?? 0} до {field.max ?? 1440} хвилин.
+              </p>
+            )}
         </div>
       ) : (
         <input

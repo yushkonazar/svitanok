@@ -1,3 +1,4 @@
+import { checkinGapV3 } from './core/checkin/adaptive.mjs';
 import { checkinReminder, checkinClock } from './core/checkin/catalog.mjs';
 // Крон-задачі Worker'а (Фаза 5, модуляризація worker.js, план A2 §5).
 //
@@ -622,6 +623,11 @@ export async function checkinNudgeCheck(/** @type {Env} */ env) {
       ? checkinDateKey(today, 0)
       : today
     : checkinDateKey(today, kyivHour());
+  if (
+    settings.checkin?.version === 3 &&
+    checkinGapV3(store.checkins?.[dateKey], win.slot, Date.now()) > 0
+  )
+    return;
   const due = shouldSendCheckinNudge({
     quiet: isQuietMinute(settings, minuteOfDay),
     alreadyNudgedToday: miniApp

@@ -1,3 +1,12 @@
+import {
+  CHECKIN_CARDS_V3,
+  FOLLOWUP_CARDS_V3,
+  cleanCheckinV3,
+  clearHiddenV3,
+  coreCompleteV3,
+  adaptiveContext,
+  followupsV3,
+} from './core/checkin/adaptive.mjs';
 // Чиста логіка статистики дашборда (F1): запис подій + агрегація для /api/stats.
 // Без залежностей і без I/O — щоб покрити тестами (worker.js імпортує це, KV-I/O
 // робить Worker). Стор — один JSON-блоб у KV (ключ `stats`).
@@ -598,6 +607,7 @@ export function staleSleepNudges(
  * обʼєкт), `clear` — ключі, які треба ВИДАЛИТИ з існуючого блоку.
  */
 function cleanCheckin(/** @type {string} */ slot, /** @type {KvBlob} */ ev) {
+  if (ev.questionVersion === 3) return cleanCheckinV3(slot, ev);
   if (ev.questionVersion === 2) return cleanCheckinV2(slot, ev);
   // Приведення CHECKIN_FIELDS до блоба: точна форма реєстру потрібна тестам
   // (enum ⊆ levels), а тут по ньому ходять довільним рядком-слотом.
@@ -1239,12 +1249,48 @@ export function recordEvent(store, ev, dateKey, nowMin = null, nowIso = null) {
       // знищувало б добу).
       if (!hasClean && !hasClear && !confirming) break;
 
-      let merged = { ...existing, ...(clean ?? {}) };
+      let merged = {
+        ...(ev.questionVersion === 3 && existing?.questionVersion !== 3 ? {} : existing),
+        ...(clean ?? {}),
+      };
       // Явне очищення (null/[] від клієнта) — ВИДАЛЯЄ ключ, а не залишає старе
       // значення. Саме цього не було раніше: {...existing, ...clean} умів лише
       // додавати/перезаписувати, ніколи не прибирав — «повторний тап знімає»
       // (questions.ts) працювало тільки локально, до першого дебаунсу.
       for (const k of clear) delete merged[k];
+      if (merged.questionVersion === 3) {
+        const context = adaptiveContext(s.checkins, dateKey, ev.slot);
+        merged = clearHiddenV3(ev.slot, merged, context);
+        merged.timezoneV3 = 'Europe/Kyiv';
+        const fields = [...(CHECKIN_CARDS_V3[ev.slot] ?? []), ...FOLLOWUP_CARDS_V3].flatMap(
+          (c) => c.fields,
+        );
+        merged.shownBranchesV3 = followupsV3(ev.slot, merged, context).map((c) => c.id);
+        if (nowIso) {
+          merged.answeredAtV3 = nowIso;
+          merged.answerTimesV3 = { ...(existing?.answerTimesV3 ?? {}) };
+          merged.answerPeriodsV3 = { ...(existing?.answerPeriodsV3 ?? {}) };
+          for (const [key, value] of Object.entries(clean ?? {})) {
+            const field = fields.find((f) => f.id === key);
+            if (
+              field &&
+              merged[key] != null &&
+              (existing?.questionVersion !== 3 ||
+                JSON.stringify(existing?.[key]) !== JSON.stringify(value))
+            ) {
+              merged.answerTimesV3[key] = nowIso;
+              merged.answerPeriodsV3[key] =
+                field.period ?? (ev.slot === 'morning' ? 'sleep_episode' : 'whole_day');
+            }
+          }
+          for (const key of Object.keys(merged.answerTimesV3))
+            if (merged[key] === undefined) {
+              delete merged.answerTimesV3[key];
+              delete merged.answerPeriodsV3[key];
+            }
+          if (confirming) merged.confirmedAtV3 = nowIso;
+        }
+      }
       if (merged.questionVersion === 2) {
         merged = clearHiddenV2(ev.slot, merged);
         merged.timezoneV2 = 'Europe/Kyiv';
@@ -1301,6 +1347,7 @@ export function recordEvent(store, ev, dateKey, nowMin = null, nowIso = null) {
         }
       }
       if (confirming) {
+        if (merged.questionVersion === 3 && !coreCompleteV3(ev.slot, merged)) break;
         if (merged.questionVersion === 2 && !coreCompleteV2(ev.slot, merged)) break;
         // Підтверджувати ПОРОЖНІЙ блок нема сенсу — це замкнуло б добу, де
         // жодної відповіді ще нема, назавжди без жодних даних усередині.

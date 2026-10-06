@@ -721,6 +721,36 @@
 .renewal-news-story.is-featured {
   grid-template-columns: minmax(0, 1fr);
 }
+.renewal-news-story.is-text-only {
+  grid-template-columns: minmax(0, 1fr);
+}
+.renewal-news-story.is-text-only .renewal-news-actions {
+  grid-column: 1;
+}
+.renewal-news-actions {
+  align-items: center;
+  flex-wrap: wrap;
+}
+.renewal-news-less {
+  min-height: 44px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  color: var(--color-tx2);
+  border: 1px solid var(--color-glassb);
+  font-size: 12px;
+}
+.renewal-news-less[aria-pressed='true'] {
+  color: var(--color-a2);
+  border-color: var(--color-a2);
+}
+.renewal-news-detail {
+  font-size: 15px;
+  line-height: 1.75;
+  color: var(--color-tx2);
+}
+.news-screen {
+  overflow-anchor: none;
+}
 .renewal-news-story.is-featured .renewal-news-actions {
   grid-column: 1;
 }
@@ -978,4 +1008,101 @@
   font-size: 16px;
   background: var(--color-bg2);
   color: var(--color-tx);
+}
+
+/* Adaptive check-in: bounded inline detail and compact, consistent summaries. */
+.checkin-screen {
+  /* Inline details change height. Never anchor the viewport to the buttons
+     or inactive slots below them while the user is scrolling the document. */
+  overflow-anchor: none;
+}
+.checkin-adaptive-flow,
+.checkin-adaptive-card,
+.checkin-adaptive-stage {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  min-width: 0;
+}
+.checkin-adaptive-stage {
+  scroll-margin-top: 16px;
+}
+.checkin-followup {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 18px;
+  border-radius: 22px;
+  border: 1px solid var(--color-hair);
+  border-left: 3px solid var(--color-a2);
+  background: rgba(255, 190, 146, 0.04);
+  animation: checkin-reveal 0.2s ease-out;
+}
+.checkin-option-group {
+  padding: 12px 14px;
+  border-radius: 16px;
+  border: 1px solid var(--color-hair);
+  background: rgba(255, 255, 255, 0.025);
+}
+.checkin-option-group summary {
+  position: relative;
+  padding-right: 30px;
+  min-height: 24px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 600;
+}
+.checkin-group-count {
+  position: absolute;
+  right: 0;
+  top: 0;
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-a2);
+  font-variant-numeric: tabular-nums;
+}
+.adaptive-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.adaptive-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 16px;
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.035);
+  min-width: 0;
+}
+.adaptive-stat small,
+.adaptive-stat span {
+  color: var(--color-tx3);
+  font-size: 12px;
+}
+.adaptive-stat b {
+  font-family: var(--font-mono);
+  font-size: clamp(19px, 5vw, 26px);
+  overflow-wrap: anywhere;
+}
+.adaptive-distribution {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+@keyframes checkin-reveal {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .checkin-followup {
+    animation: none;
+  }
 }

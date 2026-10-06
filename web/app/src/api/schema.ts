@@ -245,8 +245,47 @@ const multi = <T extends z.ZodType>(s: T) =>
     .transform((v) => (Array.isArray(v) ? v : [v]))
     .optional()
     .catch(undefined);
+const checkinV3Fields = {
+  sleepModeV3: z.string().max(300).optional().catch(undefined),
+  priorityV3: z.string().max(300).optional().catch(undefined),
+  priorityStepV3: z.string().max(300).optional().catch(undefined),
+  developmentPlanV3: z.string().max(300).optional().catch(undefined),
+  priorityPaceV3: z.string().max(300).optional().catch(undefined),
+  priorityOutcomeV3: z.string().max(300).optional().catch(undefined),
+  developmentActualV3: z.string().max(300).optional().catch(undefined),
+  freeTimeV3: z.string().max(300).optional().catch(undefined),
+  bedtimePlanV3: z.string().max(300).optional().catch(undefined),
+  napV3: z.string().max(300).optional().catch(undefined),
+  bedtimeOutcomeV3: z.string().max(300).optional().catch(undefined),
+  energyKindV3: z.string().max(300).optional().catch(undefined),
+  learningRangeV3: z.string().max(300).optional().catch(undefined),
+  readingRangeV3: z.string().max(300).optional().catch(undefined),
+  workBreaksV3: z.string().max(300).optional().catch(undefined),
+  activitiesV3: z.array(z.string()).max(20).optional().catch(undefined),
+  companyV3: z.array(z.string()).max(20).optional().catch(undefined),
+  bedtimeReasonsV3: z.array(z.string()).max(20).optional().catch(undefined),
+  sleepBlockersV3: z.array(z.string()).max(20).optional().catch(undefined),
+  sleepHelpersV3: z.array(z.string()).max(20).optional().catch(undefined),
+  developmentBlockersV3: z.array(z.string()).max(20).optional().catch(undefined),
+  priorityReasonsV3: z.array(z.string()).max(20).optional().catch(undefined),
+  moodFactorsV3: z.array(z.string()).max(20).optional().catch(undefined),
+  shownBranchesV3: z.array(z.string()).max(20).optional().catch(undefined),
+  sleepMinutesV3: num.optional().catch(undefined),
+  satisfactionV3: num.optional().catch(undefined),
+  napMinutesV3: num.optional().catch(undefined),
+  sleepQualityV3: z.union([num, z.string()]).optional().catch(undefined),
+  comprehensionV3: z.union([num, z.string()]).optional().catch(undefined),
+  recoveryEffectV3: z.union([num, z.string()]).optional().catch(undefined),
+  workLoadV3: z.union([num, z.string()]).optional().catch(undefined),
+  answeredAtV3: z.string().optional(),
+  confirmedAtV3: z.string().optional(),
+  timezoneV3: z.string().optional(),
+  answerTimesV3: z.record(z.string(), z.string()).optional(),
+  answerPeriodsV3: z.record(z.string(), z.string()).optional(),
+};
+
 const checkinV2Fields = {
-  questionVersion: z.literal(2).optional(),
+  questionVersion: z.union([z.literal(2), z.literal(3)]).optional(),
   answeredAtV2: z.string().optional(),
   timezoneV2: z.literal('Europe/Kyiv').optional(),
   answerTimesV2: z.record(z.string(), z.string()).optional(),
@@ -321,6 +360,7 @@ const checkinV2Fields = {
 
 export const checkinMorningSchema = z.object({
   ...checkinV2Fields,
+  ...checkinV3Fields,
   /** Режим ночі. Гейтить sleepH/sleepQ у чек-іні; значення для моделі виводить
    *  flattenCheckinDay, тож пропуск двох питань НЕ обнуляє RECOVERY. */
   sleepKind: lenient(z.enum(['none', 'naps', 'slept'])),
@@ -369,6 +409,7 @@ export const checkinMorningSchema = z.object({
 });
 export const checkinAfternoonSchema = z.object({
   ...checkinV2Fields,
+  ...checkinV3Fields,
   pace: lenient(z.enum(['on', 'off', 'behind', 'other', 'overload', 'better'])),
   energy: int.optional(),
   mood: int.optional(),
@@ -382,6 +423,7 @@ export const checkinAfternoonSchema = z.object({
 });
 export const checkinEveningSchema = z.object({
   ...checkinV2Fields,
+  ...checkinV3Fields,
   dayScore: int.optional(),
   kept: lenient(z.enum(['yes', 'partly', 'no', 'changed'])),
   applied: int.optional(),
@@ -905,6 +947,7 @@ export const statsSchema = z.object({
   checkinToday: checkinDaySchema.nullable().optional(),
   checkinDate: z.string().optional(),
   checkinNextIn: int.optional(),
+  checkinGapIn: int.optional(),
   checkinSeries: z.array(checkinPointSchema).default([]),
   checkinRaw: checkinRawSchema.default({ days: 90, from: '', to: '', records: {} }),
   checkinReflections: z

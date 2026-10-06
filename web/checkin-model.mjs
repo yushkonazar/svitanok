@@ -1117,9 +1117,9 @@ export function sleepQualityOf(m) {
  */
 export function flattenCheckinDay(rec, asListFn, categoryValues) {
   // This weighted legacy model never consumes the new observation catalog.
-  const m = rec?.morning?.questionVersion === 2 ? {} : (rec?.morning ?? {});
-  const a = rec?.afternoon?.questionVersion === 2 ? {} : (rec?.afternoon ?? {});
-  const e = rec?.evening?.questionVersion === 2 ? {} : (rec?.evening ?? {});
+  const m = [2, 3].includes(rec?.morning?.questionVersion) ? {} : (rec?.morning ?? {});
+  const a = [2, 3].includes(rec?.afternoon?.questionVersion) ? {} : (rec?.afternoon ?? {});
+  const e = [2, 3].includes(rec?.evening?.questionVersion) ? {} : (rec?.evening ?? {});
   const plan = asListFn(m.plan).filter((x) => categoryValues.includes(x));
   const ate = asListFn(a.ate).filter((x) => categoryValues.includes(x));
   const intentMatch =

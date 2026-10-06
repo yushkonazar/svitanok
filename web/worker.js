@@ -43,6 +43,7 @@ export { BackupStateDO } from './core/backup-state/do.mjs';
 export { WeeklyReviewStateDO } from './core/weekly-review-state/do.mjs';
 export { MonoAlertGateDO } from './core/mono-alert-gate/do.mjs';
 export { SteamCheckStateDO } from './core/steam-check-state/do.mjs';
+export { NewsRefreshDO } from './core/brief/news-refresh-do.mjs';
 // Workflow плану дня (етап 3 PR-8) - той самий контракт деплою, що й DO.
 export { DayPlanChain } from './core/day-plan/chain.mjs';
 export { IdeaAnalysis } from './core/ideas/analysis.mjs';
@@ -78,7 +79,7 @@ import { handleAnalyticsRequest } from './api-analytics.mjs';
 import { handleDeletionsRequest } from './api-deletions.mjs';
 import { handleMailAttention } from './api-mail-attention.mjs';
 import { handleFinance } from './api-finance.mjs';
-import { handleNews } from './api-news.mjs';
+import { handleNews, handleNewsImage } from './api-news.mjs';
 import { refreshNewsSnapshot } from './core/brief/news-snapshot.mjs';
 import { miniAppPaymentRemindTask } from './core/finance/reminders.mjs';
 import { tgCall, trackIncomingMessage } from './telegram-client.mjs';
@@ -556,7 +557,8 @@ export default {
     if (url.pathname === '/api/finance') {
       return handleFinance(request, env);
     }
-    if (url.pathname === '/api/news' && request.method === 'GET') return handleNews(request, env);
+    if (url.pathname.startsWith('/api/news/image/')) return handleNewsImage(request, env);
+    if (url.pathname === '/api/news') return handleNews(request, env);
     if (url.pathname === '/api/weather') {
       return handleLiveWeather(request, env);
     }

@@ -1,7 +1,10 @@
-import { describe, it, expect, vi } from 'vitest';
-import { localizeNewsGroups } from '../web/core/brief/news-localization.mjs';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { localizeNewsGroups, translateNewsBatch } from '../web/core/brief/news-localization.mjs';
 import { workerEnv } from './helpers/env.js';
-const env = workerEnv();
+let env = workerEnv();
+beforeEach(() => {
+  env = workerEnv();
+});
 const groups = () => [
   {
     items: [
@@ -29,6 +32,82 @@ const translator = () =>
     };
   });
 describe('bounded Ukrainian RSS localization', () => {
+  it('counts native Ukrainian as ready and retains translations beyond the preceding snapshot', async () => {
+    const translate = translator();
+    const foreign = groups();
+    await localizeNewsGroups(env, foreign, null, translate);
+    const mixed = [
+      ...groups(),
+      {
+        scope: 'ua',
+        topic: 'Україна',
+        items: [{ title: 'Нова подія в Україні', url: 'https://www.pravda.com.ua/news/a' }],
+      },
+    ];
+    expect(await localizeNewsGroups(env, mixed, { groups: [] }, translate)).toMatchObject({
+      native: 1,
+      translated: 1,
+      pending: 0,
+      total: 2,
+    });
+    expect(translate).toHaveBeenCalledTimes(1);
+  });
+  it('uses the existing Google API for a single text batch without leaking its key in a URL', async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          data: {
+            translations: [
+              { translatedText: 'Запущено новий телескоп' },
+              { translatedText: 'Обсерваторію запустили в понеділок.' },
+            ],
+          },
+        }),
+      ),
+    );
+    const result = await translateNewsBatch(
+      workerEnv({ GOOGLE_TRANSLATE_API_KEY: 'test-key' }),
+      {
+        prompt: JSON.stringify([
+          {
+            id: 'one',
+            title: 'New telescope launched',
+            excerpt: 'The observatory launched on Monday.',
+          },
+        ]),
+      },
+      fetcher,
+    );
+    expect(result).toMatchObject({
+      ok: true,
+      provider: 'google-translation',
+      structured: { items: [{ id: 'one', title: 'Запущено новий телескоп' }] },
+    });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(String(fetcher.mock.calls[0]?.[0])).not.toContain('test-key');
+    expect(JSON.parse(String(fetcher.mock.calls[0]?.[1]?.body))).toMatchObject({
+      target: 'uk',
+      format: 'text',
+      q: ['New telescope launched', 'The observatory launched on Monday.'],
+    });
+  });
+  it('reports a failed translator while retaining original evidence', async () => {
+    const input = groups();
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response('', { status: 403 }));
+    const result = await localizeNewsGroups(
+      workerEnv({ GOOGLE_TRANSLATE_API_KEY: 'test-key' }),
+      input,
+      null,
+      (e, o) => translateNewsBatch(e, o, fetcher),
+    );
+    expect(result).toMatchObject({
+      translated: 0,
+      native: 0,
+      pending: 1,
+      error: 'translation-http-403',
+    });
+    expect(input[0]?.items[0]?.title).toBe('New telescope launched');
+  });
   it('keeps native Ukrainian articles without paying for a translation request', async () => {
     const translate = translator();
     const feed = [
@@ -52,7 +131,7 @@ describe('bounded Ukrainian RSS localization', () => {
   it('translates once, retains source evidence, reuses unchanged items, and invalidates edited source text', async () => {
     const translate = translator(),
       first = groups();
-    expect(await localizeNewsGroups(env, first, null, translate)).toEqual({
+    expect(await localizeNewsGroups(env, first, null, translate)).toMatchObject({
       translated: 1,
       total: 1,
     });
@@ -98,7 +177,7 @@ describe('bounded Ukrainian RSS localization', () => {
       structured: { items: [{ id: 'invented', title: 'Вигадка', summary: 'Факт' }] },
     }));
     const original = groups();
-    expect(await localizeNewsGroups(env, original, null, invalid)).toEqual({
+    expect(await localizeNewsGroups(env, original, null, invalid)).toMatchObject({
       translated: 0,
       total: 1,
     });
@@ -107,7 +186,7 @@ describe('bounded Ukrainian RSS localization', () => {
       await localizeNewsGroups(env, groups(), null, async () => {
         throw new Error('offline');
       }),
-    ).toEqual({ translated: 0, total: 1 });
+    ).toMatchObject({ translated: 0, total: 1 });
   });
   it('rejects markup, non-Ukrainian and overlong outputs without dropping source articles', async () => {
     const invalid = async (_env: Env, options: { prompt: string }) => ({
@@ -122,7 +201,7 @@ describe('bounded Ukrainian RSS localization', () => {
         ],
       },
     });
-    expect(await localizeNewsGroups(env, groups(), null, invalid)).toEqual({
+    expect(await localizeNewsGroups(env, groups(), null, invalid)).toMatchObject({
       translated: 0,
       total: 1,
     });

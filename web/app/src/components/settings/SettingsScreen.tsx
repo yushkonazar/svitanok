@@ -1,10 +1,10 @@
-import { CheckinPreferences } from '../checkin/CheckinPreferences.tsx';
+import { AdaptivePreferences } from '../checkin/AdaptivePreferences.tsx';
 import { NEWS_SOURCE_CATALOG, DEFAULT_NEWS_SOURCES } from '../../../../core/brief/news-catalog.mjs';
 import { PageHeading } from '../ui/PageHeading.tsx';
 import { usePresentation, savePresentation } from '../../lib/presentation.ts';
 import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import { useSettings, useSaveSettings, useBriefing } from '../../api/hooks.ts';
+import { useSettings, useSaveSettings, useBriefing, useNewsSnapshot } from '../../api/hooks.ts';
 import { readBlock, newsDataSchema } from '../../api/briefing-schema.ts';
 import { topicEmoji } from '../../lib/topicEmoji.ts';
 import { getDemoState, setDemoState, type DemoState } from '../../api/client.ts';
@@ -64,6 +64,27 @@ function Section({ title, children }: { title: string; children: React.ReactNode
       <SectionLabel>{title}</SectionLabel>
       {children}
     </section>
+  );
+}
+function NewsUsage() {
+  const news = useNewsSnapshot();
+  const usage = news.data?.usage;
+  if (!usage) return null;
+  return (
+    <details className="renewal-inset mt-4">
+      <summary className="cursor-pointer text-sm font-semibold">
+        Обробка новин · {usage.period}
+      </summary>
+      <p className="renewal-muted mt-3">
+        Перекладено через Google: {usage.translatedCharacters.toLocaleString('uk-UA')} символів.
+        Редакторські запити: {usage.editorCalls}. Орієнтовна вартість AI: $
+        {usage.estimatedEditorUsd.toFixed(3)}.
+      </p>
+      <p className="renewal-chart-note mt-2">
+        Це облік новин Світанку. Рахунок Google за переклад враховує також інше використання сервісу
+        й спільний щомісячний кредит.
+      </p>
+    </details>
   );
 }
 
@@ -204,7 +225,7 @@ export function SettingsScreen() {
   return (
     <div className="flex flex-col gap-6">
       <PageHeading eyebrow="ТВІЙ СВІТАНОК" title="Підлаштувати" accent="під себе." />
-      <CheckinPreferences />
+      <AdaptivePreferences />
       <section className="renewal-card">
         <h2 className="text-lg font-semibold mb-4">Вигляд і відчуття</h2>
         {(
@@ -282,6 +303,7 @@ export function SettingsScreen() {
           До 18 матеріалів за збірку. Переклад нових заголовків кешується; відкриття стрічки читає
           готову збірку. Налаштування джерел і частоти спільні з асистентом.
         </p>
+        <NewsUsage />
         {save.error && (
           <p role="alert" className="text-neg text-sm mt-3">
             {save.error.message}

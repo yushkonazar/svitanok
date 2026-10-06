@@ -1,3 +1,4 @@
+import { analyzeAdaptive, adaptiveMetrics } from '../checkin/adaptive-observations.mjs';
 import { analyzeObservations } from '../checkin/observations.mjs';
 import { CHECKIN_CARDS } from '../checkin/catalog.mjs';
 // Bounded, deterministic check-in aggregates for the assistant. Missing slots
@@ -37,9 +38,9 @@ function window(checkins, from, to, days) {
   for (const [date, record] of Object.entries(checkins ?? {})) {
     if (date < from || date > to || !record || typeof record !== 'object') continue;
     if (
-      record.morning?.questionVersion === 2 ||
-      record.evening?.questionVersion === 2 ||
-      record.afternoon?.questionVersion === 2
+      [2, 3].includes(record.morning?.questionVersion) ||
+      [2, 3].includes(record.evening?.questionVersion) ||
+      [2, 3].includes(record.afternoon?.questionVersion)
     )
       continue;
     recordedDays += 1;
@@ -134,8 +135,15 @@ export function buildCheckinPeriod(checkins, todayKey, days) {
     previous: previousV2,
     ...observations
   } = analyzeObservations(checkins, todayKey, Math.min(90, duration));
+  const adaptive = analyzeAdaptive(checkins, todayKey, Math.min(90, duration));
+  const { current: adaptiveCurrent, previous: adaptivePrevious, ...adaptiveSummary } = adaptive;
   return {
     scope: 'checkin',
+    observationsV3: {
+      ...adaptiveSummary,
+      currentMetrics: adaptiveMetrics(adaptiveCurrent),
+      previousMetrics: adaptiveMetrics(adaptivePrevious),
+    },
     observationsV2: {
       ...observations,
       currentMetrics: observationMetrics(currentV2),
@@ -146,6 +154,6 @@ export function buildCheckinPeriod(checkins, todayKey, days) {
     retentionDays: 365,
     sourceCoverage:
       duration * 2 > 365 ? 'previous_period_may_be_incomplete' : 'within_retention_window',
-    rule: 'Legacy aggregates are separate from confirmed v2 observations. Missing values are excluded; explicit no sleep is 0 hours; naps without a duration are unknown. Correlation is reported only with at least 14 pairs and never implies causation.',
+    rule: 'Legacy, confirmed v2 and confirmed v3 observations are separate. Missing values are excluded; explicit no sleep is 0 hours; naps without a duration are unknown. Correlation is reported only with at least 14 pairs and never implies causation.',
   };
 }

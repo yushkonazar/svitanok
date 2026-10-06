@@ -55,7 +55,7 @@ async function recordCheckin(env, payload, now) {
   const slot = preferences
     ? checkinClock(kyivHour(now) * 60 + now.getUTCMinutes(), preferences).slot
     : checkinSlot(kyivHour(now));
-  if (!slot) throw new Error('зараз тиха зона (02:00-08:00) - чек-ін не пишемо');
+  if (!slot) throw new Error('зараз тиха зона — пауза між вікнами чек-іну');
   // ⚠️ `type` ОСТАННІЙ і поверх payload (security-ревʼю PR-6): при
   // `{ type: 'checkin', ...payload }` ключ `type` усередині payload перекривав
   // би свій же літерал, і виклик «запиши чек-ін» писав би job_stage з

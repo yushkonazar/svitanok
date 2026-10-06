@@ -11,6 +11,52 @@ const now = Date.parse('2026-10-04T09:00:00Z');
 const item = (link: string, date: string, title = 'Title') =>
   `<item><title><![CDATA[${title}]]></title><link>${link}</link><pubDate>${date}</pubDate></item>`;
 describe('fresh RSS snapshot', () => {
+  it('parses British summer dates used by Sky and respects the broader candidate limit', () => {
+    const xml = Array.from({ length: 12 }, (_, i) =>
+      item(
+        `https://www.skysports.com/news/${i}`,
+        'Sun, 04 Oct 2026 09:00:00 BST',
+        `Football result ${i}`,
+      ),
+    ).join('');
+    expect(parseNewsFeed(xml, now, { britishTime: true, limit: 15 })).toHaveLength(12);
+    expect(parseNewsFeed(xml, now, { britishTime: true })[0]?.publishedAt).toBe(
+      '2026-10-04T08:00:00.000Z',
+    );
+  });
+  it('extracts enclosure and encoded description photos only from publisher CDNs', () => {
+    const xml = item('https://www.skysports.com/news/a', '2026-10-04T08:00:00Z').replace(
+      '</item>',
+      '<enclosure type="image/jpeg" url="https://e0.365dm.com/photo.jpg"/></item>',
+    );
+    expect(parseNewsFeed(xml, now)[0]?.image).toBe('https://e0.365dm.com/photo.jpg');
+    const html = xml.replace(
+      '<enclosure type="image/jpeg" url="https://e0.365dm.com/photo.jpg"/>',
+      '<description>&lt;img src=&quot;https://img-cdn.hltv.org/a.jpg&quot;&gt;Details</description>',
+    );
+    expect(parseNewsFeed(html, now)[0]?.image).toBe('https://img-cdn.hltv.org/a.jpg');
+    expect(
+      parseNewsFeed(
+        xml.replace('https://e0.365dm.com/photo.jpg', 'https://127.0.0.1/a.jpg'),
+        now,
+      )[0]?.image,
+    ).toBeUndefined();
+  });
+  it('enforces a ten-minute manual collection cooldown independently of the automatic interval', async () => {
+    const kv = memoryKv(new Map());
+    const env = workerEnv({ BRIEFING: kv });
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(new Response(item('https://example.test/a', '2026-10-04T08:00:00Z')));
+    await refreshNewsSnapshot(env, now, fetcher, true);
+    expect(await refreshNewsSnapshot(env, now + 60000, fetcher, true)).toMatchObject({
+      skipped: 'cooldown',
+      retryAfterSeconds: 540,
+    });
+    expect(fetcher).toHaveBeenCalledTimes(6);
+    await refreshNewsSnapshot(env, now + 11 * 60000, fetcher, true);
+    expect(fetcher).toHaveBeenCalledTimes(12);
+  });
   it('curates default sources, deduplicates feeds and caps the balanced selection at eighteen', async () => {
     const kv = memoryKv(new Map());
     const fetcher = vi

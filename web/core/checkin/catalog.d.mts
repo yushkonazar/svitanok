@@ -19,6 +19,7 @@ export interface Card {
   help?: string;
 }
 export interface CheckinPreferences {
+  version?: 3;
   modules: string[];
   schedule: { morning: string; afternoon: string; evening: string; end: string };
   habits: { id: string; name: string; days: number[] }[];

@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import type { Finance, FinanceCommand } from '../../api/finance-schema.ts';
-import { postFinance } from '../../api/client.ts';
+import { refreshFinanceBank, postFinance } from '../../api/client.ts';
 import { FINANCE_QUERY } from '../../api/finance-hooks.ts';
 import {
   parseMoney,
@@ -171,6 +171,7 @@ export function FinanceForm({
         : 'receive',
     settlementNote: request.kind === 'taxi-settlement-edit' ? (settlement?.note ?? '') : '',
     transferMode: 'manual',
+    bankRefreshAccountId: f.accounts.find((a) => a.kind === 'mono')?.id ?? '',
     manualTransactionId: '',
     goalMoveMode: 'reserve',
     goalPlan: goal?.planAmountMinor != null ? 'true' : 'false',
@@ -238,10 +239,44 @@ export function FinanceForm({
   const [debtStep, setDebtStep] = useState(0);
   const [error, setError] = useState('');
   const [pending, setPending] = useState(false);
+  const [refreshingBank, setRefreshingBank] = useState(false);
+  const [bankRefreshMessage, setBankRefreshMessage] = useState('');
+  const [bankRefreshError, setBankRefreshError] = useState('');
+  const bankTransfers = f.transactions.filter(
+    (t) =>
+      t.accountId === v.bankRefreshAccountId &&
+      t.bank &&
+      !t.reference &&
+      t.currency === 'UAH' &&
+      t.amountMinor !== 0 &&
+      ['income', 'expense', 'unclassified', 'transfer'].includes(t.kind),
+  );
+  const completedTransfers = bankTransfers.filter((t) => !t.bankHold);
+  const heldTransfers = bankTransfers.filter((t) => t.bankHold);
+  const refreshBankList = async () => {
+    if (refreshingBank || pending) return;
+    setRefreshingBank(true);
+    setBankRefreshMessage('');
+    setBankRefreshError('');
+    try {
+      const refreshed = await refreshFinanceBank(v.bankRefreshAccountId);
+      query.setQueryData(FINANCE_QUERY, refreshed);
+      setBankRefreshMessage(
+        'Виписку звірено з Monobank. Підтверджені операції доступні для вибору.',
+      );
+    } catch (error) {
+      setBankRefreshError(
+        error instanceof Error ? error.message : 'Не вдалося оновити список. Спробуй ще раз.',
+      );
+    } finally {
+      setRefreshingBank(false);
+    }
+  };
   const attempt = useRef<{ fingerprint: string; command: FinanceCommand } | null>(null);
   const set = (key: string, value: string) =>
     setValues((prev) => {
       const next = { ...prev, [key]: value };
+      if (key === 'bankRefreshAccountId') next.bankTransactionId = '';
       if (
         key === 'goalMoveMode' &&
         value === 'cash' &&
@@ -730,23 +765,67 @@ export function FinanceForm({
             ])}
           {kind === 'transfer' && v.transferMode === 'bank' && (
             <>
+              {f.accounts.filter((a) => a.kind === 'mono').length > 1 &&
+                select(
+                  'bankRefreshAccountId',
+                  'Картка Monobank',
+                  f.accounts.filter((a) => a.kind === 'mono').map((a) => [a.id, a.name]),
+                )}
               {select('bankTransactionId', 'Операція Monobank', [
                 ['', 'Обери завершений переказ'],
-                ...f.transactions
-                  .filter(
-                    (t) =>
-                      t.bank &&
-                      !t.bankHold &&
-                      !t.reference &&
-                      t.currency === 'UAH' &&
-                      t.amountMinor !== 0 &&
-                      ['income', 'expense', 'unclassified', 'transfer'].includes(t.kind),
-                  )
-                  .map((t): [string, string] => [
-                    t.id,
-                    `${t.description} · ${moneyLabel(t.amountMinor)} · ${kyivParts(Date.parse(t.at)).date}`,
-                  ]),
+                ...completedTransfers.map((t): [string, string] => [
+                  t.id,
+                  `${t.description} · ${moneyLabel(t.amountMinor)} · ${kyivParts(Date.parse(t.at)).date}`,
+                ]),
               ])}
+              <button
+                type="button"
+                className="renewal-secondary self-start"
+                disabled={refreshingBank || pending}
+                onClick={() => void refreshBankList()}
+              >
+                {refreshingBank ? 'Оновлюємо список…' : 'Оновити список'}
+              </button>
+              {bankRefreshMessage && (
+                <p role="status" className="renewal-muted">
+                  {bankRefreshMessage}
+                </p>
+              )}
+              {bankRefreshError && (
+                <p role="alert" className="renewal-muted">
+                  {bankRefreshError}
+                </p>
+              )}
+              <div className="renewal-inset">
+                <p className="renewal-muted">
+                  Обери поповнення картки або зняття готівки. Тут доступні лише завершені операції,
+                  які ще не пов’язані з іншим записом.
+                </p>
+                {heldTransfers.length > 0 && (
+                  <section aria-label="Операції в очікуванні" className="mt-3">
+                    <h3 className="font-semibold">Очікують підтвердження банку</h3>
+                    <ul className="mt-2 space-y-2">
+                      {heldTransfers.map((t) => (
+                        <li key={t.id} className="renewal-muted break-words">
+                          {t.description} · {moneyLabel(t.amountMinor)} ·{' '}
+                          {kyivParts(Date.parse(t.at)).date}
+                        </li>
+                      ))}
+                    </ul>
+                    <p className="renewal-muted mt-2">
+                      Ці операції вже надійшли від Monobank, але поки їх не можна обрати. Після
+                      підтвердження банком і синхронізації натисни «Оновити список».
+                    </p>
+                  </section>
+                )}
+                {completedTransfers.length === 0 && (
+                  <p className="renewal-muted mt-2">Завершених операцій для вибору поки немає.</p>
+                )}
+                <p className="renewal-muted mt-2">
+                  Кнопка звіряє виписку безпосередньо з Monobank. Доступна не частіше одного разу на
+                  хвилину.
+                </p>
+              </div>
               {select('accountId', 'Другий рахунок · готівка або ручний', accountOptions)}
               <p className="renewal-inset renewal-muted">
                 Банківська сума вже врахована в залишку картки. Змінимо тільки другий рахунок: при

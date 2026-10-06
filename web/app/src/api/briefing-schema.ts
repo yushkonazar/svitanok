@@ -177,12 +177,25 @@ export const onThisDayDataSchema = z.object({
 
 export const newsItemSchema = z.object({
   image: z.string().url().optional(),
+  imageProxy: z
+    .string()
+    .regex(/^\/api\/news\/image\/[a-f0-9]{64}$/)
+    .optional(),
   title: z.string(),
   originalTitle: z.string().optional(),
   translated: z.boolean().optional(),
   url: z.string(),
   why: z.string().optional(),
   publishedAt: z.string().optional(),
+  priority: z.number().optional(),
+  rank: z.number().optional(),
+  updated: z.boolean().optional(),
+  translationStatus: z.enum(['native', 'ready', 'pending']).optional(),
+  related: z
+    .array(
+      z.object({ title: z.string(), url: z.string().url(), publishedAt: z.string().optional() }),
+    )
+    .optional(),
 });
 
 export const newsGroupSchema = z.object({
@@ -196,11 +209,39 @@ export const newsDataSchema = z.object({
   groups: z.array(newsGroupSchema).default([]),
 });
 export const newsSnapshotSchema = newsDataSchema.extend({
-  localization: z.object({ translated: z.number(), total: z.number() }).optional(),
+  localization: z
+    .object({
+      translated: z.number(),
+      total: z.number(),
+      native: z.number().optional(),
+      pending: z.number().optional(),
+      provider: z.string().nullable().optional(),
+    })
+    .optional(),
+  feedback: z.record(z.string(), z.enum(['like', 'less', 'clear'])).optional(),
+  lastSeenAt: z.string().nullable().optional(),
+  usage: z
+    .object({
+      period: z.string(),
+      translatedCharacters: z.number(),
+      editorCalls: z.number(),
+      estimatedEditorUsd: z.number(),
+      cycles: z.number(),
+    })
+    .optional(),
   generatedAt: z.string().nullable(),
   attemptedAt: z.string(),
-  sources: z.array(z.object({ name: z.string(), ok: z.boolean() })),
+  sources: z.array(
+    z.object({
+      name: z.string(),
+      ok: z.boolean(),
+      enabled: z.boolean().optional(),
+      count: z.number().optional(),
+      state: z.string().optional(),
+    }),
+  ),
 });
+export type NewsSnapshot = z.infer<typeof newsSnapshotSchema>;
 
 // funnelStage — лише демо-фолбек; реальна стадія завжди зі stats (funnelList).
 export const jobItemSchema = z.object({
