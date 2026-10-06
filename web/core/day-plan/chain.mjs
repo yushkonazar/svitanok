@@ -21,9 +21,23 @@ import { enqueueOutbox, drainOutbox } from '../tg/outbox.mjs';
 import { assistantHomeTarget } from '../tg/home.mjs';
 import { renderMdParts } from '../tg/markdown.mjs';
 import { buildCallbackActionCardRows } from '../tg/action-card.mjs';
-import { setChainState, waitOrNull, readChainState, chainTarget } from '../chains/state.mjs';
+import {
+  setChainState,
+  patchChainState,
+  waitOrNull,
+  readChainState,
+  chainTarget,
+} from '../chains/state.mjs';
 import { startChainWorkerRun } from '../brain/chain-worker.mjs';
 import { calendarizeBlocks } from '../tools/plan.mjs';
+import { runRoutesEta } from '../tools/places.mjs';
+import {
+  requireClockRangeQuestions,
+  applyNamedWorkClocks,
+  exactAnswerClock,
+  plannedRoute,
+  requestsRouteCheck,
+} from './clarifications.mjs';
 import { computeSlots, formatDraft, energyBySlot, hhmmToMin, minToHhmm } from './slots.mjs';
 import {
   readDayPlanConfig,
@@ -54,6 +68,21 @@ export const WAIT_CARRY_MS = 2 * 3_600_000;
 export const REPLAN_MAX_CHANGES = 20;
 export const DAY_PLANNER_MODEL = 'claude-sonnet-5';
 
+/** An unanswered old workflow must not overwrite another draft/approval.
+ * @param {Env} env @param {string} date @param {string} chainId
+ */
+async function closeUnansweredPlan(env, date, chainId) {
+  if (!env.DB) throw new Error('привʼязки DB немає');
+  await env.DB.prepare(
+    `UPDATE day_plans SET status='skipped'
+    WHERE date=? AND workflow_id=? AND status='intent'
+      AND (intent_text IS NULL OR TRIM(intent_text)='')
+      AND NOT EXISTS (SELECT 1 FROM plan_items WHERE date=?)`,
+  )
+    .bind(date, chainId, date)
+    .run();
+}
+
 /**
  * @typedef {{
  *   now: () => number,
@@ -62,6 +91,7 @@ export const DAY_PLANNER_MODEL = 'claude-sonnet-5';
  *   startWorker: (mode: 'intent' | 'explain' | 'replan', task: Record<string, unknown>) => Promise<boolean>,
  *   readCalendar: (date: string) => Promise<{ title: string, startMin: number | null, endMin: number | null, transparent?: boolean }[] | null>,
  *   readEnergy: () => Promise<{ morning: number, afternoon: number, evening: number } | null>,
+ *   readRoute?: (args: {from: string, to: string, mode: string, depart_at?: string}) => Promise<{duration_min: number, distance_km: number, traffic?: boolean} | null>,
  * }} ChainIo
  * @typedef {{
  *   do: <T>(name: string, fn: () => Promise<T>) => Promise<T>,
@@ -75,6 +105,34 @@ function buttons(chainId, pairs) {
   return buildCallbackActionCardRows({
     choicePairs: pairs.map(([text, choice]) => ({ text, callback_data: `c:${chainId}:${choice}` })),
   });
+}
+
+/** @param {Env} env @param {string} chainId @param {number} questionIndex */
+function questionState(env, chainId, questionIndex) {
+  return patchChainState(env, chainId, 'waiting', {
+    awaiting: 'answer',
+    awaiting_since: new Date().toISOString(),
+    question_index: questionIndex,
+  });
+}
+
+/** Ignore delayed duplicate taps already queued before the next question.
+ * @param {ChainStep} step @param {ChainIo} io @param {string} name @param {number} questionIndex
+ */
+async function questionAnswer(step, io, name, questionIndex) {
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const answer = await waitOrNull(
+      step,
+      attempt ? `${name}-stale-${attempt}` : name,
+      'answer',
+      WAIT_ANSWER_MS,
+    );
+    if (!answer || !Number.isInteger(answer.item) || answer.item === questionIndex) return answer;
+    await step.do(`${name}-reject-${attempt}`, () =>
+      io.send('Це попереднє уточнення. Відповідай під останнім запитанням.'),
+    );
+  }
+  return null;
 }
 
 /**
@@ -122,7 +180,7 @@ export async function runDayPlanChain(env, params, step, io) {
   }
   if (intent?.choice === 'skip') {
     await step.do('skip', async () => {
-      await upsertDayPlan(env, date, { status: 'skipped' }, io.now());
+      await closeUnansweredPlan(env, date, chainId);
       await setChainState(env, chainId, { status: 'done', awaiting: null });
     });
     return { outcome: 'skipped' };
@@ -133,7 +191,7 @@ export async function runDayPlanChain(env, params, step, io) {
   // знову, а перенесені пункти не губляться в базі.
   if (intent == null) {
     await step.do('no-intent', async () => {
-      await upsertDayPlan(env, date, { status: 'skipped', workflow_id: chainId }, io.now());
+      await closeUnansweredPlan(env, date, chainId);
       await setChainState(env, chainId, { status: 'done', awaiting: null });
     });
     return { outcome: 'no-input' };
@@ -179,22 +237,7 @@ export async function runDayPlanChain(env, params, step, io) {
           .slice(0, 4)
       : [];
     const excludedIds = new Set();
-    const uncertainEnd = intentText.match(
-      /(?:до|закінч\p{L}*\s+(?:о|близько))\s*(\d{1,2}:\d{2})\s*[–—-]\s*(\d{1,2}:\d{2})/iu,
-    );
-    if (uncertainEnd) {
-      const index = items.findLastIndex((i) => i.role === 'work' || /робот|прац/iu.test(i.title));
-      const uncertainItem = items[index];
-      if (uncertainItem && !questions.some((q) => q.item === index && q.field === 'hard_end')) {
-        uncertainItem.hard_end = null;
-        questions.unshift({
-          item: index,
-          field: 'hard_end',
-          q: 'До котрої запланувати роботу?',
-          options: [uncertainEnd[1], uncertainEnd[2]],
-        });
-      }
-    }
+    requireClockRangeQuestions(items, intentText, questions, config.habits.work_start_at);
     for (let index = 0; index < items.length && questions.length < 4; index += 1) {
       const item = items[index];
       if (!item) continue;
@@ -239,27 +282,42 @@ export async function runDayPlanChain(env, params, step, io) {
       durationAsked.add(itemIndex);
     }
     if (questions.length) {
+      const namedAnswers = new Set();
+      let routeRequested = requestsRouteCheck(intentText);
       for (let qi = 0; qi < questions.length; qi += 1) {
         const q = questions[qi];
+        if (namedAnswers.has(`${q.item}:${q.field}`)) continue;
         if (Number.isInteger(q?.item) && excludedIds.has(items[q.item]?.id)) continue;
-        await step.do(`ask-question-${qi}`, async () => {
-          await setChainState(env, chainId, { status: 'waiting', awaiting: 'answer' });
-          /** @type {unknown[]} */
-          const options =
-            q.field === 'choice' && Array.isArray(q.choices)
-              ? q.choices.slice(0, 4).map((/** @type {any} */ c) => c.label)
-              : Array.isArray(q.options)
-                ? q.options.slice(0, 4)
-                : ['не знаю'];
-          await io.send(
-            String(q.q ?? 'Уточни, будь ласка'),
-            buttons(
-              chainId,
-              options.map((o, oi) => /** @type {[string, string]} */ ([String(o), `a${qi}_${oi}`])),
-            ),
-          );
-        });
-        const answer = await waitOrNull(step, `wait-answer-${qi}`, 'answer', WAIT_ANSWER_MS);
+        const routeAlreadyRequested =
+          routeRequested &&
+          (q.field == null || q.field === 'duration') &&
+          items[q.item]?.kind === 'move' &&
+          items.filter((item) => item.kind === 'move').length === 1 &&
+          plannedRoute(intentText) &&
+          io.readRoute;
+        if (!routeAlreadyRequested)
+          await step.do(`ask-question-${qi}`, async () => {
+            await questionState(env, chainId, qi);
+            /** @type {unknown[]} */
+            const options =
+              q.field === 'choice' && Array.isArray(q.choices)
+                ? q.choices.slice(0, 4).map((/** @type {any} */ c) => c.label)
+                : Array.isArray(q.options)
+                  ? q.options.slice(0, 4)
+                  : ['не знаю'];
+            await io.send(
+              String(q.q ?? 'Уточни, будь ласка'),
+              buttons(
+                chainId,
+                options.map(
+                  (o, oi) => /** @type {[string, string]} */ ([String(o), `a${qi}_${oi}`]),
+                ),
+              ),
+            );
+          });
+        const answer = routeAlreadyRequested
+          ? { text: 'Перевір маршрут сам' }
+          : await questionAnswer(step, io, `wait-answer-${qi}`, qi);
         if (q.field === 'choice' && Array.isArray(q.choices)) {
           const alternatives = new Set(
             q.choices.flatMap((/** @type {any} */ c) =>
@@ -285,7 +343,113 @@ export async function runDayPlanChain(env, params, step, io) {
           }
           continue;
         }
-        items = applyAnswer(items, questions, answer, qi);
+        if (typeof answer?.text === 'string') {
+          routeRequested ||= requestsRouteCheck(answer.text);
+          const clocksAnswered = applyNamedWorkClocks(items, answer.text);
+          for (const key of clocksAnswered) namedAnswers.add(key);
+          const item = items[q.item];
+          if (
+            (q.field == null || q.field === 'duration') &&
+            item?.kind === 'move' &&
+            items.filter((candidate) => candidate.kind === 'move').length === 1 &&
+            routeRequested
+          ) {
+            const route = plannedRoute(intentText);
+            if (route && io.readRoute) {
+              let mode = route.mode;
+              if (!mode) {
+                await step.do(`ask-route-mode-${qi}`, async () => {
+                  await questionState(env, chainId, 100 + qi);
+                  await io.send(
+                    'Чим їдеш? Перевірю час дороги для цього транспорту.',
+                    buttons(chainId, [
+                      ['Авто', `a${100 + qi}_0`],
+                      ['Громадський транспорт', `a${100 + qi}_1`],
+                      ['Пішки', `a${100 + qi}_2`],
+                    ]),
+                  );
+                });
+                const transport = await questionAnswer(step, io, `wait-route-mode-${qi}`, 100 + qi);
+                mode =
+                  typeof transport?.option === 'number'
+                    ? (['car', 'transit', 'walk'][transport.option] ?? null)
+                    : (plannedRoute(`${intentText}, ${String(transport?.text ?? '')}`)?.mode ??
+                      null);
+              }
+              const depart = item.hard_at ? kyivMs(date, item.hard_at) : null;
+              const routeReader = io.readRoute;
+              const estimate = mode
+                ? await step.do(`route-estimate-${qi}`, () =>
+                    routeReader({
+                      from: route.from,
+                      to: route.to,
+                      mode,
+                      ...(depart == null ? {} : { depart_at: new Date(depart).toISOString() }),
+                    }).catch(() => null),
+                  )
+                : null;
+              if (estimate && Number.isFinite(estimate.duration_min) && estimate.duration_min > 0) {
+                item.est_min = Math.ceil(estimate.duration_min);
+                item.floating = true;
+                item.flexible = questions.some(
+                  (question) =>
+                    question.item === q.item &&
+                    ['hard_at', 'hard_end', 'not_before', 'not_after'].includes(question.field) &&
+                    hhmmToMin(
+                      item[
+                        /** @type {'hard_at' | 'hard_end' | 'not_before' | 'not_after'} */ (
+                          question.field
+                        )
+                      ],
+                    ) == null,
+                );
+                await step.do(`route-result-${qi}`, () =>
+                  io.send(
+                    `Час дороги за маршрутом — приблизно ${item.est_min} хв. Це оцінка, без твоїх зупинок; фактичний час може змінитися.`,
+                  ),
+                );
+              } else {
+                item.flexible = true;
+                const fallbackOptions = ['30 хв', '1 год', '4 год', 'не знаю'];
+                await step.do(`ask-route-fallback-${qi}`, async () => {
+                  await questionState(env, chainId, 200 + qi);
+                  await io.send(
+                    'Час дороги не вдалося перевірити. Скільки часу закласти за твоєю оцінкою?',
+                    buttons(
+                      chainId,
+                      fallbackOptions.map((label, option) => [label, `a${200 + qi}_${option}`]),
+                    ),
+                  );
+                });
+                const fallback = await questionAnswer(
+                  step,
+                  io,
+                  `wait-route-fallback-${qi}`,
+                  200 + qi,
+                );
+                items = applyAnswer(
+                  items,
+                  questions,
+                  fallback
+                    ? {
+                        text:
+                          typeof fallback.option === 'number'
+                            ? fallbackOptions[fallback.option]
+                            : fallback.text,
+                      }
+                    : null,
+                  qi,
+                );
+              }
+              routeRequested = false;
+              continue;
+            }
+          }
+          // A named work answer cannot become an unrelated wake-up or duration answer.
+          if (clocksAnswered.size && !clocksAnswered.has(`${q.item}:${q.field}`)) continue;
+        }
+        if (!namedAnswers.has(`${q.item}:${q.field}`))
+          items = applyAnswer(items, questions, answer, qi);
       }
       if (excludedIds.size) items = items.filter((item) => !excludedIds.has(item.id));
     }
@@ -371,7 +535,7 @@ export async function runDayPlanChain(env, params, step, io) {
     }
     if (decision.choice === 'edit') {
       await step.do(`ask-edit-${revision}`, async () => {
-        await setChainState(env, chainId, { status: 'waiting', awaiting: 'answer' });
+        await questionState(env, chainId, -1);
         await io.send(
           'Що змінити? Можеш пересунути, додати або прибрати кілька справ одним повідомленням.',
         );
@@ -595,18 +759,49 @@ export function applyAnswer(items, questions, answer, qiDefault = 0) {
     field === 'not_before' ||
     field === 'not_after'
   ) {
-    let time = /(?:^|\D)(\d{1,2}:\d{2})(?:\D|$)/.exec(option)?.[1] ?? option.trim();
-    if (/^\d{1,2}$/.test(time)) time = `${time.padStart(2, '0')}:00`;
-    if (hhmmToMin(time) != null) target[field] = time;
-    else {
+    const time = exactAnswerClock(option);
+    if (hhmmToMin(time) != null) {
+      target[field] = time;
+      if (
+        questions
+          .filter(
+            (question) =>
+              question.item === Number(q.item ?? qi) &&
+              ['hard_at', 'hard_end', 'not_before', 'not_after'].includes(question.field),
+          )
+          .every(
+            (question) =>
+              hhmmToMin(
+                target[
+                  /** @type {'hard_at' | 'hard_end' | 'not_before' | 'not_after'} */ (
+                    question.field
+                  )
+                ],
+              ) != null,
+          ) &&
+        (!['deep', 'move', 'errand'].includes(target.kind) || target.est_min != null)
+      )
+        target.flexible = false;
+    } else {
       target[field] = null;
       target.flexible = true;
     }
     return items;
   }
   const min = parseDurationMin(option);
-  if (min != null) target.est_min = min;
-  else target.flexible = true;
+  if (min != null) {
+    target.est_min = min;
+    target.flexible = questions.some(
+      (question) =>
+        question.item === Number(q.item ?? qi) &&
+        ['hard_at', 'hard_end', 'not_before', 'not_after'].includes(question.field) &&
+        hhmmToMin(
+          target[
+            /** @type {'hard_at' | 'hard_end' | 'not_before' | 'not_after'} */ (question.field)
+          ],
+        ) == null,
+    );
+  } else target.flexible = true;
   return items;
 }
 
@@ -727,7 +922,12 @@ export async function startDayPlanChain(env, date, nowMs, options = {}) {
         date,
         awaiting: null,
         chat_id: home.chatId,
-        thread_id: home.threadId,
+        thread_id:
+          home.threadId ??
+          (Number(env.TELEGRAM_OWNER_USER_ID) > 0 &&
+          String(home.chatId) === String(env.TELEGRAM_OWNER_USER_ID)
+            ? 'dm'
+            : null),
         one_shot: Boolean(options.oneShot),
       }),
       iso,
@@ -832,6 +1032,14 @@ export function productionIo(env, chainId, date, target = address(env)) {
       }));
     },
     readEnergy: async () => energyBySlot((await loadStats(env)).checkins ?? {}),
+    readRoute: async (args) => {
+      try {
+        const { result } = await runRoutesEta(env, args, Date.now());
+        return result;
+      } catch {
+        return null;
+      }
+    },
   });
 }
 

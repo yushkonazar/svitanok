@@ -851,7 +851,8 @@ export async function prerouteMessage(env, parsed, nowMs = Date.now(), voiceStat
   // Ланцюги (етап 3 PR-8 план дня, етап 5 столик): ланцюг чекає слова
   // власника в темі «Асистент» (намір/уточнення, назва закладу, час, імена)
   // - текст іде подією в Workflow, не в мозок. Інші теми не чіпаємо: питання
-  // ставилось саме тут. Збій доставки - у мозок, як звичайне повідомлення.
+  // ставилось саме тут. Збій доставки плану не запускає сторонній прогін:
+  // він не має втратити запитання або заявити про незаписане затвердження.
   if (threadKey === THREAD_DM || threadKey === String(env.TOPIC_ASSISTANT ?? '')) {
     const awaiting = await findAwaitingChain(env, threadKey).catch((/** @type {any} */ e) => {
       // Збій D1 тут не блокує повідомлення (воно піде в мозок), але й не мовчить.
@@ -865,6 +866,15 @@ export async function prerouteMessage(env, parsed, nowMs = Date.now(), voiceStat
         return true;
       } catch (/** @type {any} */ e) {
         console.error('prerouter: подія в ланцюг не доставлена', e?.message);
+        if (awaiting.kind === 'day-plan') {
+          await reply(
+            env,
+            target,
+            'Не вдалося передати відповідь у планування. Чернетку не затверджено; повтори відповідь трохи пізніше.',
+            nowMs,
+          );
+          return true;
+        }
       }
     }
     // Ланцюг столика чекає понад добу (S-1-6): мʼякий рядок раз на день - не
@@ -2695,6 +2705,17 @@ async function chainCallbackToast(env, parsed, chainId, choice) {
   if (!kind) return 'Ланцюг не знайдено - напиши текстом.';
   const ev = choiceEvent(kind, choice);
   if (!ev) return 'Невідома кнопка ланцюга.';
+  if (kind === 'day-plan' && ev.type === 'answer') {
+    const saved = await readChainState(env, chainId).catch(() => null);
+    if (!saved) return 'Не вдалося перевірити запитання. Спробуй ще раз.';
+    if (
+      Number.isInteger(saved.state.question_index) &&
+      (saved.status !== 'waiting' ||
+        saved.state.awaiting !== 'answer' ||
+        saved.state.question_index !== ev.payload.item)
+    )
+      return 'Це попереднє уточнення. Обери відповідь під останнім запитанням.';
+  }
   try {
     await sendChainEvent(env, chainId, ev.type, ev.payload);
   } catch (/** @type {any} */ e) {

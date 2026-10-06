@@ -301,6 +301,45 @@ beforeEach(() => {
 });
 
 describe('інструкція профілю в /run (PR-5)', () => {
+  it('scheduled DM answers stay in their workflow; failed delivery cannot fall back to a new model run', async () => {
+    const reg = makeRegistryStub();
+    const { brain, tg } = makeFetchStub();
+    const d1 = d1WithInstructions(['0001_base.sql', '0002_assistant.sql']);
+    const env = makeEnv(reg, d1.stub);
+    const sendEvent = vi.fn(async () => undefined);
+    env.DAY_PLAN = { create: async () => undefined, get: async () => ({ sendEvent }) } as never;
+    d1.db
+      .prepare(
+        `INSERT INTO chains (id, kind, workflow_id, state_json, status, created_at, updated_at)
+      VALUES ('scheduled-dm', 'day-plan', 'scheduled-dm', ?, 'waiting', 'x', 'x')`,
+      )
+      .run(
+        JSON.stringify({ date: '2026-10-07', awaiting: 'intent', chat_id: 777, thread_id: null }),
+      );
+    expect(
+      await prerouteMessage(env, parsedMsg('Працюю до 16, виїзд о 17', { chatId: 777 }), NOW),
+    ).toBe(true);
+    expect(sendEvent).toHaveBeenCalledWith({
+      type: 'intent',
+      payload: { text: 'Працюю до 16, виїзд о 17' },
+    });
+    expect(brain).toHaveLength(0);
+    d1.db
+      .prepare(`UPDATE chains SET state_json=json_set(state_json, '$.awaiting', 'answer')`)
+      .run();
+    sendEvent.mockRejectedValueOnce(new Error('Workflow unavailable'));
+    expect(
+      await prerouteMessage(
+        env,
+        parsedMsg('Починаю о 9, закінчую о 16', { chatId: 777, messageId: 2 }),
+        NOW + 1,
+      ),
+    ).toBe(true);
+    expect(brain).toHaveLength(0);
+    expect(
+      tg.some((call) => String(call.body.text).includes('Не вдалося передати відповідь')),
+    ).toBe(true);
+  });
   it('chat несе persona, quick несе quick - з тіла D1 і його ж хешем', async () => {
     // Окремі реєстри: один тред тримає один активний прогін, і друге
     // повідомлення в тому ж треді пішло б у чергу, а не в мозок.
@@ -2052,6 +2091,22 @@ describe('handleBrainCallback (p:/u: - борг PR-8; реальна policy на
   });
 
   // Етап 3 PR-8: c:<chainId>:<choice> - кнопки ланцюга плану → подія у Workflow.
+  it('does not acknowledge or deliver a stale day-plan question button', async () => {
+    const { env, db, tg } = cbEnv();
+    db.prepare(
+      `INSERT INTO chains (id, kind, workflow_id, state_json, status, created_at, updated_at)
+      VALUES ('q-dm', 'day-plan', 'q-dm', ?, 'waiting', 'x', 'x')`,
+    ).run(JSON.stringify({ awaiting: 'answer', question_index: 103 }));
+    const sendEvent = vi.fn(async () => undefined);
+    env.DAY_PLAN = { create: async () => undefined, get: async () => ({ sendEvent }) } as never;
+    const tap = (data: string) =>
+      handleBrainCallback(env, { data, chatId: 555, messageId: 7, threadId: 99 }, NOW);
+    expect(await tap('c:q-dm:a3_0')).toContain('попереднє уточнення');
+    expect(sendEvent).not.toHaveBeenCalled();
+    expect(tg.filter((call) => call.method === 'editMessageReplyMarkup')).toHaveLength(0);
+    expect(await tap('c:q-dm:a103_0')).toBe('Прийняв.');
+    expect(sendEvent).toHaveBeenCalledWith({ type: 'answer', payload: { item: 103, option: 0 } });
+  });
   it('c:<id>:<choice> → sendEvent за мапою choice→type, клавіатура знята; збій Workflow - чесний тост', async () => {
     const { env, db, tg } = cbEnv();
     // kind ланцюга читається з рядка chains (етап 5: реєстр ланцюгів).
