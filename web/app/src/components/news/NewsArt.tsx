@@ -3,38 +3,27 @@ export function NewsArt({
   image,
   topic,
   compact = false,
+  onUnavailable,
 }: {
   image?: string;
   topic: string;
   compact?: boolean;
+  onUnavailable?: () => void;
 }) {
-  const [failed, setFailed] = useState(false);
-  const icon =
-    topic === 'CS2'
-      ? '⌘'
-      : topic === 'Футбол'
-        ? '⚽'
-        : topic === 'Наука'
-          ? '✦'
-          : topic.includes('технолог')
-            ? '◈'
-            : '◎';
+  const [failed, setFailed] = useState<string | null>(null);
+  if (!image || failed === image) return null;
   return (
     <div className={`renewal-news-art ${compact ? 'is-compact' : ''}`} data-topic={topic}>
-      {image && !failed ? (
-        <img
-          src={image}
-          alt=""
-          loading="lazy"
-          referrerPolicy="no-referrer"
-          onError={() => setFailed(true)}
-        />
-      ) : (
-        <>
-          <span aria-hidden="true">{icon}</span>
-          {!compact && <small>Ілюстрація · {topic}</small>}
-        </>
-      )}
+      <img
+        src={image}
+        alt=""
+        loading="lazy"
+        referrerPolicy="no-referrer"
+        onError={() => {
+          setFailed(image);
+          onUnavailable?.();
+        }}
+      />
     </div>
   );
 }

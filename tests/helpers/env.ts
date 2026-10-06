@@ -50,6 +50,7 @@ export interface WorkerEnvOverrides extends Partial<
     | 'MONO_ALERT_GATE'
     | 'STEAM_CHECK_STATE'
     | 'BRIEF_DISPATCH'
+    | 'NEWS_REFRESH'
     | 'DB'
     | 'AI'
     | 'VECTORIZE'
@@ -74,6 +75,7 @@ export interface WorkerEnvOverrides extends Partial<
   MONO_ALERT_GATE?: unknown;
   STEAM_CHECK_STATE?: unknown;
   BRIEF_DISPATCH?: unknown;
+  NEWS_REFRESH?: unknown;
   DB?: unknown;
   // AI/VECTORIZE (памʼять, ADR-038) - та сама доктрина, що DB: стаб на одну-дві
   // операції, а не імітація повного інтерфейсу Workers AI/Vectorize.

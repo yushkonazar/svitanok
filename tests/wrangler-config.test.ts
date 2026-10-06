@@ -65,6 +65,7 @@ describe('web/wrangler.jsonc', () => {
       { name: 'MONO_ALERT_GATE', class_name: 'MonoAlertGateDO' },
       { name: 'STEAM_CHECK_STATE', class_name: 'SteamCheckStateDO' },
       { name: 'BRIEF_DISPATCH', class_name: 'BriefDispatchDO' },
+      { name: 'NEWS_REFRESH', class_name: 'NewsRefreshDO' },
     ]);
     expect(cfg.exports).toEqual({
       AgentRun: { type: 'durable-object', storage: 'sqlite' },
@@ -84,6 +85,7 @@ describe('web/wrangler.jsonc', () => {
       MonoAlertGateDO: { type: 'durable-object', storage: 'sqlite' },
       SteamCheckStateDO: { type: 'durable-object', storage: 'sqlite' },
       BriefDispatchDO: { type: 'durable-object', storage: 'sqlite' },
+      NewsRefreshDO: { type: 'durable-object', storage: 'sqlite' },
     });
     // Легасі-масив `migrations` і `exports` взаємовиключні — тримаємо лише другий.
     expect(cfg.migrations).toBeUndefined();
@@ -105,6 +107,7 @@ describe('web/wrangler.jsonc', () => {
     expect(worker).toContain('export { MonoAlertGateDO }');
     expect(worker).toContain('export { SteamCheckStateDO }');
     expect(worker).toContain('export { BriefDispatchDO }');
+    expect(worker).toContain('export { NewsRefreshDO }');
   });
 
   it('немає ключа routes — маршрути веде дашборд, wrangler їх не перезаписує', () => {

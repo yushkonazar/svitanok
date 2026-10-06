@@ -1,36 +1,26 @@
-// Six public RSS fetches and at most one cached translation per 3-hour cycle.
+// Six default public RSS feeds, one cached selection and one translation batch per cycle.
 // This snapshot is separate from the morning briefing and never overwrites it.
 import { localizeNewsGroups } from './news-localization.mjs';
 import { normalizeSettings } from '../../settings-core.mjs';
 import { DEFAULT_NEWS_SOURCES, NEWS_FEEDS } from './news-catalog.mjs';
+import { cleanNewsText, decodeNewsText, safeNewsImage, newsFingerprint } from './news-content.mjs';
+import { curateNewsGroups } from './news-curation.mjs';
+import { kyivDateKey } from '../../kyiv-time.mjs';
 export const NEWS_SNAPSHOT_KEY = 'miniAppNewsSnapshot';
 export const NEWS_INTERVAL_MS = 3 * 60 * 60 * 1000;
+/** @param {Env} env @returns {Promise<KvBlob|null>} */
+export async function readNewsSnapshot(env) {
+  try {
+    return JSON.parse((await env.BRIEFING.get(NEWS_SNAPSHOT_KEY)) ?? 'null');
+  } catch {
+    return null;
+  }
+}
 const SOURCES = NEWS_FEEDS;
 
-const entities = /** @type {Record<string, string>} */ ({
-  '&amp;': '&',
-  '&lt;': '<',
-  '&gt;': '>',
-  '&quot;': '"',
-  '&apos;': "'",
-  '&#39;': "'",
-});
-/** @param {string} text */
-const clean = (text) =>
-  text
-    .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1')
-    .replace(/<[^>]*>/g, ' ')
-    .replace(/&(?:amp|lt|gt|quot|apos|#39);/g, (s) => entities[s] ?? s)
-    .replace(/&#(\d+);/g, (_, n) => (Number(n) < 0x110000 ? String.fromCodePoint(Number(n)) : ''))
-    .replace(/&#x([0-9a-f]+);/gi, (_, n) =>
-      Number.parseInt(n, 16) < 0x110000 ? String.fromCodePoint(Number.parseInt(n, 16)) : '',
-    )
-    .replace(/&nbsp;/g, ' ')
-    .replace(/<[^>]*>/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-/** @param {string} xml @param {number} nowMs */
-export function parseNewsFeed(xml, nowMs) {
+const clean = cleanNewsText;
+/** @param {string} xml @param {number} nowMs @param {{limit?:number,britishTime?:boolean}} [options] */
+export function parseNewsFeed(xml, nowMs, options = {}) {
   /** @type {{title: string, url: string, publishedAt: string, image?: string, excerpt?: string}[]} */ const items =
     [];
   const seen = new Set();
@@ -41,9 +31,11 @@ export function parseNewsFeed(xml, nowMs) {
       block.match(/<link\b[^>]*href=["']([^"']+)/i)?.[1] ??
       '';
     const link = clean(rawLink);
-    const at = Date.parse(
-      clean(block.match(/<(pubDate|published|updated)\b[^>]*>([\s\S]*?)<\/\1>/i)?.[2] ?? ''),
+    const dateText = clean(
+      block.match(/<(pubDate|published|updated)\b[^>]*>([\s\S]*?)<\/\1>/i)?.[2] ?? '',
     );
+    // Sky uses British Summer Time, unsupported by Date.parse in workerd/Node.
+    const at = Date.parse(options.britishTime ? dateText.replace(/\bBST\b/g, '+0100') : dateText);
     // Undated / future / stale items are not presented as current-day news.
     if (
       !title ||
@@ -73,21 +65,24 @@ export function parseNewsFeed(xml, nowMs) {
       block.match(/<(description|summary)\b[^>]*>([\s\S]*?)<\/\1>/i)?.[2] ?? '',
     ).slice(0, 400);
     let image;
-    const imageLink = clean(
-      block.match(/<media:(?:content|thumbnail)\b[^>]*url=["']([^"']+)/i)?.[1] ?? '',
+    const attrs = (/** @type {string} */ tag) =>
+      Object.fromEntries(
+        [...tag.matchAll(/([\w:-]+)=["']([^"']*)["']/g)].map((m) => [
+          m[1],
+          decodeNewsText(m[2] ?? ''),
+        ]),
+      );
+    const tags = block.match(/<(?:media:content|media:thumbnail|enclosure)\b[^>]*>/gi) ?? [];
+    const candidates = tags
+      .map(attrs)
+      .filter((a) => !a.type || a.type.startsWith('image/'))
+      .map((a) => a.url ?? '');
+    const description = decodeNewsText(
+      block.match(/<(description|summary)\b[^>]*>([\s\S]*?)<\/\1>/i)?.[2] ?? '',
     );
-    try {
-      const u = new URL(imageLink);
-      if (
-        u.protocol === 'https:' &&
-        !u.username &&
-        !u.password &&
-        !/^(localhost|127\.|\[|10\.|192\.168\.)/i.test(u.hostname)
-      )
-        image = u.href;
-    } catch {
-      /* Image is optional. */
-    }
+    for (const tag of description.match(/<img\b[^>]*>/gi) ?? [])
+      candidates.push(attrs(tag).src ?? '');
+    image = candidates.map(safeNewsImage).find(Boolean) ?? undefined;
     items.push({
       title,
       url,
@@ -96,10 +91,14 @@ export function parseNewsFeed(xml, nowMs) {
       ...(image ? { image } : {}),
     });
   }
-  return items.sort((a, b) => b.publishedAt.localeCompare(a.publishedAt)).slice(0, 3);
+  return items
+    .sort((a, b) => b.publishedAt.localeCompare(a.publishedAt))
+    .slice(0, options.limit ?? 3);
 }
-/** @param {Env} env @param {number} [nowMs] @param {typeof fetch} [fetchImpl] */
-export async function refreshNewsSnapshot(env, nowMs = Date.now(), fetchImpl = fetch) {
+/** @param {Env} env @param {number} nowMs @param {typeof fetch} fetchImpl
+ * @param {{old?:KvBlob|null,force?:boolean,preferences?:Record<string,number>}} [options]
+ * @returns {Promise<KvBlob>} */
+export async function buildNewsSnapshot(env, nowMs, fetchImpl, options = {}) {
   let rawSettings;
   try {
     rawSettings = JSON.parse((await env.BRIEFING.get('settings')) ?? 'null');
@@ -111,7 +110,12 @@ export async function refreshNewsSnapshot(env, nowMs = Date.now(), fetchImpl = f
   const interval = (settings.news?.intervalHours ?? 3) * 3600000;
   const allowed = settings.news?.sources ?? DEFAULT_NEWS_SOURCES;
   const configKey = JSON.stringify({
-    catalogVersion: 2,
+    catalogVersion: 3,
+    translationService: env.GOOGLE_TRANSLATE_API_KEY
+      ? 'google'
+      : env.GEMINI_API_KEY && env.GEMINI_TIER === 'paid'
+        ? 'gemini'
+        : 'unconfigured',
     allowed,
     interval,
     muted: settings.mutedTopics,
@@ -123,20 +127,25 @@ export async function refreshNewsSnapshot(env, nowMs = Date.now(), fetchImpl = f
     !(source.topic === 'CS2' && settings.mutedTopics.includes('Кіберспорт')) &&
     !(source.topic === 'Винаходи й технології' && settings.mutedTopics.includes('Тех/IT')) &&
     !(source.topic === 'Головне' && settings.mutedTopics.includes('Світ'));
-  /** @type {KvBlob|null} */ let old = null;
-  try {
-    old = JSON.parse((await env.BRIEFING.get(NEWS_SNAPSHOT_KEY)) ?? 'null');
-  } catch {
-    /* Rebuild malformed cache. */
-  }
+  /** @type {KvBlob|null} */ let old = options.old ?? null;
+  if (options.old === undefined)
+    try {
+      old = JSON.parse((await env.BRIEFING.get(NEWS_SNAPSHOT_KEY)) ?? 'null');
+    } catch {
+      /* Rebuild malformed cache. */
+    }
+  const elapsed = old?.attemptedAt ? nowMs - Date.parse(String(old.attemptedAt)) : Infinity;
+  if (options.force && old?.catalogVersion === 3 && elapsed < 10 * 60000)
+    return { skipped: 'cooldown', retryAfterSeconds: Math.ceil((10 * 60000 - elapsed) / 1000) };
   if (
     old?.attemptedAt &&
-    (old.configKey === configKey ||
-      (old.catalogVersion === 2 &&
-        old.configKey == null &&
-        !settings.news &&
-        settings.mutedTopics.length === 0)) &&
-    nowMs - Date.parse(String(old.attemptedAt)) < interval
+    old.configKey === configKey &&
+    !options.force &&
+    elapsed <
+      (old.localization?.pending &&
+      (env.GOOGLE_TRANSLATE_API_KEY || (env.GEMINI_API_KEY && env.GEMINI_TIER === 'paid'))
+        ? Math.min(interval, 30 * 60000)
+        : interval)
   )
     return { skipped: 'fresh' };
   const results = await Promise.allSettled(
@@ -149,7 +158,12 @@ export async function refreshNewsSnapshot(env, nowMs = Date.now(), fetchImpl = f
       if (!response.ok) throw new Error(`RSS ${response.status}`);
       const xml = await response.text();
       if (xml.length > 1500000) throw new Error('RSS oversized');
-      return { source, items: parseNewsFeed(xml, nowMs) };
+      const rawCount = (xml.match(/<(?:item|entry)\b/gi) ?? []).length;
+      return {
+        source,
+        rawCount,
+        items: parseNewsFeed(xml, nowMs, { limit: 15, britishTime: source.id === 'sky-football' }),
+      };
     }),
   );
   /** @type {KvBlob[]} */ const groups = [];
@@ -157,7 +171,21 @@ export async function refreshNewsSnapshot(env, nowMs = Date.now(), fetchImpl = f
   results.forEach((result, i) => {
     const source = SOURCES[i];
     if (!source) return;
-    status.push({ name: source.name, ok: result.status === 'fulfilled', enabled: enabled(source) });
+    status.push({
+      name: source.name,
+      ok: result.status === 'fulfilled',
+      enabled: enabled(source),
+      count: result.status === 'fulfilled' ? result.value.items.length : 0,
+      state: !enabled(source)
+        ? 'disabled'
+        : result.status === 'rejected'
+          ? 'unavailable'
+          : result.value.items.length
+            ? 'ready'
+            : result.value.rawCount
+              ? 'no-recent-items'
+              : 'empty',
+    });
     if (result.status === 'fulfilled')
       groups.push({
         sourceId: source.id,
@@ -185,35 +213,74 @@ export async function refreshNewsSnapshot(env, nowMs = Date.now(), fetchImpl = f
       });
     }
   });
-  // Round-robin selection preserves small sources; total <= 18, no duplicate URLs.
-  /** @type {KvBlob[][]} */ const selected = groups.map(() => []);
-  const seen = new Set();
-  let count = 0;
-  for (let rank = 0; rank < 3; rank++)
-    for (let i = 0; i < groups.length; i++) {
-      const item = groups[i]?.items[rank];
-      if (!item || seen.has(item.url) || count >= 18) continue;
-      seen.add(item.url);
-      selected[i]?.push(item);
-      count++;
-    }
-  groups.forEach((group, i) => {
-    group.items = selected[i] ?? [];
-  });
+  const curation = await curateNewsGroups(env, groups, nowMs, options.preferences);
+  groups.splice(0, groups.length, ...curation.groups);
   const successful =
     !SOURCES.some(enabled) ||
     results.some((r, i) => r.status === 'fulfilled' && SOURCES[i] && enabled(SOURCES[i]));
-  const localization = await localizeNewsGroups(env, groups, old);
+  const localization = await localizeNewsGroups(env, groups, old, undefined, nowMs);
+  const previous = new Map(
+    (old?.groups ?? [])
+      .flatMap((/** @type {KvBlob} */ g) => g.items ?? [])
+      .map((/** @type {KvBlob} */ item) => [item.url, item]),
+  );
+  for (const g of groups)
+    for (const item of g.items) {
+      const prior = previous.get(item.url);
+      if (prior?.translationKey && prior.translationKey !== item.translationKey)
+        item.updated = true;
+      if (item.image) {
+        item.imageId = await newsFingerprint(item.image);
+        item.imageProxy = `/api/news/image/${item.imageId}`;
+      }
+    }
+  const period = kyivDateKey(new Date(nowMs)).slice(0, 7);
+  let usage = { period, translatedCharacters: 0, editorCalls: 0, estimatedEditorUsd: 0, cycles: 0 };
+  try {
+    const prior = JSON.parse((await env.BRIEFING.get('miniAppNewsUsage')) ?? 'null');
+    if (prior?.period === period) usage = prior;
+  } catch {
+    /* new counter */
+  }
+  usage.translatedCharacters += localization.characters;
+  usage.editorCalls += curation.editorial.requests + localization.editorCalls;
+  usage.estimatedEditorUsd +=
+    Number(curation.editorial.usage?.estimatedUsd ?? 0) +
+    Number(localization.usage?.estimatedUsd ?? 0);
+  usage.cycles++;
+  await env.BRIEFING.put('miniAppNewsUsage', JSON.stringify(usage));
   const snapshot = {
     configKey,
-    catalogVersion: 2,
+    catalogVersion: 3,
     intervalHours: settings.news?.intervalHours ?? 3,
     groups,
     localization,
+    editorial: curation.editorial,
+    usage,
     sources: status,
     attemptedAt: new Date(nowMs).toISOString(),
     generatedAt: successful ? new Date(nowMs).toISOString() : (old?.generatedAt ?? null),
   };
-  await env.BRIEFING.put(NEWS_SNAPSHOT_KEY, JSON.stringify(snapshot));
-  return { updated: successful };
+  return { updated: successful, snapshot };
+}
+/** @param {Env} env @returns {any|null} */
+export const newsRefreshStub = (env) =>
+  typeof env.NEWS_REFRESH?.getByName === 'function'
+    ? env.NEWS_REFRESH.getByName('mini-app-news')
+    : null;
+// Tests and rollback environments without the DO retain the cache path.
+/** @param {Env} env @param {number} [nowMs] @param {typeof fetch} [fetchImpl] @param {boolean} [force] */
+export async function refreshNewsSnapshot(
+  env,
+  nowMs = Date.now(),
+  fetchImpl = fetch,
+  force = false,
+) {
+  const target = newsRefreshStub(env);
+  if (target) return target.refresh(nowMs, force);
+  const result = await buildNewsSnapshot(env, nowMs, fetchImpl, { force });
+  if (result.snapshot) await env.BRIEFING.put(NEWS_SNAPSHOT_KEY, JSON.stringify(result.snapshot));
+  const status = { ...result };
+  delete status.snapshot;
+  return status;
 }

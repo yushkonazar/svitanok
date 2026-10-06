@@ -113,7 +113,8 @@ export class SchedulerDO extends DurableObject {
       // `period IS NOT NULL` береже разові задачі того ж kind від перетворення
       // на періодичні.
       this.ctx.storage.sql.exec(
-        'UPDATE jobs SET period = ? WHERE kind = ? AND period IS NOT NULL AND period != ?',
+        'UPDATE jobs SET due_at = MIN(due_at, ?), period = ? WHERE kind = ? AND period IS NOT NULL AND period != ?',
+        new Date(nowMs + def.periodMin * 60_000).toISOString(),
         def.periodMin,
         kind,
         def.periodMin,

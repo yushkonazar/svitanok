@@ -721,6 +721,36 @@
 .renewal-news-story.is-featured {
   grid-template-columns: minmax(0, 1fr);
 }
+.renewal-news-story.is-text-only {
+  grid-template-columns: minmax(0, 1fr);
+}
+.renewal-news-story.is-text-only .renewal-news-actions {
+  grid-column: 1;
+}
+.renewal-news-actions {
+  align-items: center;
+  flex-wrap: wrap;
+}
+.renewal-news-less {
+  min-height: 44px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  color: var(--color-tx2);
+  border: 1px solid var(--color-glassb);
+  font-size: 12px;
+}
+.renewal-news-less[aria-pressed='true'] {
+  color: var(--color-a2);
+  border-color: var(--color-a2);
+}
+.renewal-news-detail {
+  font-size: 15px;
+  line-height: 1.75;
+  color: var(--color-tx2);
+}
+.news-screen {
+  overflow-anchor: none;
+}
 .renewal-news-story.is-featured .renewal-news-actions {
   grid-column: 1;
 }

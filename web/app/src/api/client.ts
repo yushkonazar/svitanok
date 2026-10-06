@@ -41,6 +41,29 @@ export async function fetchNewsSnapshot() {
   if (!res.ok) throw new Error('Не вдалося оновити стрічку. Показано останній брифінг.');
   return newsSnapshotSchema.parse(await res.json());
 }
+export async function postNewsAction(
+  action:
+    | { type: 'refresh' | 'seen' }
+    | { type: 'feedback'; url: string; kind: 'like' | 'less' | 'clear' },
+) {
+  if (!inTelegram()) return { ok: true, demo: true };
+  const response = await fetch('/api/news', {
+    method: 'POST',
+    headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+    body: JSON.stringify(action),
+  });
+  throwIfSessionExpired(response);
+  if (!response.ok) throw new Error('Не вдалося оновити новини. Спробуй ще раз.');
+  return (await response.json()) as {
+    ok: boolean;
+    skipped?: string;
+    updated?: boolean;
+    retryAfterSeconds?: number;
+    feedback?: Record<string, 'like' | 'less' | 'clear'>;
+    lastSeenAt?: string;
+    demo?: boolean;
+  };
+}
 
 export async function fetchFinance() {
   if (!inTelegram()) return { finance: readFinanceDemo(), demo: true };

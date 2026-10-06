@@ -2,23 +2,15 @@ import { Link } from 'react-router-dom';
 import { useBriefing, useNewsSnapshot, useSettings } from '../../api/hooks.ts';
 import { newsDataSchema, readBlock } from '../../api/briefing-schema.ts';
 import { newsSource } from '../../lib/newsSource.ts';
+import { newsFeed } from '../../lib/newsFeed.ts';
 export function NewsPreview() {
   const { data: settings } = useSettings();
   const { data } = useBriefing();
   const live = useNewsSnapshot();
   const groups =
     live.data?.groups ?? readBlock(data?.brief.blocks ?? [], 'news', newsDataSchema)?.groups ?? [];
-  const item = groups
-    .filter((g) => !settings?.settings.mutedTopics.includes(g.topic))
-    .flatMap((g) => g.items)
-    .filter(
-      (n) =>
-        !settings?.settings.news ||
-        settings.settings.news.sources.some(
-          (source) => newsSource(n.url) === (source === 'The Guardian' ? 'Guardian' : source),
-        ),
-    )
-    .sort((a, b) => Date.parse(b.publishedAt ?? '') - Date.parse(a.publishedAt ?? ''))[0];
+  const item = newsFeed(groups, settings?.settings.mutedTopics, settings?.settings.news?.sources)[0]
+    ?.item;
   if (!item) return null;
   return (
     <section>

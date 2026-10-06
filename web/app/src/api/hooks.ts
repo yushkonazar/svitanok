@@ -3,6 +3,7 @@ import { inTelegram } from '../telegram.ts';
 import {
   fetchStats,
   fetchNewsSnapshot,
+  postNewsAction,
   fetchArchive,
   fetchDeletionReceipts,
   fetchLevers,
@@ -44,6 +45,34 @@ export function useNewsSnapshot() {
     queryFn: fetchNewsSnapshot,
     staleTime: 15 * 60000,
     refetchInterval: 15 * 60000,
+  });
+}
+export function useRefreshNews() {
+  return useMutation({ mutationFn: () => postNewsAction({ type: 'refresh' }) });
+}
+export function useNewsSeen() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => postNewsAction({ type: 'seen' }),
+    onSuccess: (result) => {
+      if (result.lastSeenAt)
+        qc.setQueryData<Awaited<ReturnType<typeof fetchNewsSnapshot>>>(['newsSnapshot'], (old) =>
+          old ? { ...old, lastSeenAt: result.lastSeenAt } : old,
+        );
+    },
+  });
+}
+export function useNewsFeedback() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { url: string; kind: 'like' | 'less' | 'clear' }) =>
+      postNewsAction({ type: 'feedback', ...input }),
+    onSuccess: (result) => {
+      if (result.feedback)
+        qc.setQueryData<Awaited<ReturnType<typeof fetchNewsSnapshot>>>(['newsSnapshot'], (old) =>
+          old ? { ...old, feedback: result.feedback } : old,
+        );
+    },
   });
 }
 

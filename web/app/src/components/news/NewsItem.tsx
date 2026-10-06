@@ -1,5 +1,6 @@
 import type { NewsItem as NewsItemT } from '../../api/briefing-schema.ts';
-import { useStats, useVote, useToggleSaveNews } from '../../api/hooks.ts';
+import { useState } from 'react';
+import { useStats, useNewsSnapshot, useNewsFeedback, useToggleSaveNews } from '../../api/hooks.ts';
 import { useSaved } from '../../saved.tsx';
 import { postEvent } from '../../api/client.ts';
 import { has } from '../../lib/format.ts';
@@ -9,15 +10,8 @@ import { newsSource } from '../../lib/newsSource.ts';
 import { timeAgo } from '../../lib/timeAgo.ts';
 import { useTick } from '../../lib/useTick.ts';
 
-// Айтем новини (дизайн v2, Svitanok.dc.html): заголовок + «чому» акцентом,
-// праворуч дві квадратні кнопки ❤️/🔖 (активна — кольорова рамка+тло).
-// Голос — зі stats.votes (сервер не обрізає), збереження — session-sticky.
-//
-// ❤️ замість 👍/👎 (фідбек власника, п.5): лишився ЛИШЕ позитивний сигнал.
-// Механіку тоглу не чіпали — applyUrlVote і так знімає голос на повторний клік
-// того ж напрямку; тепер напрямок завжди один. Старі 👎 з KV нікуди не діли:
-// сервер більше не дає їх СТВОРИТИ, але вміє прочитати й відкотити, якщо
-// лайкнути раніше дизлайкнуту новину (див. коментар у web/worker.js).
+// Publisher photo or compact text card, with explicit like/less feedback.
+// Legacy upvotes supply the initial heart state until a new reaction is recorded.
 
 export function NewsItem({
   item,
@@ -35,10 +29,13 @@ export function NewsItem({
   const { data } = useStats();
   // Лише 'up' підсвічує серце. Легасі-'down' у KV читається як «не лайкнуто»,
   // а не як активна кнопка: дизлайків більше немає, і малювати їх нічим.
-  const liked = data?.stats.votes?.[item.url] === 'up';
+  const live = useNewsSnapshot();
+  const [localFeedback, setLocalFeedback] = useState<'like' | 'less' | 'clear' | null>(null);
+  const feedback = localFeedback ?? live.data?.feedback?.[item.url];
+  const liked = feedback ? feedback === 'like' : data?.stats.votes?.[item.url] === 'up';
   const { isSaved, setSaved } = useSaved();
   const saved = isSaved('news', item.url);
-  const voteMut = useVote();
+  const voteMut = useNewsFeedback();
   const saveMut = useToggleSaveNews();
 
   const openNews = () => {
@@ -83,17 +80,44 @@ export function NewsItem({
 
   const source = newsSource(item.url);
   const ago = timeAgo(item.publishedAt);
+  const image = item.imageProxy ?? item.image;
+  const [failedImage, setFailedImage] = useState<string | null>(null);
+  const hasImage = !!image && failedImage !== image;
+  const react = (kind: 'like' | 'less' | 'clear') => {
+    if (voteMut.isPending) return;
+    const old = localFeedback;
+    setLocalFeedback(kind);
+    voteMut.mutate(
+      { url: item.url, kind },
+      {
+        onSuccess: (result) => {
+          if (!result.demo) setLocalFeedback(null);
+        },
+        onError: () => setLocalFeedback(old),
+      },
+    );
+    haptic('light');
+  };
 
   return (
-    <div className={`renewal-news-story ${featured ? 'is-featured' : ''}`}>
-      <button
-        type="button"
-        onClick={openNews}
-        className="renewal-news-visual"
-        aria-label={`Відкрити: ${item.title}`}
-      >
-        <NewsArt image={item.image} topic={topic} compact={!featured} />
-      </button>
+    <div
+      className={`renewal-news-story ${featured ? 'is-featured' : ''} ${hasImage ? 'has-photo' : 'is-text-only'}`}
+    >
+      {hasImage && (
+        <button
+          type="button"
+          onClick={openNews}
+          className="renewal-news-visual"
+          aria-label={`Відкрити: ${item.title}`}
+        >
+          <NewsArt
+            image={image}
+            topic={topic}
+            compact={!featured}
+            onUnavailable={() => setFailedImage(image ?? null)}
+          />
+        </button>
+      )}
       <button
         type="button"
         onClick={openNews}
@@ -108,6 +132,10 @@ export function NewsItem({
           </span>
         )}
         <span className="renewal-news-headline">{item.title}</span>
+        {item.updated && <span className="renewal-pill mt-2">Оновлено</span>}
+        {item.translationStatus === 'pending' && (
+          <span className="renewal-muted block mt-2">Переклад очікується · показано оригінал</span>
+        )}
         {has(item.why) && <span className="renewal-news-excerpt">{item.why}</span>}
       </button>
       <div className="renewal-news-actions flex flex-none gap-1.5">
@@ -115,8 +143,7 @@ export function NewsItem({
           '❤️',
           liked,
           () => {
-            voteMut.mutate({ category: topic, url: item.url });
-            haptic('light');
+            react(liked ? 'clear' : 'like');
           },
           'rgba(255,110,122,.16)',
           'var(--color-a1)',
@@ -138,7 +165,21 @@ export function NewsItem({
           'var(--color-a2)',
           saved ? 'Прибрати зі збереженого' : 'Зберегти',
         )}
+        <button
+          type="button"
+          className="renewal-news-less"
+          aria-pressed={feedback === 'less'}
+          disabled={voteMut.isPending}
+          onClick={() => react(feedback === 'less' ? 'clear' : 'less')}
+        >
+          Менше такого
+        </button>
       </div>
+      {voteMut.error && (
+        <p role="alert" className="renewal-muted">
+          Не вдалося зберегти реакцію. Спробуй ще раз.
+        </p>
+      )}
       {item.translated && item.originalTitle && (
         <details className="renewal-news-original">
           <summary aria-label="Показати оригінальний заголовок">EN</summary>
