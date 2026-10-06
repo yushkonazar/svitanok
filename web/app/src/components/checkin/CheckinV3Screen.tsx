@@ -14,6 +14,7 @@ import {
   type AdaptiveContext,
 } from '../../../../core/checkin/adaptive.mjs';
 import { useStats, useSaveCheckin, useSettings, useSaveSettings } from '../../api/hooks.ts';
+import { isSessionExpired } from '../../api/client.ts';
 import { resetCheckinDemo } from '../../api/checkin-demo.ts';
 import { type CheckinSlot } from '../../api/schema.ts';
 import { inTelegram, haptic, setVerticalSwipes } from '../../telegram.ts';
@@ -323,21 +324,25 @@ export function CheckinV3Screen() {
     [],
   );
   if (query.isLoading) return <LoadingSkeleton />;
-  if (query.isError || !query.data)
+  if (!query.data || isSessionExpired(query.error))
     return (
       <ErrorState
         message={query.error?.message ?? 'Не вдалося завантажити чек-ін'}
         onRetry={() => query.refetch()}
       />
     );
-  if (inTelegram() && settings.isError)
+  if (inTelegram() && settings.isError && (!settings.data || isSessionExpired(settings.error)))
     return (
       <ErrorState
         message="Не вдалося завантажити налаштування чек-іну"
         onRetry={() => settings.refetch()}
       />
     );
-  if (inTelegram() && saveSettings.isError)
+  if (
+    inTelegram() &&
+    saveSettings.isError &&
+    (settings.data?.settings.checkin?.version !== 3 || isSessionExpired(saveSettings.error))
+  )
     return (
       <ErrorState
         message="Не вдалося увімкнути новий чек-ін"
@@ -347,10 +352,7 @@ export function CheckinV3Screen() {
         }}
       />
     );
-  if (
-    inTelegram() &&
-    (!settings.data || settings.data.settings.checkin?.version !== 3 || saveSettings.isPending)
-  )
+  if (inTelegram() && (!settings.data || settings.data.settings.checkin?.version !== 3))
     return <LoadingSkeleton />;
   const s = query.data.stats,
     demo = !inTelegram(),
@@ -365,15 +367,17 @@ export function CheckinV3Screen() {
       : { ...prior, ...(drafts[draftKey(date, slot)] ?? readDraft(draftKey(date, slot))) };
   };
   const current = active ? answers(active) : {};
-  const elapsed = Math.floor((now - query.dataUpdatedAt) / 60000),
+  // useTick can lag behind a just-received snapshot. Never turn a zero gap into +1 minute.
+  // Optimistic autosaves update dataUpdatedAt, but must not restart the server countdown.
+  const elapsedMs = Math.max(0, now - (query.data.receivedAtMs ?? query.dataUpdatedAt));
+  const elapsed = Math.floor(elapsedMs / 60000),
     left = Math.max(0, (s.checkinSlotEndsIn ?? 0) - elapsed);
   const gap = demo ? 0 : Math.max(0, (s.checkinGapIn ?? 0) - elapsed);
   const allowed = !gap || early === `${date}:${active}`;
   const nextSeconds = Math.max(
     0,
     Math.ceil(
-      (s.checkinNextIn ?? checkinClock(kyivParts(now).hour * 60).nextIn) * 60 -
-        (now - query.dataUpdatedAt) / 1000,
+      (s.checkinNextIn ?? checkinClock(kyivParts(now).hour * 60).nextIn) * 60 - elapsedMs / 1000,
     ),
   );
   function change(slot: CheckinSlot, key: string, value: unknown) {
@@ -449,11 +453,6 @@ export function CheckinV3Screen() {
             Скинути демо чек-іну
           </button>
         </section>
-      )}
-      {save.error && (
-        <p role="alert" className="renewal-inset text-neg">
-          {save.error.message}
-        </p>
       )}
       {(!active || current.confirmed === true) && (
         <section className="renewal-card text-center">
@@ -535,6 +534,27 @@ export function CheckinV3Screen() {
           </section>
         );
       })}
+      {save.error && (
+        <p role="alert" className="renewal-inset text-neg">
+          {save.error.message}
+        </p>
+      )}
+      {(query.isError || settings.isError) && (
+        <section role="status" className="renewal-inset">
+          <p className="renewal-chart-note">
+            Не вдалося оновити дані. Твої відповіді збережені в чернетці; можна продовжувати.
+          </p>
+          <button
+            className="renewal-link mt-3"
+            onClick={() => {
+              if (query.isError) void query.refetch();
+              if (settings.isError) void settings.refetch();
+            }}
+          >
+            Повторити оновлення
+          </button>
+        </section>
+      )}
       <section className="renewal-card">
         <h2 className="font-semibold">Ритм тижня</h2>
         <p className="renewal-chart-note mt-1">
