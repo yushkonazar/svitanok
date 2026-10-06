@@ -22,11 +22,27 @@ if (secretName === 'GOOGLE_TRANSLATE_API_KEY') {
   if (!/[іїєґа-я]/i.test(translated.data?.translations?.[0]?.translatedText ?? ''))
     throw new Error('Translator did not return Ukrainian text');
 } else {
-  const check = await fetch('https://api.openai.com/v1/models/gpt-4.1-mini-2025-04-14', {
+  // A restricted key may permit Responses while denying the model catalogue.
+  // Validate the actual endpoint with one fixed public, tightly bounded request.
+  const check = await fetch('https://api.openai.com/v1/responses', {
+    method: 'POST',
     signal: AbortSignal.timeout(15000),
-    headers: { authorization: `Bearer ${translationKey}` },
+    headers: { authorization: `Bearer ${translationKey}`, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      model: 'gpt-4.1-mini-2025-04-14',
+      input: 'Reply only: OK',
+      store: false,
+      max_output_tokens: 16,
+    }),
   });
-  if (!check.ok) throw new Error(`Existing news editor check failed: HTTP ${check.status}`);
+  if (!check.ok) {
+    const body = await check.json().catch(() => ({}));
+    const code =
+      typeof body.error?.code === 'string' && /^[a-z_]{1,60}$/i.test(body.error.code)
+        ? body.error.code
+        : 'unspecified';
+    throw new Error(`Existing news editor check failed: HTTP ${check.status} (${code})`);
+  }
 }
 const transferPublicKey = (process.env.TRANSFER_PUBLIC_KEY ?? '').trim();
 if (transferPublicKey) {
