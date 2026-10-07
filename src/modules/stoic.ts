@@ -6,6 +6,8 @@
 import type { Module, Block, Ctx } from '../core/types.js';
 import type { AppConfig } from '../core/config.js';
 import quotesData from '../data/verified-stoic.json' with { type: 'json' };
+import { octoberQuotes } from '../data/content-october.js';
+import { monthlyContent } from '../core/monthly-content.js';
 
 interface Quote {
   text: string;
@@ -15,7 +17,7 @@ interface Quote {
   translation: string;
   verifiedAt: string;
 }
-const quotes: Quote[] = quotesData as Quote[];
+const quotes: Quote[] = [...quotesData, ...octoberQuotes];
 
 /** День року 1..366 з "YYYY-MM-DD" (todayKey уже київський). */
 export function dayOfYear(todayKey: string): number {
@@ -34,7 +36,14 @@ export const stoicModule: Module<AppConfig> = {
   kind: 'consumer',
   enabled: (config) => config.modules.stoic.enabled,
   async run(ctx: Ctx<AppConfig>): Promise<Block | null> {
-    const q = resolveQuote(ctx.clock.todayKey());
+    const q = monthlyContent(
+      'quotes',
+      ctx.clock.todayKey(),
+      quotes,
+      ctx.state,
+      (n) => `${n.author}:${n.reference}`,
+      resolveQuote,
+    );
     if (!q) return null;
     return {
       id: 'stoic',

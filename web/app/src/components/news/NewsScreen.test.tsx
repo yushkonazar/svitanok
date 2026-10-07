@@ -53,6 +53,26 @@ beforeEach(() => {
   mocks.live = snapshot('Перша подія', 1);
   vi.spyOn(window, 'scrollTo').mockImplementation(() => {});
 });
+it('opens the concise overview and shows source-proven text changes', () => {
+  mocks.live!.groups[0]!.items[0] = {
+    ...mocks.live!.groups[0]!.items[0]!,
+    updated: true,
+    changeAt: '2026-10-06T11:00:00Z',
+    previousTitle: 'Попередня подія',
+    previousSummary: 'Раніше повідомляли меншу суму.',
+    why: 'Новий опис джерела.',
+  };
+  render(
+    <MemoryRouter>
+      <NewsScreen />
+    </MemoryRouter>,
+  );
+  expect(screen.getByRole('heading', { name: 'Головне зараз' })).toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: 'Коротко: Перша подія' }));
+  fireEvent.click(screen.getByText('Що змінилося в матеріалі?'));
+  expect(screen.getByText('Раніше: Попередня подія')).toBeInTheDocument();
+  expect(screen.getByText('Тепер: Перша подія')).toBeInTheDocument();
+});
 afterEach(() => {
   vi.restoreAllMocks();
   vi.clearAllMocks();

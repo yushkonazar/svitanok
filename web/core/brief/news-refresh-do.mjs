@@ -37,8 +37,15 @@ export class NewsRefreshDO extends DurableObject {
       const profile = await this.getFeedback();
       /** @type {Record<string,number>} */ const preferences = {};
       for (const n of Object.values(profile))
-        if (n.kind !== 'clear')
-          preferences[n.topic] = (preferences[n.topic] ?? 0) + (n.kind === 'like' ? 1 : -1);
+        if (n.kind !== 'clear') {
+          const key =
+            n.reason === 'source' && n.sourceId
+              ? `source:${n.sourceId}`
+              : n.reason === 'repeat' || n.reason === 'weak'
+                ? `article:${n.url}`
+                : n.topic;
+          preferences[key] = (preferences[key] ?? 0) + (n.kind === 'like' ? 1 : -1);
+        }
       const result = await buildNewsSnapshot(/** @type {Env} */ (this.env), nowMs, fetch, {
         old,
         force,
@@ -51,7 +58,7 @@ export class NewsRefreshDO extends DurableObject {
         for (const snapshot of [old, result.snapshot])
           for (const group of snapshot?.groups ?? [])
             for (const item of group.items ?? [])
-              known[item.url] = { topic: group.topic, at: nowMs };
+              known[item.url] = { topic: group.topic, sourceId: group.sourceId, at: nowMs };
         const recent = Object.fromEntries(
           Object.entries(known)
             .filter(([, n]) => nowMs - Number(n.at) < 3 * 86400000)
@@ -67,8 +74,8 @@ export class NewsRefreshDO extends DurableObject {
       return status;
     });
   }
-  /** @param {string} url @param {'like'|'less'|'clear'} kind */
-  async feedback(url, kind) {
+  /** @param {string} url @param {'like'|'less'|'clear'} kind @param {string} [reason] */
+  async feedback(url, kind, reason) {
     return this.#serial(async () => {
       const snapshot = /** @type {KvBlob|null} */ (await this.getSnapshot());
       const group = snapshot?.groups?.find((/** @type {KvBlob} */ g) =>
@@ -82,7 +89,16 @@ export class NewsRefreshDO extends DurableObject {
       if (!topic) return { ok: false, error: 'article-not-found' };
       const profile = await this.getFeedback();
       delete profile[url];
-      profile[url] = { kind, topic, at: Date.now() };
+      profile[url] = {
+        kind,
+        topic,
+        url,
+        sourceId: group?.sourceId ?? known?.sourceId,
+        ...(kind === 'less' && ['topic', 'repeat', 'weak', 'source'].includes(reason ?? '')
+          ? { reason }
+          : {}),
+        at: Date.now(),
+      };
       const bounded = Object.fromEntries(Object.entries(profile).slice(-300));
       await this.ctx.storage.put('feedback', bounded);
       return {

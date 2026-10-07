@@ -190,6 +190,12 @@ export const newsItemSchema = z.object({
   priority: z.number().optional(),
   rank: z.number().optional(),
   updated: z.boolean().optional(),
+  storyId: z.string().optional(),
+  firstSeenAt: z.string().optional(),
+  changeAt: z.string().optional(),
+  changeLabel: z.string().optional(),
+  previousTitle: z.string().optional(),
+  previousSummary: z.string().optional(),
   translationStatus: z.enum(['native', 'ready', 'pending']).optional(),
   related: z
     .array(

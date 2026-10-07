@@ -14,6 +14,8 @@ import { TaxiHistory } from './TaxiHistory.tsx';
 import { FinanceReport } from './FinanceReport.tsx';
 import { PaymentDetail } from './PaymentDetail.tsx';
 import { PaymentCard } from './PaymentCard.tsx';
+import { FinanceExplanation } from './FinanceExplanation.tsx';
+import { PaymentCalendar } from './PaymentCalendar.tsx';
 import { paymentSchedule } from '../../lib/paymentSchedule.ts';
 import { kyivParts, shiftDate } from '../../../../core/finance/planning.mjs';
 import { resetFinanceDemo } from '../../api/finance-demo.ts';
@@ -56,6 +58,8 @@ export function FinanceScreen() {
   };
   const [historyOpen, setHistoryOpen] = useState(false);
   const [reportOpen, setReportOpen] = useState(false);
+  const [explainOpen, setExplainOpen] = useState(false);
+  const [calendarOpen, setCalendarOpen] = useState(false);
   const [detailId, setDetailId] = useState<string | null>(null);
   const overviewScroll = useRef(0);
   useLayoutEffect(() => {
@@ -193,6 +197,9 @@ export function FinanceScreen() {
             ? 'Потрібно підтвердити залишки й кредитний ліміт картки або доповнити комісію й готівку змін таксі.'
             : 'Власні кошти на рахунках мінус резерв парку та зарезервовані кошти на цілі. Кредитний ліміт не є твоїми грошима.'}
         </p>
+        <button className="renewal-link mt-3" onClick={() => setExplainOpen(true)}>
+          Як порахована ця сума?
+        </button>
         <div className="renewal-metrics">
           <div className="renewal-metric">
             <span className="renewal-muted">На рахунках · ₴</span>
@@ -530,6 +537,15 @@ export function FinanceScreen() {
             month: 'long',
           })}
         </p>
+        <button
+          className="renewal-link mt-3"
+          onClick={() => {
+            overviewScroll.current = window.scrollY;
+            setCalendarOpen(true);
+          }}
+        >
+          Календар платежів ↗
+        </button>
         <div className="renewal-big mt-3">
           {view.unknownBalances || unplanned ? '—' : moneyLabel(view.available - obligations)}
         </div>
@@ -711,6 +727,18 @@ export function FinanceScreen() {
           Фінансові звіти
         </button>
       </section>
+      {explainOpen && <FinanceExplanation finance={f} onClose={() => setExplainOpen(false)} />}
+      {calendarOpen && (
+        <PaymentCalendar
+          finance={f}
+          onClose={() => setCalendarOpen(false)}
+          onPayment={(id) => {
+            setCalendarOpen(false);
+            // Let Sheet restore/unlock the overview before opening the detail at its top.
+            requestAnimationFrame(() => setDetailId(id));
+          }}
+        />
+      )}
       {historyOpen && (
         <TaxiHistory
           finance={f}

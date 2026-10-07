@@ -33,11 +33,12 @@ export async function handleNews(request, env) {
       if (
         typeof body.url !== 'string' ||
         body.url.length > 2000 ||
-        !['like', 'less', 'clear'].includes(body.kind)
+        !['like', 'less', 'clear'].includes(body.kind) ||
+        (body.reason != null && !['topic', 'repeat', 'weak', 'source'].includes(body.reason))
       )
         return json({ ok: false, error: 'Некоректна реакція' }, 400);
       if (!target) return json({ ok: false, error: 'Реакції тимчасово недоступні' }, 503);
-      const result = await target.feedback(body.url, body.kind);
+      const result = await target.feedback(body.url, body.kind, body.reason);
       return json(result, result.ok ? 200 : 404);
     }
     if (body.type !== 'refresh') return json({ ok: false, error: 'Невідома дія' }, 400);
@@ -48,9 +49,12 @@ export async function handleNews(request, env) {
   const snapshot = target ? await target.getSnapshot() : await readNewsSnapshot(env);
   if (!snapshot) return json({ ok: false, error: 'Стрічка ще не зібрана' }, 503);
   const profile = target ? await target.getFeedback() : {};
+  // Public article history stays server-side; the UI needs only current item metadata.
+  const visibleSnapshot = { ...snapshot };
+  delete visibleSnapshot.history;
   return new Response(
     JSON.stringify({
-      ...snapshot,
+      ...visibleSnapshot,
       lastSeenAt: target ? await target.getLastSeen() : null,
       feedback: Object.fromEntries(
         Object.entries(profile).map(([key, value]) => [key, /** @type {KvBlob} */ (value).kind]),

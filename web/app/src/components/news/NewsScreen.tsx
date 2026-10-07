@@ -72,7 +72,8 @@ export function NewsScreen() {
   const matches = feed.filter(
     (n) =>
       (readingFilter === 'Усе' ||
-        (readingFilter === 'Непрочитане' && !read.includes(n.item.url)) ||
+        (readingFilter === 'Непрочитане' &&
+          !read.includes(n.item.changeAt ? `${n.item.url}#${n.item.changeAt}` : n.item.url)) ||
         (readingFilter === 'Збережене' && isSaved('news', n.item.url))) &&
       (filter === 'Усе' || filter === n.topic) &&
       `${n.topic} ${n.item.title} ${n.item.why ?? ''} ${newsSource(n.item.url)}`
@@ -80,6 +81,11 @@ export function NewsScreen() {
         .includes(search.trim().toLocaleLowerCase('uk-UA')),
   );
   const article = feed.find((n) => n.item.url === selected);
+  const openArticle = (item: (typeof feed)[number]['item']) => {
+    feedScroll.current = window.scrollY;
+    markRead(item.changeAt ? `${item.url}#${item.changeAt}` : item.url);
+    setSelected(item.url);
+  };
   if (article)
     return (
       <div className="flex flex-col gap-5">
@@ -116,6 +122,23 @@ export function NewsScreen() {
             {article.item.why ||
               'Короткого опису немає. Деталі доступні в оригінальному матеріалі.'}
           </p>
+          {article.item.updated && article.item.previousTitle && (
+            <details className="renewal-inset mt-4">
+              <summary className="font-semibold cursor-pointer">Що змінилося в матеріалі?</summary>
+              <p className="renewal-chart-note mt-3">
+                {article.item.changeLabel ?? 'Оновлення джерела'}. Порівняння доступних заголовків і
+                описів.
+              </p>
+              <p className="renewal-muted mt-3">Раніше: {article.item.previousTitle}</p>
+              {article.item.previousSummary && (
+                <p className="renewal-chart-note mt-2">{article.item.previousSummary}</p>
+              )}
+              <p className="mt-3">Тепер: {article.item.title}</p>
+              <p className="renewal-chart-note mt-2">
+                {article.item.why ?? 'Новий опис не наданий джерелом.'}
+              </p>
+            </details>
+          )}
           {article.item.originalTitle && (
             <details className="mt-4 renewal-muted">
               <summary>Оригінальний заголовок</summary>
@@ -158,8 +181,11 @@ export function NewsScreen() {
     live.data?.groups.flatMap((g) => g.items).filter((n) => !knownUrls.has(n.url)).length ?? 0;
   const generatedAt = displayed?.generatedAt ?? brief.data?.brief.generatedAt;
   const sinceLastVisit = displayed?.lastSeenAt
-    ? feed.filter((n) => Date.parse(n.item.publishedAt ?? '') > Date.parse(displayed.lastSeenAt!))
-        .length
+    ? feed.filter(
+        (n) =>
+          Date.parse(n.item.changeAt ?? n.item.publishedAt ?? '') >
+          Date.parse(displayed.lastSeenAt!),
+      ).length
     : 0;
   const pending =
     displayed?.localization?.pending ??
@@ -265,6 +291,48 @@ export function NewsScreen() {
           </p>
         )}
       {live.error && <p className="renewal-muted">{live.error.message}</p>}
+      {feed.some((n) => n.priority === 0) &&
+        !search &&
+        readingFilter === 'Усе' &&
+        filter === 'Усе' && (
+          <section className="renewal-card">
+            <p className="renewal-eyebrow">ШВИДКО ЗРОЗУМІТИ ДЕНЬ</p>
+            <h2 className="text-lg font-semibold mt-2">Головне зараз</h2>
+            <p className="renewal-chart-note mt-2">
+              До п’яти подій із поточної добірки. Деталі — за натисканням.
+            </p>
+            <div className="flex flex-col gap-4 mt-4">
+              {feed
+                .filter((n) => n.priority === 0)
+                .slice(0, 5)
+                .map(({ item }, i) => (
+                  <button
+                    key={item.url}
+                    className="text-left border-b border-glassb pb-4 last:border-0"
+                    aria-label={`Коротко: ${item.title}`}
+                    onClick={() => {
+                      openArticle(item);
+                    }}
+                  >
+                    <span className="font-semibold block">
+                      {i + 1}. {item.title}
+                    </span>
+                    {item.why && (
+                      <span className="renewal-muted text-sm block mt-2">
+                        {item.why.length > 180
+                          ? item.why.slice(0, 177).replace(/\s+\S*$/, '') + '…'
+                          : item.why}
+                      </span>
+                    )}
+                    <span className="renewal-chart-note block mt-2">
+                      {newsSource(item.url)}
+                      {item.updated ? ' · Оновлення події' : ''}
+                    </span>
+                  </button>
+                ))}
+            </div>
+          </section>
+        )}
       <div className="flex items-center justify-between gap-3">
         <div className="renewal-segments">
           {['Усе', 'Непрочитане', 'Збережене'].map((v) => (
@@ -349,7 +417,7 @@ export function NewsScreen() {
             onOpen={() => {
               feedScroll.current = window.scrollY;
               setSelected(item.url);
-              markRead(item.url);
+              markRead(item.changeAt ? `${item.url}#${item.changeAt}` : item.url);
             }}
           />
         </article>

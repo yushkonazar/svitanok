@@ -31,6 +31,7 @@ export function NewsItem({
   // а не як активна кнопка: дизлайків більше немає, і малювати їх нічим.
   const live = useNewsSnapshot();
   const [localFeedback, setLocalFeedback] = useState<'like' | 'less' | 'clear' | null>(null);
+  const [selectedReason, setSelectedReason] = useState<string | null>(null);
   const feedback = localFeedback ?? live.data?.feedback?.[item.url];
   const liked = feedback ? feedback === 'like' : data?.stats.votes?.[item.url] === 'up';
   const { isSaved, setSaved } = useSaved();
@@ -132,7 +133,9 @@ export function NewsItem({
           </span>
         )}
         <span className="renewal-news-headline">{item.title}</span>
-        {item.updated && <span className="renewal-pill mt-2">Оновлено</span>}
+        {item.updated && (
+          <span className="renewal-pill mt-2">{item.changeLabel ?? 'Оновлено'}</span>
+        )}
         {item.translationStatus === 'pending' && (
           <span className="renewal-muted block mt-2">Переклад очікується · показано оригінал</span>
         )}
@@ -179,6 +182,36 @@ export function NewsItem({
         <p role="alert" className="renewal-muted">
           Не вдалося зберегти реакцію. Спробуй ще раз.
         </p>
+      )}
+      {feedback === 'less' && (
+        <details className="renewal-news-feedback">
+          <summary>Уточнити причину · необов’язково</summary>
+          <div className="flex flex-wrap gap-2 mt-3">
+            {(
+              [
+                ['topic', 'Нецікава тема'],
+                ['repeat', 'Повтор'],
+                ['weak', 'Мало змісту'],
+                ['source', 'Джерело'],
+              ] as const
+            ).map(([reason, label]) => (
+              <button
+                key={reason}
+                disabled={voteMut.isPending}
+                aria-pressed={selectedReason === reason}
+                className="renewal-secondary"
+                onClick={() =>
+                  voteMut.mutate(
+                    { url: item.url, kind: 'less', reason },
+                    { onSuccess: () => setSelectedReason(reason) },
+                  )
+                }
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </details>
       )}
       {item.translated && item.originalTitle && (
         <details className="renewal-news-original">

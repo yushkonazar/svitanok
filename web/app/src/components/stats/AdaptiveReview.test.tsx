@@ -22,7 +22,7 @@ it('does not invent observations in a private empty account', () => {
       }}
     />,
   );
-  expect(screen.getByText(/0\/7 днів із записами/)).toBeInTheDocument();
+  expect(screen.getAllByText(/0\/7 днів із записами/)).toHaveLength(2);
   expect(screen.queryByText(/Демонстраційні спостереження/)).not.toBeInTheDocument();
   expect(screen.queryByRole('slider')).not.toBeInTheDocument();
 });

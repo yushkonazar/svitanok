@@ -10,6 +10,79 @@ const entry = (id: string, title: string, at = '2026-10-06T10:00:00Z') => ({
 });
 const offline = vi.fn(async () => ({ ok: false, error: 'offline' }));
 describe('news editorial selection', () => {
+  it('allows only known recent event IDs from the history supplied to the editor', async () => {
+    const history = [
+      {
+        storyId: 'known-event',
+        observedAt: '2026-10-06T11:00:00Z',
+        title: 'Previous report',
+        summary: 'Public source details',
+      },
+    ];
+    const editor = async () => ({
+      ok: true,
+      structured: {
+        items: [
+          { id: '0', importance: 5, sameEvent: '', previousEvent: 'known-event' },
+          { id: '1', importance: 4, sameEvent: '', previousEvent: 'invented' },
+        ],
+      },
+    });
+    const r = await curateNewsGroups(
+      workerEnv(),
+      [
+        {
+          sourceId: 'bbc-world',
+          scope: 'world',
+          topic: 'Головне',
+          items: [
+            entry('update', 'Countries publish new ceasefire conditions'),
+            entry('new', 'Space agency announces independent exploration mission'),
+          ],
+        },
+      ],
+      now,
+      {},
+      editor,
+      history,
+    );
+    expect(
+      r.groups[0]?.items.find((n: { url: string }) => n.url.endsWith('/update'))?.historyStoryId,
+    ).toBe('known-event');
+    expect(
+      r.groups[0]?.items.find((n: { url: string }) => n.url.endsWith('/new'))?.historyStoryId,
+    ).toBeUndefined();
+  });
+  it('takes only verbatim source evidence for the short summary and retains the raw source for history', async () => {
+    const item = {
+      ...entry('evidence', 'A meaningful event'),
+      excerpt: 'First source sentence with verified information. Another source sentence.',
+    };
+    const editor = async () => ({
+      ok: true,
+      structured: {
+        items: [
+          {
+            id: '0',
+            importance: 4,
+            sameEvent: '',
+            excerptQuote: 'First source sentence with verified information.',
+          },
+        ],
+      },
+    });
+    const r = await curateNewsGroups(
+      workerEnv(),
+      [{ sourceId: 'bbc-world', scope: 'world', topic: 'Головне', items: [item] }],
+      now,
+      {},
+      editor,
+    );
+    expect(r.groups[0]?.items[0]).toMatchObject({
+      excerpt: 'First source sentence with verified information.',
+      sourceExcerpt: item.excerpt,
+    });
+  });
   it('prioritizes Ukraine/world even when sports are newer and heavily liked', async () => {
     const groups = [
       {

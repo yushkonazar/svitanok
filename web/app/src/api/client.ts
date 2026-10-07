@@ -44,7 +44,12 @@ export async function fetchNewsSnapshot() {
 export async function postNewsAction(
   action:
     | { type: 'refresh' | 'seen' }
-    | { type: 'feedback'; url: string; kind: 'like' | 'less' | 'clear' },
+    | {
+        type: 'feedback';
+        url: string;
+        kind: 'like' | 'less' | 'clear';
+        reason?: 'topic' | 'repeat' | 'weak' | 'source';
+      },
 ) {
   if (!inTelegram()) return { ok: true, demo: true };
   const response = await fetch('/api/news', {

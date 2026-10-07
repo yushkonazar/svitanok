@@ -5,6 +5,7 @@ import { inTelegram } from '../../telegram.ts';
 import { kyivParts } from '../../../../core/finance/planning.mjs';
 import {
   analyzeAdaptive,
+  adaptiveDay,
   demoAdaptive,
   frequenciesV3,
   pointsV3,
@@ -17,6 +18,7 @@ import {
 } from '../../../../core/checkin/adaptive.mjs';
 import { ObservationChart } from '../charts/ObservationChart.tsx';
 import { ObservationReview } from './ObservationReview.tsx';
+import { WeeklyReview } from './WeeklyReview.tsx';
 
 const slots: CheckinSlot[] = ['morning', 'afternoon', 'evening'];
 const names = { morning: 'Ранок', afternoon: 'День', evening: 'Вечір' };
@@ -161,7 +163,7 @@ export function AdaptiveReview({
   };
   const a = analyzeAdaptive(records, to, days);
   const chosen =
-    a.current.find((d) => d.date === selected) ??
+    (selected ? adaptiveDay(selected, records[selected]) : null) ??
     a.current
       .filter((d) => d.morning.confirmed || d.afternoon.confirmed || d.evening.confirmed)
       .at(-1) ??
@@ -181,6 +183,18 @@ export function AdaptiveReview({
           Демонстраційні спостереження. Особисті відповіді тут не підставляються.
         </p>
       )}
+      <WeeklyReview
+        records={records}
+        today={to}
+        onDay={(date) => {
+          setSelected(date);
+          requestAnimationFrame(() =>
+            document
+              .getElementById('adaptive-recorded-day')
+              ?.scrollIntoView({ block: 'start', behavior: 'auto' }),
+          );
+        }}
+      />
       <section className="renewal-card">
         <div className="flex flex-wrap justify-between items-center gap-3">
           <h2 className="text-lg font-semibold">Твій період</h2>
@@ -275,15 +289,18 @@ export function AdaptiveReview({
             />
           </div>
         </details>
-        {a.recordedDays > 0 && (
-          <details className="mt-5" open={selected != null}>
+        {(a.recordedDays > 0 ||
+          chosen.morning.confirmed ||
+          chosen.afternoon.confirmed ||
+          chosen.evening.confirmed) && (
+          <details id="adaptive-recorded-day" className="mt-5" open={selected != null}>
             <summary className="renewal-link cursor-pointer">Переглянути конкретний день</summary>
             <label className="renewal-field my-4">
               <span>Дата</span>
               <input
                 type="date"
                 value={chosen.date}
-                min={a.from}
+                min={Object.keys(records).sort()[0] ?? a.from}
                 max={to}
                 onChange={(e) => setSelected(e.target.value)}
               />

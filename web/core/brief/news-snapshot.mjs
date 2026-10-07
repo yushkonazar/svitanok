@@ -5,6 +5,7 @@ import { normalizeSettings } from '../../settings-core.mjs';
 import { DEFAULT_NEWS_SOURCES, NEWS_FEEDS } from './news-catalog.mjs';
 import { cleanNewsText, decodeNewsText, safeNewsImage, newsFingerprint } from './news-content.mjs';
 import { curateNewsGroups } from './news-curation.mjs';
+import { evolveNews } from './news-evolution.mjs';
 import { kyivDateKey } from '../../kyiv-time.mjs';
 export const NEWS_SNAPSHOT_KEY = 'miniAppNewsSnapshot';
 export const NEWS_INTERVAL_MS = 3 * 60 * 60 * 1000;
@@ -110,7 +111,7 @@ export async function buildNewsSnapshot(env, nowMs, fetchImpl, options = {}) {
   const interval = (settings.news?.intervalHours ?? 3) * 3600000;
   const allowed = settings.news?.sources ?? DEFAULT_NEWS_SOURCES;
   const configKey = JSON.stringify({
-    catalogVersion: 3,
+    catalogVersion: 4,
     editorService: env.OPENAI_API_KEY ? 'openai' : 'gemini',
     translationService: env.GOOGLE_TRANSLATE_API_KEY
       ? 'google'
@@ -138,7 +139,7 @@ export async function buildNewsSnapshot(env, nowMs, fetchImpl, options = {}) {
       /* Rebuild malformed cache. */
     }
   const elapsed = old?.attemptedAt ? nowMs - Date.parse(String(old.attemptedAt)) : Infinity;
-  if (options.force && old?.catalogVersion === 3 && elapsed < 10 * 60000)
+  if (options.force && old?.catalogVersion === 4 && elapsed < 10 * 60000)
     return { skipped: 'cooldown', retryAfterSeconds: Math.ceil((10 * 60000 - elapsed) / 1000) };
   if (
     old?.attemptedAt &&
@@ -218,22 +219,25 @@ export async function buildNewsSnapshot(env, nowMs, fetchImpl, options = {}) {
       });
     }
   });
-  const curation = await curateNewsGroups(env, groups, nowMs, options.preferences);
+  const priorHistory =
+    old?.history ??
+    (await evolveNews(old?.groups ?? [], [], Date.parse(old?.generatedAt ?? '') || nowMs));
+  const curation = await curateNewsGroups(
+    env,
+    groups,
+    nowMs,
+    options.preferences,
+    undefined,
+    priorHistory,
+  );
   groups.splice(0, groups.length, ...curation.groups);
   const successful =
     !SOURCES.some(enabled) ||
     results.some((r, i) => r.status === 'fulfilled' && SOURCES[i] && enabled(SOURCES[i]));
   const localization = await localizeNewsGroups(env, groups, old, undefined, nowMs);
-  const previous = new Map(
-    (old?.groups ?? [])
-      .flatMap((/** @type {KvBlob} */ g) => g.items ?? [])
-      .map((/** @type {KvBlob} */ item) => [item.url, item]),
-  );
+  const history = await evolveNews(groups, priorHistory, nowMs);
   for (const g of groups)
     for (const item of g.items) {
-      const prior = previous.get(item.url);
-      if (prior?.translationKey && prior.translationKey !== item.translationKey)
-        item.updated = true;
       if (item.image) {
         item.imageId = await newsFingerprint(item.image);
         item.imageProxy = `/api/news/image/${item.imageId}`;
@@ -256,9 +260,10 @@ export async function buildNewsSnapshot(env, nowMs, fetchImpl, options = {}) {
   await env.BRIEFING.put('miniAppNewsUsage', JSON.stringify(usage));
   const snapshot = {
     configKey,
-    catalogVersion: 3,
+    catalogVersion: 4,
     intervalHours: settings.news?.intervalHours ?? 3,
     groups,
+    history,
     localization,
     editorial: curation.editorial,
     usage,

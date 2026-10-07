@@ -2,7 +2,10 @@
 // One stable item per Kyiv calendar day; retries do not consume another fact.
 import type { Module, Block, Ctx } from '../core/types.js';
 import type { AppConfig } from '../core/config.js';
-import catalog from '../data/verified-facts.json' with { type: 'json' };
+import originalCatalog from '../data/verified-facts.json' with { type: 'json' };
+import { octoberFacts } from '../data/content-october.js';
+import { monthlyContent } from '../core/monthly-content.js';
+const catalog = [...originalCatalog, ...octoberFacts];
 
 export interface VerifiedFact {
   id: string;
@@ -26,7 +29,7 @@ export const factModule: Module<AppConfig> = {
     const saved = ctx.state.get<{ date: string; id: string }>('verifiedFactDay');
     const fact =
       (saved?.date === date ? catalog.find((item) => item.id === saved.id) : null) ??
-      resolveFact(date);
+      monthlyContent('facts', date, catalog, ctx.state, (n) => n.id, resolveFact);
     if (!fact) return null;
     ctx.state.set('verifiedFactDay', { date, id: fact.id });
     return {

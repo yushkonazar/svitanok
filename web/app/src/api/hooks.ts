@@ -65,8 +65,11 @@ export function useNewsSeen() {
 export function useNewsFeedback() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (input: { url: string; kind: 'like' | 'less' | 'clear' }) =>
-      postNewsAction({ type: 'feedback', ...input }),
+    mutationFn: (input: {
+      url: string;
+      kind: 'like' | 'less' | 'clear';
+      reason?: 'topic' | 'repeat' | 'weak' | 'source';
+    }) => postNewsAction({ type: 'feedback', ...input }),
     onSuccess: (result) => {
       if (result.feedback)
         qc.setQueryData<Awaited<ReturnType<typeof fetchNewsSnapshot>>>(['newsSnapshot'], (old) =>
