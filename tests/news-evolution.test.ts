@@ -1,6 +1,17 @@
 import { expect, it } from 'vitest';
 import { evolveNews } from '../web/core/brief/news-evolution.mjs';
 const now = Date.parse('2026-10-07T12:00:00Z');
+it('bounds multibyte history by bytes as well as article count', async () => {
+  const history = Array.from({ length: 300 }, (_, i) => ({
+    storyId: String(i),
+    urls: [`https://example.test/${i}`],
+    observedAt: new Date(now).toISOString(),
+    summary: 'ї'.repeat(10000),
+  }));
+  const result = await evolveNews([], history, now);
+  expect(result.length).toBeLessThan(300);
+  expect(new TextEncoder().encode(JSON.stringify(result)).length).toBeLessThanOrEqual(512 * 1024);
+});
 const group = (title = 'Подія', excerpt = 'Перше повідомлення') => [
   {
     items: [

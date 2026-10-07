@@ -60,5 +60,15 @@ export async function evolveNews(groups, history = [], nowMs = Date.now()) {
         observedAt: new Date(nowMs).toISOString(),
       });
     }
-  return [...next.values()].sort((a, b) => b.observedAt.localeCompare(a.observedAt)).slice(0, 300);
+  const bounded = [];
+  let bytes = 2;
+  for (const row of [...next.values()]
+    .sort((a, b) => b.observedAt.localeCompare(a.observedAt))
+    .slice(0, 300)) {
+    const size = new TextEncoder().encode(JSON.stringify(row)).length + 1;
+    if (bytes + size > 512 * 1024) continue;
+    bytes += size;
+    bounded.push(row);
+  }
+  return bounded;
 }

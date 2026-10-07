@@ -43,6 +43,7 @@ export function parseNewsFeed(xml, nowMs, options = {}) {
       /\b(?:quiz(?:zes)?|brainteaser|crossword)\b/i.test(title) ||
       /\/iplayer\//i.test(link) ||
       !/^https?:\/\//i.test(link) ||
+      link.length > 2000 ||
       !Number.isFinite(at) ||
       at > nowMs + 60000 ||
       at < nowMs - 48 * 3600000
