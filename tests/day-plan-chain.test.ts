@@ -14,6 +14,7 @@ import {
   normalizeIntent,
   parseDurationMin,
   applyAnswer,
+  productionIo,
   replanChanges,
   hhmmToMin,
   CHAIN_KIND,
@@ -155,6 +156,126 @@ const WORKER_INTENT = {
   },
 };
 describe('runDayPlanChain', () => {
+  it('keeps the scheduled date, resolves ranges and writes precise clocks only after approval', async () => {
+    const { env, db } = setup();
+    const date = '2026-10-07';
+    const now = Date.parse('2026-10-06T17:30:00Z');
+    env.ASSISTANT_HOME = 'dm';
+    env.TELEGRAM_OWNER_USER_ID = '806352792';
+    const chainId = await startDayPlanChain(env, date, now);
+    await setChainState(env, chainId, { status: 'waiting', awaiting: 'intent' });
+    expect(await findAwaitingChain(env, 'dm')).toMatchObject({ id: chainId, awaiting: 'intent' });
+    const readRoute = vi.fn(async () => ({ duration_min: 240, distance_km: 301 }));
+    const { step } = fakeStep({
+      intent: [
+        {
+          payload: {
+            text: 'Прокинутись о 8-9, працювати до 3-4, в 5 виїхати зі Львова до Немович.',
+          },
+        },
+      ],
+      worker: [
+        {
+          payload: {
+            output: {
+              items: [
+                { title: 'Прокинутися', kind: 'moment', hard_at: '08:00' },
+                { title: 'Робота', role: 'work', hard_at: '09:00', hard_end: '15:00' },
+                { title: 'Дорога до Немович', kind: 'move', hard_at: '17:00' },
+              ],
+            },
+          },
+        },
+      ],
+      answer: [
+        { payload: { text: '8' } },
+        { payload: { item: 0, option: 1 } },
+        { payload: { text: 'Починаю о 9, закінчую о 16' } },
+        { payload: { text: 'Скільки їхати глянь сам' } },
+        { payload: { item: 103, option: 0 } },
+      ],
+      accept: [{ payload: { choice: 'accept' } }],
+    });
+    const { io, sent } = fakeIo(db, chainId, {
+      now: () => now,
+      readCalendar: async () => [],
+      readRoute,
+    });
+    await runDayPlanChain(env, { chainId, date }, step, io);
+    expect(readRoute).toHaveBeenCalledWith({
+      from: 'Львова',
+      to: 'Немович',
+      mode: 'car',
+      depart_at: '2026-10-07T14:00:00.000Z',
+    });
+    expect((await getDayPlan(env, date))?.status).toBe('reviewed');
+    expect((await listItems(env, date)).every((item) => item.event_id)).toBe(true);
+    expect(await listItems(env, date)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ title: 'Робота', window_start: '09:00', window_end: '16:00' }),
+        expect.objectContaining({
+          title: 'Дорога до Немович',
+          window_start: '17:00',
+          window_end: '21:00',
+        }),
+      ]),
+    );
+    expect(sent.some((s) => s.buttons.some((b) => b.endsWith(':accept')))).toBe(true);
+    expect(sent.some((s) => /На який день|не маю доступу/iu.test(s.text))).toBe(false);
+    expect(sent.some((s) => s.text.includes('попереднє уточнення'))).toBe(true);
+  });
+
+  it('route lookup failure asks for an owner estimate, never inserts a guessed duration', async () => {
+    const { env, db } = setup();
+    const chainId = await startDayPlanChain(env, DATE, NOW);
+    const { step } = fakeStep({
+      worker: [
+        { payload: { output: { items: [{ title: 'Дорога', kind: 'move', hard_at: '17:00' }] } } },
+      ],
+      answer: [{ payload: { item: 200, option: 2 } }],
+      accept: [{ payload: { choice: 'accept' } }],
+    });
+    const { io, sent } = fakeIo(db, chainId, {
+      readCalendar: async () => [],
+      readRoute: async () => null,
+    });
+    await runDayPlanChain(
+      env,
+      {
+        chainId,
+        date: DATE,
+        oneShot: true,
+        initialIntent: 'Авто, виїхати зі Львова до Немович. Перевір маршрут сам.',
+      },
+      step,
+      io,
+    );
+    expect(sent.some((s) => s.text.includes('не вдалося перевірити'))).toBe(true);
+    expect((await listItems(env, DATE))[0]).toMatchObject({
+      window_start: '17:00',
+      window_end: '21:00',
+      est_min: 240,
+    });
+    expect((await getDayPlan(env, DATE))?.status).toBe('accepted');
+  });
+
+  it.each(['draft', 'accepted'])(
+    'unanswered old workflow cannot erase an existing %s',
+    async (status) => {
+      const { env, db } = setup();
+      const chainId = await startDayPlanChain(env, DATE, NOW);
+      db.prepare('UPDATE day_plans SET status=?, intent_text=? WHERE date=?').run(
+        status,
+        'робота до 16',
+        DATE,
+      );
+      const { step } = fakeStep({});
+      const { io } = fakeIo(db, chainId);
+      await runDayPlanChain(env, { chainId, date: DATE }, step, io);
+      expect((await getDayPlan(env, DATE))?.status).toBe(status);
+    },
+  );
+
   it('keeps every work segment, asks about the uncertain end and writes once after approval', async () => {
     const { env, db } = setup();
     const chainId = await startDayPlanChain(env, DATE, NOW);
@@ -573,6 +694,34 @@ describe('runDayPlanChain', () => {
 });
 
 describe('helpers ланцюга', () => {
+  it('production delivery keeps HTML formatting and the approval keyboard together', async () => {
+    const { env } = setup();
+    env.TELEGRAM_BOT_TOKEN = 'test-token';
+    const requests: Record<string, unknown>[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url, init) => {
+        requests.push(JSON.parse(String(init?.body ?? '{}')));
+        return new Response(JSON.stringify({ ok: true, result: { message_id: 7 } }), {
+          status: 200,
+        });
+      }),
+    );
+    const keyboard = [[{ text: 'Затвердити й записати', callback_data: 'c:test:accept' }]];
+    await productionIo(env, 'test', DATE, { chatId: '806352792', threadId: null }).send(
+      '**План** на завтра',
+      keyboard,
+    );
+    expect(requests).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          text: '<b>План</b> на завтра',
+          parse_mode: 'HTML',
+          reply_markup: { inline_keyboard: keyboard },
+        }),
+      ]),
+    );
+  });
   it('startDayPlanChain: рядок chains + Workflow.create(id=chainId); без привʼязки - помилка', async () => {
     const { db, env, wf } = setup();
     const chainId = await startDayPlanChain(env, DATE, NOW);

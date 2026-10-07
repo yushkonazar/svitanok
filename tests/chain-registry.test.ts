@@ -52,6 +52,18 @@ function setup() {
 const tableText = (text: string) => ({ type: 'table', payload: { action: 'text', text } });
 
 describe('мапи кнопок і тексту', () => {
+  it('maps distinct route questions and rejects oversized/invalid callbacks', () => {
+    expect(dayPlanChoiceEvent('a103_0')).toEqual({
+      type: 'answer',
+      payload: { item: 103, option: 0 },
+    });
+    expect(dayPlanChoiceEvent('a203_3')).toEqual({
+      type: 'answer',
+      payload: { item: 203, option: 3 },
+    });
+    expect(dayPlanChoiceEvent('a1000_0')).toBeNull();
+    expect(dayPlanChoiceEvent('a103_9')).toBeNull();
+  });
   it('tableChoiceEvent покриває всі кнопки столика; чуже - null', () => {
     expect(tableChoiceEvent('cancel')).toEqual({ type: 'table', payload: { action: 'cancel' } });
     expect(tableChoiceEvent('v3')).toEqual({
@@ -132,6 +144,32 @@ describe('мапи кнопок і тексту', () => {
 });
 
 describe('D1 + привʼязки', () => {
+  it('recovers legacy scheduled DM scope only for the configured owner address', async () => {
+    const { env, seed } = setup();
+    env.TELEGRAM_OWNER_USER_ID = '806352792';
+    seed(
+      'old-group',
+      'day-plan',
+      { awaiting: 'intent', chat_id: -100123, thread_id: null },
+      'waiting',
+      'z',
+    );
+    seed(
+      'other-owner',
+      'day-plan',
+      { awaiting: 'intent', chat_id: 111, thread_id: null },
+      'waiting',
+      'y',
+    );
+    seed('scheduled-dm', 'day-plan', { awaiting: 'intent', chat_id: 806352792, thread_id: null });
+    expect(await findAwaitingChain(env, 'dm')).toEqual({
+      id: 'scheduled-dm',
+      kind: 'day-plan',
+      awaiting: 'intent',
+    });
+    env.TELEGRAM_OWNER_USER_ID = '';
+    expect(await findAwaitingChain(env, 'dm')).toBeNull();
+  });
   it('readChainKind / sendChainEvent: привʼязка за kind; невідомий рядок або kind без привʼязки - помилка', async () => {
     const { env, events, seed } = setup();
     seed('d1', 'day-plan', { awaiting: 'intent' });

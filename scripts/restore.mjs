@@ -22,7 +22,13 @@ import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { decryptBackup, restoreSql, summarizeBackup } from '../web/core/backup/core.mjs';
+import {
+  BACKUP_TABLES,
+  decryptBackup,
+  restoreSql,
+  summarizeBackup,
+  prepareRestoreTables,
+} from '../web/core/backup/core.mjs';
 
 /** @param {string[]} argv */
 export function parseArgs(argv) {
@@ -51,12 +57,17 @@ export async function restore(args, deps) {
   if (!deps.secret) throw new Error('BACKUP_ENC_KEY не задано в середовищі');
   const bytes = new Uint8Array(readFileSync(args.file));
   const doc = await decryptBackup(deps.secret, bytes);
+  const covered = prepareRestoreTables(doc);
   const summary = summarizeBackup(doc);
   log(
     `Бекап від ${doc.created_at} (env=${doc.env}): таблиць ${summary.tables}, рядків ${summary.rows}, ключів KV ${summary.kvKeys}`,
   );
   log(`Непорожні: ${summary.nonEmpty.join(', ') || '(нічого)'}`);
   log(`KV: ${Object.keys(doc.kv).join(', ') || '(нічого)'}`);
+  const preserved = BACKUP_TABLES.filter((table) => !Object.hasOwn(covered, table));
+  if (preserved.length) log(`Не змінюються (відсутні/виключені в архіві): ${preserved.join(', ')}`);
+  if (covered.knowledge_documents?.length)
+    log('Пошукову проєкцію активної бази знань буде перебудовано з D1 після відновлення.');
 
   if (args.dryRun) {
     log('--dry-run: нічого не змінено.');

@@ -14,6 +14,7 @@ import {
   BACKUP_TABLES,
   decryptBackup,
   restoreSql,
+  prepareRestoreTables,
   summarizeBackup,
 } from '../web/core/backup/core.mjs';
 
@@ -49,8 +50,9 @@ function projectRow(columns, actual) {
 
 /** @param {import('../web/core/backup/core.mjs').BackupDocument} doc */
 function expectedTables(doc) {
+  const restored = prepareRestoreTables(doc);
   const tables = /** @type {Record<string, Record<string, unknown>[]>} */ ({});
-  for (const table of BACKUP_TABLES) tables[table] = [...(doc.d1[table] ?? [])];
+  for (const table of BACKUP_TABLES) tables[table] = [...(restored[table] ?? [])];
   // Older backups can lack the counter introduced later. restoreSql deliberately
   // recreates it so the first post-restore idea write is safe.
   if (!tables.counters.some((row) => row.name === 'ideas')) {

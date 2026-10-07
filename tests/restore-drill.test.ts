@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { describe, expect, it } from 'vitest';
 import { BACKUP_TABLES, buildBackupDocument, encryptBackup } from '../web/core/backup/core.mjs';
 import { parseArgs, restoreDrill } from '../scripts/restore-drill.mjs';
+import { lifecycleRows } from './helpers/lifecycle-fixtures.js';
 
 const SECRET = 'a sufficiently long backup test secret';
 
@@ -13,6 +14,7 @@ describe('restore-drill', () => {
       createdMs: Date.parse('2026-09-18T10:00:00.000Z'),
       envName: 'test',
       tables: {
+        ...lifecycleRows(),
         counters: [{ name: 'ideas', value: 7 }],
         facts: [
           {

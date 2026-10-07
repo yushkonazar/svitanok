@@ -81,6 +81,27 @@ export const RETENTION = [
   // Черга відправок - 7 діб: доставлене й провалене; те, що ще чекає
   // (pending/sending), лишається сміттям видимим, а не стертим мовчки.
   { table: 'outbox', column: 'next_at', ms: 7 * DAY, where: "status IN ('sent', 'failed')" },
+  { table: 'outbox', column: 'next_at', ms: 90 * DAY, where: "status = 'uncertain'" },
+  {
+    table: 'context_reminders',
+    column: 'updated_at',
+    ms: 12 * MONTH,
+    where: "status IN ('done','cancelled')",
+  },
+  {
+    table: 'context_deliveries',
+    column: 'created_at',
+    ms: 12 * MONTH,
+    where:
+      "NOT EXISTS (SELECT 1 FROM context_reminders r WHERE r.delivery_id=context_deliveries.id AND r.status NOT IN ('done','cancelled'))",
+  },
+  {
+    table: 'work_contexts',
+    column: 'opened_at',
+    ms: 12 * MONTH,
+    where:
+      'NOT EXISTS (SELECT 1 FROM context_reminders r WHERE r.context_id=work_contexts.id) AND NOT EXISTS (SELECT 1 FROM context_deliveries d WHERE d.context_id=work_contexts.id)',
+  },
   { table: 'quota_counters', column: 'updated_at', ms: 12 * MONTH },
   // Стан голосового живе хвилини; доба - із запасом на завислий тап.
   { table: 'voice_pending', column: 'created_at', ms: DAY },
@@ -159,7 +180,7 @@ export async function retentionCleanupTask(env, nowMs = Date.now()) {
         // Менше за стелю - таблиця вичищена, далі проходити нема чого.
         if (got < BATCH) break;
       }
-      if (n) removed[rule.table] = n;
+      if (n) removed[rule.table] = (removed[rule.table] ?? 0) + n;
     } catch (/** @type {any} */ e) {
       // Збій однієї таблиці не зупиняє решту - та сама ізоляція, що в
       // планувальнику (B11).

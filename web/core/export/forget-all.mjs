@@ -317,18 +317,22 @@ async function continueForgetAll(env, receipt) {
 /** Локальна частина виконується лише після зовнішніх підтверджень. @param {Env} env */
 async function eraseLocalData(env) {
   const db = /** @type {NonNullable<Env['DB']>} */ (env.DB);
-  let rows = 0;
-  for (const table of [...FORGET_ALL_TABLES].reverse()) {
-    // Імена - з константного списку, не з вводу.
-    const res = await db.prepare(`DELETE FROM ${table}`).bind().run();
-    rows += Number(res?.meta?.changes ?? 0);
-  }
-  for (const sql of FINANCE_DEFAULT_SQL) await db.prepare(sql).bind().run();
-  // Лічильники не видаляємо, а обнуляємо: рядок потрібен коду, значення - ні.
-  await db.prepare('UPDATE counters SET value = 0').bind().run();
-  for (const fts of FORGET_ALL_FTS) {
-    await db.prepare(`DELETE FROM ${fts}`).bind().run();
-  }
+  // D1 batch is transactional. A schema/write error in a later table must not
+  // leave a half-erased database whose receipt could claim all rows survived.
+  // Names are trusted constants, never owner/model input.
+  const deletes = [...FORGET_ALL_TABLES]
+    .reverse()
+    .map((table) => db.prepare(`DELETE FROM ${table}`).bind());
+  const results = await db.batch([
+    ...deletes,
+    ...FINANCE_DEFAULT_SQL.map((sql) => db.prepare(sql).bind()),
+    // Keep required counter rows, reset only their personal numbering.
+    db.prepare('UPDATE counters SET value = 0').bind(),
+    ...FORGET_ALL_FTS.map((fts) => db.prepare(`DELETE FROM ${fts}`).bind()),
+  ]);
+  const rows = results
+    .slice(0, deletes.length)
+    .reduce((count, result) => count + Number(result?.meta?.changes ?? 0), 0);
 
   // Canonical pending-proposal slot не є KV-копією: T2 має стерти його ДО
   // legacy mirror, інакше старе ✅ могло б пережити «забудь усе» у DO.
@@ -405,8 +409,8 @@ function deletionErrorSummary(error) {
   if (/Drive|backup|OAuth/i.test(text)) {
     return 'Drive backup не підтвердив видалення; локальні дані збережено.';
   }
-  if (/D1|DB|баз/i.test(text)) return 'Локальне стирання не завершилось; дані збережено.';
-  return 'Крок видалення завершився помилкою; локальні дані збережено.';
+  if (/D1|DB|баз/i.test(text)) return 'Локальне стирання не завершилось; перевір стан у квитанції.';
+  return 'Крок видалення завершився помилкою; перевір стан у квитанції перед повтором.';
 }
 
 /** @param {Record<string, any>} receipt @param {number} nowMs @returns {DeletionReceiptReport|null} */

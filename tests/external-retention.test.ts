@@ -14,23 +14,7 @@ import { workerEnv } from './helpers/env.js';
 import { memoryKv } from './helpers/kv.js';
 import { d1FromSqlite } from './helpers/d1.js';
 
-const MIGRATIONS = [
-  '0001_base.sql',
-  '0002_assistant.sql',
-  '0003_telemetry.sql',
-  '0004_ideas_travel.sql',
-  '0005_finance.sql',
-  '0006_inbox_collections.sql',
-  '0007_instructions_plans.sql',
-  '0008_fts.sql',
-  '0009_voice.sql',
-  '0010_reminders_address.sql',
-  '0011_ideas_number.sql',
-  '0012_reminders_recurrence.sql',
-  '0013_run_steps_idempotency.sql',
-  '0028_mini_app_finance.sql',
-  '0029_finance_credit_limits.sql',
-];
+import { ALL_MIGRATIONS as MIGRATIONS } from './helpers/migrations.js';
 const NOW = Date.parse('2026-09-16T01:10:00.000Z'); // 04:10 Київ
 const OLD = '2026-01-01T00:00:00.000Z';
 

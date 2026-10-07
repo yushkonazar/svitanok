@@ -45,6 +45,12 @@ import { applyPolicy } from './policy/proposals.mjs';
 import { muteHintTopic, HINT_TOPICS } from './hints/daily-hint.mjs';
 import { activeRemindersForList } from '../commands.mjs';
 import {
+  routeContextReminder,
+  contextReminderCallback,
+  showContextReminders,
+} from './reminders/context-router.mjs';
+import { listContextReminders, contextUndoGuard } from './reminders/context-store.mjs';
+import {
   addDaysToDateKey,
   buildRemindersKeyboard,
   formatRemindersListMessage,
@@ -705,7 +711,7 @@ export async function prerouteMessage(env, parsed, nowMs = Date.now(), voiceStat
       return true;
     }
     if (cmd.cmd === 'digest') {
-      await send(await actionDigest(env, nowMs));
+      await send(await actionDigest(env, nowMs, target));
       return true;
     }
     if (cmd.cmd === 'chains') {
@@ -739,6 +745,7 @@ export async function prerouteMessage(env, parsed, nowMs = Date.now(), voiceStat
         await sendRemindersList(env, target, nowMs);
         return true;
       }
+      if (await routeContextReminder(env, parsed, `Нагадай ${cmd.args}`, nowMs)) return true;
       const title = incompleteReminderTitle(`Нагадай ${cmd.args}`, nowMs);
       if (title) {
         const draftId = await saveReminderDraft(env, target, title, nowMs);
@@ -773,6 +780,11 @@ export async function prerouteMessage(env, parsed, nowMs = Date.now(), voiceStat
   // як вікно «↩» минуло. Детерміновано, без прогону: модель не мусить
   // угадувати, яка саме дія була останньою.
   if (UNDO_LAST_RE.test(text)) {
+    const contextual = await contextUndoGuard(env, target, nowMs);
+    if (contextual) {
+      await reply(env, target, String(contextual.text), nowMs, contextual);
+      return true;
+    }
     await sendUndoLast(env, target, threadKey, nowMs);
     return true;
   }
@@ -780,6 +792,10 @@ export async function prerouteMessage(env, parsed, nowMs = Date.now(), voiceStat
   // Слово-підтвердження T2 (01 §4.3): відкрита пропозиція цього треду з таким
   // словом - це рішення власника, а не повідомлення для моделі.
   if (await resolveT2Word(env, target, threadKey, text, nowMs)) return true;
+
+  // Event reminders precede both generic reminder drafts and LLM/chain routing.
+  // Confirmed voice goes through this same entry point with its source message id.
+  if (await routeContextReminder(env, parsed, text, nowMs)) return true;
 
   // Коротке продовження нагадування живе окремо від розмовної пам'яті: тут
   // саме код знає, що «завтра о 9» є часом для попереднього «нагадай про…».
@@ -835,7 +851,8 @@ export async function prerouteMessage(env, parsed, nowMs = Date.now(), voiceStat
   // Ланцюги (етап 3 PR-8 план дня, етап 5 столик): ланцюг чекає слова
   // власника в темі «Асистент» (намір/уточнення, назва закладу, час, імена)
   // - текст іде подією в Workflow, не в мозок. Інші теми не чіпаємо: питання
-  // ставилось саме тут. Збій доставки - у мозок, як звичайне повідомлення.
+  // ставилось саме тут. Збій доставки плану не запускає сторонній прогін:
+  // він не має втратити запитання або заявити про незаписане затвердження.
   if (threadKey === THREAD_DM || threadKey === String(env.TOPIC_ASSISTANT ?? '')) {
     const awaiting = await findAwaitingChain(env, threadKey).catch((/** @type {any} */ e) => {
       // Збій D1 тут не блокує повідомлення (воно піде в мозок), але й не мовчить.
@@ -849,6 +866,15 @@ export async function prerouteMessage(env, parsed, nowMs = Date.now(), voiceStat
         return true;
       } catch (/** @type {any} */ e) {
         console.error('prerouter: подія в ланцюг не доставлена', e?.message);
+        if (awaiting.kind === 'day-plan') {
+          await reply(
+            env,
+            target,
+            'Не вдалося передати відповідь у планування. Чернетку не затверджено; повтори відповідь трохи пізніше.',
+            nowMs,
+          );
+          return true;
+        }
       }
     }
     // Ланцюг столика чекає понад добу (S-1-6): мʼякий рядок раз на день - не
@@ -932,10 +958,20 @@ async function sendUndoLast(env, target, threadKey, nowMs) {
 async function sendRemindersList(env, target, nowMs) {
   const list = await activeRemindersForList(env);
   const keyboard = buildRemindersKeyboard(list);
-  await reply(env, target, formatRemindersListMessage(list), nowMs, {
-    parse_mode: 'HTML',
-    ...(keyboard.inline_keyboard.length ? { reply_markup: keyboard } : {}),
-  });
+  const contextual = await listContextReminders(env, target);
+  await reply(
+    env,
+    target,
+    contextual.length && !list.length
+      ? '⏰ Справи після роботи — нижче.'
+      : formatRemindersListMessage(list),
+    nowMs,
+    {
+      parse_mode: 'HTML',
+      ...(keyboard.inline_keyboard.length ? { reply_markup: keyboard } : {}),
+    },
+  );
+  await showContextReminders(env, target, nowMs);
 }
 
 /**
@@ -1556,6 +1592,16 @@ export async function kickPendingThreads(env, nowMs = Date.now()) {
  */
 export async function handleBrainCallback(env, parsed, nowMs = Date.now(), defer = null) {
   const data = String(parsed.data ?? '');
+  if (data.startsWith('er:')) {
+    if (defer) {
+      const toast = await contextReminderCallback(env, parsed, nowMs, false);
+      defer(async () => {
+        await drainOutbox(env, { nowMs });
+      });
+      return toast;
+    }
+    return contextReminderCallback(env, parsed, nowMs);
+  }
   // Receipt chips survive feature-mode changes; their safe no-op response
   // must not depend on whether the V2 router is currently enabled.
   if (data === 'm:done') return 'Це вже вирішено.';
@@ -2659,6 +2705,17 @@ async function chainCallbackToast(env, parsed, chainId, choice) {
   if (!kind) return 'Ланцюг не знайдено - напиши текстом.';
   const ev = choiceEvent(kind, choice);
   if (!ev) return 'Невідома кнопка ланцюга.';
+  if (kind === 'day-plan' && ev.type === 'answer') {
+    const saved = await readChainState(env, chainId).catch(() => null);
+    if (!saved) return 'Не вдалося перевірити запитання. Спробуй ще раз.';
+    if (
+      Number.isInteger(saved.state.question_index) &&
+      (saved.status !== 'waiting' ||
+        saved.state.awaiting !== 'answer' ||
+        saved.state.question_index !== ev.payload.item)
+    )
+      return 'Це попереднє уточнення. Обери відповідь під останнім запитанням.';
+  }
   try {
     await sendChainEvent(env, chainId, ev.type, ev.payload);
   } catch (/** @type {any} */ e) {
@@ -3419,6 +3476,7 @@ async function voiceCallbackToast(env, parsed, id, choice, nowMs, defer) {
               chatId: target.chatId,
               threadId: target.threadId,
               fromId: env.TELEGRAM_OWNER_USER_ID,
+              messageId: parsed.messageId,
               text: env.ASSISTANT_V2 === 'shadow' ? `v2:${text}` : text,
             },
             nowMs,
@@ -4007,7 +4065,13 @@ function workerVersionStatusLine(env) {
  * коли модель зайнята. Автоматичний inbox digest лишається окремим сценарієм.
  * @param {Env} env @param {number} nowMs
  */
-export async function actionDigest(env, nowMs = Date.now()) {
+export async function actionDigest(
+  env,
+  nowMs = Date.now(),
+  target = /** @type {import('./reminders/context-store.mjs').Target|null} */ (
+    assistantHomeTarget(env, 'assistant')
+  ),
+) {
   const horizonMs = nowMs + 24 * 60 * 60_000;
   const reminders = await activeRemindersForList(env).catch((/** @type {any} */ e) => {
     console.error('prerouter: /digest не прочитав нагадування', e?.message);
@@ -4036,6 +4100,15 @@ export async function actionDigest(env, nowMs = Date.now()) {
     }
   }
   const lines = ['📬 Важливе зараз'];
+  const contextual = target ? await listContextReminders(env, target).catch(() => []) : [];
+  if (contextual.length) {
+    lines.push('', '⏰ Справи після роботи:');
+    for (const item of contextual.slice(0, 5))
+      lines.push(
+        `• ${compactDigestText(item.text)} — ${item.status === 'deferred' ? 'не зараз' : item.status === 'awaiting_scope' ? 'обери зміну в «Нагадуваннях»' : item.finished_at ? 'ще не виконано' : item.work_date}`,
+      );
+    if (contextual.length > 5) lines.push('Решта — у «Нагадуваннях».');
+  }
   if (soon.length) {
     lines.push('', `⏰ Нагадування найближчої доби (${soon.length}):`);
     for (const reminder of soon) {

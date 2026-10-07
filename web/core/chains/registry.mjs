@@ -88,7 +88,8 @@ export async function findAwaitingChain(env, threadKey = null) {
   const { results } = await db(env)
     .prepare(
       `SELECT id, kind, json_extract(state_json, '$.awaiting') AS awaiting,
-              json_extract(state_json, '$.thread_id') AS thread_id
+              json_extract(state_json, '$.thread_id') AS thread_id,
+              json_extract(state_json, '$.chat_id') AS chat_id
        FROM chains
        WHERE status = 'waiting' AND json_extract(state_json, '$.awaiting') IN (${awaits.map(() => '?').join(', ')})
        ORDER BY COALESCE(json_extract(state_json, '$.awaiting_since'), updated_at) DESC LIMIT 10`,
@@ -98,10 +99,19 @@ export async function findAwaitingChain(env, threadKey = null) {
   for (const r of results ?? []) {
     const kind = String(r.kind);
     const awaiting = String(r.awaiting);
-    // Ланцюг памʼятає адресу старту. Старі записи без thread_id належать
-    // темі асистента; вони не мають перехоплювати приватний чат.
+    // Old null-thread rows are group-scoped unless their saved chat is the
+    // configured owner's private address. Recover scheduled DM rows narrowly.
     if (threadKey != null) {
-      if (r.thread_id == null && threadKey === 'dm') continue;
+      if (r.thread_id == null && Number(r.chat_id) > 0 && threadKey !== 'dm') continue;
+      if (
+        r.thread_id == null &&
+        threadKey === 'dm' &&
+        !(
+          Number(env.TELEGRAM_OWNER_USER_ID) > 0 &&
+          String(r.chat_id) === String(env.TELEGRAM_OWNER_USER_ID)
+        )
+      )
+        continue;
       if (r.thread_id != null && String(r.thread_id) !== threadKey) continue;
     }
     if (kind === 'day-plan' && !DAY_PLAN_TEXT_AWAITS.includes(awaiting)) continue;
@@ -203,7 +213,7 @@ export function dayPlanChoiceEvent(choice) {
   }
   if (choice === 'carry_all' || choice === 'carry_none')
     return { type: 'carry', payload: { choice } };
-  const a = choice.match(/^a(\d)_(\d)$/);
+  const a = choice.match(/^a(\d{1,3})_([0-3])$/);
   if (a) return { type: 'answer', payload: { item: Number(a[1]), option: Number(a[2]) } };
   return null;
 }

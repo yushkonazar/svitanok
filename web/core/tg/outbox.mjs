@@ -12,6 +12,7 @@
 
 import { recordTrackedMessage } from '../../kv-store.mjs';
 import { assistantHomeTarget } from './home.mjs';
+import { renderContextDelivery, recoverContextDeliveries } from '../reminders/context-store.mjs';
 import {
   splitMessage,
   nextAttemptAt,
@@ -185,11 +186,21 @@ export async function dropPendingEdits(env, chatId, messageId) {
 export async function drainOutbox(env, opts = {}) {
   const nowMs = opts.nowMs ?? Date.now();
   const sleep = opts.sleep ?? ((/** @type {number} */ ms) => new Promise((r) => setTimeout(r, ms)));
+  await recoverContextDeliveries(env, nowMs);
 
   // Завислий claim (ізолят умер посеред відправки): вичерпані спроби - failed
   // (інакше отруйний ряд крутився б pending↔sending вічно), решта - назад у
   // чергу зі спробою.
   const stuckCut = new Date(nowMs - STUCK_SENDING_MS).toISOString();
+  // A send with unknown external outcome must not be blindly replayed. Edits
+  // remain retryable; ordinary outbox traffic keeps its existing semantics.
+  await db(env)
+    .prepare(
+      `UPDATE outbox SET status='uncertain' WHERE status='sending' AND next_at<?
+    AND json_valid(payload_json) AND json_extract(payload_json,'$.delivery_safety')='at-most-once'`,
+    )
+    .bind(stuckCut)
+    .run();
   await db(env)
     .prepare(
       `UPDATE outbox SET status = 'failed', attempts = attempts + 1
@@ -236,11 +247,20 @@ export async function drainOutbox(env, opts = {}) {
     // обрив усього драйну з рядом, навічно завислим у 'sending'.
     const outcome = await sendRow(env, row).catch((/** @type {any} */ e) => {
       console.error(`outbox: відправка ${row.id} кинула виняток`, e?.message);
-      return { ok: false, retryAfterSec: null };
+      return {
+        ok: false,
+        retryAfterSec: null,
+        uncertain: row.payload_json.includes('"delivery_safety":"at-most-once"'),
+      };
     });
     if (outcome.ok) {
       await db(env).prepare(`UPDATE outbox SET status = 'sent' WHERE id = ?`).bind(row.id).run();
       sent += 1;
+      continue;
+    }
+    if ('uncertain' in outcome && outcome.uncertain) {
+      await db(env).prepare("UPDATE outbox SET status='uncertain' WHERE id=?").bind(row.id).run();
+      failed += 1;
       continue;
     }
     const attempts = row.attempts + 1;
@@ -304,6 +324,18 @@ async function sendRow(env, row) {
     console.error(`outbox: ряд ${row.id} з битим payload_json`);
     return { ok: false, retryAfterSec: null };
   }
+  const atMostOnce = payload.delivery_safety === 'at-most-once';
+  if (typeof payload.context_delivery_id === 'string') {
+    try {
+      payload = { ...payload, ...(await renderContextDelivery(env, payload.context_delivery_id)) };
+    } catch {
+      // No HTTP attempt yet: local rendering failure is retryable, not an
+      // ambiguous external send. Do not log the owner's task text.
+      return { ok: false, retryAfterSec: null };
+    }
+  }
+  delete payload.context_delivery_id;
+  delete payload.delivery_safety;
   // fallback_send - наш прапорець, не поле Bot API: зрізаємо до виклику.
   const fallbackSend = payload.fallback_send === true;
   delete payload.fallback_send;
@@ -384,7 +416,7 @@ async function sendRow(env, row) {
       retryAfterSec = null;
     }
   }
-  return { ok: false, retryAfterSec };
+  return { ok: false, retryAfterSec, uncertain: atMostOnce && res.status >= 500 };
 }
 
 /**

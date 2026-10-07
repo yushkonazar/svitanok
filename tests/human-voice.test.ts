@@ -12,6 +12,7 @@ import { workerButtons } from '../web/core/brain/worker-results.mjs';
 import { workerEnv } from './helpers/env.js';
 import { d1FromSqlite } from './helpers/d1.js';
 import { memoryKv } from './helpers/kv.js';
+import { ALL_MIGRATIONS } from './helpers/migrations.js';
 
 /** Env із живим токеном Google (Date.now(), не фіксована мітка - інакше ядро
  *  пішло б по новий токен у мережу і стаб віддав би йому не те). */
@@ -102,21 +103,6 @@ describe('посилання - у тексті, не голим URL', () => {
 
 describe('обсяг T2 - ДО слова', () => {
   const MIGRATIONS = ['0001_base.sql', '0002_assistant.sql', '0006_inbox_collections.sql'];
-  const ALL_MIGRATIONS = [
-    '0001_base.sql',
-    '0002_assistant.sql',
-    '0003_telemetry.sql',
-    '0004_ideas_travel.sql',
-    '0005_finance.sql',
-    '0006_inbox_collections.sql',
-    '0007_instructions_plans.sql',
-    '0008_fts.sql',
-    '0009_voice.sql',
-    '0010_reminders_address.sql',
-    '0011_ideas_number.sql',
-    '0028_mini_app_finance.sql',
-    '0029_finance_credit_limits.sql',
-  ];
 
   it('forget target=collection - скільки записів і в якій колекції', async () => {
     const d1 = d1FromSqlite(MIGRATIONS);
