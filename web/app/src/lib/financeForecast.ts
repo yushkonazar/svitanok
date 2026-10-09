@@ -86,6 +86,18 @@ export function financeForecast(f: Finance, days: number, nowMs: number) {
   });
   // Separate roots watching the same categories are alternative envelopes, not additive.
   const overlaps: string[] = [];
+  // Ancestor envelopes intentionally overlap. Parallel branches must not
+  // forecast the same purchases or goal contributions more than once.
+  enabled.forEach((a, i) =>
+    enabled.slice(i + 1).forEach((b) => {
+      if (a.purpose !== b.purpose || isInside(a, b) || isInside(b, a)) return;
+      const shared =
+        a.purpose === 'expense'
+          ? a.categories.some((c) => b.categories.includes(c))
+          : !a.goalId || !b.goalId || a.goalId === b.goalId;
+      if (shared) overlaps.push(a.category, b.category);
+    }),
+  );
   const groups: Array<{ plans: typeof plans; amount: number; categories: Set<string> }> = [];
   for (const plan of plans.filter((p) => p.purpose === 'expense')) {
     const matches = groups.filter((g) => plan.categories.some((c) => g.categories.has(c)));

@@ -75,8 +75,9 @@ export function ForecastPlan({
       </div>
       {!!result.overlaps.length && (
         <p className="renewal-inset text-sm mt-3">
-          Плани перетинаються за категоріями: {result.overlaps.join(', ')}. Зроби їх підпланами або
-          залиш один у прогнозі, щоб не рахувати ті самі витрати двічі.
+          Плани перетинаються за категоріями або цілями: {result.overlaps.join(', ')}. Уточни їхню
+          ієрархію, розділи категорії або залиш один паралельний ліміт у прогнозі, щоб не рахувати
+          ті самі витрати двічі.
         </p>
       )}
       {result.incomplete && !result.overlaps.length && (

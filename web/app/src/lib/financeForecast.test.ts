@@ -28,6 +28,27 @@ function data() {
   f.forecast = { incomes: [] };
   return f;
 }
+it('refuses overlapping parallel subplans while permitting their shared parent envelope', () => {
+  const f = data();
+  const budget = {
+    category: 'Їжа',
+    categories: ['продукти'],
+    purpose: 'expense' as const,
+    period: 'day' as const,
+    limitMinor: 10000,
+    shareBps: null,
+    incomeBaseMinor: null,
+    forecastEnabled: true,
+  };
+  f.budgets = [
+    { ...budget, id: 'parent', category: 'Основне' },
+    { ...budget, id: 'first', parentId: 'parent' },
+    { ...budget, id: 'second', parentId: 'parent', category: 'Контроль' },
+  ];
+  expect(financeForecast(f, 7, now).result).toBeNull();
+  f.budgets[2].forecastEnabled = false;
+  expect(financeForecast(f, 7, now).result).toBe(930000);
+});
 it('forecasts only remaining expenses, keeps past spending out of deductions, and avoids harmonic day allocation', () => {
   const f = data();
   f.budgets = [
