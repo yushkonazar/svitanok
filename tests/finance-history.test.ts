@@ -16,6 +16,7 @@ function setup() {
     '0031_finance_installment_overpayment.sql',
     '0032_finance_interest_method.sql',
     '0033_finance_history_and_links.sql',
+    '0035_finance_budget_planning.sql',
   ]);
   const env = workerEnv({ DB: d1.stub });
   let sequence = 0;
@@ -92,7 +93,7 @@ describe('finance history, actual settlements and linked transfers', () => {
       note: 'Фактичний розрахунок парку',
     });
     const paid = await readFinanceWorkspace(env, NOW);
-    expect(paid.accounts[0]!.balanceMinor).toBe(70000);
+    expect(paid.accounts.find((a) => a.id === 'cash')!.balanceMinor).toBe(70000);
     expect(paid.reserveMinor).toBe(0);
     expect(paid.taxiWeeks[0]).toMatchObject({
       actualSettlementMinor: -190000,
@@ -106,7 +107,7 @@ describe('finance history, actual settlements and linked transfers', () => {
       note: 'Уточнення',
     });
     const edited = await readFinanceWorkspace(env, NOW);
-    expect(edited.accounts[0]!.balanceMinor).toBe(80000);
+    expect(edited.accounts.find((a) => a.id === 'cash')!.balanceMinor).toBe(80000);
     expect(edited.settlements[0]).toMatchObject({
       expectedMinor: -110000,
       amountMinor: -180000,
@@ -201,14 +202,18 @@ describe('finance history, actual settlements and linked transfers', () => {
       amountMinor: 50000,
       movementKind: 'reserve',
     });
-    expect((await readFinanceWorkspace(env, NOW)).accounts[0]!.balanceMinor).toBe(400000);
+    expect(
+      (await readFinanceWorkspace(env, NOW)).accounts.find((a) => a.id === 'cash')!.balanceMinor,
+    ).toBe(400000);
     await send('goal-move', {
       goalId,
       accountId: 'cash',
       amountMinor: 70000,
       movementKind: 'external',
     });
-    expect((await readFinanceWorkspace(env, NOW)).accounts[0]!.balanceMinor).toBe(330000);
+    expect(
+      (await readFinanceWorkspace(env, NOW)).accounts.find((a) => a.id === 'cash')!.balanceMinor,
+    ).toBe(330000);
     await expect(
       send('goal-move', {
         goalId,
@@ -239,7 +244,9 @@ describe('finance history, actual settlements and linked transfers', () => {
       amountMinor: -20000,
       movementKind: 'external',
     });
-    expect((await readFinanceWorkspace(env, NOW)).accounts[0]!.balanceMinor).toBe(350000);
+    expect(
+      (await readFinanceWorkspace(env, NOW)).accounts.find((a) => a.id === 'cash')!.balanceMinor,
+    ).toBe(350000);
   });
   it('advances weekly and daily payments across months and DST without treating them as monthly', async () => {
     const { env, send } = setup();

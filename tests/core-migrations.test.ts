@@ -71,6 +71,7 @@ const EXPECTED_COLUMNS: Record<string, string[]> = {
     'categories_json',
     'updated_at',
     'credit_limits_json',
+    'forecast_json',
   ],
   finance_taxi_policies: [
     'id',
@@ -142,6 +143,11 @@ const EXPECTED_COLUMNS: Record<string, string[]> = {
     'share_bps',
     'income_base_minor',
     'created_at',
+    'parent_id',
+    'goal_id',
+    'sort_order',
+    'forecast_enabled',
+    'template_role',
   ],
   finance_payments: [
     'id',
@@ -535,7 +541,7 @@ const EXPECTED_INDEXES: Record<string, IndexSpec[]> = {
     { cols: ['bank_tx_id'], unique: true },
   ],
   finance_goal_moves: [{ cols: ['goal_id'] }, { cols: ['bank_tx_id'], unique: true }],
-  finance_budgets: [{ cols: ['category', 'period'], unique: true }],
+  finance_budgets: [{ cols: ['category', 'period'], unique: true }, { cols: ['parent_id'] }],
   facts: [
     { cols: ['kind', 'key'], unique: true },
     { cols: ['expires_at'] },
@@ -629,7 +635,7 @@ const columnsOf = (table: string): { name: string; pk: number }[] =>
   }[];
 
 describe('міграції D1 — файли', () => {
-  it('тридцять чотири файли 0001–0034, нумерація без дірок', () => {
+  it('тридцять п’ять файлів 0001–0035, нумерація без дірок', () => {
     expect(files.map((f) => f.slice(0, 4))).toEqual([
       '0001',
       '0002',
@@ -665,6 +671,7 @@ describe('міграції D1 — файли', () => {
       '0032',
       '0033',
       '0034',
+      '0035',
     ]);
   });
 });
