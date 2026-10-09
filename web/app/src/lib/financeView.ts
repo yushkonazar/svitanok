@@ -1,12 +1,7 @@
 import type { Finance } from '../api/finance-schema.ts';
+import { budgetRows, orderedBudgets } from './budgetPlanning.ts';
 import { interestDebtPayment, fixedDebtPayment } from '../../../core/finance/payments.mjs';
-import {
-  share,
-  sumMoney,
-  kyivParts,
-  kyivInstant,
-  shiftDate,
-} from '../../../core/finance/planning.mjs';
+import { sumMoney, kyivParts, kyivInstant, shiftDate } from '../../../core/finance/planning.mjs';
 
 export const moneyLabel = (minor: number, currency = 'UAH') =>
   ((minor || 0) / 100).toLocaleString('uk-UA', {
@@ -37,45 +32,7 @@ export function financeView(f: Finance, days: number, nowMs = Date.now()) {
     f.accounts.some((a) => a.currency === 'UAH' && a.balanceMinor === null) ||
     f.taxiWeeks.some((w) => !w.settled && !w.complete);
   const unclassified = txs.filter((t) => t.kind === 'unclassified');
-  const budgets = f.budgets.map((b) => {
-    const dow = (new Date(`${today}T00:00:00Z`).getUTCDay() + 6) % 7;
-    const startDate =
-      b.period === 'day'
-        ? today
-        : b.period === 'week'
-          ? shiftDate(today, -dow)
-          : `${today.slice(0, 7)}-01`;
-    const start = kyivInstant(startDate, 0);
-    const categories = b.categories.length ? b.categories : [b.category];
-    const spent =
-      b.purpose === 'saving'
-        ? sumMoney(
-            f.goalMoves
-              .filter((m) => Date.parse(m.at) >= start && Date.parse(m.at) <= nowMs)
-              .map((m) => m.amountMinor),
-          )
-        : -sumMoney(
-            f.transactions
-              .filter(
-                (t) =>
-                  t.kind === 'expense' &&
-                  categories.includes(t.category) &&
-                  t.amountUah != null &&
-                  Date.parse(t.at) >= start &&
-                  Date.parse(t.at) <= nowMs,
-              )
-              .map((t) => t.amountUah!),
-          );
-    const limit = b.limitMinor ?? share(b.incomeBaseMinor ?? 0, b.shareBps ?? 0);
-    return {
-      ...b,
-      spent,
-      limit,
-      left: limit - spent,
-      progress:
-        limit === 0 ? (spent > 0 ? 100 : 0) : Math.min(100, Math.max(0, (spent / limit) * 100)),
-    };
-  });
+  const budgets = orderedBudgets(budgetRows(f, nowMs));
   const chart = Array.from({ length: days }, (_, i) => {
     const date = shiftDate(today, i - days + 1);
     const expenses = txs.filter(

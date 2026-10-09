@@ -34,6 +34,22 @@ import { kyivParts } from '../../../core/finance/planning.mjs';
 function authHeaders(): Record<string, string> {
   return inTelegram() && tg ? { 'X-Telegram-Init-Data': tg.initData } : {};
 }
+export async function fetchCurrencyHistory(
+  code: string,
+): Promise<Array<{ date: string; value: number }> | null> {
+  if (!inTelegram()) return null;
+  const response = await fetch(`/api/currency/history?code=${encodeURIComponent(code)}`, {
+    headers: authHeaders(),
+  });
+  throwIfSessionExpired(response);
+  if (!response.ok) throw new Error('Історія НБУ тимчасово недоступна');
+  const data = await response.json();
+  if (!Array.isArray(data.points)) throw new Error('Неповні дані історії');
+  return data.points.filter(
+    (p: { date: string; value: number }) =>
+      typeof p?.date === 'string' && Number.isFinite(p?.value) && p.value > 0,
+  );
+}
 export async function fetchNewsSnapshot() {
   if (!inTelegram()) return null;
   const res = await fetch('/api/news', { headers: authHeaders() });
@@ -107,7 +123,7 @@ export async function fetchFinanceReport(from: string, to: string) {
 export async function postFinance(command: FinanceCommand) {
   if (!inTelegram()) {
     writeFinanceDemo(command);
-    return;
+    return { finance: readFinanceDemo(), demo: true };
   }
   const res = await fetch('/api/finance', {
     method: 'POST',
@@ -123,6 +139,7 @@ export async function postFinance(command: FinanceCommand) {
         : 'Не вдалося зберегти операцію',
     );
   }
+  return { finance: financeSchema.parse(await res.json()), demo: false };
 }
 
 /**

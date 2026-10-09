@@ -15,6 +15,7 @@ import { moneyLabel } from '../../lib/financeView.ts';
 import { DebtSetup } from './DebtSetup.tsx';
 import { debtSetup } from '../../lib/debtSetup.ts';
 import { financeCategoryLabel } from '../../../../core/finance/categories.mjs';
+import { bankPaymentAmount } from '../../../../core/finance/payment-link.mjs';
 import {
   PAYMENT_KIND_LABELS,
   isDebtKind,
@@ -242,6 +243,7 @@ export function FinanceForm({
   const [refreshingBank, setRefreshingBank] = useState(false);
   const [bankRefreshMessage, setBankRefreshMessage] = useState('');
   const [bankRefreshError, setBankRefreshError] = useState('');
+  const [paymentSearch, setPaymentSearch] = useState('');
   const bankTransfers = f.transactions.filter(
     (t) =>
       t.accountId === v.bankRefreshAccountId &&
@@ -336,7 +338,16 @@ export function FinanceForm({
     if (payment?.interestMethod && request.kind === 'payment-paid') {
       const amount =
         v.paymentMode === 'bank'
-          ? -(f.transactions.find((t) => t.id === v.bankTransactionId)?.amountMinor ?? 0)
+          ? -(
+              bankPaymentAmount(
+                f.transactions.find((t) => t.id === v.bankTransactionId) ?? {
+                  bank: false,
+                  amountUah: null,
+                  amountMinor: 0,
+                  currency: 'UAH',
+                },
+              ) ?? 0
+            )
           : parseMoney(v.amount);
       suggestedPayment = interestDebtPayment(payment, amount);
     }
@@ -664,7 +675,7 @@ export function FinanceForm({
         if (v.paymentMode === 'bank' && !bank) throw new Error('Обери банківську операцію');
         Object.assign(p, {
           paymentId: request.id,
-          amountMinor: bank ? -bank.amountMinor : inputMoney('amount'),
+          amountMinor: bank ? -(bankPaymentAmount(bank) ?? 0) : inputMoney('amount'),
           accountId: v.accountId,
           transactionId: bank?.id,
           principalMinor: v.principal ? inputMoney('principal') : undefined,
@@ -1361,6 +1372,15 @@ export function FinanceForm({
               ])}
               {v.paymentMode === 'bank' ? (
                 <>
+                  <label className="renewal-field">
+                    Знайти оплату
+                    <input
+                      type="search"
+                      value={paymentSearch}
+                      onChange={(e) => setPaymentSearch(e.target.value)}
+                      placeholder="Назва продавця, сума або дата"
+                    />
+                  </label>
                   {select('bankTransactionId', 'Банківська операція', [
                     ['', 'Обери завершений платіж'],
                     ...f.transactions
@@ -1369,17 +1389,64 @@ export function FinanceForm({
                           t.bank &&
                           !t.bankHold &&
                           !t.reference &&
-                          t.currency === 'UAH' &&
-                          t.amountMinor < 0 &&
-                          ['expense', 'unclassified'].includes(t.kind),
+                          (bankPaymentAmount(t) ?? 0) < 0 &&
+                          ['expense', 'unclassified', 'transfer'].includes(t.kind) &&
+                          (t.id === v.bankTransactionId ||
+                            `${t.description} ${-(bankPaymentAmount(t) ?? 0) / 100} ${kyivParts(Date.parse(t.at)).date}`
+                              .toLocaleLowerCase('uk-UA')
+                              .includes(paymentSearch.toLocaleLowerCase('uk-UA'))),
                       )
                       .map((t): [string, string] => [
                         t.id,
-                        `${t.description} · ${moneyLabel(-t.amountMinor)} · ${t.at.slice(0, 10)}`,
+                        `${t.description} · ${moneyLabel(-(bankPaymentAmount(t) ?? 0))} · ${kyivParts(Date.parse(t.at)).date}${t.currency !== 'UAH' ? ` (${moneyLabel(-t.amountMinor, t.currency)})` : ''}`,
                       ]),
                   ])}
+                  {select(
+                    'bankRefreshAccountId',
+                    'Картка для оновлення виписки',
+                    f.accounts.filter((a) => a.kind === 'mono').map((a) => [a.id, a.name]),
+                  )}
+                  <button
+                    type="button"
+                    className="renewal-secondary"
+                    disabled={refreshingBank || pending || !v.bankRefreshAccountId}
+                    onClick={refreshBankList}
+                  >
+                    {refreshingBank ? 'Звіряю з банком…' : 'Оновити список Monobank ↻'}
+                  </button>
+                  {bankRefreshMessage && (
+                    <p className="renewal-muted" role="status">
+                      {bankRefreshMessage}
+                    </p>
+                  )}
+                  {bankRefreshError && (
+                    <p className="text-neg text-sm" role="alert">
+                      {bankRefreshError}
+                    </p>
+                  )}
+                  {f.transactions.some((t) => t.bankHold && (bankPaymentAmount(t) ?? 0) < 0) && (
+                    <details className="renewal-inset">
+                      <summary className="renewal-link">Операції, які ще підтверджує банк</summary>
+                      {f.transactions
+                        .filter(
+                          (t) => t.bankHold && (bankPaymentAmount(t) ?? 0) < 0 && !t.reference,
+                        )
+                        .map((t) => (
+                          <p className="renewal-muted" key={t.id}>
+                            {t.description} · {moneyLabel(-(bankPaymentAmount(t) ?? 0))} · в
+                            очікуванні
+                          </p>
+                        ))}
+                      <p className="renewal-chart-note">
+                        Після підтвердження банком з’являться у списку. Кнопка вище звіряє їхній
+                        стан; повторного списання немає.
+                      </p>
+                    </details>
+                  )}
                   <p className="renewal-muted">
-                    Пов’яжемо наявну операцію. Друге списання не створюється.
+                    Пов’яжемо наявну операцію. Друге списання не створюється. Для іноземної оплати
+                    використовується фактичне списання з гривневої картки. Уже пов’язані операції
+                    недоступні для повторної оплати.
                   </p>
                 </>
               ) : (

@@ -7,7 +7,10 @@ import { financeView, moneyLabel } from '../../lib/financeView.ts';
 import { sumMoney, calculateTaxiWeek } from '../../../../core/finance/planning.mjs';
 import { LoadingSkeleton, ErrorState } from '../ui/states.tsx';
 import { SessionExpired } from '../ui/SessionExpired.tsx';
-import { ObservationChart } from '../charts/ObservationChart.tsx';
+import { BudgetPlan } from './BudgetPlan.tsx';
+import { ForecastPlan } from './ForecastPlan.tsx';
+import { AccountsPanel } from './AccountsPanel.tsx';
+import { SpendingRhythm } from './SpendingRhythm.tsx';
 import { FinanceForm, type FinanceFormRequest } from './FinanceForm.tsx';
 import { PageHeading } from '../ui/PageHeading.tsx';
 import { TaxiHistory } from './TaxiHistory.tsx';
@@ -16,7 +19,6 @@ import { PaymentDetail } from './PaymentDetail.tsx';
 import { PaymentCard } from './PaymentCard.tsx';
 import { FinanceExplanation } from './FinanceExplanation.tsx';
 import { PaymentCalendar } from './PaymentCalendar.tsx';
-import { paymentSchedule } from '../../lib/paymentSchedule.ts';
 import { kyivParts, shiftDate } from '../../../../core/finance/planning.mjs';
 import { resetFinanceDemo } from '../../api/finance-demo.ts';
 
@@ -73,9 +75,11 @@ export function FinanceScreen() {
     form ??
     (params.get('action') === 'expense'
       ? { kind: 'expense' as const }
-      : params.get('action') === 'settings'
-        ? { kind: 'settings' as const }
-        : null);
+      : params.get('action') === 'personal'
+        ? { kind: 'taxi-personal' as const }
+        : params.get('action') === 'settings'
+          ? { kind: 'settings' as const }
+          : null);
   const nowMs = useTick(30_000);
   if (isSessionExpired(error)) return <SessionExpired />;
   if (isLoading) return <LoadingSkeleton />;
@@ -105,23 +109,7 @@ export function FinanceScreen() {
       }}
     />
   );
-  const today = kyivParts(nowMs).date,
-    until = shiftDate(today, days - 1);
-  const unplanned = f.payments.some(
-    (p) =>
-      p.status === 'active' &&
-      p.installmentsLeft === 0 &&
-      (p.remainingMinor ?? 0) + (p.overpaymentRemainingMinor ?? 0) > 0,
-  );
-  const obligations = sumMoney(
-    f.payments
-      .filter((p) => p.status === 'active')
-      .flatMap((p) =>
-        paymentSchedule(p, 1200)
-          .filter((r) => r.date <= until)
-          .map((r) => r.payment),
-      ),
-  );
+  const today = kyivParts(nowMs).date;
   if (reportOpen) return <FinanceReport onBack={() => setReportOpen(false)} />;
   if (detail)
     return (
@@ -485,94 +473,15 @@ export function FinanceScreen() {
         )}
         {!view.txs.length && <p className="renewal-muted">За цей період операцій немає.</p>}
       </section>
-      <section className="renewal-card">
-        <div className="renewal-section-head">
-          <h2 className="text-lg font-bold">План витрат</h2>
-          <button className="renewal-link" onClick={() => setForm({ kind: 'budget' })}>
-            Бюджет +
-          </button>
-        </div>
-        {!view.budgets.length && (
-          <p className="renewal-muted">Додай денний, тижневий або місячний ліміт за категоріями.</p>
-        )}
-        {view.budgets.map((b) => (
-          <div key={b.id} className="mb-5">
-            <div className="renewal-section-head mb-1">
-              <b className="text-sm">{b.category}</b>
-              <button
-                className="renewal-link"
-                onClick={() => setForm({ kind: 'budget', id: b.id })}
-              >
-                Змінити
-              </button>
-            </div>
-            <p className="renewal-muted">
-              {moneyLabel(b.spent)} із {moneyLabel(b.limit)} / {PERIOD[b.period]}
-              {b.shareBps != null ? ` · ${b.shareBps / 100}% планового доходу` : ''}
-            </p>
-            <Progress percent={b.progress} />
-            <p className={`mt-2 text-xs ${b.left < 0 ? 'text-neg' : 'text-tx2'}`}>
-              {b.left < 0
-                ? `Перевищення ${moneyLabel(-b.left)}`
-                : `Залишилось ${moneyLabel(b.left)}`}
-            </p>
-          </div>
-        ))}
-        <button className="renewal-secondary" onClick={() => setForm({ kind: 'template' })}>
-          Додати план 50 / 30 / 20
-        </button>
-      </section>
-
-      <section className="renewal-card">
-        <div className="renewal-section-head">
-          <h2 className="text-lg font-semibold">План на {days === 7 ? 'тиждень' : 'місяць'}</h2>
-          <span className="renewal-pill">
-            {f.settings.incomePeriod === 'week' ? 'Тижнева каса' : 'Місячна каса'}
-          </span>
-        </div>
-        <p className="renewal-muted">
-          Після платежів до{' '}
-          {new Date(until + 'T12:00:00Z').toLocaleDateString('uk-UA', {
-            day: 'numeric',
-            month: 'long',
-          })}
-        </p>
-        <button
-          className="renewal-link mt-3"
-          onClick={() => {
-            overviewScroll.current = window.scrollY;
-            setCalendarOpen(true);
-          }}
-        >
-          Календар платежів ↗
-        </button>
-        <div className="renewal-big mt-3">
-          {view.unknownBalances || unplanned ? '—' : moneyLabel(view.available - obligations)}
-        </div>
-        {unplanned && (
-          <p className="renewal-inset renewal-muted mt-3">
-            Є борг із завершеним графіком. Уточни кількість майбутніх платежів, щоб план показував
-            повний залишок після зобов’язань.
-          </p>
-        )}
-        {[
-          ['Особисті витрати', view.expense],
-          ['Найближчі зобов’язання', obligations],
-          ['Вже виділено на цілі', view.allocated],
-        ].map(([label, value]) => (
-          <div key={String(label)}>
-            <div className="renewal-plan-lane">
-              <span>{label}</span>
-              <strong>{moneyLabel(Number(value))}</strong>
-            </div>
-            <Progress percent={view.owned > 0 ? (Number(value) / view.owned) * 100 : 0} />
-          </div>
-        ))}
-        <p className="renewal-chart-note mt-4">
-          Платежі — план, а не списання. Резерв парку та внески на цілі вже враховані у вільних
-          коштах. Прострочені платежі теж включені.
-        </p>
-      </section>
+      <BudgetPlan finance={f} nowMs={nowMs} />
+      <ForecastPlan
+        finance={f}
+        nowMs={nowMs}
+        onCalendar={() => {
+          overviewScroll.current = window.scrollY;
+          setCalendarOpen(true);
+        }}
+      />
 
       <section className="renewal-card">
         <div className="renewal-section-head">
@@ -635,83 +544,19 @@ export function FinanceScreen() {
           );
         })}
         <p className="renewal-muted">
-          На рахунках зарезервовано {moneyLabel(view.allocated)}. Фактичні внески в банки вже
-          зменшили відповідні залишки й повторно з вільної суми не віднімаються.
+          Резерв на власних рахунках: {moneyLabel(view.allocated)}. Окремо переказано на цілі:{' '}
+          {moneyLabel(
+            sumMoney(
+              f.goalMoves.filter((m) => m.movementKind === 'external').map((m) => m.amountMinor),
+            ),
+          )}
+          . Переказані внески входять у прогрес цілей; вони вже зменшили залишок рахунку й повторно
+          з вільної суми не віднімаються.
         </p>
       </section>
 
-      <details className="renewal-card renewal-disclosure">
-        <summary className="renewal-section-head cursor-pointer">
-          <h2 className="text-lg font-bold">Рахунки та інструменти</h2>
-          <span className="renewal-muted">{f.accounts.length} рахунки</span>
-        </summary>
-        <div className="renewal-section-head">
-          <h2 className="text-lg font-bold">Рахунки й залишки</h2>
-          <button className="renewal-link" onClick={() => setForm({ kind: 'account' })}>
-            Додати +
-          </button>
-        </div>
-        {f.accounts.map((a) => (
-          <div className="renewal-list-row" key={a.id}>
-            <span>
-              {a.name}
-              <small>
-                {a.kind === 'mono'
-                  ? 'Дані Monobank'
-                  : a.kind === 'cash'
-                    ? 'Готівка'
-                    : 'Ручний облік'}
-                {a.asOf ? ` · ${new Date(a.asOf).toLocaleDateString('uk-UA')}` : ''}
-              </small>
-              {a.kind === 'mono' && (
-                <small>
-                  Доступно в банку:{' '}
-                  {a.availableMinor == null ? '—' : moneyLabel(a.availableMinor, a.currency)} ·
-                  Кредитний ліміт:{' '}
-                  {a.creditLimitMinor == null
-                    ? 'не визначено'
-                    : moneyLabel(a.creditLimitMinor, a.currency)}
-                  <button
-                    className="renewal-link block mt-2"
-                    onClick={() => setForm({ kind: 'credit-limit', id: a.id })}
-                  >
-                    Налаштувати кредитний ліміт
-                  </button>
-                </small>
-              )}
-            </span>
-            <b className="font-mono">
-              {a.balanceMinor == null
-                ? a.kind === 'mono' && a.creditLimitMinor == null
-                  ? 'Вкажи ліміт'
-                  : 'Немає залишку'
-                : moneyLabel(a.balanceMinor, a.currency)}
-            </b>
-          </div>
-        ))}
-        <div className="mt-4 flex gap-3">
-          <button className="renewal-secondary" onClick={() => setForm({ kind: 'transfer' })}>
-            Переказ
-          </button>
-          <button
-            className="renewal-secondary"
-            onClick={() => setForm({ kind: 'account-balance' })}
-          >
-            Вказати поточний залишок
-          </button>
-        </div>
-      </details>
-
-      <details className="renewal-card renewal-disclosure">
-        <summary className="text-lg font-bold cursor-pointer">Ритм особистих витрат</summary>
-        <ObservationChart
-          key={days}
-          label="Особисті витрати за день"
-          points={view.chart}
-          unit="₴"
-        />
-        <p className="renewal-muted">Перекази, корекції та готівка парку не входять у витрати.</p>
-      </details>
+      <AccountsPanel finance={f} onAction={setForm} />
+      <SpendingRhythm finance={f} nowMs={nowMs} />
       <section className="renewal-card">
         <h2 className="text-lg font-bold">Історія фінансів</h2>
         <p className="renewal-muted mt-2 mb-4">

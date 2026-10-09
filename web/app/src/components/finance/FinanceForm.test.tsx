@@ -33,6 +33,52 @@ function open(request: FinanceFormRequest, finance = readFinanceDemo()) {
   );
   return { invalidate, close };
 }
+it('shows international subscriptions and unlinked transfer debits, submitting actual UAH and offering a statement refresh', async () => {
+  const f = readFinanceDemo(),
+    pay = f.payments[0]!;
+  f.transactions = [
+    {
+      id: 'foreign',
+      at: new Date().toISOString(),
+      bank: true,
+      bankHold: false,
+      reference: null,
+      amountMinor: -699,
+      amountUah: -29070,
+      currency: 'USD',
+      description: 'Foreign subscription',
+      category: 'цифрові сервіси',
+      kind: 'expense',
+      accountId: 'mono:sample',
+    },
+    {
+      id: 'transfer',
+      at: new Date().toISOString(),
+      bank: true,
+      bankHold: false,
+      reference: null,
+      amountMinor: -7000,
+      amountUah: -7000,
+      currency: 'UAH',
+      description: 'Loan transfer',
+      category: 'фінанси',
+      kind: 'transfer',
+      accountId: 'mono:sample',
+    },
+  ];
+  open({ kind: 'payment-paid', id: pay.id }, f);
+  fireEvent.change(screen.getByLabelText('Як сплачено?'), { target: { value: 'bank' } });
+  expect(screen.getByRole('option', { name: /Foreign subscription.*290,70/ })).toBeInTheDocument();
+  expect(screen.getByRole('option', { name: /Loan transfer/ })).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Оновити список Monobank ↻' })).toBeInTheDocument();
+  fireEvent.change(screen.getByLabelText('Банківська операція'), { target: { value: 'foreign' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Підтвердити й зберегти' }));
+  await waitFor(() => expect(vi.mocked(postFinance)).toHaveBeenCalled());
+  expect(vi.mocked(postFinance).mock.calls[0][0]).toMatchObject({
+    type: 'payment-paid',
+    payload: { transactionId: 'foreign', amountMinor: 29070 },
+  });
+});
 it('fills payment, total and overpayment from the selected annual rate, amount and term', async () => {
   const { close } = open({ kind: 'payment' });
   fireEvent.change(screen.getByLabelText('Тип'), { target: { value: 'loan' } });

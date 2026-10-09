@@ -11,6 +11,7 @@ function setup() {
     '0005_finance.sql',
     '0028_mini_app_finance.sql',
     '0033_finance_history_and_links.sql',
+    '0035_finance_budget_planning.sql',
     '0029_finance_credit_limits.sql',
   ]);
   return { d1, env: workerEnv({ DB: d1.stub }) };

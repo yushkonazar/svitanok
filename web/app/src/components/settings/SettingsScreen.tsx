@@ -1,4 +1,5 @@
 import { AdaptivePreferences } from '../checkin/AdaptivePreferences.tsx';
+import { version as appVersion } from '../../../package.json';
 import { NEWS_SOURCE_CATALOG, DEFAULT_NEWS_SOURCES } from '../../../../core/brief/news-catalog.mjs';
 import { PageHeading } from '../ui/PageHeading.tsx';
 import { usePresentation, savePresentation } from '../../lib/presentation.ts';
@@ -234,8 +235,8 @@ export function SettingsScreen() {
             { key: 'haptics', title: 'Тактильний відгук', hint: 'Вібрації в Telegram' },
             {
               key: 'learning',
-              title: 'Навчання на «Сьогодні»',
-              hint: 'План і таймер зосередження',
+              title: 'Фокус-таймер на «Сьогодні»',
+              hint: 'Власна справа та 15–60 хвилин зосередження',
             },
             {
               key: 'newsPreview',
@@ -482,7 +483,8 @@ export function SettingsScreen() {
       )}
 
       <div className="pt-1 text-center font-mono text-[10px] font-medium text-tx3">
-        Світанок{!inTelegram() && ' · демо-режим'}
+        Світанок · {appVersion}
+        {!inTelegram() && ' · демо-режим'}
       </div>
     </div>
   );

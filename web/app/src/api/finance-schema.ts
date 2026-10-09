@@ -74,6 +74,11 @@ export const financeBudgetSchema = z.object({
   limitMinor: money.nullable(),
   shareBps: z.number().int().nullable(),
   incomeBaseMinor: money.nullable(),
+  parentId: z.string().nullable().optional(),
+  goalId: z.string().nullable().optional(),
+  sortOrder: z.number().int().optional(),
+  forecastEnabled: z.boolean().optional(),
+  templateRole: z.enum(['needs', 'wants', 'saving']).nullable().optional(),
 });
 export const financePaymentSchema = z.object({
   id: z.string(),
@@ -147,6 +152,19 @@ export const financeSchema = z.object({
     }),
   ),
   reserveMinor: money,
+  forecast: z
+    .object({
+      incomes: z.array(
+        z.object({
+          id: z.string(),
+          name: z.string(),
+          amountMinor: money,
+          nextDate: z.string(),
+          recurrence: z.enum(['once', 'week', 'month']),
+        }),
+      ),
+    })
+    .default({ incomes: [] }),
   goals: z.array(financeGoalSchema),
   goalMoves: z.array(
     z.object({

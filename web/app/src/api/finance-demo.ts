@@ -1,5 +1,6 @@
 import { financeSchema, type Finance, type FinanceCommand } from './finance-schema.ts';
 import { financeCategories } from '../../../core/finance/categories.mjs';
+import { bankPaymentAmount } from '../../../core/finance/payment-link.mjs';
 import { fixedDebtPayment, interestDebtPayment } from '../../../core/finance/payments.mjs';
 import {
   calculateTaxiWeek,
@@ -124,6 +125,7 @@ function seed(): Finance {
     taxiWeeks: [],
     settlements: [],
     reserveMinor: 0,
+    forecast: { incomes: [] },
     goals: [
       {
         id: 'laptop',
@@ -245,6 +247,14 @@ export function readFinanceDemo(): Finance {
       memory = seed();
     }
   }
+  const primary = memory.budgets.some((b) =>
+    ['Основні витрати', 'Бажання', 'Заощадження'].includes(b.category),
+  );
+  memory.budgets.forEach((b) => {
+    if (b.forecastEnabled == null)
+      b.forecastEnabled =
+        !primary || ['Основні витрати', 'Бажання', 'Заощадження'].includes(b.category);
+  });
   return structuredClone(rebuild(memory));
 }
 export function resetFinanceDemo() {
@@ -568,6 +578,27 @@ export function writeFinanceDemo(command: FinanceCommand) {
         tx(-amount, 'transfer', accountId!, ':goal', `goal:${p.goalId}`);
       break;
     }
+    case 'budget-remove': {
+      const ids = new Set([str('budgetId')]);
+      for (let i = 0; i < f.budgets.length; i++)
+        f.budgets.forEach((b) => {
+          if (b.parentId && ids.has(b.parentId)) ids.add(b.id);
+        });
+      f.budgets = f.budgets.filter((b) => !ids.has(b.id));
+      break;
+    }
+    case 'budget-reorder': {
+      const ids = p.ids as string[];
+      if (ids.length !== f.budgets.length || new Set(ids).size !== ids.length)
+        throw new Error('Онови список планів');
+      f.budgets.forEach((b) => {
+        b.sortOrder = ids.indexOf(b.id);
+      });
+      break;
+    }
+    case 'forecast-settings':
+      f.forecast = { incomes: p.incomes as Finance['forecast']['incomes'] };
+      break;
     case 'budget': {
       const b = {
         id: str('budgetId') || id,
@@ -578,16 +609,39 @@ export function writeFinanceDemo(command: FinanceCommand) {
         limitMinor: p.limitMinor == null ? null : num('limitMinor'),
         shareBps: p.shareBps == null ? null : num('shareBps'),
         incomeBaseMinor: p.incomeBaseMinor == null ? null : num('incomeBaseMinor'),
+        parentId: p.parentId ? str('parentId') : null,
+        goalId: p.goalId ? str('goalId') : null,
+        sortOrder: f.budgets.find((b) => b.id === str('budgetId'))?.sortOrder ?? f.budgets.length,
+        forecastEnabled: p.forecastEnabled === true,
+        templateRole: f.budgets.find((b) => b.id === str('budgetId'))?.templateRole ?? null,
       };
       if (
         f.budgets.some((r) => r.category === b.category && r.period === b.period && r.id !== b.id)
       )
         throw new Error('Такий бюджет уже є');
+      const ancestors = new Set([b.id]);
+      let parent = f.budgets.find((r) => r.id === b.parentId);
+      while (parent) {
+        if (ancestors.has(parent.id)) throw new Error('План не може бути частиною самого себе');
+        ancestors.add(parent.id);
+        parent = f.budgets.find((r) => r.id === parent?.parentId);
+      }
       f.budgets = [...f.budgets.filter((r) => r.id !== b.id), b];
       break;
     }
     case 'budget-template': {
-      if (f.budgets.some((b) => ['Основні витрати', 'Бажання', 'Заощадження'].includes(b.category)))
+      const roles = ['needs', 'wants', 'saving'] as const;
+      const shares = (p.shares ?? [5000, 3000, 2000]) as number[];
+      if (
+        shares.length !== 3 ||
+        shares.some((s) => !Number.isInteger(s) || s < 0 || s > 10000) ||
+        shares.reduce((a, b) => a + b, 0) !== 10000
+      )
+        throw new Error('Частки мають давати 100%');
+      if (
+        f.budgets.some((b) => ['Основні витрати', 'Бажання', 'Заощадження'].includes(b.category)) &&
+        p.updateExisting !== true
+      )
         throw new Error('Шаблон уже є. Відредагуй бюджети.');
       const needs = [
         'продукти',
@@ -603,7 +657,16 @@ export function writeFinanceDemo(command: FinanceCommand) {
         ['Основні витрати', 5000],
         ['Бажання', 3000],
         ['Заощадження', 2000],
-      ].forEach(([name, bps], i) =>
+      ].forEach(([name], i) => {
+        const previous = f.budgets.find(
+          (b) => (b.templateRole === roles[i] || b.category === name) && b.period === 'month',
+        );
+        if (previous) {
+          previous.limitMinor = null;
+          previous.shareBps = shares[i];
+          previous.incomeBaseMinor = num('incomeBaseMinor');
+          return;
+        }
         f.budgets.push({
           id: `${id}:${i}`,
           category: String(name),
@@ -620,10 +683,32 @@ export function writeFinanceDemo(command: FinanceCommand) {
           purpose: i === 2 ? 'saving' : 'expense',
           period: 'month',
           limitMinor: null,
-          shareBps: Number(bps),
+          shareBps: shares[i],
           incomeBaseMinor: num('incomeBaseMinor'),
-        }),
-      );
+          forecastEnabled: true,
+          templateRole: roles[i],
+          sortOrder: f.budgets.length,
+        });
+      });
+      for (const budget of f.budgets.filter(
+        (b) =>
+          !b.parentId &&
+          !b.templateRole &&
+          !['Основні витрати', 'Бажання', 'Заощадження'].includes(b.category),
+      )) {
+        const root = f.budgets.find(
+          (b) =>
+            (!!b.templateRole ||
+              ['Основні витрати', 'Бажання', 'Заощадження'].includes(b.category)) &&
+            b.purpose === budget.purpose &&
+            (b.purpose === 'saving' ||
+              (budget.categories.length > 0 &&
+                budget.categories.every((c) => b.categories.includes(c)))),
+        );
+        if (!root) continue;
+        if (budget.limitMinor != null) budget.parentId = root.id;
+        else budget.forecastEnabled = false;
+      }
       break;
     }
     case 'payment': {
@@ -730,8 +815,7 @@ export function writeFinanceDemo(command: FinanceCommand) {
           !bankTx.bank ||
           bankTx.bankHold ||
           bankTx.reference ||
-          bankTx.currency !== 'UAH' ||
-          bankTx.amountMinor !== -amount)
+          bankPaymentAmount(bankTx) !== -amount)
       )
         throw new Error('Обери непов’язаний завершений платіж');
       if (!bankTx) tx(-amount, 'expense', str('accountId'), ':payment', pay.id);

@@ -19,6 +19,7 @@ function setup() {
     '0031_finance_installment_overpayment.sql',
     '0032_finance_interest_method.sql',
     '0033_finance_history_and_links.sql',
+    '0035_finance_budget_planning.sql',
   ]);
   const originalBatch = d1.stub.batch;
   d1.stub.batch = async (statements) => {
@@ -34,6 +35,149 @@ function setup() {
   };
   return { d1, env: workerEnv({ DB: d1.stub }) };
 }
+it('links an international card subscription using the UAH debit, not the merchant currency; retry is idempotent', async () => {
+  const { env, d1 } = setup();
+  await executeFinanceCommand(
+    env,
+    {
+      id: 'foreign-sub',
+      version: 0,
+      type: 'payment',
+      payload: {
+        name: 'Foreign service',
+        kind: 'subscription',
+        amountMinor: 29070,
+        nextDate: '2026-10-08',
+        anchorDay: 8,
+        recurrence: 'month',
+        category: 'цифрові сервіси',
+      },
+    },
+    NOW,
+  );
+  d1.db
+    .prepare(
+      'INSERT INTO transactions(id,at,amount,currency,amount_uah,description,category,flags_json,raw_json) VALUES(?,?,?,?,?,?,?,?,?)',
+    )
+    .run(
+      'foreign-tx',
+      '2026-10-08T10:00:00Z',
+      -699,
+      'USD',
+      -29070,
+      'Foreign service',
+      'перекази й готівка',
+      '[]',
+      JSON.stringify({ account: 'mono-1', hold: false, financeKind: 'transfer' }),
+    );
+  const cmd = {
+    id: 'foreign-link',
+    version: 1,
+    type: 'payment-paid',
+    payload: { paymentId: 'foreign-sub', transactionId: 'foreign-tx', amountMinor: 29070 },
+  };
+  await executeFinanceCommand(env, cmd, NOW);
+  await executeFinanceCommand(env, cmd, NOW);
+  const f = await readFinanceWorkspace(env, NOW);
+  expect(f.transactions).toHaveLength(1);
+  expect(f.transactions[0]).toMatchObject({
+    kind: 'expense',
+    reference: 'foreign-sub',
+    currency: 'USD',
+    amountMinor: -699,
+    amountUah: -29070,
+  });
+  expect(f.payments[0]!.nextDate).toBe('2026-11-08');
+  await expect(
+    executeFinanceCommand(env, { ...cmd, id: 'link-again', version: 2 }, NOW),
+  ).rejects.toThrow(/непов’язаний/);
+});
+it('persists budget hierarchy, rejects cycles, reorders and removes planning rows without altering ledger history', async () => {
+  const { env } = setup();
+  const base = {
+    category: 'Основне',
+    categories: ['продукти'],
+    purpose: 'expense',
+    period: 'month',
+    limitMinor: 100000,
+    shareBps: null,
+    incomeBaseMinor: null,
+    forecastEnabled: true,
+  };
+  await executeFinanceCommand(
+    env,
+    { id: 'plan-root', version: 0, type: 'budget', payload: base },
+    NOW,
+  );
+  await executeFinanceCommand(
+    env,
+    {
+      id: 'plan-child',
+      version: 1,
+      type: 'budget',
+      payload: {
+        ...base,
+        category: 'Харчування',
+        parentId: 'plan-root',
+        period: 'day',
+        limitMinor: null,
+        shareBps: 5000,
+        incomeBaseMinor: 0,
+      },
+    },
+    NOW,
+  );
+  await expect(
+    executeFinanceCommand(
+      env,
+      {
+        id: 'plan-cycle',
+        version: 2,
+        type: 'budget',
+        payload: { ...base, budgetId: 'plan-root', parentId: 'plan-child' },
+      },
+      NOW,
+    ),
+  ).rejects.toThrow(/самого себе/);
+  await executeFinanceCommand(
+    env,
+    {
+      id: 'plan-reorder',
+      version: 2,
+      type: 'budget-reorder',
+      payload: { ids: ['plan-child', 'plan-root'] },
+    },
+    NOW,
+  );
+  expect(
+    (await readFinanceWorkspace(env, NOW)).budgets.find((b) => b.id === 'plan-child'),
+  ).toMatchObject({ parentId: 'plan-root', sortOrder: 0, forecastEnabled: true });
+  await executeFinanceCommand(
+    env,
+    { id: 'plan-remove', version: 3, type: 'budget-remove', payload: { budgetId: 'plan-root' } },
+    NOW,
+  );
+  const f = await readFinanceWorkspace(env, NOW);
+  expect(f.budgets).toHaveLength(0);
+  expect(f.transactions).toHaveLength(0);
+  await executeFinanceCommand(
+    env,
+    {
+      id: 'plan-income',
+      version: 4,
+      type: 'forecast-settings',
+      payload: {
+        incomes: [
+          { name: 'Зарплата', amountMinor: 500000, nextDate: '2026-10-12', recurrence: 'month' },
+        ],
+      },
+    },
+    NOW,
+  );
+  const final = await readFinanceWorkspace(env, NOW);
+  expect(final.forecast.incomes[0].amountMinor).toBe(500000);
+  expect(final.accounts[0]!.balanceMinor).toBe(0);
+});
 describe('finance workspace · real migration and SQLite transactions', () => {
   it('uses the saved interest method for each real payment without requiring manual principal', async () => {
     const { env } = setup();

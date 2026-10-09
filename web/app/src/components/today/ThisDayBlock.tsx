@@ -21,6 +21,10 @@ export function ThisDayBlock({ d }: { d: OnThisDayData }) {
         </div>
         <span className="renewal-muted">{events.length} подій</span>
       </div>
+      <p className="renewal-chart-note mb-3">
+        Події цього дня за роками. Обери позначку на мапі або пересунь часову стрічку — опис і
+        джерело зміняться разом.
+      </p>
       <div className="relative overflow-hidden rounded-2xl border border-glassb bg-bg">
         <svg
           viewBox="0 0 360 180"

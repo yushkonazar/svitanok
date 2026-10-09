@@ -4,6 +4,237 @@
   border-radius: 24px;
   background: linear-gradient(140deg, var(--color-glass), transparent), var(--color-bg2);
 }
+/* Finance: distinct surfaces, quiet borders and stable mobile layouts. */
+.finance-budget-row {
+  padding: 16px;
+  margin-bottom: 14px;
+  border: 1px solid var(--color-glassb);
+  border-left: 3px solid var(--color-a2);
+  border-radius: 18px;
+  background: var(--color-glass);
+}
+.finance-budget-amount,
+.finance-budget-actions {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+  margin: 12px 0;
+  flex-wrap: wrap;
+}
+.finance-budget-amount {
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+}
+.finance-budget-actions {
+  margin-bottom: 0;
+}
+.finance-category-picker {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  max-height: 260px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.finance-category-picker button[aria-pressed='true'] {
+  border-color: var(--color-a2);
+  background: color-mix(in srgb, var(--color-a2) 14%, var(--color-bg2));
+  color: var(--color-tx);
+}
+.finance-toggle {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  font-size: 14px;
+}
+.finance-toggle input {
+  width: 20px;
+  height: 20px;
+  accent-color: var(--color-a2);
+  flex: none;
+}
+.finance-forecast {
+  border-color: color-mix(in srgb, var(--color-a2) 35%, transparent);
+}
+.finance-forecast-formula > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 11px 0;
+  border-bottom: 1px solid var(--color-hair);
+  font-size: 12px;
+  align-items: baseline;
+}
+.finance-forecast-formula span {
+  color: var(--color-tx2);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.finance-forecast-formula b {
+  text-align: right;
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
+.finance-tool-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+.finance-tool-grid > :last-child:nth-child(odd) {
+  grid-column: 1/-1;
+}
+.finance-account-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
+  gap: 12px;
+}
+.finance-account {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px;
+  border: 1px solid var(--color-glassb);
+  border-radius: 18px;
+  background: var(--color-bg);
+}
+.finance-account-balance {
+  font-size: 24px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+.finance-account-icon {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--color-a2) 15%, var(--color-bg2));
+  color: var(--color-a2);
+  font-weight: 700;
+}
+.today-quick-action {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  min-height: 50px;
+  gap: 6px;
+  line-height: 1.35;
+}
+.today-payment-preview {
+  padding: 16px;
+  border-radius: 20px;
+  border: 1px solid var(--color-glassb);
+  background: var(--color-bg2);
+}
+.today-payment-row {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 12px 0;
+  border-top: 1px solid var(--color-hair);
+}
+.today-payment-row b {
+  overflow-wrap: anywhere;
+}
+.today-payment-date {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 6px 4px;
+  border-radius: 12px;
+  background: var(--color-glass);
+  color: var(--color-a2);
+}
+.today-payment-date b {
+  font-size: 18px;
+}
+.today-payment-date small {
+  font-size: 10px;
+}
+.daily-fact {
+  border-top: 2px solid var(--color-info);
+}
+.daily-quote {
+  border-top: 2px solid var(--color-a2);
+}
+.weather-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  font-size: 11px;
+  color: var(--color-tx2);
+  margin-bottom: 10px;
+}
+.weather-legend span {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.weather-legend i {
+  width: 7px;
+  height: 7px;
+  border-radius: 3px;
+}
+.weather-selected {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 12px;
+}
+.weather-selected > div {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px;
+  background: var(--color-glass);
+  border-radius: 12px;
+}
+.weather-selected small {
+  color: var(--color-tx2);
+  font-size: 11px;
+}
+.weather-selected b {
+  font-size: 18px;
+}
+.weather-temperature {
+  padding: 14px;
+  border: 1px solid var(--color-glassb);
+  border-radius: 18px;
+  background: var(--color-glass);
+}
+.weather-temperature .renewal-section-head {
+  flex-wrap: wrap;
+}
+.checkin-choice,
+.checkin-screen .renewal-secondary,
+.checkin-screen .renewal-button,
+.checkin-screen .renewal-segments button {
+  min-width: 0;
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.4;
+  height: auto;
+}
+.checkin-screen .renewal-segments {
+  flex-wrap: wrap;
+}
+.checkin-screen .renewal-segments > button {
+  flex: 1 1 auto;
+}
+.renewal-section-head > h2 {
+  min-width: 0;
+}
+.renewal-secondary:disabled,
+.renewal-button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
 .renewal-section-head {
   display: flex;
   align-items: center;

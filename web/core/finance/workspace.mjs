@@ -1,4 +1,5 @@
 import { financeCategories } from './categories.mjs';
+import { bankPaymentAmount } from './payment-link.mjs';
 import { fixedDebtPayment, isDebtKind, interestDebtPayment, interestQuote } from './payments.mjs';
 import { NOT_TEST_SQL, readMonoAccounts } from './store.mjs';
 import {
@@ -301,6 +302,11 @@ export async function readFinanceWorkspace(env, nowMs = Date.now(), range) {
     taxiWeeks,
     settlements,
     reserveMinor,
+    forecast: {
+      incomes: Array.isArray(jsonObject(settings.forecast_json).incomes)
+        ? jsonObject(settings.forecast_json).incomes
+        : [],
+    },
     goals: rows(5).map((r) => ({
       id: String(r.id),
       name: String(r.name),
@@ -328,6 +334,11 @@ export async function readFinanceWorkspace(env, nowMs = Date.now(), range) {
       limitMinor: r.limit_minor == null ? null : Number(r.limit_minor),
       shareBps: r.share_bps == null ? null : Number(r.share_bps),
       incomeBaseMinor: r.income_base_minor == null ? null : Number(r.income_base_minor),
+      parentId: r.parent_id == null ? null : String(r.parent_id),
+      goalId: r.goal_id == null ? null : String(r.goal_id),
+      sortOrder: Number(r.sort_order ?? 0),
+      forecastEnabled: Boolean(r.forecast_enabled),
+      templateRole: r.template_role == null ? null : String(r.template_role),
     })),
     payments: rows(8).map((r) => ({
       id: String(r.id),
@@ -977,6 +988,40 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
         now,
         `goal:${goal.id}`,
       );
+  } else if (type === 'budget-remove') {
+    const target = state.budgets.find((b) => b.id === payload.budgetId);
+    if (!target) throw new FinanceValidation('Бюджет не знайдено');
+    const ids = new Set([target.id]);
+    for (let i = 0; i < state.budgets.length; i++)
+      state.budgets.forEach((b) => {
+        if (b.parentId && ids.has(b.parentId)) ids.add(b.id);
+      });
+    for (const budgetId of ids) update('DELETE FROM finance_budgets WHERE id = ?', [budgetId]);
+  } else if (type === 'budget-reorder') {
+    if (
+      !Array.isArray(payload.ids) ||
+      payload.ids.length !== state.budgets.length ||
+      new Set(payload.ids).size !== state.budgets.length ||
+      payload.ids.some((/** @type {unknown} */ x) => !state.budgets.some((b) => b.id === x))
+    )
+      throw new FinanceValidation('Онови список бюджетів перед зміною порядку');
+    payload.ids.forEach((/** @type {string} */ budgetId, /** @type {number} */ i) =>
+      update('UPDATE finance_budgets SET sort_order = ? WHERE id = ?', [i, budgetId]),
+    );
+  } else if (type === 'forecast-settings') {
+    if (!Array.isArray(payload.incomes) || payload.incomes.length > 30)
+      throw new FinanceValidation('До 30 планових надходжень');
+    const incomes = payload.incomes.map((/** @type {KvBlob} */ x, /** @type {number} */ i) => ({
+      id: `${id}:${i}`,
+      name: text(x.name),
+      amountMinor: minor(x.amountMinor),
+      nextDate: date(x.nextDate),
+      recurrence: choice(x.recurrence, ['once', 'week', 'month']),
+    }));
+    update('UPDATE finance_settings SET forecast_json = ? WHERE id = ?', [
+      JSON.stringify({ incomes }),
+      'owner',
+    ]);
   } else if (type === 'budget') {
     const category = text(payload.category),
       period = choice(payload.period, ['day', 'week', 'month']);
@@ -1002,9 +1047,52 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
     const categories = payload.categories.map((/** @type {unknown} */ c) => text(c));
     const purpose = choice(payload.purpose ?? 'expense', ['expense', 'saving']);
     const base = bps == null ? null : minor(payload.incomeBaseMinor);
+    const parentId =
+      payload.parentId === undefined
+        ? (existingBudget?.parentId ?? null)
+        : payload.parentId
+          ? text(payload.parentId)
+          : null;
+    const parent = parentId ? state.budgets.find((b) => b.id === parentId) : null;
+    if (parentId && (!parent || parent.purpose !== purpose))
+      throw new FinanceValidation('Обери основний план того самого типу');
+    const ancestors = new Set([existingBudget?.id ?? id]);
+    let ancestor = parent;
+    while (ancestor) {
+      if (ancestors.has(ancestor.id))
+        throw new FinanceValidation('План не може бути частиною самого себе');
+      ancestors.add(ancestor.id);
+      if (ancestors.size > 4) throw new FinanceValidation('До чотирьох рівнів плану');
+      const ancestorParent = ancestor.parentId;
+      ancestor = state.budgets.find((b) => b.id === ancestorParent);
+    }
+    if (parent && categories.some((/** @type {string} */ c) => !parent.categories.includes(c)))
+      throw new FinanceValidation('Категорії підплану мають входити в основний план');
+    if (
+      existingBudget &&
+      state.budgets.some(
+        (b) =>
+          b.parentId === existingBudget.id &&
+          (b.purpose !== purpose || b.categories.some((c) => !categories.includes(c))),
+      )
+    )
+      throw new FinanceValidation('Спершу уточни категорії й тип дочірніх планів');
+    const goalId =
+      purpose === 'saving'
+        ? payload.goalId === undefined
+          ? (existingBudget?.goalId ?? null)
+          : payload.goalId
+            ? text(payload.goalId)
+            : null
+        : null;
+    if (goalId && !state.goals.some((g) => g.id === goalId && g.status === 'active'))
+      throw new FinanceValidation('Обери активну ціль');
+    const sortOrder = existingBudget?.sortOrder ?? state.budgets.length;
+    const forecastEnabled =
+      (payload.forecastEnabled ?? existingBudget?.forecastEnabled ?? false) === true ? 1 : 0;
     if (existingBudget)
       update(
-        'UPDATE finance_budgets SET category = ?, categories_json = ?, purpose = ?, period = ?, limit_minor = ?, share_bps = ?, income_base_minor = ? WHERE id = ?',
+        'UPDATE finance_budgets SET category = ?, categories_json = ?, purpose = ?, period = ?, limit_minor = ?, share_bps = ?, income_base_minor = ?, parent_id = ?, goal_id = ?, sort_order = ?, forecast_enabled = ? WHERE id = ?',
         [
           category,
           JSON.stringify(categories),
@@ -1013,6 +1101,10 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
           limit,
           bps,
           base,
+          parentId,
+          goalId,
+          sortOrder,
+          forecastEnabled,
           existingBudget.id,
         ],
       );
@@ -1026,10 +1118,23 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
         limit_minor: limit,
         share_bps: bps,
         income_base_minor: base,
+        parent_id: parentId,
+        goal_id: goalId,
+        sort_order: sortOrder,
+        forecast_enabled: forecastEnabled,
         created_at: now,
       });
   } else if (type === 'budget-template') {
     const base = minor(payload.incomeBaseMinor);
+    const shares = payload.shares ?? [5000, 3000, 2000];
+    const roles = ['needs', 'wants', 'saving'];
+    if (
+      !Array.isArray(shares) ||
+      shares.length !== 3 ||
+      shares.some((s) => !Number.isInteger(s) || s < 0 || s > 10000) ||
+      shares.reduce((a, b) => a + b, 0) !== 10000
+    )
+      throw new FinanceValidation('Три частки основного плану мають давати 100%');
     const definitions = [
       {
         category: 'Основні витрати',
@@ -1071,10 +1176,21 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
     if (
       definitions.some((d) =>
         state.budgets.some((b) => b.category === d.category && b.period === 'month'),
-      )
+      ) &&
+      payload.updateExisting !== true
     )
       throw new FinanceValidation('Шаблон уже додано; відредагуй його бюджети');
-    definitions.forEach((d, i) =>
+    definitions.forEach((d, i) => {
+      const previous = state.budgets.find(
+        (b) => (b.templateRole === roles[i] || b.category === d.category) && b.period === 'month',
+      );
+      if (previous) {
+        update(
+          'UPDATE finance_budgets SET limit_minor = ?, share_bps = ?, income_base_minor = ? WHERE id = ?',
+          [null, shares[i], base, previous.id],
+        );
+        return;
+      }
       insert('finance_budgets', {
         id: `${id}:${i}`,
         category: d.category,
@@ -1082,11 +1198,46 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
         purpose: d.purpose,
         period: 'month',
         limit_minor: null,
-        share_bps: d.share,
+        share_bps: shares[i],
         income_base_minor: base,
+        forecast_enabled: 1,
+        template_role: roles[i],
+        sort_order: state.budgets.length + i,
         created_at: now,
-      }),
-    );
+      });
+    });
+    for (const budget of state.budgets.filter(
+      (b) =>
+        !b.parentId &&
+        !b.templateRole &&
+        !definitions.some((d) => d.category === b.category && b.period === 'month'),
+    )) {
+      const index = definitions.findIndex((d, i) => {
+        const root = state.budgets.find(
+          (b) => b.templateRole === roles[i] || (b.category === d.category && b.period === 'month'),
+        );
+        return (
+          d.purpose === budget.purpose &&
+          (d.purpose === 'saving' ||
+            (budget.categories.length > 0 &&
+              budget.categories.every((c) => (root?.categories ?? d.categories).includes(c))))
+        );
+      });
+      if (index < 0) continue;
+      const definition = definitions[index];
+      if (!definition) continue;
+      const root = state.budgets.find(
+        (b) =>
+          b.templateRole === roles[index] ||
+          (b.category === definition.category && b.period === 'month'),
+      );
+      if (budget.limitMinor != null)
+        update('UPDATE finance_budgets SET parent_id = ? WHERE id = ?', [
+          root?.id ?? `${id}:${index}`,
+          budget.id,
+        ]);
+      else update('UPDATE finance_budgets SET forecast_enabled = ? WHERE id = ?', [0, budget.id]);
+    }
   } else if (type === 'payment') {
     const previous = payload.paymentId
       ? state.payments.find((p) => p.id === payload.paymentId)
@@ -1290,9 +1441,8 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
         !existingTx.bank ||
         existingTx.bankHold ||
         existingTx.reference ||
-        existingTx.currency !== 'UAH' ||
-        existingTx.amountMinor !== -amount ||
-        !['expense', 'unclassified'].includes(existingTx.kind))
+        bankPaymentAmount(existingTx) !== -amount ||
+        !['expense', 'unclassified', 'transfer'].includes(existingTx.kind))
     )
       throw new FinanceValidation(
         'Обери завершений непов’язаний банківський платіж із відповідною сумою',

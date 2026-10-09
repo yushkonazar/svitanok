@@ -54,22 +54,47 @@ export function TodayAttention() {
         </Link>
       </div>
       <div className="renewal-form-grid mb-4">
-        <Link className="renewal-secondary text-center" to="/finance?action=expense">
+        <Link className="renewal-button today-quick-action" to="/finance?action=expense">
           ＋ Записати витрату
         </Link>
-        <Link className="renewal-secondary text-center" to="/stats">
-          ↗ Мій стан
+        <Link className="renewal-secondary today-quick-action" to="/finance?action=personal">
+          ＋ Особистий дохід
         </Link>
       </div>
       {view && view.reminders.length > 0 && (
-        <Link to="/finance" className="renewal-inset block text-sm">
-          <span className="text-a2">Найближчі платежі{money?.demo ? ' · демо' : ''}</span>
-          {view.reminders.slice(0, 3).map((p) => (
-            <span key={p.id} className="mt-2 block text-xs text-tx2">
-              {p.name} · {moneyLabel(p.amountMinor)} · {p.nextDate}
+        <div className="today-payment-preview">
+          <div className="renewal-section-head">
+            <span className="text-a2 text-sm font-semibold">
+              Найближчі платежі{money?.demo ? ' · демо' : ''}
             </span>
+            <Link className="renewal-link" to="/finance">
+              Усі →
+            </Link>
+          </div>
+          {view.reminders.slice(0, 3).map((p) => (
+            <Link key={p.id} to="/finance" className="today-payment-row">
+              <span className="today-payment-date">
+                <b>{Number(p.nextDate.slice(8))}</b>
+                <small>
+                  {new Date(p.nextDate + 'T12:00:00Z').toLocaleDateString('uk-UA', {
+                    month: 'short',
+                  })}
+                </small>
+              </span>
+              <span className="min-w-0">
+                <b className="block text-sm">{p.name}</b>
+                <small className={p.nextDate < now.date ? 'text-neg' : 'text-tx2'}>
+                  {p.nextDate < now.date
+                    ? 'Строк минув'
+                    : p.nextDate === now.date
+                      ? 'Сьогодні'
+                      : 'Заплановано'}
+                </small>
+              </span>
+              <strong className="text-sm">{moneyLabel(p.amountMinor)}</strong>
+            </Link>
           ))}
-        </Link>
+        </div>
       )}
       {money && money.finance.reserveMinor > 0 && (
         <Link to="/finance" className="mt-3 block text-xs text-tx2">

@@ -12,16 +12,16 @@
    Світлу вмикає <html data-theme="light"> — перевизначає ті самі змінні. */
 @theme {
   /* тло / поверхні */
-  --color-bg: #120e1c;
-  --color-bg2: #1a1330;
+  --color-bg: #100c19;
+  --color-bg2: #21182f;
   --color-glass: rgba(255, 255, 255, 0.05);
-  --color-glassb: rgba(255, 255, 255, 0.1);
+  --color-glassb: rgba(255, 231, 216, 0.17);
   --color-hair: rgba(255, 255, 255, 0.08);
 
   /* текст */
   --color-tx: #f2f1ec;
-  --color-tx2: rgba(242, 241, 236, 0.6);
-  --color-tx3: rgba(242, 241, 236, 0.38);
+  --color-tx2: rgba(242, 241, 236, 0.78);
+  --color-tx3: rgba(242, 241, 236, 0.6);
 
   /* акценти */
   --color-a1: #ff6e7a;

@@ -31,12 +31,13 @@ export function LearningFocus() {
   return (
     <section>
       <div className="renewal-section-label">
-        Твій наступний крок<span className="renewal-pill">Mate Academy</span>
+        Час на важливе<span className="renewal-pill">Фокус-таймер</span>
       </div>
       <div className="renewal-card">
-        <h2 className="text-lg font-semibold">Залишити місце для навчання</h2>
+        <h2 className="text-lg font-semibold">{plan.task || 'Одна справа без поспіху'}</h2>
         <p className="renewal-muted mt-2">
-          {plan.task || 'Один зосереджений блок для того, що зараз важливо.'}
+          Обери справу та виділи 15–60 хвилин. Це твій таймер, а не автоматична рекомендація
+          асистента. План зберігається лише на цьому пристрої.
         </p>
         {remaining != null && (
           <div className="renewal-focus-clock" role="timer">
@@ -75,6 +76,7 @@ export function LearningFocus() {
         <div className="renewal-actions mb-0">
           <button
             className="renewal-button"
+            disabled={!plan.task?.trim()}
             onClick={() => {
               save({
                 ...plan,
@@ -93,7 +95,7 @@ export function LearningFocus() {
             aria-expanded={editing}
             onClick={() => setEditing(!editing)}
           >
-            {editing ? 'Готово' : 'Змінити план'}
+            {editing ? 'Готово' : plan.task ? 'Змінити справу' : 'Налаштувати таймер'}
           </button>
         </div>
       </div>

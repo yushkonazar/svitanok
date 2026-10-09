@@ -1,4 +1,6 @@
 import { useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
+import { fetchCurrencyHistory } from '../../api/client.ts';
 import type { CurrencyData } from '../../api/briefing-schema.ts';
 import { amountInput } from '../../lib/amountInput.ts';
 import { ObservationChart } from '../charts/ObservationChart.tsx';
@@ -37,6 +39,13 @@ export function CurrencyBlock({ d, date }: { d: CurrencyData | null; date: strin
   const [search, setSearch] = useState('');
   const [code, setCode] = useState('USD');
   const [period, setPeriod] = useState(30);
+  const history = useQuery({
+    queryKey: ['currency-history', code],
+    queryFn: () => fetchCurrencyHistory(code),
+    enabled: historyOpen,
+    staleTime: 6 * 60 * 60 * 1000,
+    retry: 1,
+  });
   const [raw, setRaw] = useState('100');
   const [from, setFrom] = useState('USD');
   const [to, setTo] = useState('UAH');
@@ -54,11 +63,14 @@ export function CurrencyBlock({ d, date }: { d: CurrencyData | null; date: strin
     .filter((r) => watch.includes(r.code))
     .sort((a, b) => watch.indexOf(a.code) - watch.indexOf(b.code));
   const observed = d?.observations ?? [];
-  const latest = observed.at(-1)?.date;
+  const dated = history.data?.length
+    ? history.data
+    : observed
+        .filter((p) => p.rates[code] != null)
+        .map((p) => ({ date: p.date, value: p.rates[code] }));
+  const latest = dated.at(-1)?.date;
   const cutoff = latest ? Date.parse(latest) - (period - 1) * 86_400_000 : 0;
-  const points = observed
-    .filter((p) => Date.parse(p.date) >= cutoff && p.rates[code] != null)
-    .map((p) => ({ date: p.date, value: p.rates[code] }));
+  const points = dated.filter((p) => Date.parse(p.date) >= cutoff);
   const amount = amountInput(raw);
   const result =
     amount != null && rates[from] && rates[to] ? (amount * rates[from]) / rates[to] : null;
@@ -175,7 +187,7 @@ export function CurrencyBlock({ d, date }: { d: CurrencyData | null; date: strin
             <div id="currency-history">
               {' '}
               <div className="renewal-section-head mt-4">
-                <span className="text-sm font-semibold">{code} · історія спостережень</span>
+                <span className="text-sm font-semibold">{code} · історія курсу</span>
                 <div className="renewal-segments">
                   {[7, 30, 90].map((n) => (
                     <button
@@ -195,6 +207,16 @@ export function CurrencyBlock({ d, date }: { d: CurrencyData | null; date: strin
                 label={`Курс ${code}`}
                 unit="₴"
               />
+              <p className="renewal-chart-note">
+                {history.isFetching
+                  ? 'Завантажую офіційну історію НБУ…'
+                  : history.error
+                    ? 'НБУ тимчасово недоступний. Показані збережені спостереження.'
+                    : history.data?.length
+                      ? 'Офіційна історія НБУ · усі доступні дати періоду'
+                      : 'Збережені спостереження брифінгів'}{' '}
+                · {points.length} дат
+              </p>
               {!observed.length && (
                 <p className="renewal-muted">
                   Старий брифінг не містить дат історії. Нові спостереження накопичуватимуться після
