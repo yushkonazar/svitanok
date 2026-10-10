@@ -72,6 +72,7 @@ export async function main() {
   if (previous.length > 5000) throw new Error('Content ledger requires editorial maintenance');
   const before = (await read(`dailyContent:status:${month}`)) as { attempts?: number } | null;
   const staging = batchSchema.safeParse(await read(`dailyContent:staging:${month}`));
+  const candidates = await read(`dailyContent:candidates:${month}`);
   const attempts = before?.attempts ?? 0;
   if (!staging.success && attempts >= 2)
     throw new Error('Monthly paid attempt cap reached; using reviewed reserve');
@@ -109,6 +110,8 @@ export async function main() {
         now,
         previous,
         preferences: { ...(preferences ?? DEFAULT_CONTENT_PREFERENCES), reactions },
+        candidates,
+        checkpoint: (value) => write(`dailyContent:candidates:${month}`, value),
       });
       await write(`dailyContent:staging:${month}`, batch);
     }

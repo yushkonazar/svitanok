@@ -186,6 +186,38 @@ describe('monthly editorial preparation', () => {
       }),
     ).rejects.toThrow();
   });
+  it('rejects invalid peers and resumes a saved candidate packet without repeating the paid search', async () => {
+    const c = candidates();
+    const saved = {
+      ...c,
+      quotes: [...c.quotes, { ...c.quotes[0], id: 'invalid-peer', evidence: 'short' }],
+    };
+    const checkpoint = vi.fn().mockResolvedValue(undefined);
+    const respond = vi
+      .fn()
+      .mockResolvedValue({ approved: [...c.facts, ...c.quotes].map((n) => n.id), rejected: [] });
+    const fetchFn = vi.fn(async (url: string | URL | Request) => {
+      const n = [...c.facts, ...c.quotes].find((item) => item.sourceUrl === String(url))!;
+      return new Response(n.evidence, { headers: { 'content-type': 'text/plain' } });
+    }) as unknown as typeof fetch;
+    const ready = await prepareContent({
+      month: '2026-11',
+      apiKey: 'test',
+      model: 'test',
+      previous: [],
+      preferences: {},
+      now: '2026-10-28T07:00:00Z',
+      candidates: saved,
+      checkpoint,
+      respond,
+      fetchFn,
+    });
+    expect(ready.quotes).toHaveLength(38);
+    expect(ready.quotes.some((n) => n.id === 'invalid-peer')).toBe(false);
+    expect(checkpoint).toHaveBeenCalledWith(saved);
+    expect(respond).toHaveBeenCalledTimes(1);
+    expect(respond.mock.calls[0]![0].search).toBeUndefined();
+  });
   it('bounds provider tools/tokens and does not publish incomplete model responses', async () => {
     const fetchFn = vi
       .fn()
