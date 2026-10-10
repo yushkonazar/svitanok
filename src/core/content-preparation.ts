@@ -108,7 +108,17 @@ export async function contentResponse(input: {
           type: 'json_schema',
           name: 'daily_content',
           strict: true,
-          schema: z.toJSONSchema(input.schema, { unrepresentable: 'any' }),
+          // Unsupported string constraints stay in the local Zod validator.
+          // Local parsing still enforces length, URL validity and source policy.
+          schema: JSON.parse(
+            JSON.stringify(
+              z.toJSONSchema(input.schema, { unrepresentable: 'any' }),
+              (key, value) =>
+                (key === 'format' && value === 'uri') || key === 'minLength' || key === 'maxLength'
+                  ? undefined
+                  : value,
+            ),
+          ),
         },
       },
       ...(input.search
@@ -125,8 +135,16 @@ export async function contentResponse(input: {
         : {}),
     }),
   });
-  // Provider payloads can contain secrets or full prompts: errors deliberately disclose only status.
-  if (!res.ok) throw new Error(`Content provider HTTP ${res.status}`);
+  if (!res.ok) {
+    // Only bounded identifier fields; never log provider messages, prompts or credentials.
+    const error = (await res.json().catch(() => ({}))) as {
+      error?: { code?: string; param?: string };
+    };
+    const identifiers = [error.error?.code, error.error?.param]
+      .filter((n) => typeof n === 'string' && /^[\w.[\]-]{1,160}$/.test(n))
+      .join(' ');
+    throw new Error(`Content provider HTTP ${res.status}${identifiers ? ` (${identifiers})` : ''}`);
+  }
   const data = (await res.json()) as {
     status?: string;
     output?: Array<{ content?: Array<{ type: string; text?: string }> }>;

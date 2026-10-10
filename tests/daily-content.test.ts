@@ -204,6 +204,10 @@ describe('monthly editorial preparation', () => {
     expect(body.max_tool_calls).toBe(8);
     expect(body.max_output_tokens).toBe(24000);
     expect(body.store).toBe(false);
+    expect(JSON.stringify(body.text.format.schema)).not.toContain('"format":"uri"');
+    expect(JSON.stringify(body.text.format.schema)).not.toContain('minLength');
+    expect(JSON.stringify(body.text.format.schema)).not.toContain('maxLength');
+    expect(body.text.format.schema.properties.facts.items.properties.sourceUrl.type).toBe('string');
   });
   it('targets the next month including December and Kyiv date boundaries; preferences change order, never existing slots', () => {
     expect(nextContentMonth(new Date('2026-12-31T23:00:00Z'))).toBe('2027-02');

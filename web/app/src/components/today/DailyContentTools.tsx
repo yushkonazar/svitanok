@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { CONTENT_TOPICS, contentIdentity } from '../../../../core/brief/daily-content.mjs';
+import { CONTENT_TOPICS, contentIdentity } from '../../../../core/brief/daily-content-display.mjs';
 import {
   fetchContentArchive,
   fetchContentProfile,

@@ -1,5 +1,5 @@
 import type { FactData, StoicData } from '../../api/briefing-schema.ts';
-import { CONTENT_TOPICS } from '../../../../core/brief/daily-content.mjs';
+import { CONTENT_TOPICS } from '../../../../core/brief/daily-content-display.mjs';
 import { textHash } from '../../lib/format.ts';
 import { SectionLabel } from '../ui/primitives.tsx';
 import { SaveButton } from './SaveButton.tsx';

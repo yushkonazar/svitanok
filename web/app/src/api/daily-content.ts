@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { inTelegram, tg } from '../telegram.ts';
 import { factDataSchema, stoicDataSchema } from './briefing-schema.ts';
 import { throwIfSessionExpired } from './client.ts';
-import { CONTENT_TOPICS } from '../../../core/brief/daily-content.mjs';
+import { CONTENT_TOPICS } from '../../../core/brief/daily-content-display.mjs';
 
 const profileSchema = z.object({
   date: z.string(),
