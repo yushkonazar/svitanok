@@ -1,6 +1,6 @@
 {
   "name": "svitanok",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Персональний AI-асистент у Telegram (GitHub Actions + OpenAI Responses)",
   "license": "MIT",
   "type": "module",

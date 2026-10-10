@@ -786,13 +786,30 @@
 .renewal-payment-navigation {
   display: flex;
   align-items: center;
-  gap: 6px;
-  flex-shrink: 0;
+  justify-content: center;
+  gap: 16px;
+  margin-top: 12px;
 }
 .renewal-payment-navigation span {
   font: 500 11px var(--font-mono);
   color: var(--color-tx2);
-  margin-right: 2px;
+  display: block;
+  text-align: center;
+}
+.renewal-payment-position {
+  width: 90px;
+}
+.renewal-payment-position-track {
+  margin-top: 7px;
+  height: 3px;
+  border-radius: 4px;
+  background: var(--color-glassb);
+  overflow: hidden;
+}
+.renewal-payment-position-track span {
+  height: 100%;
+  border-radius: inherit;
+  background: var(--color-a2);
 }
 .renewal-payment-navigation button {
   width: 44px;
@@ -811,11 +828,16 @@
   overflow-x: auto;
   min-width: 0;
   position: relative;
-  scroll-snap-type: x proximity;
+  width: 100%;
+  max-width: 380px;
+  margin-inline: auto;
+  scroll-snap-type: x mandatory;
   overscroll-behavior-x: contain;
-  padding-bottom: 10px;
-  scrollbar-width: thin;
-  scrollbar-color: var(--color-a2) transparent;
+  touch-action: pan-x pan-y pinch-zoom;
+  scrollbar-width: none;
+}
+.renewal-payment-rail::-webkit-scrollbar {
+  display: none;
 }
 .renewal-payment-rail:focus-visible {
   outline: 2px solid var(--color-a2);
@@ -823,9 +845,10 @@
   border-radius: 18px;
 }
 .renewal-payment-rail .renewal-payment-compact {
-  flex: 0 0 min(320px, calc(100% - 24px));
+  flex: 0 0 100%;
   margin-top: 0;
-  scroll-snap-align: start;
+  scroll-snap-align: center;
+  scroll-snap-stop: always;
   grid-template-columns: 44px minmax(0, 1fr);
   grid-template-rows: auto auto 1fr auto;
   gap: 10px;

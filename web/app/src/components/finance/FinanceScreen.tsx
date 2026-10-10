@@ -1,4 +1,5 @@
-import { useState, useLayoutEffect, useRef } from 'react';
+import { useState, useLayoutEffect, useEffect, useRef } from 'react';
+import { setVerticalSwipes } from '../../telegram.ts';
 import { useTick } from '../../lib/useTick.ts';
 import { useSearchParams } from 'react-router-dom';
 import { useFinance } from '../../api/finance-hooks.ts';
@@ -40,6 +41,10 @@ function Progress({ percent }: { percent: number }) {
   );
 }
 export function FinanceScreen() {
+  useEffect(() => {
+    setVerticalSwipes(false);
+    return () => setVerticalSwipes(true);
+  }, []);
   const { data, isLoading, error, refetch } = useFinance();
   const [allOperations, setAllOperations] = useState(false);
   const [paymentsExpanded, setPaymentsExpanded] = useState(() => {
