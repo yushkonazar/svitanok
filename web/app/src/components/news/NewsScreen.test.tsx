@@ -103,18 +103,76 @@ it('announces a new snapshot without moving existing articles until the reader a
       <NewsScreen />
     </MemoryRouter>,
   );
-  expect(screen.getByText('Перша подія')).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Коротко: Перша подія' })).toBeInTheDocument();
   mocks.live = snapshot('Друга подія', 2);
   view.rerender(
     <MemoryRouter>
       <NewsScreen />
     </MemoryRouter>,
   );
-  expect(screen.getByText('Перша подія')).toBeInTheDocument();
-  expect(screen.queryByText('Друга подія')).not.toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Коротко: Перша подія' })).toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Коротко: Друга подія' })).not.toBeInTheDocument();
   fireEvent.click(screen.getByRole('button', { name: /Оновлена добірка/ }));
-  expect(screen.getByText('Друга подія')).toBeInTheDocument();
-  expect(screen.queryByText('Перша подія')).not.toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Коротко: Друга подія' })).toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Коротко: Перша подія' })).not.toBeInTheDocument();
+});
+
+it('shows each headline once and keeps additional main events and interests in the remaining feed', () => {
+  mocks.live!.groups[0]!.items = Array.from({ length: 7 }, (_, i) => ({
+    title: `Головна подія ${i + 1}`,
+    url: `https://www.bbc.com/news/main-${i + 1}`,
+  }));
+  mocks.live!.groups.push({
+    scope: 'world',
+    topic: 'Тех/IT',
+    items: [
+      {
+        title: 'Цікава технологія',
+        url: 'https://www.bbc.com/news/technology',
+        priority: 1,
+      },
+    ],
+    more: [],
+  });
+  const view = render(
+    <MemoryRouter>
+      <NewsScreen />
+    </MemoryRouter>,
+  );
+  expect(screen.getAllByRole('button', { name: /^Коротко:/ })).toHaveLength(5);
+  expect(view.container.querySelectorAll('article')).toHaveLength(3);
+  for (let i = 1; i <= 5; i++)
+    expect(screen.getAllByText(`${i}. Головна подія ${i}`)).toHaveLength(1);
+  expect(screen.getByText('Головна подія 6')).toBeInTheDocument();
+  expect(screen.getByText('Головна подія 7')).toBeInTheDocument();
+  expect(screen.getByText('Цікава технологія')).toBeInTheDocument();
+});
+
+it('keeps highlighted stories searchable and filterable when the overview is hidden', () => {
+  render(
+    <MemoryRouter>
+      <NewsScreen />
+    </MemoryRouter>,
+  );
+  const input = screen.getByRole('textbox', { name: 'Пошук у новинах' });
+  fireEvent.change(input, { target: { value: 'Перша' } });
+  expect(screen.queryByRole('heading', { name: 'Головне зараз' })).not.toBeInTheDocument();
+  expect(screen.getByText('Перша подія')).toBeInTheDocument();
+  fireEvent.change(input, { target: { value: '' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Головне' }));
+  expect(screen.queryByRole('heading', { name: 'Головне зараз' })).not.toBeInTheDocument();
+  expect(screen.getByText('Перша подія')).toBeInTheDocument();
+});
+
+it('does not show an empty feed warning when all stories are displayed in the overview', () => {
+  const view = render(
+    <MemoryRouter>
+      <NewsScreen />
+    </MemoryRouter>,
+  );
+  expect(screen.getByRole('button', { name: 'Коротко: Перша подія' })).toBeInTheDocument();
+  expect(view.container.querySelectorAll('article')).toHaveLength(0);
+  expect(screen.queryByText(/Тут поки немає матеріалів/)).not.toBeInTheDocument();
 });
 it('starts a real collection action and does not label native Ukrainian as a translation failure', () => {
   render(

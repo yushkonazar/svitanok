@@ -69,8 +69,14 @@ export function NewsScreen() {
     settings.data?.settings.news?.sources,
   );
   const topics = [...new Set(feed.map((n) => n.topic))];
+  const highlights =
+    !search.trim() && readingFilter === 'Усе' && filter === 'Усе'
+      ? feed.filter((n) => n.priority === 0).slice(0, 5)
+      : [];
+  const highlightedUrls = new Set(highlights.map((n) => n.item.url));
   const matches = feed.filter(
     (n) =>
+      !highlightedUrls.has(n.item.url) &&
       (readingFilter === 'Усе' ||
         (readingFilter === 'Непрочитане' &&
           !read.includes(n.item.changeAt ? `${n.item.url}#${n.item.changeAt}` : n.item.url)) ||
@@ -291,48 +297,42 @@ export function NewsScreen() {
           </p>
         )}
       {live.error && <p className="renewal-muted">{live.error.message}</p>}
-      {feed.some((n) => n.priority === 0) &&
-        !search &&
-        readingFilter === 'Усе' &&
-        filter === 'Усе' && (
-          <section className="renewal-card">
-            <p className="renewal-eyebrow">ШВИДКО ЗРОЗУМІТИ ДЕНЬ</p>
-            <h2 className="text-lg font-semibold mt-2">Головне зараз</h2>
-            <p className="renewal-chart-note mt-2">
-              До п’яти подій із поточної добірки. Деталі — за натисканням.
-            </p>
-            <div className="flex flex-col gap-4 mt-4">
-              {feed
-                .filter((n) => n.priority === 0)
-                .slice(0, 5)
-                .map(({ item }, i) => (
-                  <button
-                    key={item.url}
-                    className="text-left border-b border-glassb pb-4 last:border-0"
-                    aria-label={`Коротко: ${item.title}`}
-                    onClick={() => {
-                      openArticle(item);
-                    }}
-                  >
-                    <span className="font-semibold block">
-                      {i + 1}. {item.title}
-                    </span>
-                    {item.why && (
-                      <span className="renewal-muted text-sm block mt-2">
-                        {item.why.length > 180
-                          ? item.why.slice(0, 177).replace(/\s+\S*$/, '') + '…'
-                          : item.why}
-                      </span>
-                    )}
-                    <span className="renewal-chart-note block mt-2">
-                      {newsSource(item.url)}
-                      {item.updated ? ' · Оновлення події' : ''}
-                    </span>
-                  </button>
-                ))}
-            </div>
-          </section>
-        )}
+      {highlights.length > 0 && (
+        <section className="renewal-card">
+          <p className="renewal-eyebrow">ШВИДКО ЗРОЗУМІТИ ДЕНЬ</p>
+          <h2 className="text-lg font-semibold mt-2">Головне зараз</h2>
+          <p className="renewal-chart-note mt-2">
+            До п’яти подій із поточної добірки. Деталі — за натисканням.
+          </p>
+          <div className="flex flex-col gap-4 mt-4">
+            {highlights.map(({ item }, i) => (
+              <button
+                key={item.url}
+                className="text-left border-b border-glassb pb-4 last:border-0"
+                aria-label={`Коротко: ${item.title}`}
+                onClick={() => {
+                  openArticle(item);
+                }}
+              >
+                <span className="font-semibold block">
+                  {i + 1}. {item.title}
+                </span>
+                {item.why && (
+                  <span className="renewal-muted text-sm block mt-2">
+                    {item.why.length > 180
+                      ? item.why.slice(0, 177).replace(/\s+\S*$/, '') + '…'
+                      : item.why}
+                  </span>
+                )}
+                <span className="renewal-chart-note block mt-2">
+                  {newsSource(item.url)}
+                  {item.updated ? ' · Оновлення події' : ''}
+                </span>
+              </button>
+            ))}
+          </div>
+        </section>
+      )}
       <div className="flex items-center justify-between gap-3">
         <div className="renewal-segments">
           {['Усе', 'Непрочитане', 'Збережене'].map((v) => (
@@ -422,7 +422,7 @@ export function NewsScreen() {
           />
         </article>
       ))}
-      {!matches.length && (
+      {!matches.length && !highlights.length && (
         <p className="renewal-card renewal-muted">
           {search
             ? 'Нічого не знайдено. Спробуй інше слово.'
