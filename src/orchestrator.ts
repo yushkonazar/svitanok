@@ -206,6 +206,18 @@ export async function runBriefing(deps: RunDeps, opts: RunOptions = {}): Promise
     };
   }
 
+  if (deps.kvEnv) {
+    const month = clock.todayKey().slice(0, 7);
+    const previousMonth = new Date(Date.parse(`${month}-01T00:00:00Z`) - 86400000)
+      .toISOString()
+      .slice(0, 7);
+    const [batch, reserve] = await Promise.all([
+      readKvJson(deps.kvEnv, `dailyContent:batch:${month}`),
+      readKvJson(deps.kvEnv, `dailyContent:batch:${previousMonth}`),
+    ]);
+    deps.bus.set('dailyContentBatch', batch);
+    deps.bus.set('dailyContentReserve', reserve);
+  }
   const ctx: Ctx<AppConfig> = {
     clock,
     config,

@@ -1475,6 +1475,143 @@
     opacity: 1;
   }
 }
+
+/* Daily editorial cards: quiet chrome, readable content, details only on request. */
+.daily-content-card {
+  display: flex;
+  flex-direction: column;
+  gap: 13px;
+  min-width: 0;
+}
+.daily-content-topic {
+  align-self: flex-start;
+  padding: 5px 10px;
+  border: 1px solid rgba(255, 189, 137, 0.25);
+  border-radius: 99px;
+  color: var(--color-a2);
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.03em;
+  background: rgba(255, 189, 137, 0.06);
+}
+.daily-content-title {
+  margin: 0;
+  font-size: clamp(19px, 4.8vw, 23px);
+  font-weight: 700;
+  line-height: 1.3;
+  letter-spacing: -0.025em;
+}
+.daily-content-copy {
+  font-size: 15px;
+  line-height: 1.75;
+  margin: 0;
+}
+.daily-content-details {
+  border-top: 1px solid var(--color-glassb);
+  padding-top: 11px;
+  font-size: 13px;
+  line-height: 1.65;
+}
+.daily-content-details summary {
+  cursor: pointer;
+  color: var(--color-a2);
+  min-height: 36px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.daily-content-details summary::before {
+  content: '+';
+  font-size: 20px;
+  font-weight: 400;
+}
+.daily-content-details[open] summary::before {
+  content: '−';
+}
+.daily-content-details p {
+  margin: 8px 0 12px;
+  color: var(--color-tx2);
+}
+.daily-content-feedback button {
+  min-height: 40px;
+  padding: 8px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--color-glassb);
+  font-size: 12px;
+  color: var(--color-tx2);
+  background: rgba(255, 255, 255, 0.025);
+}
+.daily-content-feedback button[aria-pressed='true'],
+.daily-content-topics button[aria-pressed='true'] {
+  border-color: var(--color-a2);
+  color: var(--color-a2);
+  background: rgba(255, 189, 137, 0.08);
+}
+.daily-content-feedback button:disabled {
+  opacity: 0.55;
+}
+.daily-quote-text {
+  position: relative;
+  padding: 10px 0 0 18px;
+}
+.daily-quote-mark {
+  position: absolute;
+  top: -10px;
+  left: -3px;
+  color: var(--color-a2);
+  opacity: 0.75;
+  font-size: 40px;
+  line-height: 1;
+  font-family: Georgia, serif;
+}
+.daily-quote-text p {
+  margin: 0;
+  font-family: Georgia, 'Times New Roman', serif;
+  font-size: clamp(21px, 5.5vw, 26px);
+  line-height: 1.5;
+  letter-spacing: -0.015em;
+}
+.daily-quote-author {
+  margin: 2px 0 0;
+  font-weight: 650;
+  font-size: 14px;
+}
+.daily-quote-reference {
+  margin: -8px 0 0;
+  color: var(--color-tx2);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.daily-content-provenance {
+  color: var(--color-tx3);
+  font-size: 11px;
+}
+.daily-content-tools {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 8px;
+}
+.daily-content-tools button {
+  min-height: 40px;
+  color: var(--color-tx2);
+  font-size: 12px;
+  text-align: left;
+}
+.daily-archive-entry {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.daily-archive-entry article + article {
+  border-top: 1px solid var(--color-glassb);
+  padding-top: 14px;
+}
+.daily-archive-entry article p {
+  font-size: 14px;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+}
 @media (prefers-reduced-motion: reduce) {
   .checkin-followup {
     animation: none;

@@ -142,6 +142,10 @@ export const mockDataSchema = z.object({
 });
 
 export const factDataSchema = z.object({
+  id: z.string().optional(),
+  topic: z.string().optional(),
+  title: z.string().optional(),
+  context: z.string().optional(),
   fact: z.string(),
   sourceName: z.string().optional(),
   verifiedAt: z.string().optional(),
@@ -149,6 +153,10 @@ export const factDataSchema = z.object({
 });
 
 export const stoicDataSchema = z.object({
+  id: z.string().optional(),
+  topic: z.string().optional(),
+  title: z.string().optional(),
+  context: z.string().optional(),
   text: z.string(),
   author: z.string(),
   reference: z.string().optional(),

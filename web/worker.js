@@ -80,6 +80,7 @@ import { handleDeletionsRequest } from './api-deletions.mjs';
 import { handleMailAttention } from './api-mail-attention.mjs';
 import { handleFinance } from './api-finance.mjs';
 import { handleCurrencyHistory } from './api-currency-history.mjs';
+import { handleDailyContent } from './api-daily-content.mjs';
 import { handleNews, handleNewsImage } from './api-news.mjs';
 import { refreshNewsSnapshot } from './core/brief/news-snapshot.mjs';
 import { miniAppPaymentRemindTask } from './core/finance/reminders.mjs';
@@ -559,6 +560,7 @@ export default {
       return handleFinance(request, env);
     }
     if (url.pathname === '/api/currency/history') return handleCurrencyHistory(request, env);
+    if (url.pathname === '/api/daily-content') return handleDailyContent(request, env);
     if (url.pathname.startsWith('/api/news/image/')) return handleNewsImage(request, env);
     if (url.pathname === '/api/news') return handleNews(request, env);
     if (url.pathname === '/api/weather') {

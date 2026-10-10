@@ -8,8 +8,11 @@ import type { AppConfig } from '../core/config.js';
 import quotesData from '../data/verified-stoic.json' with { type: 'json' };
 import { octoberQuotes } from '../data/content-october.js';
 import { monthlyContent } from '../core/monthly-content.js';
+import { preparedDailyContent, reviewedReserve } from '../core/daily-content.js';
+import { contentExcluded, CONTENT_AUTHORS } from '../../web/core/brief/daily-content.mjs';
 
 interface Quote {
+  id?: string;
   text: string;
   author: string;
   reference: string;
@@ -17,7 +20,9 @@ interface Quote {
   translation: string;
   verifiedAt: string;
 }
-const quotes: Quote[] = [...quotesData, ...octoberQuotes];
+const quotes: Quote[] = [...quotesData, ...octoberQuotes].filter(
+  (n) => !contentExcluded(n) && Object.hasOwn(CONTENT_AUTHORS, n.author),
+);
 
 /** День року 1..366 з "YYYY-MM-DD" (todayKey уже київський). */
 export function dayOfYear(todayKey: string): number {
@@ -36,14 +41,23 @@ export const stoicModule: Module<AppConfig> = {
   kind: 'consumer',
   enabled: (config) => config.modules.stoic.enabled,
   async run(ctx: Ctx<AppConfig>): Promise<Block | null> {
-    const q = monthlyContent(
-      'quotes',
-      ctx.clock.todayKey(),
-      quotes,
-      ctx.state,
-      (n) => `${n.author}:${n.reference}`,
-      resolveQuote,
-    );
+    const pool = [...quotes, ...(reviewedReserve(ctx, 'quote') as unknown as Quote[])];
+    const previous = ctx.state
+      ?.get<Array<{ date: string; id: string }>>('dailyContentHistory:quotes')
+      ?.find((n) => n.date === ctx.clock.todayKey());
+    const q =
+      (previous
+        ? pool.find((n) => (n.id ?? `${n.author}:${n.reference}`) === previous.id)
+        : null) ??
+      (preparedDailyContent(ctx, 'quote') as unknown as Quote | null) ??
+      monthlyContent(
+        'quotes',
+        ctx.clock.todayKey(),
+        pool,
+        ctx.state,
+        (n) => n.id ?? `${n.author}:${n.reference}`,
+        resolveQuote,
+      );
     if (!q) return null;
     return {
       id: 'stoic',

@@ -1,82 +1,74 @@
 import type { FactData, StoicData } from '../../api/briefing-schema.ts';
+import { CONTENT_TOPICS } from '../../../../core/brief/daily-content.mjs';
 import { textHash } from '../../lib/format.ts';
 import { SectionLabel } from '../ui/primitives.tsx';
 import { SaveButton } from './SaveButton.tsx';
+import { ContentFeedback } from './DailyContentTools.tsx';
 
-// 🧠 Факт дня + 🏛 Думка дня (дизайн v2, Svitanok.dc.html).
-// Факт: моно-лейбл + текст із «маркерним» підсвічуванням хвоста речення.
-// Цитата: велика градієнтна лапка, курсив, риска + автор капсом.
-
+function Topic({ value }: { value?: string }) {
+  const name = value ? CONTENT_TOPICS[value as keyof typeof CONTENT_TOPICS] : null;
+  return name ? <span className="daily-content-topic">{name}</span> : null;
+}
 export function FactBlock({ d }: { d: FactData }) {
-  const id = textHash(d.fact);
   return (
-    <div className="renewal-card daily-fact flex flex-col gap-2">
+    <article className="renewal-card daily-fact daily-content-card">
       <div className="flex items-center gap-2">
         <SectionLabel>ФАКТ ДНЯ</SectionLabel>
         <div className="ml-auto">
-          <SaveButton kind="fact" id={id} title={d.fact} />
+          <SaveButton kind="fact" id={textHash(d.fact)} title={d.fact} />
         </div>
       </div>
-      <div className="text-[14.5px] font-medium leading-[1.55]">{d.fact}</div>
-      {d.sourceUrl?.startsWith('https://') && (
-        <a className="renewal-link" href={d.sourceUrl} target="_blank" rel="noopener noreferrer">
-          {d.sourceName ?? 'Перевірити джерело'} ↗
-        </a>
-      )}
-    </div>
+      <Topic value={d.topic} />
+      {d.title && <h3 className="daily-content-title">{d.title}</h3>}
+      <p className="daily-content-copy">{d.fact}</p>
+      <details className="daily-content-details">
+        <summary>Чому це цікаво та джерело</summary>
+        {d.context && <p>{d.context}</p>}
+        {d.sourceUrl?.startsWith('https://') && (
+          <a className="renewal-link" href={d.sourceUrl} target="_blank" rel="noopener noreferrer">
+            {d.sourceName ?? 'Перевірити джерело'} ↗
+          </a>
+        )}
+      </details>
+      <ContentFeedback kind="fact" item={d} />
+    </article>
   );
 }
-
 export function QuoteBlock({ d }: { d: StoicData }) {
-  // id/title — за КОМБІНОВАНИМ рядком «текст» — автор (як vanilla qtId).
-  // ⚠️ Формат рядка НЕ чіпати: з нього рахується textHash = id збереженого в KV.
-  // Зміниш лапки — і всі раніше збережені цитати стануть «незбереженими».
+  // Keep legacy saved IDs: the exact combined string is shared with the old dashboard.
   const title = `«${d.text}» — ${d.author}`;
-  const id = textHash(title);
+  const paraphrase = d.translation?.includes('переказ');
   return (
-    <div className="renewal-card daily-quote flex flex-col gap-2">
-      {/* Шапка як у «Факті дня» й «Питанні дня»: підпис секції + 🔖 праворуч.
-          Доти цей блок був єдиним без підпису, а кнопка жила внизу в рядку
-          автора — через це вона й здавалась зʼїхалою відносно сусідів. */}
+    <article className="renewal-card daily-quote daily-content-card">
       <div className="flex items-center gap-2">
         <SectionLabel>ЦИТАТА ДНЯ</SectionLabel>
         <div className="ml-auto">
-          <SaveButton kind="quote" id={id} title={title} />
+          <SaveButton kind="quote" id={textHash(title)} title={title} />
         </div>
       </div>
-
-      <div className="relative pl-11 pt-1.5">
-        <div
-          className="absolute left-0 top-[-8px] text-[58px] font-extrabold leading-none"
-          style={{
-            background: 'var(--grad)',
-            WebkitBackgroundClip: 'text',
-            backgroundClip: 'text',
-            color: 'transparent',
-          }}
-          aria-hidden="true"
-        >
-          «
-        </div>
-        <div className="text-base font-medium italic leading-[1.5]">{d.text}</div>
-        <div className="mt-2 flex items-center gap-2">
-          <div className="h-[1.5px] w-[22px] bg-a2" />
-          <span className="font-mono text-[10.5px] font-medium text-tx3">
-            {d.author.toUpperCase()}
-          </span>
-        </div>
+      <Topic value={d.topic} />
+      <div className="daily-quote-text">
+        <span aria-hidden="true" className="daily-quote-mark">
+          “
+        </span>
+        <p>{d.text}</p>
+      </div>
+      <p className="daily-quote-author">{d.author}</p>
+      <p className="daily-quote-reference">{d.reference}</p>
+      {d.translation && <span className="daily-content-provenance">{d.translation}</span>}
+      <details className="daily-content-details">
+        <summary>Контекст і оригінал</summary>
+        {paraphrase && (
+          <p>Це український переказ думки автора; формулювання відрізняється від оригіналу.</p>
+        )}
+        {d.context && <p>{d.context}</p>}
         {d.sourceUrl?.startsWith('https://') && (
-          <a
-            className="renewal-link block"
-            href={d.sourceUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-          >
+          <a className="renewal-link" href={d.sourceUrl} target="_blank" rel="noopener noreferrer">
             {d.reference ?? 'Читати оригінал'} ↗
           </a>
         )}
-        {d.translation && <p className="renewal-muted mt-1 text-[10px]">{d.translation}</p>}
-      </div>
-    </div>
+      </details>
+      <ContentFeedback kind="quote" item={d} />
+    </article>
   );
 }

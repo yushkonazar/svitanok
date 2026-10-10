@@ -5,7 +5,9 @@ import type { AppConfig } from '../core/config.js';
 import originalCatalog from '../data/verified-facts.json' with { type: 'json' };
 import { octoberFacts } from '../data/content-october.js';
 import { monthlyContent } from '../core/monthly-content.js';
-const catalog = [...originalCatalog, ...octoberFacts];
+import { preparedDailyContent, reviewedReserve } from '../core/daily-content.js';
+import { contentExcluded } from '../../web/core/brief/daily-content.mjs';
+const catalog = [...originalCatalog, ...octoberFacts].filter((n) => !contentExcluded(n));
 
 export interface VerifiedFact {
   id: string;
@@ -26,10 +28,12 @@ export const factModule: Module<AppConfig> = {
   enabled: (config) => config.modules.fact.enabled,
   async run(ctx: Ctx<AppConfig>): Promise<Block | null> {
     const date = ctx.clock.todayKey();
+    const pool = [...catalog, ...(reviewedReserve(ctx, 'fact') as unknown as VerifiedFact[])];
     const saved = ctx.state.get<{ date: string; id: string }>('verifiedFactDay');
     const fact =
-      (saved?.date === date ? catalog.find((item) => item.id === saved.id) : null) ??
-      monthlyContent('facts', date, catalog, ctx.state, (n) => n.id, resolveFact);
+      (saved?.date === date ? pool.find((item) => item.id === saved.id) : null) ??
+      (preparedDailyContent(ctx, 'fact') as unknown as VerifiedFact | null) ??
+      monthlyContent('facts', date, pool, ctx.state, (n) => n.id, resolveFact);
     if (!fact) return null;
     ctx.state.set('verifiedFactDay', { date, id: fact.id });
     return {

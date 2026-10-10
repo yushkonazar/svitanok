@@ -14,6 +14,7 @@ import { WeatherBlock } from './WeatherBlock.tsx';
 import { CurrencyBlock } from './CurrencyBlock.tsx';
 import { TodayAttention } from './TodayAttention.tsx';
 import { FactBlock, QuoteBlock } from './FactQuoteBlocks.tsx';
+import { DailyContentTools } from './DailyContentTools.tsx';
 import { ThisDayBlock } from './ThisDayBlock.tsx';
 import { LearningFocus } from './LearningFocus.tsx';
 import { NewsPreview } from './NewsPreview.tsx';
@@ -116,6 +117,7 @@ export function TodayScreen() {
     });
   if (fact) sections.push({ key: 'fact', node: <FactBlock d={fact} /> });
   if (stoic) sections.push({ key: 'stoic', node: <QuoteBlock d={stoic} /> });
+  if (fact || stoic) sections.push({ key: 'content-tools', node: <DailyContentTools /> });
   if (onthisday) sections.push({ key: 'onthisday', node: <ThisDayBlock d={onthisday} /> });
 
   return (

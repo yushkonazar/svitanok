@@ -21,7 +21,10 @@ export const SAMPLE_BRIEF: Brief = {
       id: 'stoic',
       data: {
         text: 'Людей тривожать не самі речі, а їхні уявлення про речі.',
-        author: 'Епіктет · Енхірідіон, 5',
+        author: 'Епіктет',
+        topic: 'mind',
+        context:
+          'Автор розрізняє подію та наше судження про неї. Переказ передає цю думку українською; це не дослівна цитата.',
         sourceUrl: 'https://classics.mit.edu/Epictetus/epicench.html',
         reference: 'Енхірідіон, 5',
         translation: 'Власний український переказ',
@@ -145,6 +148,8 @@ export const SAMPLE_BRIEF: Brief = {
     {
       id: 'fact',
       data: {
+        topic: 'nature',
+        title: 'Три серця під водою',
         fact: 'У восьминога три серця. Два прокачують кров через зябра, а третє забезпечує кровообіг решти тіла.',
         sourceUrl: 'https://ocean.si.edu/ocean-life/invertebrates/octopuses-squids-and-relatives',
         sourceName: 'Smithsonian Ocean',

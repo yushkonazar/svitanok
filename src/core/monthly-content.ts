@@ -60,7 +60,7 @@ export function monthlyContent<T extends { sourceUrl: string }>(
       `dailyContentHistory:${kind}`,
       [...history.filter((n) => n.date !== date), { date, id: idOf(item) }]
         .sort((a, b) => a.date.localeCompare(b.date))
-        .slice(-120),
+        .slice(-365),
     );
   return item;
 }

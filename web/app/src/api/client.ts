@@ -173,7 +173,7 @@ export const isSessionExpired = (error: unknown): error is SessionExpiredError =
     error !== null &&
     (error as { name?: unknown }).name === 'SessionExpiredError');
 
-function throwIfSessionExpired(res: Response): void {
+export function throwIfSessionExpired(res: Response): void {
   if (res.status === 401 || res.status === 403) throw new SessionExpiredError(res.status);
 }
 
