@@ -174,7 +174,7 @@ export const onThisDayEventSchema = z.object({
       lon: z.number().min(-180).max(180),
       label: z.string(),
       sourceUrl: z.string().url(),
-      kind: z.enum(['associated_article', 'event']),
+      kind: z.enum(['associated_article', 'event', 'event_place']),
     })
     .optional(),
 });

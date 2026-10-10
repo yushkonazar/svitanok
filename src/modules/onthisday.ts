@@ -3,6 +3,7 @@
 
 import type { Module, Block, Ctx } from '../core/types.js';
 import type { AppConfig } from '../core/config.js';
+import { enrichHistoricLocations } from './history-location.js';
 
 const PRIORITY = 25;
 
@@ -15,7 +16,7 @@ export interface OnThisDayEvent {
     lon: number;
     label: string;
     sourceUrl: string;
-    kind: 'associated_article' | 'event';
+    kind: 'associated_article' | 'event' | 'event_place';
   };
 }
 
@@ -163,7 +164,15 @@ export function createOnThisDayModule(opts: OnThisDayOptions = {}): Module<AppCo
           headers: { 'user-agent': 'svitanok-bot/1.0' },
         });
         if (!res.ok) throw new Error(`Wikipedia HTTP ${res.status}`);
-        const events = selectHistoric(parseEvents(await res.json()), limit);
+        const raw: unknown = await res.json();
+        const selected = selectHistoric(parseEvents(raw), limit);
+        const events = await enrichHistoricLocations(selected, raw, {
+          fetchImpl,
+          state: ctx.state,
+          log: ctx.log,
+          signal: ctrl.signal,
+          now: ctx.clock.now().getTime(),
+        });
         if (events.length === 0) return null;
         return {
           id: 'onthisday',

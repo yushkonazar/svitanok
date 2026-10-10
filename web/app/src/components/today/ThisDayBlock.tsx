@@ -90,7 +90,7 @@ export function ThisDayBlock({ d }: { d: OnThisDayData }) {
             className="absolute bottom-2 inset-x-2 rounded-xl bg-bg2/95 px-3 py-2 text-xs text-tx2"
             role="status"
           >
-            Для події {event.year} джерело не надало координат. Опис доступний нижче.
+            Для події {event.year} поки не вдалося визначити місце на мапі. Опис доступний нижче.
           </p>
         )}
       </div>
@@ -157,10 +157,12 @@ export function ThisDayBlock({ d }: { d: OnThisDayData }) {
       </p>
       <p className="renewal-muted mt-2">
         {event.location
-          ? event.location.kind === 'event'
-            ? event.location.label
-            : `Місце зі статті «${event.location.label}». Координати пов’язані зі статтею й можуть відрізнятися від точного місця події.`
-          : 'Джерело не надало перевірених координат цієї події.'}
+          ? event.location.kind === 'event_place'
+            ? `Місце проведення — ${event.location.label}. Позначка показує місце з джерела, не обов’язково точну адресу.`
+            : event.location.kind === 'event'
+              ? event.location.label
+              : `Місце зі статті «${event.location.label}». Координати пов’язані зі статтею й можуть відрізнятися від точного місця події.`
+          : 'Місце ще не визначено: у доступних даних немає однозначного зв’язку події з координатами.'}
       </p>
       {event.url && (
         <button className="renewal-link mt-3" onClick={() => openLink(event.url!)}>

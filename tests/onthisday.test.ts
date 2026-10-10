@@ -3,6 +3,7 @@ import { parseEvents, selectHistoric, createOnThisDayModule } from '../src/modul
 import { createRunBus } from '../src/core/bus.js';
 import type { Ctx } from '../src/core/types.js';
 import type { AppConfig } from '../src/core/config.js';
+import { memState } from './helpers/state.js';
 
 describe('onthisday — parseEvents', () => {
   it('keeps valid article coordinates even after malformed or out-of-range pages', () => {
@@ -200,7 +201,7 @@ const ctx = (): Ctx<AppConfig> =>
     },
     log: { debug: noop, info: noop, warn: noop, error: noop },
     config: { modules: { onthisday: { enabled: true } } } as unknown as AppConfig,
-    state: {} as Ctx['state'],
+    state: memState(),
     llm: {} as Ctx['llm'],
     fetcher: {} as Ctx['fetcher'],
   }) as Ctx<AppConfig>;

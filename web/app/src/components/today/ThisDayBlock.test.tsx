@@ -82,3 +82,33 @@ it('handles legacy briefings without coordinates and empty or refreshed data', (
   rerender(<ThisDayBlock d={{ events: [] }} />);
   expect(screen.queryByRole('slider')).not.toBeInTheDocument();
 });
+
+it('shows a verified event place without presenting its point as an exact address', () => {
+  render(
+    <ThisDayBlock
+      d={{
+        events: [
+          {
+            year: 1964,
+            text: 'у Токіо почалися XVIII Олімпійські ігри.',
+            location: {
+              lat: 35.689444,
+              lon: 139.691667,
+              label: 'Токіо',
+              sourceUrl: 'https://www.wikidata.org/wiki/Q1490',
+              kind: 'event_place',
+            },
+          },
+        ],
+      }}
+    />,
+  );
+  expect(screen.getByRole('button', { name: '1964: Токіо' })).toHaveAttribute(
+    'aria-pressed',
+    'true',
+  );
+  expect(screen.queryByRole('status')).not.toBeInTheDocument();
+  expect(screen.getByText(/Місце проведення — Токіо/)).toHaveTextContent(
+    'не обов’язково точну адресу',
+  );
+});
