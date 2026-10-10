@@ -4,6 +4,7 @@ import {
   prepareContent,
   validatePreparedBatch,
   contentResponse,
+  calendarContent,
   type ContentBatch,
 } from '../src/core/content-preparation.js';
 import {
@@ -101,6 +102,21 @@ describe('monthly editorial preparation', () => {
     ).toBe(true);
     expect(contentExcluded({ author: 'Достоєвський' })).toBe(true);
     expect(contentExcluded({ fact: 'Russia-related discovery' })).toBe(true);
+  });
+  it('moves excess quotes from one author into reserve while preserving a full balanced calendar', () => {
+    const quotes = batch().quotes;
+    quotes.forEach((n, i) => {
+      n.author = i < 20 ? 'Марк Аврелій' : i < 30 ? 'Епіктет' : 'Генрі Девід Торо';
+    });
+    const ordered = calendarContent(quotes, 'quote', '2026-10', {});
+    expect(ordered).toHaveLength(38);
+    expect(
+      ordered.slice(0, 31).filter((n) => n.author === 'Марк Аврелій').length,
+    ).toBeLessThanOrEqual(13);
+    expect(
+      ordered.slice(0, 31).filter((n) => CONTENT_AUTHORS[n.author as keyof typeof CONTENT_AUTHORS])
+        .length,
+    ).toBeGreaterThanOrEqual(19);
   });
   it('does not allow SSRF URLs or redirects outside reviewed primary source domains', async () => {
     for (const url of [
@@ -217,6 +233,65 @@ describe('monthly editorial preparation', () => {
     expect(checkpoint).toHaveBeenCalledWith(saved);
     expect(respond).toHaveBeenCalledTimes(1);
     expect(respond.mock.calls[0]![0].search).toBeUndefined();
+  });
+  it('repairs a saved partial packet from fetched sources once, then independently reviews it', async () => {
+    const c = candidates();
+    const partial = { facts: c.facts.slice(0, 31), quotes: c.quotes.slice(0, 28) };
+    const repair = {
+      facts: c.facts.slice(0, 12).map((n, i) => ({
+        ...n,
+        id: `repair-fact-${i}`,
+        semanticKey: `repair-discovery-${i}`,
+        fact: Array.from({ length: 12 }, (_, k) => `доповнення${i}відомість${k}`).join(' '),
+        evidence: `Additional original factual passage number ${i}.`,
+      })),
+      quotes: c.quotes.slice(0, 12).map((n, i) => ({
+        ...n,
+        id: `repair-quote-${i}`,
+        semanticKey: `repair-thought-${i}`,
+        reference: `Книга доповнення ${i}`,
+        text: Array.from({ length: 12 }, (_, k) => `доповнення${i}думка${k}`).join(' '),
+        evidence: `Additional original philosophical passage number ${i}.`,
+      })),
+    };
+    const all = [...partial.facts, ...partial.quotes, ...repair.facts, ...repair.quotes];
+    const fetchFn = vi.fn(
+      async (url: string | URL | Request) =>
+        new Response(
+          all
+            .filter((n) => n.sourceUrl === String(url))
+            .map((n) => n.evidence)
+            .join(' '),
+          { headers: { 'content-type': 'text/plain' } },
+        ),
+    ) as unknown as typeof fetch;
+    const respond = vi
+      .fn()
+      .mockResolvedValueOnce(repair)
+      .mockResolvedValueOnce({ approved: all.map((n) => n.id), rejected: [] });
+    const checkpoint = vi.fn().mockResolvedValue(undefined);
+    const input = {
+      month: '2026-10',
+      apiKey: 'test',
+      model: 'test',
+      previous: [],
+      preferences: {},
+      now: '2026-10-10T07:00:00Z',
+      candidates: partial,
+      respond,
+      fetchFn,
+      checkpoint,
+    };
+    const ready = await prepareContent(input);
+    expect(ready.facts).toHaveLength(42);
+    expect(ready.quotes).toHaveLength(40);
+    expect(respond).toHaveBeenCalledTimes(2);
+    expect(respond.mock.calls.every((call) => !call[0].search)).toBe(true);
+    const saved = checkpoint.mock.calls.at(-1)![0];
+    expect(saved.repaired).toBe(true);
+    const review = vi.fn().mockResolvedValue({ approved: all.map((n) => n.id), rejected: [] });
+    await prepareContent({ ...input, candidates: saved, respond: review });
+    expect(review).toHaveBeenCalledTimes(1);
   });
   it('bounds provider tools/tokens and does not publish incomplete model responses', async () => {
     const fetchFn = vi

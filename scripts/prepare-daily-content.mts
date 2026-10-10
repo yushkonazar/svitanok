@@ -3,6 +3,7 @@ import { loadConfig } from '../src/core/config.js';
 import {
   prepareContent,
   validatePreparedBatch,
+  contentResponse,
   type Candidate,
 } from '../src/core/content-preparation.js';
 import {
@@ -71,7 +72,11 @@ export async function main() {
   }));
   const previous = [...legacy, ...legacyQuotes, ...((stored as Candidate[]) ?? [])] as Candidate[];
   if (previous.length > 5000) throw new Error('Content ledger requires editorial maintenance');
-  const before = (await read(`dailyContent:status:${month}`)) as { attempts?: number } | null;
+  const before = (await read(`dailyContent:status:${month}`)) as {
+    attempts?: number;
+    paidCalls?: number;
+    searchCalls?: number;
+  } | null;
   const staging = batchSchema.safeParse(await read(`dailyContent:staging:${month}`));
   const savedCandidates = (await read(`dailyContent:candidates:${month}`)) as {
     facts?: unknown;
@@ -85,7 +90,9 @@ export async function main() {
       ? savedCandidates
       : null;
   const attempts = before?.attempts ?? 0;
-  if (!staging.success && attempts >= 3)
+  let paidCalls = before?.paidCalls ?? attempts * 2;
+  let searchCalls = before?.searchCalls ?? Math.min(attempts, 3);
+  if (!staging.success && paidCalls >= 6)
     throw new Error('Monthly paid attempt cap reached; using reviewed reserve');
   const now = new Date().toISOString();
   try {
@@ -99,6 +106,8 @@ export async function main() {
         month,
         state: 'preparing',
         attempts: attempts + 1,
+        paidCalls,
+        searchCalls,
         updatedAt: now,
       });
       const preferences = (await read('dailyContent:preferences')) as Record<
@@ -112,8 +121,15 @@ export async function main() {
       if (!feedbackList.ok) throw new Error('Content feedback unavailable');
       const feedbackKeys = (await feedbackList.json()) as { result?: Array<{ name: string }> };
       const reactions: unknown[] = [];
-      for (const key of (feedbackKeys.result ?? []).slice(-100))
-        reactions.push(await read(key.name));
+      const reactionKeys = ['fact', 'quote'].flatMap((kind) =>
+        (feedbackKeys.result ?? [])
+          .filter((key) => key.name.startsWith(`dailyContent:feedback:${kind}:`))
+          .slice(-50),
+      );
+      for (let i = 0; i < reactionKeys.length; i += 6)
+        reactions.push(
+          ...(await Promise.all(reactionKeys.slice(i, i + 6).map((key) => read(key.name)))),
+        );
       batch = await prepareContent({
         month,
         apiKey,
@@ -123,6 +139,21 @@ export async function main() {
         preferences: { ...(preferences ?? DEFAULT_CONTENT_PREFERENCES), reactions },
         candidates,
         checkpoint: (value) => write(`dailyContent:candidates:${month}`, value),
+        respond: async (request) => {
+          if (paidCalls >= 6 || (request.search && searchCalls >= 3))
+            throw new Error('Monthly paid attempt cap reached; using reviewed reserve');
+          paidCalls++;
+          if (request.search) searchCalls++;
+          await write(`dailyContent:status:${month}`, {
+            month,
+            state: 'preparing',
+            attempts: attempts + 1,
+            paidCalls,
+            searchCalls,
+            updatedAt: new Date().toISOString(),
+          });
+          return contentResponse(request);
+        },
       });
       await write(`dailyContent:staging:${month}`, batch);
     }
@@ -134,6 +165,8 @@ export async function main() {
       month,
       state: 'ready',
       attempts: staging.success ? attempts : attempts + 1,
+      paidCalls,
+      searchCalls,
       updatedAt: now,
       facts: batch.facts.length,
       quotes: batch.quotes.length,
@@ -146,6 +179,8 @@ export async function main() {
       month,
       state: 'reserve',
       attempts: staging.success ? attempts : attempts + 1,
+      paidCalls,
+      searchCalls,
       updatedAt: now,
     });
     throw error;
