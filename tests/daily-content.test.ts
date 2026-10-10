@@ -395,6 +395,38 @@ describe('monthly editorial preparation', () => {
       reviewed: reviewCheckpoint.mock.calls[0]![0],
     });
     expect(noProvider).not.toHaveBeenCalled();
+    const expanded = {
+      facts: c.facts.slice(0, 26),
+      quotes: c.quotes.slice(0, 26),
+    };
+    const expandedFetch = vi.fn(
+      async (url: string | URL | Request) =>
+        new Response(
+          [...expanded.facts, ...expanded.quotes].find((n) => n.sourceUrl === String(url))
+            ?.evidence ?? '',
+          { headers: { 'content-type': 'text/plain' } },
+        ),
+    ) as unknown as typeof fetch;
+    const recovered = await prepareContent({
+      ...input,
+      candidates: expanded,
+      fetchFn: expandedFetch,
+      respond: noProvider,
+      reviewed: reviewCheckpoint.mock.calls[0]![0],
+    });
+    expect(noProvider).not.toHaveBeenCalled();
+    expect(recovered.facts.map((n) => n.id)).not.toContain(c.facts[25]!.id);
+    expect(recovered.quotes.map((n) => n.id)).not.toContain(c.quotes[25]!.id);
+    const changed = structuredClone(partial);
+    changed.facts[0]!.context = 'Змінений неперевірений контекст.';
+    await expect(
+      prepareContent({
+        ...input,
+        candidates: changed,
+        respond: noProvider,
+        reviewed: reviewCheckpoint.mock.calls[0]![0],
+      }),
+    ).rejects.toThrow('must not pay again');
     await expect(
       prepareContent({
         ...input,

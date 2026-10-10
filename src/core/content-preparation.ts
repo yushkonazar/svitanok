@@ -440,12 +440,28 @@ These original book excerpts were actually fetched. Use them for precise origina
     eligible.filter((n) => 'text' in n).length < requiredDays
   )
     throw new Error('Insufficient fetched source evidence for a whole month; review not charged');
-  const signature = createHash('sha256')
-    .update(JSON.stringify({ prior, reviewData }))
-    .digest('hex');
+  const reviewSignature = (items: typeof reviewData) =>
+    createHash('sha256')
+      .update(JSON.stringify({ prior, reviewData: items }))
+      .digest('hex');
+  let signature = reviewSignature(reviewData);
   const savedReview = z
     .object({ signature: z.string(), review: reviewSchema })
     .safeParse(input.reviewed);
+  // A previously unavailable source may return on retry. Reuse only the exact
+  // reviewed subset, with unchanged evidence and prior history, never its new peers.
+  if (savedReview.success && savedReview.data.signature !== signature) {
+    const reviewedIds = new Set([
+      ...savedReview.data.review.approved,
+      ...savedReview.data.review.rejected.map((n) => n.id),
+    ]);
+    const subset = reviewData.filter((n) => reviewedIds.has(n.item.id));
+    const subsetSignature = reviewSignature(subset);
+    if (subsetSignature === savedReview.data.signature) {
+      signature = subsetSignature;
+      eligible = eligible.filter((n) => reviewedIds.has(n.id));
+    }
+  }
   const review = reviewSchema.parse(
     savedReview.success && savedReview.data.signature === signature
       ? savedReview.data.review
