@@ -28,6 +28,15 @@ export const financeTxSchema = z.object({
   bankHold: z.boolean().optional(),
   reference: z.string().nullable(),
   personalTaxiType: z.string().nullable().optional(),
+  attention: z
+    .object({
+      status: z.enum(['reviewing', 'different']),
+      at: z.string(),
+      source: z.literal('owner'),
+    })
+    .nullable()
+    .optional(),
+  duplicateSuspected: z.boolean().optional(),
 });
 export const taxiPolicySchema = z.object({
   id: z.string(),

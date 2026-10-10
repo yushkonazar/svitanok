@@ -12,6 +12,7 @@
 // «дослівно не копіювати» тримає інструкція працівника.
 
 import { formatMoney } from '../format.mjs';
+import { parseFinanceAttention } from '../finance/attention-state.mjs';
 import { matchRule, merchantKey, normalizeMerchant } from '../finance/rules.mjs';
 import {
   LIST_MAX,
@@ -170,6 +171,7 @@ async function queryOne(env, id) {
       category: String(row.category ?? ''),
       flags,
       note: row.note == null ? null : String(row.note),
+      attention: parseFinanceAttention(row.raw_json),
     },
     merchant: reference,
     subscription: subscription

@@ -8,5 +8,6 @@ export function useFinance(enabled = true) {
     enabled,
     staleTime: 30_000,
     refetchInterval: enabled ? 60_000 : false,
+    refetchOnWindowFocus: 'always',
   });
 }

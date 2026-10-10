@@ -65,7 +65,7 @@ export async function handleFinance(request, env) {
     return json(
       {
         ok: false,
-        error: 'Фінанси тимчасово недоступні. Перевір локальну міграцію та спробуй знову.',
+        error: 'Фінанси тимчасово недоступні. Спробуй пізніше.',
       },
       503,
     );

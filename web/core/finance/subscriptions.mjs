@@ -12,11 +12,8 @@
 // Скасована підписка НЕ воскресає: власник прибрав її з обліку свідомо, і
 // наступне списання того ж мерчанта не має мовчки повертати рядок в active.
 
-import { kyivDateKey, kyivHour } from '../../kyiv-time.mjs';
-import { formatMoney, cleanSource } from '../format.mjs';
-import { enqueueOutbox, drainOutbox } from '../tg/outbox.mjs';
-import { assistantHomeTarget } from '../tg/home.mjs';
 import { merchantKey } from './rules.mjs';
+import { kyivDateKey } from '../../kyiv-time.mjs';
 
 /** Година нагадування за Києвом (окремо від підказки о 10:00 - S-4-6). */
 export const REMIND_HOUR = 11;
@@ -192,63 +189,15 @@ export function subscriptionButtons(id) {
 }
 
 /**
- * Задача `subscription-remind` (07 §7, S-4-6): за два дні до списання - один
- * рядок з кнопкою. Тиша, коли нічого не наближається, - штатний результат.
- * @param {Env} env @param {number} [nowMs]
+ * Compatibility entry point. Bank-detected intervals are predictions, not
+ * confirmed payment dates. Keep the records for analysis, never notify from
+ * them; canonical finance_payments owns payment attention.
+ * @param {Env} _env @param {number} [_nowMs]
  */
-export async function subscriptionRemindTask(env, nowMs = Date.now()) {
-  const now = new Date(nowMs);
-  if (kyivHour(now) !== REMIND_HOUR) return { skipped: 'hour' };
-  const today = kyivDateKey(now);
-  if ((await env.BRIEFING.get(REMIND_MARKER_KEY)) === today) return { skipped: 'done' };
-  if (!env.DB) {
-    console.error('subscription-remind: привʼязки DB немає - нагадувань не буде');
-    return { skipped: 'no-db' };
-  }
-  const home = assistantHomeTarget(env);
-  if (!home) {
-    console.error('subscription-remind: TELEGRAM_CHAT_ID немає - нікуди слати');
-    return { skipped: 'no-chat' };
-  }
-
-  const target = addDays(today, REMIND_DAYS);
-  const { results } = await db(env)
-    .prepare(
-      `SELECT id, merchant, amount, currency, next_at FROM subscriptions
-       WHERE status = 'active' AND next_at IS NOT NULL AND substr(next_at, 1, 10) = ?
-       ORDER BY merchant LIMIT ?`,
-    )
-    .bind(target, REMIND_MAX)
-    .all();
-  const rows = results ?? [];
-  // Мітку ставимо в будь-якому разі: «нічого не наближається» - теж результат
-  // дня, і крутитись до 12:00 задачі нема сенсу.
-  await env.BRIEFING.put(REMIND_MARKER_KEY, today);
-  if (!rows.length) return { sent: false };
-
-  for (const row of rows) {
-    const amount =
-      row.amount == null
-        ? ''
-        : ` ${formatMoney(Number(row.amount), String(row.currency ?? 'UAH'))}`;
-    await enqueueOutbox(
-      env,
-      {
-        chatId: home.chatId,
-        threadId: home.threadId,
-        kind: 'send',
-        payload: {
-          text: `Післязавтра ${cleanSource(String(row.merchant), 40)}${amount}.`,
-          reply_markup: { inline_keyboard: subscriptionButtons(String(row.id)) },
-        },
-      },
-      nowMs,
-    );
-  }
-  await drainOutbox(env, { nowMs }).catch((/** @type {any} */ e) =>
-    console.error('subscription-remind: драйн outbox впав, добере sweeper', e?.message),
-  );
-  return { sent: true, count: rows.length };
+export async function subscriptionRemindTask(_env, _nowMs) {
+  void _env;
+  void _nowMs;
+  return { skipped: 'forecast-only' };
 }
 
 /**

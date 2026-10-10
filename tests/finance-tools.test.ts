@@ -646,15 +646,13 @@ describe('задача subscription-remind (S-4-6)', () => {
       `INSERT INTO subscriptions (id, merchant, period, amount, currency, next_at, status, created_at)
        VALUES ('s1', 'Spotify', 'month', 499, 'USD', ?, 'active', '2026-07-01T00:00:00Z')`,
     ).run(`${addDays('2026-09-07', 2)}T09:00:00.000Z`);
-    expect(await subscriptionRemindTask(env, NOON)).toEqual({ skipped: 'hour' });
-    expect(await subscriptionRemindTask(env, REMIND)).toMatchObject({ sent: true, count: 1 });
-    const [msg] = outboxTexts(db);
-    expect(msg!.text).toBe('Післязавтра Spotify 4,99 $.');
-    expect(msg!.reply_markup).toMatchObject({
-      inline_keyboard: [[{ text: 'Скасувати підписку в обліку', callback_data: 'm:fs:s1:cancel' }]],
+    expect(await subscriptionRemindTask(env, NOON)).toEqual({ skipped: 'forecast-only' });
+    expect(await subscriptionRemindTask(env, REMIND)).toEqual({ skipped: 'forecast-only' });
+    expect(outboxTexts(db)).toHaveLength(0);
+    expect(await env.BRIEFING.get(REMIND_MARKER_KEY)).toBeNull();
+    expect(await subscriptionRemindTask(env, REMIND + 60_000)).toEqual({
+      skipped: 'forecast-only',
     });
-    expect(await env.BRIEFING.get(REMIND_MARKER_KEY)).toBe('2026-09-07');
-    expect(await subscriptionRemindTask(env, REMIND + 60_000)).toEqual({ skipped: 'done' });
   });
 
   it('за три дні або наступного тижня - тиша (це справа підказки)', async () => {
@@ -663,7 +661,7 @@ describe('задача subscription-remind (S-4-6)', () => {
       `INSERT INTO subscriptions (id, merchant, period, amount, currency, next_at, status, created_at)
        VALUES ('s1', 'Spotify', 'month', 499, 'USD', '2026-09-10T09:00:00.000Z', 'active', '2026-07-01T00:00:00Z')`,
     ).run();
-    expect(await subscriptionRemindTask(env, REMIND)).toEqual({ sent: false });
+    expect(await subscriptionRemindTask(env, REMIND)).toEqual({ skipped: 'forecast-only' });
     expect(outboxTexts(db)).toHaveLength(0);
   });
 
@@ -673,7 +671,7 @@ describe('задача subscription-remind (S-4-6)', () => {
       `INSERT INTO subscriptions (id, merchant, period, amount, currency, next_at, status, created_at)
        VALUES ('s1', 'Spotify', 'month', 499, 'USD', ?, 'cancelled', '2026-07-01T00:00:00Z')`,
     ).run(`${addDays('2026-09-07', 2)}T09:00:00.000Z`);
-    expect(await subscriptionRemindTask(env, REMIND)).toEqual({ sent: false });
+    expect(await subscriptionRemindTask(env, REMIND)).toEqual({ skipped: 'forecast-only' });
     expect(outboxTexts(db)).toHaveLength(0);
   });
 });

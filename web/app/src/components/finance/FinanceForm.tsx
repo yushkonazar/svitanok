@@ -1283,7 +1283,10 @@ export function FinanceForm({
                   <div className="renewal-form-grid">
                     {!['day', 'week'].includes(v.recurrence) &&
                       field('anchorDay', 'Фіксований день списання (1–31)')}
-                    {field('remindDays', 'Нагадувати за стільки днів')}
+                    <p className="renewal-muted">
+                      Графік лишається в календарі платежів. Якщо оплату не підтверджено, повідомлю
+                      наступного дня.
+                    </p>
                   </div>
                   <p className="renewal-chart-note">
                     Для щотижневого платежу наступна дата — через 7 днів, для щоденного — через
@@ -1471,7 +1474,7 @@ export function FinanceForm({
                 ['true', 'Показувати'],
                 ['false', 'Приховати й зберегти історію'],
               ])}
-              {select('paymentReminders', 'Нагадування про платежі в Telegram', [
+              {select('paymentReminders', 'Непідтверджені оплати в Telegram', [
                 ['true', 'Увімкнено'],
                 ['false', 'Вимкнено'],
               ])}

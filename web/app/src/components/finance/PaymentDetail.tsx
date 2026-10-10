@@ -213,7 +213,8 @@ export function PaymentDetail({
           <p className="renewal-muted mt-3">Показано найближчі 24 платежі.</p>
         )}
         <p className="renewal-chart-note mt-3">
-          Нагадування за {p.remindDays} дн. · Для 29–31 числа врахована тривалість місяця.
+          У Telegram повідомляю лише про непідтверджену оплату після планової дати. Для 29–31 числа
+          врахована тривалість місяця.
         </p>
       </section>
     </div>

@@ -844,6 +844,18 @@ export function writeFinanceDemo(command: FinanceCommand) {
         pay.nextDate = nextPaymentDate(pay.nextDate, pay.anchorDay, pay.recurrence);
       break;
     }
+    case 'transaction-attention': {
+      const t = f.transactions.find((t) => t.id === p.transactionId);
+      const status = str('status');
+      if (!t?.duplicateSuspected || !['reviewing', 'different'].includes(status))
+        throw new Error('Для цієї операції немає попередження про повторне списання');
+      t.attention = {
+        status: status as 'reviewing' | 'different',
+        at: new Date().toISOString(),
+        source: 'owner',
+      };
+      break;
+    }
     case 'classify': {
       const t = f.transactions.find((t) => t.id === p.transactionId);
       if (t) {

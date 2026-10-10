@@ -1,4 +1,5 @@
 import { financeCategories } from './categories.mjs';
+import { parseFinanceAttention } from './attention-state.mjs';
 import { bankPaymentAmount } from './payment-link.mjs';
 import { fixedDebtPayment, isDebtKind, interestDebtPayment, interestQuote } from './payments.mjs';
 import { NOT_TEST_SQL, readMonoAccounts } from './store.mjs';
@@ -123,7 +124,7 @@ export async function readFinanceWorkspace(env, nowMs = Date.now(), range) {
     db.prepare('SELECT * FROM finance_payments ORDER BY next_date').bind(),
     db
       .prepare(
-        `SELECT id, at, amount, currency, amount_uah, category, description, raw_json, balance FROM transactions WHERE at >= ? AND at < ? AND ${NOT_TEST_SQL} ORDER BY at DESC LIMIT 20001`,
+        `SELECT id, at, amount, currency, amount_uah, category, description, raw_json, flags_json, balance FROM transactions WHERE at >= ? AND at < ? AND ${NOT_TEST_SQL} ORDER BY at DESC LIMIT 20001`,
       )
       .bind(
         new Date(
@@ -270,6 +271,8 @@ export async function readFinanceWorkspace(env, nowMs = Date.now(), range) {
       bankHold: Boolean(raw.hold),
       reference: raw.financeReference ?? null,
       personalTaxiType: raw.financePersonalTaxiType ?? null,
+      attention: parseFinanceAttention(r.raw_json),
+      duplicateSuspected: categoryArray(r.flags_json).includes('duplicate'),
     };
   });
   /** @type {string[]} */ let custom = [];
@@ -409,7 +412,7 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
     throw new FinanceConflict('Дані змінилися. Онови екран і повтори дію.');
   const now = new Date(nowMs).toISOString();
   const guard =
-    'EXISTS (SELECT 1 FROM finance_commands WHERE id = ? AND payload_hash = ? AND at = ?)';
+    "EXISTS (SELECT 1 FROM finance_commands WHERE id = ? AND payload_hash = ? AND at = ?) AND EXISTS (SELECT 1 FROM finance_settings WHERE id = 'owner' AND version = ?)";
   /** @type {D1PreparedStatement[]} */ const statements = [
     db
       .prepare(
@@ -425,12 +428,12 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
         .prepare(
           `INSERT INTO ${table} (${columns.join(',')}) SELECT ${columns.map(() => '?').join(',')} WHERE ${guard} ON CONFLICT DO NOTHING`,
         )
-        .bind(...Object.values(values), id, hash, now),
+        .bind(...Object.values(values), id, hash, now, version),
     );
   };
   /** @param {string} sql @param {unknown[]} values */
   const update = (sql, values) =>
-    statements.push(db.prepare(`${sql} AND ${guard}`).bind(...values, id, hash, now));
+    statements.push(db.prepare(`${sql} AND ${guard}`).bind(...values, id, hash, now, version));
   /** @param {unknown} accountId @param {boolean} [manualOnly] */
   const account = (accountId, manualOnly = false) => {
     const found = state.accounts.find((a) => a.id === accountId);
@@ -1563,6 +1566,21 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
         'UPDATE finance_payments SET overpayment_remaining_minor = ?, overpayment_paid_minor = ? WHERE id = ?',
         [extraRemaining, (payment.overpaymentPaidMinor ?? 0) + extraPaid, payment.id],
       );
+  } else if (type === 'transaction-attention') {
+    const transactionId = text(payload.transactionId, 120);
+    const row = await db
+      .prepare(
+        `SELECT raw_json, flags_json FROM transactions WHERE id = ? AND amount < 0 AND ${NOT_TEST_SQL}`,
+      )
+      .bind(transactionId)
+      .first();
+    if (!row || !categoryArray(row.flags_json).includes('duplicate'))
+      throw new FinanceValidation('Для цієї операції немає попередження про повторне списання');
+    const status = choice(payload.status, ['reviewing', 'different']);
+    update(
+      "UPDATE transactions SET raw_json = json_patch(COALESCE(raw_json, '{}'), ?) WHERE id = ?",
+      [JSON.stringify({ financeAttention: { status, at: now, source: 'owner' } }), transactionId],
+    );
   } else if (type === 'classify') {
     const tx = state.transactions.find((t) => t.id === payload.transactionId);
     if (!tx) throw new FinanceValidation('Операція не знайдена у доступному періоді');
@@ -1583,7 +1601,7 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
       .prepare(
         `UPDATE finance_settings SET version = version + 1, updated_at = ? WHERE id = 'owner' AND version = ? AND ${guard}`,
       )
-      .bind(now, version, id, hash, now),
+      .bind(now, version, id, hash, now, version),
   );
   const outcome = await db.batch(statements);
   if (!outcome.at(-1)?.meta?.changes)

@@ -1,0 +1,97 @@
+import { useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
+import type { Finance } from '../../api/finance-schema.ts';
+import { postFinance } from '../../api/client.ts';
+import { FINANCE_QUERY } from '../../api/finance-hooks.ts';
+import { moneyLabel } from '../../lib/financeView.ts';
+
+export function TransactionDetail({
+  transaction: tx,
+  version,
+  onBack,
+  onClassify,
+}: {
+  transaction: Finance['transactions'][number];
+  version: number;
+  onBack: () => void;
+  onClassify: () => void;
+}) {
+  const query = useQueryClient();
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState('');
+  const [saved, setSaved] = useState<'reviewing' | 'different' | null>(null);
+  const status = saved ?? tx.attention?.status;
+  const acknowledge = async (next: 'reviewing' | 'different') => {
+    if (pending) return;
+    setPending(true);
+    setError('');
+    try {
+      await postFinance({
+        id: crypto.randomUUID(),
+        version,
+        type: 'transaction-attention',
+        payload: { transactionId: tx.id, status: next },
+      });
+      setSaved(next);
+      await query.invalidateQueries({ queryKey: FINANCE_QUERY });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Не вдалося зберегти відповідь.');
+      await query.invalidateQueries({ queryKey: FINANCE_QUERY });
+    } finally {
+      setPending(false);
+    }
+  };
+  return (
+    <section className="renewal-card flex flex-col gap-4">
+      <button className="renewal-link" onClick={onBack}>
+        ← До фінансів
+      </button>
+      <h1 className="text-xl font-bold">{tx.description || 'Операція'}</h1>
+      <strong>{moneyLabel(tx.amountMinor, tx.currency)}</strong>
+      <p className="renewal-muted">
+        {tx.category} · {new Date(tx.at).toLocaleString('uk-UA', { timeZone: 'Europe/Kyiv' })}
+      </p>
+      {tx.bankHold && (
+        <p className="renewal-inset">
+          Сума ще заблокована банком; остаточне списання може змінитися.
+        </p>
+      )}
+      {tx.duplicateSuspected && (
+        <div className="renewal-inset">
+          {status === 'different'
+            ? 'Позначено як різні покупки. Обидві операції залишились в обліку.'
+            : status === 'reviewing'
+              ? 'Чекає твоєї перевірки. Списання не скасовано.'
+              : 'Схожа операція була невдовзі перед цією. Перевір, чи це різні покупки.'}
+        </div>
+      )}
+      {tx.duplicateSuspected && status !== 'different' && (
+        <div className="renewal-finance-actions">
+          {!status && (
+            <button
+              disabled={pending}
+              className="renewal-secondary"
+              onClick={() => void acknowledge('reviewing')}
+            >
+              Перевірю списання
+            </button>
+          )}
+          <button
+            disabled={pending}
+            className="renewal-secondary"
+            onClick={() => void acknowledge('different')}
+          >
+            Це різні покупки
+          </button>
+        </div>
+      )}
+      {!tx.reference && (tx.bank || ['expense', 'income', 'unclassified'].includes(tx.kind)) && (
+        <button disabled={pending} className="renewal-button" onClick={onClassify}>
+          Уточнити категорію та тип
+        </button>
+      )}
+      {pending && <p role="status">Зберігаю відповідь…</p>}
+      {error && <p role="alert">{error}</p>}
+    </section>
+  );
+}

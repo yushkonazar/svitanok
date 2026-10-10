@@ -1,6 +1,7 @@
 // Задача `daily-hint` (07 §7, S-0-16, етап 3 PR-7): ≤ 1 проактивна підказка
-// на добу о 10:00 Києва - один кандидат за пріоритетом trips → subscriptions
-// → chains → ideas → facts. Дедуп на добу (KV-мітка ставиться і тоді, коли
+// на добу о 10:00 Києва — один кандидат за пріоритетом trips → chains → ideas
+// → security. Прогнози підписок не є нагадуваннями про оплати. Дедуп на добу
+// (KV-мітка ставиться і тоді, коли
 // кандидата немає: тиша - теж рішення на сьогодні). facts.setting.hint_mute_json
 // вимикає теми: «не нагадуй про X» модель кладе туди через facts.set.
 //
@@ -22,7 +23,6 @@ import { runFactsGet, runFactsSet } from '../tools/facts.mjs';
 import { applyPolicy } from '../policy/proposals.mjs';
 import { addDaysToDateKey } from '../../reminders-core.mjs';
 import { escapeHtml } from '../../tg-core.mjs';
-import { REMIND_DAYS } from '../finance/subscriptions.mjs';
 
 export const DAILY_HINT_MARKER_KEY = 'dailyHintDay';
 export const DAILY_HINT_HOUR = 10;
@@ -121,7 +121,6 @@ export async function dailyHintTask(env, nowMs = Date.now()) {
 export async function pickHint(env, today, nowMs, muted) {
   const finders = [
     ['trips', () => tripHint(env, today)],
-    ['subscriptions', () => subscriptionHint(env, today)],
     ['chains', () => chainHint(env, nowMs)],
     ['ideas', () => ideaHint(env, nowMs)],
     ['security', () => securityHint(env, nowMs)],
@@ -168,36 +167,6 @@ async function tripHint(env, today) {
   if (!row) return null;
   const days = daysBetween(today, String(row.date_from));
   return `Поїздка «${String(row.to_text ?? '')}» ${days === 0 ? 'сьогодні' : `через ${days} ${pluralDays(days)}`} - перевір чеклист.`;
-}
-
-/**
- * Підказка про підписку бере ЛИШЕ дальній край вікна: ближче стоїть задача
- * `subscription-remind` (етап 6 PR-2, S-4-6) з тим самим рядком і кнопкою
- * «Скасувати підписку в обліку», і два повідомлення про одне списання - це
- * не проактивність, а шум. Межу беремо з самої задачі (`REMIND_DAYS`), а не
- * копією числа: розійшлись би - або дубль, або діра в добу.
- * @param {Env} env @param {string} today
- */
-async function subscriptionHint(env, today) {
-  const from = addDaysToDateKey(today, REMIND_DAYS + 1);
-  const until = addDaysToDateKey(today, SUBSCRIPTION_DAYS_AHEAD);
-  const row = /** @type {any} */ (
-    await db(env)
-      .prepare(
-        `SELECT merchant, amount, currency, next_at FROM subscriptions
-         WHERE status = 'active' AND next_at IS NOT NULL AND substr(next_at, 1, 10) >= ? AND substr(next_at, 1, 10) <= ?
-         ORDER BY next_at LIMIT 1`,
-      )
-      .bind(from, until)
-      .first()
-  );
-  if (!row) return null;
-  const date = String(row.next_at).slice(0, 10);
-  const amount =
-    row.amount != null
-      ? ` ${(Number(row.amount) / 100).toFixed(2)} ${String(row.currency ?? '')}`
-      : '';
-  return `Списання ${String(row.merchant)}${amount} - ${ddmm(date)}.`;
 }
 
 /** @param {Env} env @param {number} nowMs */
@@ -395,10 +364,4 @@ function pluralDays(n) {
   if (mod10 === 1 && mod100 !== 11) return 'день';
   if (mod10 >= 2 && mod10 <= 4 && (mod100 < 10 || mod100 >= 20)) return 'дні';
   return 'днів';
-}
-
-/** @param {string} dateKey */
-function ddmm(dateKey) {
-  const [, m, d] = dateKey.split('-');
-  return `${d}.${m}`;
 }

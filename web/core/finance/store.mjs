@@ -405,7 +405,7 @@ export async function readTransaction(env, id) {
     await db(env)
       .prepare(
         `SELECT id, at, amount, currency, amount_uah, mcc, description, category, flags_json,
-                balance, note FROM transactions WHERE id = ?`,
+                balance, note, raw_json FROM transactions WHERE id = ?`,
       )
       .bind(id)
       .first()
