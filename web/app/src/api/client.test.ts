@@ -33,7 +33,9 @@ const {
   fetchSettings,
   fetchWorkerQuality,
   fetchSaved,
+  postFinance,
 } = await import('./client.ts');
+const { readFinanceDemo } = await import('./finance-demo.ts');
 
 const SETTINGS = {
   quiet: { enabled: false, from: '22:00', to: '08:00' },
@@ -80,6 +82,37 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+});
+
+describe('finance mutation acknowledgement', () => {
+  const command = { id: 'payment-test-command', version: 1, type: 'payment-paid', payload: {} };
+  it.each([false, true])(
+    'accepts the real server acknowledgement (duplicate=%s) and refreshes without reposting',
+    async (duplicate) => {
+      const finance = readFinanceDemo();
+      fetchMock
+        .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, duplicate })))
+        .mockResolvedValueOnce(new Response(JSON.stringify(finance)));
+      await expect(postFinance(command)).resolves.toEqual({ finance, demo: false });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(fetchMock.mock.calls[0][1].method).toBe('POST');
+      expect(fetchMock.mock.calls[1][1].method).toBeUndefined();
+    },
+  );
+  it('does not turn an accepted payment into a failed mutation when its subsequent refresh fails', async () => {
+    fetchMock
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, duplicate: false })))
+      .mockRejectedValueOnce(new Error('offline'));
+    await expect(postFinance(command)).resolves.toEqual({ finance: null, demo: false });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+  it('still reports a rejected command and does not refresh it as a successful payment', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ ok: false, error: 'Сума не збігається' }), { status: 400 }),
+    );
+    await expect(postFinance(command)).rejects.toThrow('Сума не збігається');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
 });
 
 const MUTATIONS: [string, () => Promise<unknown>][] = [

@@ -139,7 +139,17 @@ export async function postFinance(command: FinanceCommand) {
         : 'Не вдалося зберегти операцію',
     );
   }
-  return { finance: financeSchema.parse(await res.json()), demo: false };
+  // Mutations return an acknowledgement, not the GET workspace contract.
+  // Once accepted, a failed refresh must never suggest retrying the payment.
+  const acknowledgement: unknown = await res.json();
+  if (
+    !acknowledgement ||
+    typeof acknowledgement !== 'object' ||
+    !('ok' in acknowledgement) ||
+    acknowledgement.ok !== true
+  )
+    throw new Error('Не вдалося перевірити збереження. Онови фінанси перед повторною дією.');
+  return await fetchFinance().catch(() => ({ finance: null, demo: false }));
 }
 
 /**

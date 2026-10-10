@@ -16,7 +16,7 @@ import { PageHeading } from '../ui/PageHeading.tsx';
 import { TaxiHistory } from './TaxiHistory.tsx';
 import { FinanceReport } from './FinanceReport.tsx';
 import { PaymentDetail } from './PaymentDetail.tsx';
-import { PaymentCard } from './PaymentCard.tsx';
+import { PaymentGroups } from './PaymentGroups.tsx';
 import { FinanceExplanation } from './FinanceExplanation.tsx';
 import { PaymentCalendar } from './PaymentCalendar.tsx';
 import { kyivParts, shiftDate } from '../../../../core/finance/planning.mjs';
@@ -364,28 +364,14 @@ export function FinanceScreen() {
             : `Показати список (${f.payments.filter((p) => p.status === 'active' || p.status === 'paused').length})`}
         </button>
         <div id="finance-payment-list" hidden={!paymentsExpanded}>
-          {f.payments
-            .filter((p) => p.status === 'active')
-            .sort((a, b) => a.nextDate.localeCompare(b.nextDate))
-            .map((p) => (
-              <PaymentCard
-                key={p.id}
-                payment={p}
-                onOpen={() => {
-                  overviewScroll.current = window.scrollY;
-                  setDetailId(p.id);
-                }}
-                onPay={() => setForm({ kind: 'payment-paid', id: p.id })}
-                onEdit={() => setForm({ kind: 'payment', id: p.id })}
-                onCloseDebt={() => setForm({ kind: 'payment-close', id: p.id })}
-                onCancel={() => setForm({ kind: 'payment-cancel', id: p.id })}
-              />
-            ))}
-          {!f.payments.some((p) => p.status === 'active') && (
-            <p className="renewal-muted mt-3">
-              Активних платежів немає. Додай підписку, кредит або інший платіж.
-            </p>
-          )}
+          <PaymentGroups
+            payments={f.payments}
+            onAction={setForm}
+            onOpen={(id) => {
+              overviewScroll.current = window.scrollY;
+              setDetailId(id);
+            }}
+          />
           {f.payments.some((p) => p.status === 'paused') && (
             <details className="mt-3">
               <summary className="renewal-link">Призупинені платежі</summary>

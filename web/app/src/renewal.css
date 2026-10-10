@@ -758,6 +758,107 @@
   border-radius: 18px;
   background: var(--color-glass);
 }
+.renewal-payment-groups {
+  display: grid;
+  gap: 24px;
+  margin-top: 20px;
+  min-width: 0;
+}
+.renewal-payment-group {
+  min-width: 0;
+}
+.renewal-payment-group-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.renewal-payment-group-head h3 {
+  font-size: 14px;
+  font-weight: 700;
+}
+.renewal-payment-count {
+  color: var(--color-tx2);
+  margin-left: 6px;
+  font-weight: 500;
+}
+.renewal-payment-navigation {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.renewal-payment-navigation span {
+  font: 500 11px var(--font-mono);
+  color: var(--color-tx2);
+  margin-right: 2px;
+}
+.renewal-payment-navigation button {
+  width: 44px;
+  height: 44px;
+  border: 1px solid var(--color-glassb);
+  border-radius: 14px;
+  background: var(--color-glass);
+  font-size: 24px;
+}
+.renewal-payment-navigation button:disabled {
+  opacity: 0.3;
+}
+.renewal-payment-rail {
+  display: flex;
+  gap: 12px;
+  overflow-x: auto;
+  min-width: 0;
+  position: relative;
+  scroll-snap-type: x proximity;
+  overscroll-behavior-x: contain;
+  padding-bottom: 10px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-a2) transparent;
+}
+.renewal-payment-rail:focus-visible {
+  outline: 2px solid var(--color-a2);
+  outline-offset: 3px;
+  border-radius: 18px;
+}
+.renewal-payment-rail .renewal-payment-compact {
+  flex: 0 0 min(320px, calc(100% - 24px));
+  margin-top: 0;
+  scroll-snap-align: start;
+  grid-template-columns: 44px minmax(0, 1fr);
+  grid-template-rows: auto auto 1fr auto;
+  gap: 10px;
+  padding: 14px;
+}
+.renewal-payment-rail .renewal-payment-compact:only-child {
+  flex-basis: min(100%, 380px);
+}
+.renewal-payment-compact .renewal-datebox {
+  min-width: 0;
+  padding: 8px 4px;
+  font-size: 18px;
+}
+.renewal-payment-compact .renewal-payment-name {
+  font-size: 14px;
+  line-height: 1.4;
+}
+.renewal-payment-compact .renewal-payment-amount {
+  grid-column: 2;
+  font-size: 18px;
+  color: var(--color-a2);
+}
+.renewal-payment-compact .renewal-payment-summary {
+  grid-column: 1 / -1;
+  font-size: 11px;
+}
+.renewal-payment-compact .renewal-payment-actions {
+  align-self: end;
+}
+.renewal-payment-compact .renewal-payment-actions button {
+  font-size: 12px;
+  padding: 10px 8px;
+}
 .renewal-payment-info {
   min-width: 0;
 }
@@ -772,10 +873,16 @@
   white-space: nowrap;
 }
 .renewal-payment-name {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
   text-align: left;
   overflow-wrap: anywhere;
   font-weight: 700;
   line-height: 1.5;
+}
+.renewal-payment-name span:last-child {
+  flex-shrink: 0;
 }
 .renewal-payment-meta {
   color: var(--color-tx2);

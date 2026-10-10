@@ -182,7 +182,8 @@ function IncomePlan({
           },
         };
       const result = await postFinance(attempt.current.command);
-      query.setQueryData(FINANCE_QUERY, result);
+      if (result.finance) query.setQueryData(FINANCE_QUERY, result);
+      else void query.invalidateQueries({ queryKey: FINANCE_QUERY });
       onClose();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Не вдалося зберегти');

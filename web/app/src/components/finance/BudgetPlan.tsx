@@ -35,7 +35,8 @@ export function BudgetPlan({ finance: f, nowMs }: { finance: Finance; nowMs: num
       };
     try {
       const result = await postFinance(attempt.current.command);
-      query.setQueryData(FINANCE_QUERY, result);
+      if (result.finance) query.setQueryData(FINANCE_QUERY, result);
+      else void query.invalidateQueries({ queryKey: FINANCE_QUERY });
       setEditing(null);
       attempt.current = null;
     } catch (e) {

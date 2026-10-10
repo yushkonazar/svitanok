@@ -718,8 +718,9 @@ export function FinanceForm({
           command: { id: crypto.randomUUID(), version: f.version, type, payload: p },
         };
       setPending(true);
-      await postFinance(attempt.current.command);
-      await query.invalidateQueries({ queryKey: FINANCE_QUERY });
+      const result = await postFinance(attempt.current.command);
+      if (result?.finance) query.setQueryData(FINANCE_QUERY, result);
+      else void query.invalidateQueries({ queryKey: FINANCE_QUERY });
       haptic('success');
       onClose();
     } catch (e) {
