@@ -9,6 +9,7 @@ import {
   batchSchema,
   contentIdentity,
   DEFAULT_CONTENT_PREFERENCES,
+  monthDays,
 } from '../web/core/brief/daily-content.mjs';
 import oldFacts from '../src/data/verified-facts.json' with { type: 'json' };
 import oldQuotes from '../src/data/verified-stoic.json' with { type: 'json' };
@@ -72,9 +73,19 @@ export async function main() {
   if (previous.length > 5000) throw new Error('Content ledger requires editorial maintenance');
   const before = (await read(`dailyContent:status:${month}`)) as { attempts?: number } | null;
   const staging = batchSchema.safeParse(await read(`dailyContent:staging:${month}`));
-  const candidates = await read(`dailyContent:candidates:${month}`);
+  const savedCandidates = (await read(`dailyContent:candidates:${month}`)) as {
+    facts?: unknown;
+    quotes?: unknown;
+  } | null;
+  const candidates =
+    Array.isArray(savedCandidates?.facts) &&
+    Array.isArray(savedCandidates?.quotes) &&
+    savedCandidates.facts.length >= monthDays(month) &&
+    savedCandidates.quotes.length >= monthDays(month)
+      ? savedCandidates
+      : null;
   const attempts = before?.attempts ?? 0;
-  if (!staging.success && attempts >= 2)
+  if (!staging.success && attempts >= 3)
     throw new Error('Monthly paid attempt cap reached; using reviewed reserve');
   const now = new Date().toISOString();
   try {

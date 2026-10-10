@@ -279,7 +279,7 @@ describe('monthly editorial preparation', () => {
     await prepareMonthly();
     expect(f).toHaveBeenCalledTimes(1);
     values.delete('dailyContent:batch:2026-11');
-    values.set('dailyContent:status:2026-11', { attempts: 2 });
+    values.set('dailyContent:status:2026-11', { attempts: 3 });
     await expect(prepareMonthly()).rejects.toThrow('attempt cap');
     values.set('dailyContent:staging:2026-11', batch());
     await prepareMonthly();

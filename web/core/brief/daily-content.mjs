@@ -66,7 +66,11 @@ const common = {
   context: z.string().min(15).max(500),
   sourceUrl: z.string().url().refine(contentSourceAllowed),
   sourceName: z.string().min(2).max(80),
-  evidence: z.string().min(20).max(220),
+  evidence: z
+    .string()
+    .min(20)
+    .max(220)
+    .regex(/^[\s\S]{20,220}$/),
 };
 export const candidateFactSchema = z
   .object({ ...common, fact: z.string().min(40).max(550) })
@@ -98,6 +102,14 @@ export const candidatesSchema = z
   .object({
     facts: z.array(candidateFactSchema).max(42),
     quotes: z.array(candidateQuoteSchema).max(42),
+  })
+  .strict();
+// A generation cannot opt out silently by returning empty arrays. Local item
+// validation still rejects incomplete candidates individually afterward.
+export const generationSchema = z
+  .object({
+    facts: z.array(candidateFactSchema).min(42).max(42),
+    quotes: z.array(candidateQuoteSchema).min(42).max(42),
   })
   .strict();
 export const factSchema = candidateFactSchema.extend({ verifiedAt: z.string() });
