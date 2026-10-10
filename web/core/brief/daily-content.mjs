@@ -28,6 +28,7 @@ export const CONTENT_DOMAINS = [
   'loc.gov',
   'royalsociety.org',
   'nobelprize.org',
+  'computinghistory.org.uk',
   'classics.mit.edu',
   'gutenberg.org',
   'uk.wikisource.org',

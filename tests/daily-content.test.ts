@@ -118,6 +118,18 @@ describe('monthly editorial preparation', () => {
         .length,
     ).toBeGreaterThanOrEqual(19);
   });
+  it('keeps a three-topic partial bootstrap valid while still requiring five topics for a full month', () => {
+    const b = batch();
+    b.month = '2026-10';
+    b.startDay = 11;
+    b.facts = b.facts.slice(0, 21);
+    b.facts.forEach((n, i) => {
+      n.topic = i < 7 ? 'nature' : i < 15 ? 'science' : 'space';
+    });
+    expect(() => validatePreparedBatch(b)).not.toThrow();
+    delete b.startDay;
+    expect(() => validatePreparedBatch(b)).toThrow('whole month');
+  });
   it('does not allow SSRF URLs or redirects outside reviewed primary source domains', async () => {
     for (const url of [
       'http://www.nasa.gov/a',
