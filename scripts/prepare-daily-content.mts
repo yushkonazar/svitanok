@@ -78,6 +78,7 @@ export async function main() {
     searchCalls?: number;
   } | null;
   const staging = batchSchema.safeParse(await read(`dailyContent:staging:${month}`));
+  const reviewed = await read(`dailyContent:review:${month}`);
   const savedCandidates = (await read(`dailyContent:candidates:${month}`)) as {
     facts?: unknown;
     quotes?: unknown;
@@ -92,9 +93,18 @@ export async function main() {
   const attempts = before?.attempts ?? 0;
   let paidCalls = before?.paidCalls ?? attempts * 2;
   let searchCalls = before?.searchCalls ?? Math.min(attempts, 3);
-  if (!staging.success && paidCalls >= 6)
+  if (!staging.success && !reviewed && paidCalls >= 6)
     throw new Error('Monthly paid attempt cap reached; using reviewed reserve');
   const now = new Date().toISOString();
+  const today = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Europe/Kyiv',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(new Date(now));
+  const startDay = today.slice(0, 7) === month ? Number(today.slice(-2)) + 1 : 1;
+  if (startDay > monthDays(month))
+    throw new Error('Current month has no remaining days; prepare next month');
   try {
     let batch;
     if (staging.success) {
@@ -138,6 +148,9 @@ export async function main() {
         previous,
         preferences: { ...(preferences ?? DEFAULT_CONTENT_PREFERENCES), reactions },
         candidates,
+        startDay,
+        reviewed,
+        reviewCheckpoint: (value) => write(`dailyContent:review:${month}`, value),
         checkpoint: (value) => write(`dailyContent:candidates:${month}`, value),
         respond: async (request) => {
           if (paidCalls >= 6 || (request.search && searchCalls >= 3))
@@ -170,6 +183,8 @@ export async function main() {
       updatedAt: now,
       facts: batch.facts.length,
       quotes: batch.quotes.length,
+      startDay: batch.startDay ?? 1,
+      calendarDays: monthDays(month) - (batch.startDay ?? 1) + 1,
     });
     console.log(
       `Content ${month} ready: ${batch.facts.length} facts, ${batch.quotes.length} quotes. Daily reads cost no provider calls.`,

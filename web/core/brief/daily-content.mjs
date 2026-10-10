@@ -114,13 +114,22 @@ export const generationSchema = z
   .strict();
 export const factSchema = candidateFactSchema.extend({ verifiedAt: z.string() });
 export const quoteSchema = candidateQuoteSchema.extend({ verifiedAt: z.string() });
-export const batchSchema = z.object({
-  version: z.literal(1),
-  month: z.string().regex(/^\d{4}-\d{2}$/),
-  generatedAt: z.string(),
-  facts: z.array(factSchema).min(28).max(42),
-  quotes: z.array(quoteSchema).min(28).max(42),
-});
+export const batchSchema = z
+  .object({
+    version: z.literal(1),
+    month: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/),
+    generatedAt: z.string(),
+    startDay: z.number().int().min(1).max(31).optional(),
+    facts: z.array(factSchema).min(1).max(42),
+    quotes: z.array(quoteSchema).min(1).max(42),
+  })
+  .refine(
+    (batch) => {
+      const days = monthDays(batch.month) - (batch.startDay ?? 1) + 1;
+      return days > 0 && batch.facts.length >= days && batch.quotes.length >= days;
+    },
+    { message: 'Insufficient verified content for a whole month' },
+  );
 export const preferencesSchema = z
   .object({
     topics: z.array(topic).min(1).max(7),
@@ -149,7 +158,13 @@ export function contentRepeats(a, b) {
     normalizedContent(a.semanticKey) === normalizedContent(b.semanticKey)
   )
     return true;
-  if (a.author && a.author === b.author && a.reference === b.reference) return true;
+  if (
+    a.author &&
+    a.author === b.author &&
+    a.reference === b.reference &&
+    (!a.evidence || !b.evidence || normalizedContent(a.evidence) === normalizedContent(b.evidence))
+  )
+    return true;
   const ta = normalizedContent(a.fact ?? a.text ?? ''),
     tb = normalizedContent(b.fact ?? b.text ?? '');
   if (ta === tb) return true;

@@ -334,6 +334,63 @@ describe('monthly editorial preparation', () => {
     expect(diverseContent(prepared.facts, { topics: ['nature'] })).toHaveLength(38);
     expect(publicContent(prepared.facts[0]!)).not.toHaveProperty('semanticKey');
   });
+  it('starts a mid-month bootstrap on its actual first unpublished day and resumes the exact review without paying again', async () => {
+    const c = candidates();
+    const partial = { facts: c.facts.slice(0, 25), quotes: c.quotes.slice(0, 25) };
+    const fetchFn = vi.fn(
+      async (url: string | URL | Request) =>
+        new Response(
+          [...partial.facts, ...partial.quotes].find((n) => n.sourceUrl === String(url))
+            ?.evidence ?? '',
+          { headers: { 'content-type': 'text/plain' } },
+        ),
+    ) as unknown as typeof fetch;
+    const respond = vi.fn().mockResolvedValue({
+      approved: [...partial.facts, ...partial.quotes].map((n) => n.id),
+      rejected: [],
+    });
+    const reviewCheckpoint = vi.fn().mockResolvedValue(undefined);
+    const input = {
+      month: '2026-10',
+      startDay: 11,
+      apiKey: 'test',
+      model: 'test',
+      previous: [],
+      preferences: {},
+      now: '2026-10-10T07:00:00Z',
+      candidates: partial,
+      respond,
+      fetchFn,
+      reviewCheckpoint,
+    };
+    const ready = await prepareContent(input);
+    expect(ready.startDay).toBe(11);
+    const state = memState();
+    const ctx = {
+      clock: { todayKey: () => '2026-10-10' },
+      state,
+      bus: { get: () => ready },
+    } as unknown as Ctx;
+    expect(preparedDailyContent(ctx, 'fact')).toBeNull();
+    ctx.clock.todayKey = () => '2026-10-11';
+    expect(preparedDailyContent(ctx, 'fact')?.id).toBe(ready.facts[0]!.id);
+    ctx.clock.todayKey = () => '2026-10-31';
+    expect(preparedDailyContent(ctx, 'fact')?.id).toBe(ready.facts[20]!.id);
+    const noProvider = vi.fn().mockRejectedValue(new Error('must not pay again'));
+    await prepareContent({
+      ...input,
+      respond: noProvider,
+      reviewed: reviewCheckpoint.mock.calls[0]![0],
+    });
+    expect(noProvider).not.toHaveBeenCalled();
+    await expect(
+      prepareContent({
+        ...input,
+        respond: noProvider,
+        reviewed: { signature: 'wrong', review: { approved: [], rejected: [] } },
+      }),
+    ).rejects.toThrow('must not pay again');
+  });
   it('repeated scheduler runs and paid attempt exhaustion make no provider calls; resumes a verified staging write without regeneration', async () => {
     for (const key of ['CF_ACCOUNT_ID', 'CF_API_TOKEN', 'KV_NAMESPACE_ID', 'OPENAI_API_KEY'])
       vi.stubEnv(key, 'test');

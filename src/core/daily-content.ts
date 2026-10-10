@@ -20,7 +20,7 @@ export function preparedDailyContent(
     parsed = batchSchema.safeParse(ctx.bus?.get('dailyContentBatch'));
   if (!parsed.success || parsed.data.month !== date.slice(0, 7)) return null;
   const item = (kind === 'fact' ? parsed.data.facts : parsed.data.quotes)[
-    Number(date.slice(-2)) - 1
+    Number(date.slice(-2)) - (parsed.data.startDay ?? 1)
   ];
   if (!item || contentExcluded(item)) return null;
   const historyKey = `dailyContentHistory:${kind === 'fact' ? 'facts' : 'quotes'}`;

@@ -1,7 +1,7 @@
 {
   "name": "svitanok-dashboard",
   "private": true,
-  "version": "0.3.4",
+  "version": "0.3.5",
   "type": "module",
   "description": "Telegram Mini App дашборд Svitanok — React+Tailwind (роадмеп v3, група E). Білдиться у ../public/app, живе на /app поруч зі старим index.html.",
   "scripts": {
