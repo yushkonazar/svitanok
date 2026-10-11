@@ -25,6 +25,8 @@ import {
   FACT_KINDS,
   isOwnerAssertion,
   normalizeFactSource,
+  factWriteToken,
+  PERSONAL_FACT_KINDS,
 } from '../tools/facts.mjs';
 import { runRecord } from '../tools/record.mjs';
 import {
@@ -162,7 +164,7 @@ function driveNoteName(raw) {
  *   execute: (env: Env, payload: any, nowMs: number,
  *     ctx?: { chatId?: number | string | null, threadId?: number | string | null,
  *       internal?: Record<string, any>, policy?: { actor?: 'model' | 'owner' | 'trusted_server' | 'undo', tainted?: boolean,
- *       why?: string } })
+ *       why?: string, expectedEventId?: string } })
  *     => Promise<{ prev?: unknown, result?: unknown }>,
  *   undo?: (env: Env, prev: any, nowMs: number) => Promise<void>,
  * }>}
@@ -1173,24 +1175,41 @@ export const EXECUTORS = {
   },
   'facts.set': {
     async execute(env, payload, nowMs, ctx) {
+      if (ctx?.policy?.actor === 'owner' && typeof ctx.policy.expectedEventId !== 'string') {
+        throw new Error(
+          'Ця пропозиція пам’яті застаріла. Повтори запит, щоб зберегти актуальний факт.',
+        );
+      }
       const before = await runFactsGet(env, { kind: payload.kind, key: payload.key });
       const prev = before.result[0] ?? null; // null = факту не існувало
-      const { result } = await runFactsSet(env, payload, nowMs, ctx?.policy);
-      return { prev: { key: payload.key, kind: payload.kind, prev }, result };
+      const { result, writeEventId } = await runFactsSet(env, payload, nowMs, ctx?.policy);
+      return { prev: { key: payload.key, kind: payload.kind, prev, writeEventId }, result };
     },
     async undo(env, snapshot, nowMs) {
+      if (
+        !snapshot.writeEventId ||
+        (await factWriteToken(env, snapshot)) !== snapshot.writeEventId
+      ) {
+        throw new Error('Після цього запису факт уже змінився. Не відкочую новіше рішення.');
+      }
       if (snapshot.prev == null) {
         // Факту не було - відкат = видалення.
         await runFactsDelete(env, { kind: snapshot.kind, key: snapshot.key }, nowMs, {
           actor: 'undo',
+          expectedEventId: snapshot.writeEventId,
         });
         return;
       }
-      await restoreFactsSnapshot(env, snapshot.prev, nowMs);
+      await restoreFactsSnapshot(env, snapshot.prev, nowMs, snapshot.writeEventId);
     },
   },
   'facts.delete': {
     async execute(env, payload, nowMs, ctx) {
+      if (ctx?.policy?.actor === 'owner' && typeof ctx.policy.expectedEventId !== 'string') {
+        throw new Error(
+          'Ця пропозиція пам’яті застаріла. Повтори запит, щоб зберегти актуальний факт.',
+        );
+      }
       const { result } = await runFactsDelete(env, payload, nowMs, ctx?.policy);
       return { result };
     },
@@ -1429,15 +1448,24 @@ export async function applyPolicy(env, action, nowMs) {
   // Перевірку contract помилки лишаємо після direct-tool gate нижче: обгортка
   // мусить одержати саме його відмову для чистого T0-виклику.
   if (
-    action.kind === 'facts.set' &&
+    (action.kind === 'facts.set' || action.kind === 'facts.delete') &&
     FACT_KINDS.includes(String(action.payload?.kind)) &&
     String(action.payload.key ?? '')
   ) {
+    const expectedEventId = await factWriteToken(
+      env,
+      /** @type {{kind: string, key: string}} */ (action.payload),
+    );
+    action = { ...action, internal: { ...action.internal, expectedEventId } };
     const current = await runFactsGet(env, {
       kind: String(action.payload.kind),
       key: String(action.payload.key),
     });
-    if (isOwnerAssertion(current.result[0]?.source) && !isOwnerAssertion(action.payload.source)) {
+    if (
+      action.kind === 'facts.set' &&
+      isOwnerAssertion(current.result[0]?.source) &&
+      !isOwnerAssertion(action.payload.source)
+    ) {
       action = { ...action, payload: { ...action.payload, source: 'owner_assertion' } };
       level = 'T1';
     }
@@ -1447,6 +1475,12 @@ export async function applyPolicy(env, action, nowMs) {
   // 07 §4 дозволяє виводу моделі лише inferred, тож T0-шлях із owner
   // ескалюється до пропозиції (після ✅ attribution легітимний).
   if (level === 'T0' && action.kind === 'facts.set' && isOwnerAssertion(action.payload.source)) {
+    level = 'T1';
+  }
+
+  // Personal hypotheses are candidates, not current truth. Settings keep their
+  // established command path; a preference/habit needs the owner's decision.
+  if (action.kind === 'facts.set' && PERSONAL_FACT_KINDS.includes(String(action.payload?.kind))) {
     level = 'T1';
   }
 
@@ -1631,6 +1665,11 @@ export async function applyPolicy(env, action, nowMs) {
 export async function resolveProposal(env, input, nowMs) {
   const row = await loadRow(env, input.id);
   if (!row || row.kind.startsWith('undo:')) return { ok: false, error: 'unknown-proposal' };
+  if (row.status === 'failed')
+    return {
+      ok: false,
+      error: 'Цю дію не виконано. Перевір актуальний стан і надішли новий запит.',
+    };
   if (row.status !== 'open') return { ok: true, already: row.status };
   if (Date.parse(row.expires_at) <= nowMs) {
     await setStatus(env, row.id, 'expired', nowMs);
@@ -1679,6 +1718,12 @@ export async function resolveProposal(env, input, nowMs) {
     return { ok: true, status: 'approved', executed: true, kind: row.kind, payload, result };
   } catch (/** @type {any} */ e) {
     // Клейм уже стоїть (повтор не переграє) - збій виконання кажемо вголос.
+    if (row.kind === 'facts.set' || row.kind === 'facts.delete') {
+      await db(env)
+        .prepare("UPDATE proposals SET status='failed' WHERE id=? AND status='approved'")
+        .bind(row.id)
+        .run();
+    }
     console.error(`policy: виконання ${row.kind} після ✅ впало`, e?.message);
     return { ok: false, error: proposalExecutionError(e) };
   }
@@ -1691,6 +1736,15 @@ export async function resolveProposal(env, input, nowMs) {
  */
 export function proposalExecutionError(error) {
   const raw = String(/** @type {any} */ (error)?.message ?? error ?? '');
+  if (
+    new Set([
+      'Цей факт уже змінився. Перевір актуальне значення й повтори дію.',
+      'Ця пропозиція пам’яті застаріла. Повтори запит, щоб зберегти актуальний факт.',
+      'Після цього запису факт уже змінився. Не відкочую новіше рішення.',
+      'Підтверди збереження цього факту.',
+    ]).has(raw)
+  )
+    return raw;
   if (/^Не знайшов «.+» у календарі\./u.test(raw))
     return 'Подію плану не знайдено в календарі. Нічого не змінено — перевір календар і повтори.';
   if (/^«.+» уже змінено в календарі\./u.test(raw))
@@ -1840,6 +1894,11 @@ export async function undoLastInThread(env, threadId, nowMs) {
 export async function resolveUndo(env, id, nowMs) {
   const row = await loadRow(env, id);
   if (!row || !row.kind.startsWith('undo:')) return { ok: false, error: 'unknown-undo' };
+  if (row.status === 'failed')
+    return {
+      ok: false,
+      error: 'Цю дію не виконано. Перевір актуальний стан і надішли новий запит.',
+    };
   if (row.status !== 'open') return { ok: true, already: row.status };
   if (Date.parse(row.expires_at) <= nowMs) {
     await setStatus(env, id, 'expired', nowMs);
@@ -1859,7 +1918,17 @@ export async function resolveUndo(env, id, nowMs) {
   if (!(await setStatus(env, id, 'approved', nowMs))) {
     return { ok: true, already: 'approved' };
   }
-  await executor.undo(env, snapshot, nowMs); // approved = «↩ застосовано»
+  try {
+    await executor.undo(env, snapshot, nowMs);
+  } catch (error) {
+    if (baseKind === 'facts.set') {
+      await db(env)
+        .prepare("UPDATE proposals SET status='failed' WHERE id=? AND status='approved'")
+        .bind(row.id)
+        .run();
+    }
+    return { ok: false, error: proposalExecutionError(error) };
+  }
   return { ok: true, status: 'undone' };
 }
 
@@ -1890,7 +1959,7 @@ async function insertRow(env, row) {
 }
 
 /** Trusted metadata that is never accepted from model payload.
- * @param {{ tainted?: boolean, taintedEver?: boolean }} action
+ * @param {{ tainted?: boolean, taintedEver?: boolean, internal?: Record<string, unknown> }} action
  * @param {'model' | 'owner' | 'trusted_server' | 'undo'} actor
  */
 function executionPolicyContext(action, actor) {
@@ -1898,6 +1967,9 @@ function executionPolicyContext(action, actor) {
     actor,
     tainted: action.tainted === true,
     tainted_ever: action.taintedEver === true,
+    ...(typeof action.internal?.expectedEventId === 'string'
+      ? { expectedEventId: action.internal.expectedEventId }
+      : {}),
   };
 }
 
@@ -1911,6 +1983,9 @@ function proposalExecutionContext(row) {
       return {
         tainted: parsed.tainted === true,
         tainted_ever: parsed.tainted_ever === true,
+        ...(typeof parsed.expectedEventId === 'string'
+          ? { expectedEventId: parsed.expectedEventId }
+          : {}),
       };
     }
   } catch {

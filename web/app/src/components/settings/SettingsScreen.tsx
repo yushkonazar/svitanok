@@ -486,7 +486,7 @@ export function SettingsScreen() {
       )}
 
       <div className="pt-1 text-center font-mono text-[10px] font-medium text-tx3">
-        Світанок · {appVersion}
+        Світанок · Mini App {appVersion}
         {!inTelegram() && ' · демо-режим'}
       </div>
     </div>

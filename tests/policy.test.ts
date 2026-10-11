@@ -25,6 +25,7 @@ import {
   proposalExecutionError,
 } from '../web/core/policy/proposals.mjs';
 import { runFactsGet, runFactsSet, runFactsLedger } from '../web/core/tools/facts.mjs';
+import { factWriteToken } from '../web/core/tools/facts.mjs';
 import { ingestKnowledgeDocument } from '../web/core/knowledge-base.mjs';
 import { TOOLS } from '../web/core/tools/index.mjs';
 import { handleInternal } from '../web/core/internal/router.mjs';
@@ -260,6 +261,173 @@ describe('policy core — таблиця рівнів', () => {
   });
 });
 
+describe('personal memory boundaries', () => {
+  async function propose(key: string, value: unknown, kind = 'habit') {
+    const decision = await applyPolicy(
+      env,
+      { kind: 'facts.set', payload: { kind, key, value }, tainted: false },
+      NOW,
+    );
+    expect(decision.mode).toBe('proposed');
+    if (decision.mode !== 'proposed') throw new Error('Missing fact proposal');
+    return decision.proposal.id;
+  }
+
+  it.each(['profile', 'habit', 'place', 'vehicle', 'contact', 'inferred'])(
+    'keeps new %s hypotheses out of current truth until approval',
+    async (kind) => {
+      const id = await propose('preference', 'candidate', kind);
+      expect((await runFactsGet(env, { kind, key: 'preference' })).result).toHaveLength(0);
+      expect(await resolveProposal(env, { id, choice: 'ok' }, NOW + 1)).toMatchObject({
+        ok: true,
+        executed: true,
+      });
+      expect((await runFactsGet(env, { kind, key: 'preference' })).result[0]).toMatchObject({
+        source: 'owner_assertion',
+        value: 'candidate',
+      });
+    },
+  );
+
+  it('rejection stores no personal fact', async () => {
+    const id = await propose('preference', 'candidate');
+    await resolveProposal(env, { id, choice: 'no' }, NOW + 1);
+    expect((await runFactsGet(env, { kind: 'habit', key: 'preference' })).result).toHaveLength(0);
+  });
+
+  it('a stale approval cannot overwrite a newer approved decision or create a false ledger event', async () => {
+    const first = await propose('start', '08:00');
+    const second = await propose('start', '09:00');
+    await resolveProposal(env, { id: second, choice: 'ok' }, NOW + 1);
+    expect(await resolveProposal(env, { id: first, choice: 'ok' }, NOW + 2)).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('уже змінився'),
+    });
+    expect((await runFactsGet(env, { kind: 'habit', key: 'start' })).result[0]?.value).toBe(
+      '09:00',
+    );
+    expect((await runFactsLedger(env, { kind: 'habit', key: 'start' })).result).toHaveLength(1);
+    expect(await resolveProposal(env, { id: first, choice: 'ok' }, NOW + 3)).toMatchObject({
+      ok: false,
+    });
+  });
+
+  it('uses a server-owned token, not a model payload token', async () => {
+    const out = await applyPolicy(
+      env,
+      {
+        kind: 'facts.set',
+        payload: { kind: 'habit', key: 'start', value: '08:00', expectedEventId: 'forged' },
+        tainted: false,
+      },
+      NOW,
+    );
+    if (out.mode !== 'proposed') throw new Error('Missing proposal');
+    const row = store.raw
+      .prepare('SELECT context_json FROM proposals WHERE id=?')
+      .get(out.proposal.id) as { context_json: string };
+    expect(JSON.parse(row.context_json).expectedEventId).toBe('');
+    expect(
+      await resolveProposal(env, { id: out.proposal.id, choice: 'ok' }, NOW + 1),
+    ).toMatchObject({ ok: true });
+  });
+
+  it('refuses an old proposal without a write token', async () => {
+    const id = await propose('start', '08:00');
+    store.raw.prepare('UPDATE proposals SET context_json=? WHERE id=?').run('{}', id);
+    expect(await resolveProposal(env, { id, choice: 'ok' }, NOW + 1)).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('застаріла'),
+    });
+    expect((await runFactsGet(env, { kind: 'habit', key: 'start' })).result).toHaveLength(0);
+  });
+
+  it('a stale delete cannot erase an updated fact', async () => {
+    await runFactsSet(env, { kind: 'habit', key: 'start', value: '08:00', source: 'owner' }, NOW);
+    const out = await applyPolicy(
+      env,
+      { kind: 'facts.delete', payload: { kind: 'habit', key: 'start' }, tainted: false },
+      NOW + 1,
+    );
+    if (out.mode !== 'proposed') throw new Error('Missing delete proposal');
+    await runFactsSet(
+      env,
+      { kind: 'habit', key: 'start', value: '09:00', source: 'owner' },
+      NOW + 2,
+    );
+    expect(
+      await resolveProposal(env, { id: out.proposal.id, choice: 'ok' }, NOW + 3),
+    ).toMatchObject({ ok: false });
+    expect((await runFactsGet(env, { kind: 'habit', key: 'start' })).result[0]?.value).toBe(
+      '09:00',
+    );
+  });
+
+  it('the writer itself blocks model attribution and overwriting owner truth', async () => {
+    await expect(
+      runFactsSet(env, { kind: 'habit', key: 'start', value: '08:00', source: 'owner' }, NOW, {
+        actor: 'model',
+      }),
+    ).rejects.toThrow('Підтверди');
+    await runFactsSet(env, { kind: 'habit', key: 'start', value: '08:00', source: 'owner' }, NOW);
+    await expect(
+      runFactsSet(env, { kind: 'habit', key: 'start', value: '09:00' }, NOW + 1, {
+        actor: 'model',
+      }),
+    ).rejects.toThrow('уже змінився');
+    expect((await runFactsLedger(env, { kind: 'habit', key: 'start' })).result).toHaveLength(1);
+  });
+
+  it('guards deletion/recreation, even when timestamps and values are identical', async () => {
+    await runFactsSet(env, { kind: 'setting', key: 'token', value: 'same' }, NOW);
+    const expectedEventId = await factWriteToken(env, { kind: 'setting', key: 'token' });
+    await EXECUTORS['facts.delete']!.execute(env, { kind: 'setting', key: 'token' }, NOW);
+    await runFactsSet(env, { kind: 'setting', key: 'token', value: 'same' }, NOW);
+    await expect(
+      runFactsSet(env, { kind: 'setting', key: 'token', value: 'obsolete' }, NOW, {
+        actor: 'trusted_server',
+        expectedEventId,
+      }),
+    ).rejects.toThrow('уже змінився');
+  });
+
+  it('an old undo does not erase a newer owner decision', async () => {
+    const out = await applyPolicy(
+      env,
+      {
+        kind: 'facts.set',
+        payload: { kind: 'setting', key: 'language', value: 'uk' },
+        tainted: false,
+      },
+      NOW,
+    );
+    if (out.mode !== 'executed' || !out.undo) throw new Error('Missing undo');
+    await runFactsSet(
+      env,
+      { kind: 'setting', key: 'language', value: 'en', source: 'owner' },
+      NOW + 1,
+    );
+    expect(await resolveUndo(env, out.undo.id, NOW + 2)).toMatchObject({ ok: false });
+    expect((await runFactsGet(env, { kind: 'setting', key: 'language' })).result[0]?.value).toBe(
+      'en',
+    );
+    expect(await resolveUndo(env, out.undo.id, NOW + 3)).toMatchObject({ ok: false });
+  });
+
+  it('rolls back truth when its ledger insert fails', async () => {
+    store.raw.exec(
+      "CREATE TRIGGER fail_fact_event BEFORE INSERT ON fact_ledger BEGIN SELECT RAISE(ABORT, 'fixture failure'); END",
+    );
+    await expect(
+      runFactsSet(env, { kind: 'setting', key: 'rollback', value: 1 }, NOW),
+    ).rejects.toThrow('fixture failure');
+    expect((await runFactsGet(env, { kind: 'setting', key: 'rollback' })).result).toHaveLength(0);
+    expect((await runFactsLedger(env, { kind: 'setting', key: 'rollback' })).result).toHaveLength(
+      0,
+    );
+  });
+});
+
 describe('T0: виконати одразу + «↩» 10 хв', () => {
   it('facts.set у чистій сесії пишеться одразу, undo повертає ЯК БУЛО', async () => {
     // Було value=uk (inferred): у чистій сесії можна виправити його T0 з
@@ -308,23 +476,23 @@ describe('T0: виконати одразу + «↩» 10 хв', () => {
   it('факту не існувало — undo його видаляє; поза вікном 10 хв — expired', async () => {
     const out = await applyPolicy(
       env,
-      { kind: 'facts.set', payload: { kind: 'habit', key: 'кава', value: 2 }, tainted: false },
+      { kind: 'facts.set', payload: { kind: 'setting', key: 'кава', value: 2 }, tainted: false },
       NOW,
     );
     const undoId = out.mode === 'executed' ? String(out.undo?.id) : '';
     const late = await resolveUndo(env, undoId, NOW + UNDO_WINDOW_MS + 1);
     expect(late).toMatchObject({ ok: true, status: 'expired' });
     // Прострочений «↩» НЕ відкотив - факт лишився.
-    expect((await runFactsGet(env, { kind: 'habit', key: 'кава' })).result).toHaveLength(1);
+    expect((await runFactsGet(env, { kind: 'setting', key: 'кава' })).result).toHaveLength(1);
 
     const out2 = await applyPolicy(
       env,
-      { kind: 'facts.set', payload: { kind: 'habit', key: 'чай', value: 1 }, tainted: false },
+      { kind: 'facts.set', payload: { kind: 'setting', key: 'чай', value: 1 }, tainted: false },
       NOW,
     );
     const undo2 = out2.mode === 'executed' ? String(out2.undo?.id) : '';
     await resolveUndo(env, undo2, NOW + 1000);
-    expect((await runFactsGet(env, { kind: 'habit', key: 'чай' })).result).toHaveLength(0);
+    expect((await runFactsGet(env, { kind: 'setting', key: 'чай' })).result).toHaveLength(0);
   });
 
   it('undo повертає null provenance-поля, додані пізнішим записом', async () => {
@@ -752,6 +920,7 @@ describe('T1/T2: пропозиції', () => {
       actor: 'model',
       tainted: true,
       tainted_ever: true,
+      expectedEventId: '',
     });
 
     await expect(

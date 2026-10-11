@@ -1819,8 +1819,8 @@ describe('handleBrainCallback (p:/u: - борг PR-8; реальна policy на
       ...over,
     };
     db.prepare(
-      `INSERT INTO proposals (id, level, kind, payload_json, thread_id, word, expires_at, status, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO proposals (id, level, kind, payload_json, thread_id, word, expires_at, status, created_at, context_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       ...[
         row.id,
@@ -1832,6 +1832,7 @@ describe('handleBrainCallback (p:/u: - борг PR-8; реальна policy на
         row.expires_at,
         row.status,
         row.created_at,
+        JSON.stringify({ expectedEventId: '' }),
       ],
     );
   };
@@ -1898,15 +1899,16 @@ describe('handleBrainCallback (p:/u: - борг PR-8; реальна policy на
     // Скарга власника: після «Скасувати» стан повідомлення не змінився -
     // кнопка лишилась живою, хоч відкочувати вже нічого.
     const { env, db, tg } = cbEnv();
-    db.prepare(
-      `INSERT INTO facts (key, kind, value_json, source, created_at, updated_at)
-       VALUES ('k', 'setting', '1', 'owner', 'x', 'x')`,
-    ).run();
+    const write = await EXECUTORS['facts.set']!.execute(
+      env,
+      { kind: 'setting', key: 'k', value: 1 },
+      NOW,
+    );
     seedProposal(db, {
       id: 'u1',
       level: 'T0',
       kind: 'undo:facts.set',
-      payload_json: JSON.stringify({ kind: 'setting', key: 'k', existed: false }),
+      payload_json: JSON.stringify(write.prev),
     });
     const toast = await handleBrainCallback(env, { data: 'u:u1', chatId: 555, messageId: 42 }, NOW);
     expect(toast).toBe('Відкочено ↩');

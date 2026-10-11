@@ -16,7 +16,9 @@ interface D1Bound {
    *  ⚠️ Саме ОДИН: викликати all() і run() поспіль означало б виконати
    *  твердження двічі, і `INSERT … ON CONFLICT DO NOTHING` віддав би
    *  changes=0 на другому заході. */
-  once: () => Promise<{ results: unknown[]; meta: { changes: number } }>;
+  once: () =>
+    | { results: unknown[]; meta: { changes: number } }
+    | Promise<{ results: unknown[]; meta: { changes: number } }>;
 }
 
 export interface D1Stub {
@@ -25,8 +27,7 @@ export interface D1Stub {
   /** Обʼєкт, який підставляється в env.DB. */
   stub: {
     prepare: (sql: string) => { bind: (...args: unknown[]) => D1Bound };
-    /** D1 виконує batch однією транзакцією; тут послідовно - для тестів
-     *  важливо, що ВСІ твердження відпрацювали, а не як саме згруповані. */
+    /** D1 batch is atomic: guards and ledger claims must not interleave. */
     batch: (statements: D1Bound[]) => Promise<{ results: unknown[]; meta: { changes: number } }[]>;
   };
 }
@@ -38,7 +39,7 @@ export interface D1Stub {
  * свого модуля, тому додаємо безпечні expand-міграції, коли вони починаються з
  * базової схеми. Тести порядку/складу міграцій використовують raw DatabaseSync
  * і лишаються точними. */
-export function d1FromSqlite(migrations: string[]): D1Stub {
+export function d1FromSqlite(migrations: string[], { atomicBatch = false } = {}): D1Stub {
   const db = new DatabaseSync(':memory:');
   const files = [...migrations];
   if (files.includes('0001_base.sql') && !files.includes('0014_fact_provenance.sql')) {
@@ -119,7 +120,7 @@ export function d1FromSqlite(migrations: string[]): D1Stub {
             // @ts-expect-error те саме
             return db.prepare(sql).get(...args) ?? null;
           },
-          once: async () => {
+          once: () => {
             const st = db.prepare(sql);
             // Читання - рядки без changes; RETURNING - і рядки, і changes за
             // їхньою кількістю (саме так його рахує D1); решта - лише changes.
@@ -146,9 +147,26 @@ export function d1FromSqlite(migrations: string[]): D1Stub {
       // (D1Result[]). Доти batch віддавав лише `results`, і код, що рахує
       // записане по `meta.changes`, у тестах бачив нуль, а в проді - правду.
       batch: async (statements: D1Bound[]) => {
+        // Legacy tests sometimes wrap this stub in their own transaction.
+        // Opt in for concurrency/rollback tests that need actual D1 atomicity.
+        if (!atomicBatch) {
+          const legacy = [];
+          for (const statement of statements) legacy.push(await statement.once());
+          return legacy;
+        }
+        db.exec('BEGIN');
         const out = [];
-        for (const st of statements) out.push(await st.once());
-        return out;
+        try {
+          for (const st of statements) {
+            const result = st.once();
+            out.push(result instanceof Promise ? await result : result);
+          }
+          db.exec('COMMIT');
+          return out;
+        } catch (error) {
+          db.exec('ROLLBACK');
+          throw error;
+        }
       },
     },
   };
