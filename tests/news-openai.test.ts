@@ -55,13 +55,15 @@ describe('bounded OpenAI news editor', () => {
     expect(String(url)).not.toContain('fake-key');
     const body = JSON.parse(String(request?.body));
     expect(body).toMatchObject({
+      model: 'gpt-6-luna',
+      reasoning: { effort: 'none' },
       store: false,
       input: input.prompt,
       text: { format: { strict: true } },
     });
     expect(body.tools).toBeUndefined();
     expect(quota.amounts[0]?.[0]).toBe('news_editor_usd');
-    expect(quota.amounts[0]?.[2]).toBeCloseTo(0.00072);
+    expect(quota.amounts[0]?.[2]).toBeCloseTo(0.000225, 8);
   });
   it('refuses exhausted budget before fetching and does not silently try another paid provider', async () => {
     const fetcher = vi.fn<typeof fetch>();
@@ -72,6 +74,42 @@ describe('bounded OpenAI news editor', () => {
     );
     expect(result).toMatchObject({ ok: false, error: 'quota' });
     expect(fetcher).not.toHaveBeenCalled();
+  });
+  it('prices reported Luna cache reads and writes as disjoint input categories', async () => {
+    const quota = db();
+    const result = await callNewsEditor(
+      workerEnv({ OPENAI_API_KEY: 'fake-key', DB: quota }),
+      input,
+      async () =>
+        Response.json({
+          status: 'completed',
+          usage: {
+            input_tokens: 1000,
+            output_tokens: 200,
+            input_tokens_details: { cached_tokens: 600, cache_write_tokens: 200 },
+            output_tokens_details: { reasoning_tokens: 30 },
+          },
+          output: [{ content: [{ type: 'output_text', text: '{"items":[]}' }] }],
+        }),
+    );
+    expect(result).toMatchObject({
+      ok: true,
+      usage: { estimatedUsd: 0.000151, model: 'gpt-6-luna' },
+    });
+    expect(quota.amounts[0]?.[2]).toBeCloseTo(0.000151, 8);
+  });
+  it('does not display absent provider usage as a free editorial request', async () => {
+    const result = await callNewsEditor(
+      workerEnv({ OPENAI_API_KEY: 'fake-key', DB: db() }),
+      input,
+      async () =>
+        Response.json({
+          status: 'completed',
+          output: [{ content: [{ type: 'output_text', text: '{"items":[]}' }] }],
+        }),
+    );
+    expect(result).toMatchObject({ ok: false, attempted: true, error: 'editor-usage-unavailable' });
+    expect(result).not.toHaveProperty('usage.estimatedUsd', 0);
   });
   it('does not accept a truncated response as editorial data but accounts consumed tokens', async () => {
     const quota = db();

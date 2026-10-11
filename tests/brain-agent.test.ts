@@ -14,6 +14,7 @@ import {
   STATUS_MIN_CHARS,
   STATUS_MIN_GROWTH,
   makeRunner,
+  ModelRunError,
   type EngineOutcome,
   type EngineRunOptions,
   type ToolExecution,
@@ -668,6 +669,35 @@ describe('makeRunner: сесії (chat)', () => {
 });
 
 describe('makeRunner: summarize', () => {
+  it('retains safe model receipts for a failed run and never logs private model text', async () => {
+    const client = makeClient();
+    const { engine } = scriptedEngine(async () => {
+      throw new ModelRunError('OpenAI Responses HTTP 503', {
+        provider: 'openai',
+        model: 'gpt-6.1-sol',
+        responseId: 'resp_safe',
+        apiMs: 100,
+        usage: {
+          inputTokens: 1000,
+          outputTokens: 100,
+          cachedInputTokens: 600,
+          cacheWriteTokens: 200,
+        },
+        usageComplete: false,
+        modelResponses: 1,
+        apiAttempts: 2,
+        estimatedCostUsd: null,
+      });
+    });
+    await makeRunner({ client, engine })(req({ input: { text: 'private input' } }));
+    const steps = client.reportRuns.mock.calls[0]![1] as Array<Record<string, unknown>>;
+    const model = steps.find((step) => step.kind === 'model');
+    expect(model).toMatchObject({ name: 'openai:gpt-6.1-sol', ok: false, ms: 100 });
+    expect(model?.note).toContain('usage_complete=0');
+    expect(model?.note).toContain('cached_input_tokens=600');
+    expect(model?.note).not.toContain('cost_usd=');
+    expect(JSON.stringify(steps)).not.toContain('private input');
+  });
   const summarizeReq = (over: Partial<RunRequest> = {}) =>
     req({
       profile: 'summarize',

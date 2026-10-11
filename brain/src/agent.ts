@@ -80,7 +80,18 @@ export interface EngineOutcome {
   provider?: 'claude' | 'openai';
   model?: string | null;
   responseId?: string | null;
-  usage?: { inputTokens?: number; outputTokens?: number; totalTokens?: number } | null;
+  usage?: {
+    inputTokens?: number;
+    outputTokens?: number;
+    totalTokens?: number;
+    cachedInputTokens?: number;
+    cacheWriteTokens?: number;
+    reasoningTokens?: number;
+  } | null;
+  /** False means some API attempts have no usage receipt. Never treat it as a full invoice. */
+  usageComplete?: boolean;
+  modelResponses?: number;
+  apiAttempts?: number;
   /** Estimated only when the deployment configured its own model prices. */
   estimatedCostUsd?: number | null;
   /** Read-only OpenAI comparison. It never contains generated text, prompts,
@@ -95,6 +106,31 @@ export interface EngineOutcome {
     toolCalls: number;
     error?: string;
   } | null;
+}
+
+export type ModelTelemetry = Pick<
+  EngineOutcome,
+  | 'provider'
+  | 'model'
+  | 'responseId'
+  | 'apiMs'
+  | 'usage'
+  | 'usageComplete'
+  | 'modelResponses'
+  | 'apiAttempts'
+  | 'estimatedCostUsd'
+>;
+
+/** A failed model run can still have billed responses. Only allowlisted
+ * counters escape the runtime, never provider payloads or conversation text. */
+export class ModelRunError extends Error {
+  constructor(
+    message: string,
+    readonly telemetry: ModelTelemetry,
+  ) {
+    super(message);
+    this.name = 'ModelRunError';
+  }
 }
 
 /** «api 12.3 с» для нотатки кроку; undefined - без нотатки (JSON її відкине). */
@@ -457,6 +493,15 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
           });
         }
       } catch (e) {
+        if (e instanceof ModelRunError) {
+          pushStep({
+            kind: 'model',
+            name: `worker:${worker}:openai:${safeTelemetry(e.telemetry.model, 96) ?? 'unknown'}`,
+            ms: e.telemetry.apiMs ?? now() - t0,
+            ok: false,
+            note: openAiTelemetryNote(e.telemetry),
+          });
+        }
         // Стеля ходів із текстом - частковий результат (S-7-5), решта - збій.
         if (
           e instanceof EngineStopError &&
@@ -832,6 +877,15 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
         });
       }
     } catch (err) {
+      if (err instanceof ModelRunError) {
+        pushStep({
+          kind: 'model',
+          name: `openai:${safeTelemetry(err.telemetry.model, 96) ?? 'unknown'}`,
+          ms: err.telemetry.apiMs ?? now() - startedMs,
+          ok: false,
+          note: openAiTelemetryNote(err.telemetry),
+        });
+      }
       // «стоп» власника (POST /abort, reason='stop') - НЕ збій: тишу розриває
       // ядро («Зупинив.»), а деліверити обірвану відповідь було б шумом.
       if (abort.signal.aborted && abort.signal.reason === 'stop') {
@@ -862,15 +916,23 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
   };
 }
 
-function openAiTelemetryNote(
-  outcome: Pick<EngineOutcome, 'responseId' | 'usage' | 'estimatedCostUsd'>,
-): string {
+function openAiTelemetryNote(outcome: ModelTelemetry): string {
   const parts = [
     `response=${safeTelemetry(outcome.responseId, 100) ?? 'unknown'}`,
     `input_tokens=${outcome.usage?.inputTokens ?? 'unknown'}`,
     `output_tokens=${outcome.usage?.outputTokens ?? 'unknown'}`,
     `total_tokens=${outcome.usage?.totalTokens ?? 'unknown'}`,
   ];
+  for (const [key, value] of [
+    ['cached_input_tokens', outcome.usage?.cachedInputTokens],
+    ['cache_write_tokens', outcome.usage?.cacheWriteTokens],
+    ['reasoning_tokens', outcome.usage?.reasoningTokens],
+    ['model_responses', outcome.modelResponses],
+    ['api_attempts', outcome.apiAttempts],
+  ] as const) {
+    if (value != null) parts.push(`${key}=${value}`);
+  }
+  if (outcome.usageComplete != null) parts.push(`usage_complete=${outcome.usageComplete ? 1 : 0}`);
   if (typeof outcome.estimatedCostUsd === 'number') {
     parts.push(`cost_usd=${outcome.estimatedCostUsd.toFixed(8)}`);
   }

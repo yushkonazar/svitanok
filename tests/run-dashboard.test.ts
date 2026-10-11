@@ -65,6 +65,8 @@ describe('run dashboard', () => {
       queue_wait_ms: null,
       model: null,
       cost: null,
+      estimated_cost_usd: null,
+      usage_complete: null,
     });
   });
 
@@ -80,7 +82,7 @@ describe('run dashboard', () => {
         `INSERT INTO run_steps (id, run_id, n, at, kind, name, ms, ok, note)
          VALUES ('r-openai:model', 'r-openai', 1, '2026-09-23T08:00:01.000Z', 'model',
                  'openai:gpt-6-astra-2026-09-03', 850, 1,
-                 'response=resp_abc input_tokens=123 output_tokens=45 total_tokens=168 prompt=must-not-parse')`,
+                 'response=resp_abc input_tokens=123 output_tokens=45 total_tokens=168 cached_input_tokens=80 cache_write_tokens=20 reasoning_tokens=5 model_responses=2 api_attempts=2 usage_complete=1 cost_usd=0.0003 prompt=must-not-parse')`,
       )
       .run();
 
@@ -89,7 +91,18 @@ describe('run dashboard', () => {
       model: 'openai:gpt-6-astra-2026-09-03',
       model_version: 'openai:gpt-6-astra-2026-09-03',
       response_id: 'resp_abc',
-      usage: { input_tokens: 123, output_tokens: 45, total_tokens: 168 },
+      usage: {
+        input_tokens: 123,
+        output_tokens: 45,
+        total_tokens: 168,
+        cached_input_tokens: 80,
+        cache_write_tokens: 20,
+        reasoning_tokens: 5,
+      },
+      estimated_cost_usd: 0.0003,
+      usage_complete: true,
+      model_responses: 2,
+      api_attempts: 2,
     });
     expect(JSON.stringify(dashboard)).not.toContain('must-not-parse');
   });
