@@ -29,9 +29,11 @@ if (secretName === 'GOOGLE_TRANSLATE_API_KEY') {
     signal: AbortSignal.timeout(15000),
     headers: { authorization: `Bearer ${translationKey}`, 'content-type': 'application/json' },
     body: JSON.stringify({
-      model: 'gpt-4.1-mini-2025-04-14',
+      model: 'gpt-6-luna',
+      reasoning: { effort: 'none' },
       input: 'Reply only: OK',
       store: false,
+      service_tier: 'default',
       max_output_tokens: 16,
     }),
   });

@@ -24,7 +24,12 @@ export interface BrainConfig {
   openAiPricing: Partial<
     Record<
       'fast' | 'standard' | 'advanced',
-      { inputPerMillionUsd: number; outputPerMillionUsd: number }
+      {
+        inputPerMillionUsd: number;
+        outputPerMillionUsd: number;
+        cachedInputPerMillionUsd?: number;
+        cacheWritePerMillionUsd?: number;
+      }
     >
   > | null;
   openAiReasoningEffort: 'low' | 'medium' | 'high' | 'xhigh' | 'max' | null;
@@ -138,8 +143,8 @@ export function loadConfig(env: Record<string, string | undefined>): BrainConfig
   const legacyModel = String(env.OPENAI_MODEL ?? '').trim();
   const openAiModels = {
     fast: String(env.OPENAI_MODEL_FAST ?? 'gpt-6-luna').trim(),
-    standard: String(env.OPENAI_MODEL_STANDARD ?? legacyModel ?? 'gpt-6-sol').trim() || 'gpt-6-sol',
-    advanced: String(env.OPENAI_MODEL_ADVANCED ?? 'gpt-6-astra').trim(),
+    standard: String(env.OPENAI_MODEL_STANDARD ?? (legacyModel || 'gpt-6.1-sol')).trim(),
+    advanced: String(env.OPENAI_MODEL_ADVANCED ?? 'gpt-6.1-sol').trim(),
   };
   if (needsOpenAi && Object.values(openAiModels).some((model) => !model)) {
     throw new Error('конфігурація: OPENAI_MODEL_FAST/STANDARD/ADVANCED не можуть бути порожніми');
@@ -148,7 +153,9 @@ export function loadConfig(env: Record<string, string | undefined>): BrainConfig
     const prefix = `OPENAI_PRICE_${tier.toUpperCase()}`;
     const inputRaw = String(env[`${prefix}_INPUT_USD_PER_1M`] ?? '').trim();
     const outputRaw = String(env[`${prefix}_OUTPUT_USD_PER_1M`] ?? '').trim();
-    if (!inputRaw && !outputRaw) return undefined;
+    const cachedRaw = String(env[`${prefix}_CACHED_INPUT_USD_PER_1M`] ?? '').trim();
+    const writeRaw = String(env[`${prefix}_CACHE_WRITE_USD_PER_1M`] ?? '').trim();
+    if (!inputRaw && !outputRaw && !cachedRaw && !writeRaw) return undefined;
     const input = Number(inputRaw);
     const output = Number(outputRaw);
     if (
@@ -163,7 +170,22 @@ export function loadConfig(env: Record<string, string | undefined>): BrainConfig
         `конфігурація: ${prefix}_INPUT/OUTPUT_USD_PER_1M мають бути парними числами >= 0`,
       );
     }
-    return { inputPerMillionUsd: input, outputPerMillionUsd: output };
+    const cached = Number(cachedRaw);
+    const write = Number(writeRaw);
+    if (
+      Boolean(cachedRaw) !== Boolean(writeRaw) ||
+      (cachedRaw &&
+        (!Number.isFinite(cached) || cached < 0 || !Number.isFinite(write) || write < 0))
+    ) {
+      throw new Error(
+        `конфігурація: ${prefix}_CACHED_INPUT/CACHE_WRITE_USD_PER_1M мають бути парними числами >= 0`,
+      );
+    }
+    return {
+      inputPerMillionUsd: input,
+      outputPerMillionUsd: output,
+      ...(cachedRaw ? { cachedInputPerMillionUsd: cached, cacheWritePerMillionUsd: write } : {}),
+    };
   };
   const fastPricing = priceFor('fast');
   const standardPricing = priceFor('standard');

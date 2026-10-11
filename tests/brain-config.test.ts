@@ -64,8 +64,8 @@ describe('loadConfig: OpenAI Responses provider', () => {
       openAiApiKey: 'openai-key',
       openAiModels: {
         fast: 'gpt-6-luna',
-        standard: 'gpt-6-sol',
-        advanced: 'gpt-6-astra',
+        standard: 'gpt-6.1-sol',
+        advanced: 'gpt-6.1-sol',
       },
       openAiReasoningEffort: 'high',
       openAiRollout: 'full',

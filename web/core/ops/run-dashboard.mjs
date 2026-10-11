@@ -214,6 +214,9 @@ function shapeRun(row, steps) {
     model_version: modelStep ? compact(modelStep.name, 120) : null,
     response_id: modelTelemetry.response_id,
     usage: modelTelemetry.usage,
+    usage_complete: modelTelemetry.usage_complete,
+    model_responses: modelTelemetry.model_responses,
+    api_attempts: modelTelemetry.api_attempts,
     estimated_cost_usd: modelTelemetry.estimated_cost_usd,
     // cost_note - лише заздалегідь санітизований технічний cost producer-а;
     // якщо producer не звітує вартість, `null`, не «$0».
@@ -241,6 +244,7 @@ function parseModelTelemetry(note) {
   /** @param {string} key */
   const decimal = (key) => {
     const raw = field(key);
+    if (raw == null) return null;
     const value = Number(raw);
     return Number.isFinite(value) && value >= 0 ? value : null;
   };
@@ -250,7 +254,14 @@ function parseModelTelemetry(note) {
       input_tokens: count('input_tokens'),
       output_tokens: count('output_tokens'),
       total_tokens: count('total_tokens'),
+      cached_input_tokens: count('cached_input_tokens'),
+      cache_write_tokens: count('cache_write_tokens'),
+      reasoning_tokens: count('reasoning_tokens'),
     },
+    usage_complete:
+      field('usage_complete') === '1' ? true : field('usage_complete') === '0' ? false : null,
+    model_responses: count('model_responses'),
+    api_attempts: count('api_attempts'),
     estimated_cost_usd: decimal('cost_usd'),
   };
 }

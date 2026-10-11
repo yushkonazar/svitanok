@@ -5,9 +5,11 @@
 import { createHash } from 'node:crypto';
 import {
   EngineStopError,
+  ModelRunError,
   type EngineOutcome,
   type EngineRunOptions,
   type ModelRuntime,
+  type ModelTelemetry,
 } from '../agent.js';
 import { decodeOpenAiArguments, openAiFunctionTools } from './tools.js';
 
@@ -28,6 +30,8 @@ export interface OpenAiRuntimeConfig {
 export interface OpenAiModelPricing {
   inputPerMillionUsd: number;
   outputPerMillionUsd: number;
+  cachedInputPerMillionUsd?: number;
+  cacheWritePerMillionUsd?: number;
 }
 
 type OutputItem = { type?: unknown; name?: unknown; arguments?: unknown; call_id?: unknown };
@@ -41,6 +45,7 @@ type ResponsesPayload = {
   output?: unknown;
   output_text?: unknown;
   usage?: unknown;
+  service_tier?: unknown;
 };
 
 export function createOpenAiEngine(config: OpenAiRuntimeConfig): ModelRuntime {
@@ -53,62 +58,114 @@ export function createOpenAiEngine(config: OpenAiRuntimeConfig): ModelRuntime {
       const encoded = new Map(tools.map((tool) => [tool.name, tool.encodedArguments]));
       const input: unknown[] = [{ role: 'user', content: inputText }];
       let apiMs = 0;
-
-      for (let turn = 0; turn < opts.maxTurns; turn += 1) {
-        const started = now();
-        const response = await createResponse(fetchFn, config, opts, input, [
-          ...tools,
-          ...hostedTools,
-        ]);
-        apiMs += Math.max(0, now() - started);
-        if (response.status !== 'completed') {
-          throw new EngineStopError(`response-${String(response.status ?? 'unknown')}`, '');
-        }
-        const output = Array.isArray(response.output) ? response.output : [];
-        // With store:false, Responses requires every prior output item to be
-        // replayed before the next request; no previous_response_id is stored.
-        input.push(...output);
-        const calls = output.filter(isFunctionCall);
-        if (calls.length === 0) {
-          const finalText = responseText(response, output);
-          if (finalText && opts.streamPartials) opts.onPartialText(finalText);
-          return {
-            finalText,
-            sessionId: null,
-            apiMs,
-            provider: 'openai',
-            model: typeof response.model === 'string' ? response.model : modelFor(config, opts),
-            responseId: typeof response.id === 'string' ? response.id : null,
-            usage: usage(response.usage),
-            estimatedCostUsd: estimateCost(
-              usage(response.usage),
-              config.pricing?.[opts.openAiModelTier ?? 'standard'],
-            ),
-          };
-        }
-        for (const call of calls) {
-          const name = String(call.name);
-          let result: { text: string; isError: boolean };
+      let apiAttempts = 0;
+      let modelResponses = 0;
+      let allUsageReported = true;
+      let totalUsage: EngineOutcome['usage'] = null;
+      let totalCost: number | null = 0;
+      let lastModel = modelFor(config, opts);
+      let responseId: string | null = null;
+      const telemetry = (): ModelTelemetry => {
+        const usageComplete =
+          modelResponses > 0 && allUsageReported && apiAttempts === modelResponses;
+        return {
+          provider: 'openai',
+          model: lastModel,
+          responseId,
+          apiMs,
+          usage: totalUsage,
+          usageComplete,
+          modelResponses,
+          apiAttempts,
+          estimatedCostUsd: usageComplete ? totalCost : null,
+        };
+      };
+      try {
+        for (let turn = 0; turn < opts.maxTurns; turn += 1) {
+          const started = now();
+          let response: ResponsesPayload;
           try {
-            const args = decodeOpenAiArguments(
-              String(call.arguments ?? ''),
-              encoded.get(name) === true,
+            response = await createResponse(
+              fetchFn,
+              config,
+              opts,
+              input,
+              [...tools, ...hostedTools],
+              () => {
+                apiAttempts += 1;
+              },
             );
-            result = await opts.onToolCall(name, args);
-          } catch (error) {
-            result = {
-              text: `Аргументи інструмента відхилено: ${shortError(error)}`,
-              isError: true,
+          } finally {
+            apiMs += Math.max(0, now() - started);
+          }
+          const responseUsage = usage(response.usage);
+          totalUsage = combineUsage(totalUsage, responseUsage, modelResponses > 0);
+          modelResponses += 1;
+          allUsageReported &&=
+            responseUsage?.inputTokens != null && responseUsage.outputTokens != null;
+          lastModel = typeof response.model === 'string' ? response.model : modelFor(config, opts);
+          responseId = typeof response.id === 'string' ? response.id : null;
+          const expectedModel = modelFor(config, opts);
+          const modelMatches =
+            lastModel === expectedModel || lastModel.startsWith(`${expectedModel}-`);
+          const standardTier =
+            response.service_tier == null ||
+            ['default', 'standard'].includes(String(response.service_tier));
+          const cost =
+            modelMatches && standardTier
+              ? estimateCost(
+                  responseUsage,
+                  config.pricing?.[opts.openAiModelTier ?? 'standard'],
+                  expectedModel,
+                )
+              : null;
+          totalCost = totalCost != null && cost != null ? totalCost + cost : null;
+          if (response.status !== 'completed') {
+            throw new EngineStopError(`response-${String(response.status ?? 'unknown')}`, '');
+          }
+          const output = Array.isArray(response.output) ? response.output : [];
+          // With store:false, Responses requires every prior output item to be
+          // replayed before the next request; no previous_response_id is stored.
+          input.push(...output);
+          const calls = output.filter(isFunctionCall);
+          if (calls.length === 0) {
+            const finalText = responseText(response, output);
+            if (finalText && opts.streamPartials) opts.onPartialText(finalText);
+            return {
+              finalText,
+              sessionId: null,
+              ...telemetry(),
             };
           }
-          input.push({
-            type: 'function_call_output',
-            call_id: String(call.call_id),
-            output: JSON.stringify({ text: result.text, is_error: result.isError }),
-          });
+          for (const call of calls) {
+            const name = String(call.name);
+            let result: { text: string; isError: boolean };
+            try {
+              const args = decodeOpenAiArguments(
+                String(call.arguments ?? ''),
+                encoded.get(name) === true,
+              );
+              result = await opts.onToolCall(name, args);
+            } catch (error) {
+              result = {
+                text: `Аргументи інструмента відхилено: ${shortError(error)}`,
+                isError: true,
+              };
+            }
+            input.push({
+              type: 'function_call_output',
+              call_id: String(call.call_id),
+              output: JSON.stringify({ text: result.text, is_error: result.isError }),
+            });
+          }
         }
+        throw new EngineStopError('max-turns', '');
+      } catch (error) {
+        throw new ModelRunError(
+          error instanceof Error ? error.message : 'OpenAI runtime failed',
+          telemetry(),
+        );
       }
-      throw new EngineStopError('max-turns', '');
     },
 
     // OpenAI responses are intentionally not a transcript store. D1 summaries
@@ -125,6 +182,7 @@ async function createResponse(
   opts: EngineRunOptions,
   input: unknown[],
   tools: ResponsesTool[],
+  onAttempt: () => void,
 ): Promise<ResponsesPayload> {
   const body = JSON.stringify({
     model: modelFor(config, opts),
@@ -140,6 +198,7 @@ async function createResponse(
     tool_choice: 'auto',
     parallel_tool_calls: false,
     store: false,
+    service_tier: 'default',
     safety_identifier: hashSafetyIdentifier(opts.safetyIdentifier),
     reasoning: { effort: opts.effort ?? config.reasoningEffort },
     ...(opts.maxOutputTokens ? { max_output_tokens: opts.maxOutputTokens } : {}),
@@ -149,6 +208,7 @@ async function createResponse(
   const mayRetry = input.length === 1 && (input[0] as { role?: unknown }).role === 'user';
   for (let attempt = 0; ; attempt += 1) {
     let res: Response;
+    onAttempt();
     try {
       res = await fetchFn(RESPONSES_URL, {
         method: 'POST',
@@ -304,22 +364,70 @@ function citation(value: unknown): Array<{ title: string; url: string }> {
 
 function usage(value: unknown): EngineOutcome['usage'] {
   if (!isRecord(value)) return null;
-  const number = (key: string) => (typeof value[key] === 'number' ? value[key] : undefined);
+  const count = (n: unknown) =>
+    typeof n === 'number' && Number.isSafeInteger(n) && n >= 0 ? n : undefined;
+  const inputTokens = count(value.input_tokens);
+  const outputTokens = count(value.output_tokens);
+  const details = isRecord(value.input_tokens_details) ? value.input_tokens_details : {};
+  const outputDetails = isRecord(value.output_tokens_details) ? value.output_tokens_details : {};
   return {
-    inputTokens: number('input_tokens'),
-    outputTokens: number('output_tokens'),
-    totalTokens: number('total_tokens'),
+    inputTokens,
+    outputTokens,
+    totalTokens: count(value.total_tokens),
+    cachedInputTokens: count(details.cached_tokens),
+    cacheWriteTokens: count(details.cache_write_tokens),
+    reasoningTokens: count(outputDetails.reasoning_tokens),
   };
+}
+
+function combineUsage(
+  previous: EngineOutcome['usage'],
+  current: EngineOutcome['usage'],
+  hasPrevious: boolean,
+): EngineOutcome['usage'] {
+  if (!hasPrevious) return current;
+  if (!previous || !current) return null;
+  const merged: NonNullable<EngineOutcome['usage']> = {};
+  for (const key of [
+    'inputTokens',
+    'outputTokens',
+    'totalTokens',
+    'cachedInputTokens',
+    'cacheWriteTokens',
+    'reasoningTokens',
+  ] as const) {
+    const a = previous[key];
+    const b = current[key];
+    if (a != null && b != null && Number.isSafeInteger(a + b)) merged[key] = a + b;
+  }
+  return merged;
 }
 
 function estimateCost(
   value: EngineOutcome['usage'],
   pricing: OpenAiModelPricing | undefined,
+  model: string,
 ): number | null {
   if (!pricing || value?.inputTokens == null || value.outputTokens == null) return null;
+  const cached = value.cachedInputTokens;
+  const written = value.cacheWriteTokens;
+  if (cached == null || written == null || cached + written > value.inputTokens) return null;
+  if (
+    (cached > 0 && pricing.cachedInputPerMillionUsd == null) ||
+    (written > 0 && pricing.cacheWritePerMillionUsd == null)
+  )
+    return null;
+  const longContext = value.inputTokens > 272_000;
+  // These multipliers are verified for GPT-6 only, not guessed for arbitrary overrides.
+  if (longContext && !/^gpt-6(?:\.1)?-(?:sol|luna|astra)$/.test(model)) return null;
+  const input =
+    (value.inputTokens - cached - written) * pricing.inputPerMillionUsd +
+    cached * (pricing.cachedInputPerMillionUsd ?? 0) +
+    written * (pricing.cacheWritePerMillionUsd ?? 0);
   const total =
-    (value.inputTokens / 1_000_000) * pricing.inputPerMillionUsd +
-    (value.outputTokens / 1_000_000) * pricing.outputPerMillionUsd;
+    (input * (longContext ? 2 : 1) +
+      value.outputTokens * pricing.outputPerMillionUsd * (longContext ? 1.5 : 1)) /
+    1_000_000;
   return Number.isFinite(total) && total >= 0 ? total : null;
 }
 

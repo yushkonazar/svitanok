@@ -47,6 +47,7 @@ describe('OpenAI Responses runtime', () => {
           id: 'resp_1',
           model: 'gpt-6-astra',
           status: 'completed',
+          usage: { input_tokens: 100, output_tokens: 20, total_tokens: 120 },
           output: [
             {
               type: 'function_call',
@@ -83,7 +84,10 @@ describe('OpenAI Responses runtime', () => {
       provider: 'openai',
       model: 'gpt-6-astra',
       responseId: 'resp_2',
-      usage: { inputTokens: 123, outputTokens: 45, totalTokens: 168 },
+      usage: { inputTokens: 223, outputTokens: 65, totalTokens: 288 },
+      modelResponses: 2,
+      apiAttempts: 2,
+      usageComplete: true,
     });
 
     expect(opts.onToolCall).toHaveBeenCalledWith('calendar_read', { days: 2 });
@@ -183,7 +187,12 @@ describe('OpenAI Responses runtime', () => {
             ],
           },
         ],
-        usage: { input_tokens: 1_000, output_tokens: 500, total_tokens: 1_500 },
+        usage: {
+          input_tokens: 1_000,
+          output_tokens: 500,
+          total_tokens: 1_500,
+          input_tokens_details: { cached_tokens: 0, cache_write_tokens: 0 },
+        },
       }),
     ) as unknown as typeof fetch;
     const engine = createOpenAiEngine({

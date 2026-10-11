@@ -62,8 +62,12 @@ flowchart TB
 | `src/` + GitHub Actions | Збір і публікація брифінгу; незалежні модулі й обмежений бюджет LLM-викликів                |
 | `web/app/`              | React Mini App; той самий захищений API, що обслуговує бота                                 |
 
-Production GPT-конфігурація: `AI_PROVIDER=openai`, `OPENAI_ROLLOUT=full`;
-класи моделей — `gpt-6-luna`, `gpt-6-sol`, `gpt-6-astra`.
+Production GPT-режим: `AI_PROVIDER=openai`, `OPENAI_ROLLOUT=full`.
+Погоджена політика моделей від 12 жовтня: `gpt-6-luna` для легких задач,
+`gpt-6.1-sol` для стандартних і складних. Ці defaults не переписують явно
+задані VPS env: фактичні production-моделі змінюються окремим розгортанням.
+Редактор публічних новин також використовує Luna замість GPT-4.1 mini.
+[Моделі, ціни й облік витрат](docs/openai-model-policy.md).
 Брифінг використовує Responses-клієнт у Actions; інтерактивні прогони — Brain.
 Legacy Claude/SDK і hybrid/canary код залишаються для сумісності, але це не
 поточний основний шлях. Приклади env можуть описувати canary, а не production.

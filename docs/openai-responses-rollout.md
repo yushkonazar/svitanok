@@ -17,6 +17,11 @@ is an explicit full-cutover decision, not a Worker code deploy.
   `OPENAI_MODEL_STANDARD`, and `OPENAI_MODEL_ADVANCED`. Every profile also has
   a `max_output_tokens` ceiling. `OPENAI_MODEL` remains a compatibility
   fallback for the standard class only.
+- Owner-approved defaults (2026-10-12): fast `gpt-6-luna`, standard and
+  advanced `gpt-6.1-sol`. Advanced profiles retain their own limits; there is
+  no automatic paid Astra escalation. Explicit deployment overrides remain
+  authoritative and must be changed during rollout, not inferred from defaults.
+  See [model policy and metering](openai-model-policy.md).
 - Every Responses request sets `store:false`, uses a SHA-256 safety identifier
   derived from the internal thread identity, and never sends a
   `previous_response_id`.
@@ -31,7 +36,9 @@ is an explicit full-cutover decision, not a Worker code deploy.
 - D1 `sessions.summary_md` remains the durable memory used to build prompts.
   Provider response IDs are never persisted as conversation state.
 - Telemetry contains only a model-step allowlist: provider/model snapshot,
-  response ID, token counters and latency. It has no prompt, output, function
+  response ID, summed token/cache/reasoning counters, API attempts, receipt
+  coverage and latency. Failed OpenAI runs also retain these safe receipts.
+  It has no prompt, output, function
   arguments, tool result or API error body.
 
 ## Controlled rollout
@@ -75,3 +82,8 @@ Claude SDK transcripts remain readable only for legacy cleanup/summarization.
 The adapter contract is tested locally with fake Responses only. A real request,
 cost comparison, canary decision and external secret placement require owner
 authorization and a real API key.
+
+For the 2026-10-12 model change the owner explicitly declined paid Astra/Sol
+comparison runs. The historical provider-cutover procedure above does not
+authorize replaying that comparison. Use offline regression checks; deploying
+the prepared model defaults and updating VPS overrides remains a release step.

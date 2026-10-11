@@ -14,7 +14,7 @@ if (!apiKey) {
   const model =
     process.env.OPENAI_EVAL_MODEL?.trim() ||
     process.env.OPENAI_MODEL_STANDARD?.trim() ||
-    'gpt-6-sol';
+    'gpt-6.1-sol';
   const engine = createOpenAiEngine({
     apiKey,
     models: { fast: model, standard: model, advanced: model },
