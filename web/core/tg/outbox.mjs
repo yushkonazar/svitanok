@@ -14,6 +14,7 @@ import { recordTrackedMessage } from '../../kv-store.mjs';
 import { assistantHomeTarget } from './home.mjs';
 import { renderContextDelivery, recoverContextDeliveries } from '../reminders/context-store.mjs';
 import { renderCheckinNotice } from '../checkin/extensions.mjs';
+import { credentialNoticeCurrent, googleScopeNoticeCurrent } from '../ops/notices.mjs';
 import {
   splitMessage,
   nextAttemptAt,
@@ -327,6 +328,15 @@ async function sendRow(env, row, nowMs) {
     return { ok: false, retryAfterSec: null };
   }
   const atMostOnce = payload.delivery_safety === 'at-most-once';
+  if (payload.credential_notice && !(await credentialNoticeCurrent(env, payload.credential_notice)))
+    return { ok: true };
+  delete payload.credential_notice;
+  if (
+    payload.google_scope_notice &&
+    !(await googleScopeNoticeCurrent(env, payload.google_scope_notice, nowMs))
+  )
+    return { ok: true };
+  delete payload.google_scope_notice;
   if (payload.checkin_notice && typeof payload.checkin_notice === 'object') {
     const notice = await renderCheckinNotice(
       env,

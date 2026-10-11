@@ -24,6 +24,11 @@ import { readFinanceDemo, writeFinanceDemo } from './finance-demo.ts';
 import { readSavedDemo, writeSavedDemo } from './saved-demo.ts';
 import { buildFinanceReport } from '../../../core/finance/reporting.mjs';
 import { kyivParts } from '../../../core/finance/planning.mjs';
+import {
+  credentialsSchema,
+  type Credentials,
+  type CredentialMetadata,
+} from './credentials-schema.ts';
 
 // API-клієнт дашборда (роадмеп v3, E1). Апка живе на /app, а API — на /api (корінь
 // origin), тож шляхи абсолютні (/api/...); у dev Vite проксі /api -> wrangler :8787.
@@ -33,6 +38,44 @@ import { kyivParts } from '../../../core/finance/planning.mjs';
 /** Заголовки авторизації: initData всередині Telegram, інакше порожньо (демо). */
 function authHeaders(): Record<string, string> {
   return inTelegram() && tg ? { 'X-Telegram-Init-Data': tg.initData } : {};
+}
+
+/** Private metadata only. Demo never reads/writes the owner's registry. */
+export async function fetchCredentials(): Promise<Credentials> {
+  if (!inTelegram()) throw new Error('Відкрий налаштування в особистому чаті з ботом.');
+  const response = await fetch('/api/credentials', {
+    cache: 'no-store',
+    headers: authHeaders(),
+  }).catch(() => {
+    throw new Error('Не вдалося завантажити реєстр доступів. Спробуй ще раз.');
+  });
+  throwIfSessionExpired(response);
+  if (!response.ok) throw new Error('Не вдалося завантажити реєстр доступів.');
+  const parsed = credentialsSchema.safeParse(await response.json().catch(() => null));
+  if (!parsed.success) throw new Error('Формат реєстру змінився. Онови застосунок.');
+  return parsed.data;
+}
+export async function saveCredentialMetadata(value: CredentialMetadata): Promise<Credentials> {
+  if (!inTelegram()) throw new Error('Цю зміну можна зробити лише в особистому чаті з ботом.');
+  const response = await fetch('/api/credentials', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', ...authHeaders() },
+    body: JSON.stringify(value),
+  }).catch(() => {
+    throw new Error('Не отримав підтвердження збереження. Онови реєстр перед повтором.');
+  });
+  throwIfSessionExpired(response);
+  const body = await response.json().catch(() => null);
+  if (!response.ok)
+    throw new Error(typeof body?.error === 'string' ? body.error : 'Не вдалося зберегти дати.');
+  const parsed = credentialsSchema.safeParse(body);
+  if (!parsed.success)
+    throw new Error(
+      body?.saved === true
+        ? 'Дати збережено, але не вдалося оновити їхній показ. Онови реєстр.'
+        : 'Не отримав підтвердження збереження. Онови реєстр перед повтором.',
+    );
+  return parsed.data;
 }
 export async function fetchCurrencyHistory(
   code: string,

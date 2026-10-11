@@ -30,6 +30,7 @@ import {
   parseGrantedScopes,
   hasFeatureScope,
   featureNotConnectedText,
+  googleGrantIdentity,
 } from './core/google-scopes.mjs';
 
 /**
@@ -58,9 +59,13 @@ export async function googleTokenInfo(env) {
   // Кеш access-токена в KV (SL3): N раундів агента (кожен читає календар) НЕ
   // роблять N окремих OAuth-обмінів. Токен короткоживучий (~1год), у власному
   // KV-namespace — прийнятно. Биття кешу -> перевидати.
+  const grantIdentity = await googleGrantIdentity(env);
   try {
     const cached = JSON.parse((await env.BRIEFING.get('googleToken')) ?? 'null');
-    if (isAccessTokenFresh(cached, Date.now())) {
+    if (
+      isAccessTokenFresh(cached, Date.now()) &&
+      (!cached.grantIdentity || cached.grantIdentity === grantIdentity)
+    ) {
       return { token: cached.token, scopes: parseGrantedScopes(cached.scope) };
     }
   } catch {
@@ -99,6 +104,8 @@ export async function googleTokenInfo(env) {
           'googleToken',
           JSON.stringify({
             token,
+            grantIdentity,
+            scopeCheckedAt: new Date().toISOString(),
             expMs: Date.now() + ttlSec * 1000,
             ...(typeof json.scope === 'string' ? { scope: json.scope } : {}),
           }),

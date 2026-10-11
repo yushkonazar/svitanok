@@ -1703,10 +1703,17 @@ export function proposalExecutionError(error) {
     return 'Календар не прийняв зміну. План і нагадування повернуто до попереднього стану.';
   if (/^(?:Не вдалося узгодити план і календар|Не вдалося повністю повернути календар)/u.test(raw))
     return 'Зміна виконалася не повністю. Перевір план і календар перед повтором; потрібна ручна звірка.';
-  if (/gemini/i.test(raw) && /(?:\b402\b|prepayment|credit|billing|quota)/i.test(raw)) {
-    return 'Генерація зображення тимчасово недоступна: у Gemini немає доступних коштів. Поповни billing потрібного Gemini-проєкту й повтори запит.';
+  if (/gemini/i.test(raw) && /(?:\b402\b|prepayment|credit|billing)/i.test(raw)) {
+    return 'Генерація зображення недоступна: у Gemini немає доступних коштів. Перевір баланс і оплату потрібного проєкту, після цього повтори запит.';
   }
-  if (/(?:\b429\b|rate.?limit|temporarily unavailable|timeout)/i.test(raw)) {
+  if (
+    /spend_limit_exceeded|usage_limit_exceeded|insufficient_quota|credit_balance_exhausted/i.test(
+      raw,
+    )
+  ) {
+    return 'Досягнуто ліміт витрат або вичерпано кредит AI-сервісу. Перевір бюджет і баланс; повтор запиту сам по собі не допоможе.';
+  }
+  if (/(?:\b429\b|rate.?limit|resource_exhausted|temporarily unavailable|timeout)/i.test(raw)) {
     return 'Сервіс тимчасово перевантажений. Спробуй повторити дію трохи пізніше.';
   }
   // Контрольовані валідаційні помилки ядра повинні бути конкретними, але

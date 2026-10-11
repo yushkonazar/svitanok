@@ -9,6 +9,7 @@
 
 import { readQuotas, QUOTA_LIMITS } from '../quota/quota.mjs';
 import { parsePeriodDays, shrinkToCap } from './weekly.mjs';
+import { readCredentials } from '../ops/credentials.mjs';
 
 /** Стеля рядків за період: тиждень власника - сотні прогонів, тисячі -
  *  вже аномалія, яку варто побачити як `capped:true`, а не тягнути мегабайт. */
@@ -56,9 +57,7 @@ export async function runRunsQuery(env, args, nowMs) {
       // виклику (рядка в таблиці немає, а межу модель знати мусить).
       limits: QUOTA_LIMITS,
     },
-    // Задача secret-expiry - етап 7; до неї термінів у базі немає, і краще
-    // сказати це прямо, ніж дати моделі порожній масив «усе гаразд».
-    secrets: { note: 'терміни секретів ще не ведуться (задача secret-expiry - етап 7)' },
+    secrets: await credentialSummary(env, nowMs),
   };
   // Та сама стеля, що в data.read: спершу знімаються списки помилок і квот,
   // і лише потім - зріз із маркером `truncated`, щоб обрив був видимий.
@@ -68,6 +67,33 @@ export async function runRunsQuery(env, args, nowMs) {
       { name: 'quotas', apply: (d) => nullify(d, 'quotas') },
     ]).text,
   };
+}
+
+/** Metadata only; never values or invented key health. @param {Env} env @param {number} nowMs */
+async function credentialSummary(env, nowMs) {
+  try {
+    const registry = await readCredentials(env, nowMs);
+    return {
+      metadataAvailable: registry.available,
+      note: 'Строки дії та обрана ротація — окремі дані; це не перевірка валідності ключів.',
+      needsAttention: registry.entries
+        .filter(
+          (entry) =>
+            (entry.expiryDaysLeft != null && entry.expiryDaysLeft <= 30) ||
+            (entry.rotationDaysLeft != null && entry.rotationDaysLeft <= 30),
+        )
+        .map((entry) => ({
+          name: entry.name,
+          location: entry.location,
+          expiresAt: entry.expiresAt,
+          expiryDaysLeft: entry.expiryDaysLeft,
+          rotationDaysLeft: entry.rotationDaysLeft,
+        })),
+      expiryDatesUnknown: registry.entries.filter((entry) => !entry.expiresAt).length,
+    };
+  } catch {
+    return { note: 'Метадані доступів зараз недоступні; строків дії не вгадую.' };
+  }
 }
 
 /** @param {any} obj @param {string} key */

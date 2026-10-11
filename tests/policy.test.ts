@@ -42,8 +42,24 @@ describe('proposalExecutionError', () => {
         new Error('Gemini HTTP 402: {"message":"Your prepayment credits are depleted"}'),
       ),
     ).toBe(
-      'Генерація зображення тимчасово недоступна: у Gemini немає доступних коштів. Поповни billing потрібного Gemini-проєкту й повтори запит.',
+      'Генерація зображення недоступна: у Gemini немає доступних коштів. Перевір баланс і оплату потрібного проєкту, після цього повтори запит.',
     );
+  });
+
+  it('does not confuse temporary Gemini rate limiting with lack of funds', () => {
+    const message = proposalExecutionError(
+      new Error('Gemini HTTP 429: RESOURCE_EXHAUSTED quota rate limit'),
+    );
+    expect(message).toContain('тимчасово');
+    expect(message).not.toMatch(/кошті|billing|quota|429/);
+  });
+  it('does not present an OpenAI spending limit as a temporary rate limit', () => {
+    const message = proposalExecutionError(
+      new Error('OpenAI Responses HTTP 429: project_spend_limit_exceeded'),
+    );
+    expect(message).toContain('ліміт витрат');
+    expect(message).toContain('сам по собі не допоможе');
+    expect(message).not.toMatch(/HTTP|429|spend_limit|тимчасово/);
   });
 
   it('перекладає безпечну валідаційну підказку без внутрішнього префікса', () => {

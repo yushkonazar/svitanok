@@ -72,10 +72,11 @@ export function quotaFindings(rows, month) {
 
 /** @param {QuotaFinding[]} findings */
 export function quotaText(findings) {
+  const labels = { gemini_usd: 'Генерація зображень', news_editor_usd: 'Редагування новин' };
   const lines = findings.map((f) =>
     f.reason === 'share'
-      ? `• ${f.key}: ${f.value.toFixed(2)} із ${f.limit} (${Math.round(f.share * 100)} %)`
-      : `• ${f.key}: ${f.value.toFixed(2)} із ${f.limit}; таким темпом вийде ~${f.forecast.toFixed(2)} до кінця місяця`,
+      ? `• ${/** @type {Record<string,string>} */ (labels)[f.key] ?? 'AI-сервіс'}: $${f.value.toFixed(2)} із $${f.limit} (${Math.round(f.share * 100)} %)`
+      : `• ${/** @type {Record<string,string>} */ (labels)[f.key] ?? 'AI-сервіс'}: $${f.value.toFixed(2)} із $${f.limit}; таким темпом вийде близько $${f.forecast.toFixed(2)} до кінця місяця`,
   );
   return `💳 Витрати місяця:\n${lines.join('\n')}`;
 }

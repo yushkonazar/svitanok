@@ -130,6 +130,7 @@ function TabIcon({ id, active }: { id: TabId; active: boolean }) {
 
 // start_param -> шлях. Приймаємо і id ('stats'), і шлях ('/stats').
 function pathForStartParam(param: string): string | null {
+  if (param === 'access') return '/settings?panel=access';
   const checkin = checkinPathForStartParam(param);
   if (checkin) return checkin;
   const finance = financePathForStartParam(param);
