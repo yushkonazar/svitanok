@@ -74,6 +74,21 @@ review_text, status, rating, due_at, created_at, updated_at)` зберігає �
 а відповіді — у `stats.checkins[date_key][slot]`.
 Деталі рішення: [ADR-041](02-decisions.md), [поведінка й перевірки](../checkin-deadlines.md).
 
+### 1.2. Метадані доступів — ADR-042
+
+Expand-міграція `0037_credential_metadata.sql`. Таблиця `credential_metadata`:
+`id TEXT PRIMARY KEY` (allowlisted ім’я/місце), `rotated_at TEXT NULL`,
+`expires_at TEXT NULL`, `rotate_after_days INTEGER NULL` (1–3650),
+`version INTEGER NOT NULL`, `updated_at TEXT NOT NULL`.
+Дати оновлення/завершення — YYYY-MM-DD за Києвом, updated_at — ISO-8601 UTC.
+Немає полів для значення ключа. Дата оновлення сама не задає строк життя.
+
+`ops_notices`: `id TEXT PRIMARY KEY`, `claim TEXT NOT NULL`, `at TEXT NOT NULL`.
+Claim і outbox записуються атомарно; дата/поріг задають ідентичність повідомлення.
+Додаткових індексів немає. Метадані й claims зберігаються для обліку та
+ідемпотентності; включені в backup/export/restore і повне забуття.
+[ADR-042](02-decisions.md), [чинний інвентар і runbook](../ops/secrets.md).
+
 ## 2. Колекції - схема поля
 
 ```json
