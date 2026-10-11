@@ -175,12 +175,11 @@ export const FLAG_LABELS = /** @type {Record<string, string>} */ ({
 });
 
 /**
- * Про які прапорці варто написати ВІДРАЗУ. `subscription` сам собою не привід
- * будити власника (про підписку нагадує `subscription-remind` за два дні до
- * списання), `foreign` - теж: закордонна покупка не аномалія, вона лише
- * пояснює курс. Гучні - ті три, що означають «глянь на це».
+ * Аналітичні прапорці не є дозволом на сповіщення. Новий продавець,
+ * велика сума, валюта й прогноз підписки залишаються в обліку, але самі
+ * собою не потребують уваги. Можливе подвійне списання — потребує перевірки.
  */
-export const LOUD_FLAGS = ['new_merchant', 'over_threshold', 'duplicate'];
+export const LOUD_FLAGS = ['duplicate'];
 
 /** @param {string[]} flags */
 export function isLoud(flags) {

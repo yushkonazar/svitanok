@@ -948,6 +948,23 @@ export const statsSchema = z.object({
   checkinDate: z.string().optional(),
   checkinNextIn: int.optional(),
   checkinGapIn: int.optional(),
+  checkinWindows: z
+    .array(
+      z.object({
+        dateKey: z.string(),
+        slot: z.enum(['morning', 'afternoon', 'evening']),
+        key: z.string(),
+        startAt: z.string(),
+        baseEnd: z.string(),
+        endAt: z.string(),
+        extended: z.boolean(),
+        extensionAvailable: z.boolean(),
+        open: z.boolean(),
+        gapIn: int.default(0),
+      }),
+    )
+    .optional(),
+  checkinServerTime: z.string().optional(),
   checkinSeries: z.array(checkinPointSchema).default([]),
   checkinRaw: checkinRawSchema.default({ days: 90, from: '', to: '', records: {} }),
   checkinReflections: z

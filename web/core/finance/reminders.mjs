@@ -1,11 +1,13 @@
 // Persistent claims survive outbox retention. Queue and claim commit together;
 // the existing outbox sweeper owns Telegram delivery and retries.
-import { kyivParts } from './planning.mjs';
+import { kyivParts, shiftDate } from './planning.mjs';
 import { fixedDebtPayment, interestDebtPayment } from './payments.mjs';
 import { assistantHomeTarget } from '../tg/home.mjs';
 import { loadSettings } from '../../kv-store.mjs';
 import { isQuietMinute } from '../../settings-core.mjs';
 import { shouldDeliverProactive } from '../assistant-controls.mjs';
+import { financeMiniAppButton } from './links.mjs';
+import { cleanSource } from '../format.mjs';
 
 /** @param {Env} env */
 export async function readMiniAppNotificationSettings(env) {
@@ -23,8 +25,8 @@ export async function readMiniAppNotificationSettings(env) {
     .first();
 }
 
-/** @param {Env} env @param {string} id @param {string} text @param {number} nowMs */
-export async function queueMiniAppNotice(env, id, text, nowMs) {
+/** @param {Env} env @param {string} id @param {string} text @param {number} nowMs @param {Record<string,unknown>} [extra] */
+export async function queueMiniAppNotice(env, id, text, nowMs, extra = {}) {
   const home = assistantHomeTarget(env);
   if (!env.DB || !home) return false;
   const claim = crypto.randomUUID(),
@@ -42,7 +44,7 @@ export async function queueMiniAppNotice(env, id, text, nowMs) {
       `mini-app:${id}`,
       String(home.chatId),
       home.threadId == null ? null : String(home.threadId),
-      JSON.stringify({ text }),
+      JSON.stringify({ ...extra, text }),
       at,
       id,
       claim,
@@ -51,7 +53,48 @@ export async function queueMiniAppNotice(env, id, text, nowMs) {
   return Number(result[1]?.meta?.changes ?? 0) > 0;
 }
 
-/** Remind once before, on, and after the due date; never mark a bill paid.
+/** Only confirmed schedules; missing confirmation is not a failed bank debit.
+ * Individual claims and one consolidated message commit atomically. The payment
+ * is rechecked inside the batch, so a concurrently confirmed bill is omitted.
+ * @param {Env} env @param {any[]} notices @param {number} nowMs */
+export async function queuePaymentAttention(env, notices, nowMs) {
+  const home = assistantHomeTarget(env);
+  if (!env.DB || !home || !notices.length) return 0;
+  const db = env.DB;
+  const claim = crypto.randomUUID(),
+    at = new Date(nowMs).toISOString();
+  const statements = notices.map((notice) =>
+    db
+      .prepare(
+        `INSERT OR IGNORE INTO finance_notices(id,claim,at)
+     SELECT ?,?,? WHERE EXISTS (SELECT 1 FROM finance_payments WHERE id=? AND next_date=? AND status='active')`,
+      )
+      .bind(notice.id, claim, at, notice.paymentId, notice.date),
+  );
+  statements.push(
+    db
+      .prepare(
+        `INSERT OR IGNORE INTO outbox(id,chat_id,thread_id,kind,payload_json,attempts,next_at,status)
+     SELECT ?,?,?,'send',json_object(
+       'text','Оплату ще не підтверджено в обліку:' || char(10) || group_concat(json_extract(j.value,'$.text'),char(10)),
+       'reply_markup',json_object('inline_keyboard',json_group_array(json_extract(j.value,'$.buttons')) FILTER (WHERE json_type(j.value,'$.buttons')='array'))
+     ),0,?,'pending' FROM json_each(?) j
+     JOIN finance_notices n ON n.id=json_extract(j.value,'$.id') AND n.claim=? HAVING count(*)>0`,
+      )
+      .bind(
+        `mini-app:payments:${claim}`,
+        String(home.chatId),
+        home.threadId == null ? null : String(home.threadId),
+        at,
+        JSON.stringify(notices),
+        claim,
+      ),
+  );
+  const result = await env.DB.batch(statements);
+  return result.slice(0, -1).reduce((total, item) => total + Number(item.meta?.changes ?? 0), 0);
+}
+
+/** Remind once from the day AFTER the due date; never mark a bill paid.
  * @param {Env} env @param {number} [nowMs] */
 export async function miniAppPaymentRemindTask(env, nowMs = Date.now()) {
   if (!env.DB || !env.TELEGRAM_BOT_TOKEN || !assistantHomeTarget(env))
@@ -67,23 +110,24 @@ export async function miniAppPaymentRemindTask(env, nowMs = Date.now()) {
   if (isQuietMinute(settings, time.hour * 60 + time.minute) || !attention.deliver)
     return { skipped: 'quiet' };
   const { results } = await env.DB.prepare(
-    "SELECT * FROM finance_payments WHERE status='active' ORDER BY next_date LIMIT 200",
+    `SELECT * FROM finance_payments p WHERE status='active' AND next_date < ?
+     AND NOT EXISTS (SELECT 1 FROM finance_notices n WHERE n.id='payment:' || p.id || ':' || p.next_date || ':overdue')
+     ORDER BY next_date,id LIMIT 10`,
   )
-    .bind()
+    .bind(time.date)
     .all();
-  let queued = 0;
+  const notices = [];
   for (const row of results ?? []) {
     const days = Math.round(
       (Date.parse(`${row.next_date}T00:00:00Z`) - Date.parse(`${time.date}T00:00:00Z`)) / 86400000,
     );
-    if (!Number.isFinite(days) || days > Number(row.remind_days)) continue;
-    const phase = days > 0 ? 'before' : days === 0 ? 'due' : 'overdue';
-    const when = days > 0 ? `Через ${days} дн.` : days === 0 ? 'Сьогодні' : 'Платіж прострочений';
-    const name = String(row.name)
-      .split('')
-      .map((char) => (char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127 ? ' ' : char))
-      .join('')
-      .slice(0, 100);
+    if (!Number.isFinite(days) || days >= 0) continue;
+    try {
+      if (shiftDate(String(row.next_date), 0) !== row.next_date) continue;
+    } catch {
+      continue;
+    }
+    const name = cleanSource(String(row.name), 80);
     const payment = {
       amountMinor: Number(row.amount_minor),
       remainingMinor: row.remaining_minor == null ? null : Number(row.remaining_minor),
@@ -103,16 +147,20 @@ export async function miniAppPaymentRemindTask(env, nowMs = Date.now()) {
         maximumFractionDigits: 2,
       },
     );
-    if (
-      await queueMiniAppNotice(
-        env,
-        `payment:${row.id}:${row.next_date}:${phase}`,
-        `${when}: ${name} · ${amount} ₴. Перевір платіж у фінансах Світанку.`,
-        nowMs,
-      )
-    )
-      queued++;
-    if (queued >= 10) break;
+    const button = financeMiniAppButton(
+      env,
+      `${name.slice(0, 25)} · ${amount} ₴`,
+      'payment',
+      String(row.id),
+      assistantHomeTarget(env)?.chatId ?? null,
+    );
+    notices.push({
+      id: `payment:${row.id}:${row.next_date}:overdue`,
+      paymentId: String(row.id),
+      date: row.next_date,
+      text: `• ${name} · ${amount} ₴ · ${String(row.next_date).slice(8)}.${String(row.next_date).slice(5, 7)}`,
+      ...(button ? { buttons: [button] } : {}),
+    });
   }
-  return { queued };
+  return { queued: await queuePaymentAttention(env, notices, nowMs) };
 }

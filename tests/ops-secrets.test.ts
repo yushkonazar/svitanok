@@ -11,22 +11,14 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import {
-  SECRETS,
-  DATED_SECRETS,
-  daysLeft,
-  stageFor,
-  expiryText,
-  unknownText,
-  ROTATED_KEY_PREFIX,
-  EXPIRY_STATE_KEY,
-  UNKNOWN_MARK_KEY,
-} from '../web/core/ops/secrets.mjs';
+import { SECRETS, ROTATED_KEY_PREFIX } from '../web/core/ops/secrets.mjs';
 import {
   secretExpiryTask,
   SECRET_EXPIRY_HOUR,
   SECRET_EXPIRY_MARKER,
 } from '../web/core/ops/secret-expiry.mjs';
+import { CREDENTIALS, saveCredentialMetadata } from '../web/core/ops/credentials.mjs';
+import { googleGrantIdentity } from '../web/core/google-scopes.mjs';
 import {
   quotaCheckTask,
   quotaFindings,
@@ -56,7 +48,12 @@ function makeEnv(facts: Record<string, unknown> = {}, over: Record<string, unkno
     'googleToken',
     JSON.stringify({ token: 'AT', expMs: TOKEN_EXP(), scope: CORE_SCOPES.join(' ') }),
   );
-  const d1 = d1FromSqlite(['0001_base.sql', '0002_assistant.sql', '0003_telemetry.sql']);
+  const d1 = d1FromSqlite([
+    '0001_base.sql',
+    '0002_assistant.sql',
+    '0003_telemetry.sql',
+    '0037_credential_metadata.sql',
+  ]);
   for (const [key, value] of Object.entries(facts)) {
     d1.db
       .prepare(
@@ -111,7 +108,11 @@ describe('реєстр секретів і документ', () => {
       const secret = SECRETS[i]!;
       expect(cells[1]).toBe(`\`${secret.name}\``);
       expect(cells[2]).toBe(secret.where);
-      expect(cells[3]).toBe(secret.periodDays == null ? 'за подією' : `${secret.periodDays} дн.`);
+      expect(cells[3]).toBe(
+        secret.recommendedRotationDays == null
+          ? 'за подією'
+          : `${secret.recommendedRotationDays} дн.`,
+      );
       expect(cells[4]).toBe(secret.note ?? '');
     });
   });
@@ -125,134 +126,115 @@ describe('реєстр секретів і документ', () => {
     );
     // Ті, що чистяться в експорті, але строку ротації не мають: ключі погоди
     // й новин (міняються за подією) та другий HMAC/легасі-хост.
-    expect(onlyInExport).toEqual([
-      'WEATHER_API_KEY',
-      'NEWSDATA_API_KEY',
-      'INTERNAL_HMAC_KEY_NEXT',
-      'LLM_HOST_SECRET',
-    ]);
-  });
-});
-
-describe('daysLeft і пороги', () => {
-  const dated = DATED_SECRETS[0]!;
-
-  it('без запису про ротацію - null, а не «сьогодні»', () => {
-    expect(daysLeft(dated, null, NOW)).toBeNull();
-    expect(daysLeft(dated, 'учора', NOW)).toBeNull();
-  });
-
-  it('секрет без строку не «закінчується» ніколи', () => {
-    const eventOnly = SECRETS.find((s) => s.periodDays == null)!;
-    expect(daysLeft(eventOnly, new Date(NOW - 5 * 365 * DAY).toISOString(), NOW)).toBeNull();
-  });
-
-  it('поріг спрацьовує від ПЕРШОГО дня, коли залишок менший (пропуск доби не губить)', () => {
-    expect(stageFor(31, null)).toBeNull();
-    expect(stageFor(30, null)).toBe(30);
-    expect(stageFor(25, null)).toBe(30); // задача пропустила тиждень - нагадування не втрачене
-    expect(stageFor(30, 30)).toBeNull(); // уже казали
-    expect(stageFor(7, 30)).toBe(7);
-    expect(stageFor(-3, 7)).toBeNull(); // після 7 більше не повторюємо
-  });
-
-  it('текст називає секрет, місце і що робити', () => {
-    expect(expiryText(dated, 7, 7)).toContain(dated.name);
-    expect(expiryText(dated, 7, 7)).toContain('docs/ops/secrets.md');
-    expect(expiryText(dated, -2, 7)).toContain('строк вийшов 2 дн. тому');
-    expect(unknownText(['A', 'B'])).toContain('Вигадувати дату не буду');
+    expect(onlyInExport).toEqual([]);
   });
 });
 
 describe('secret-expiry', () => {
-  it('за 30 днів - один алерт; наступного дня мовчить', async () => {
-    const rotated = new Date(NOW - (365 - 30) * DAY).toISOString();
-    const { env } = makeEnv({ [`${ROTATED_KEY_PREFIX}MAPS_API_KEY`]: rotated });
-    const sent = stubTelegram();
-    await secretExpiryTask(env, NOW);
-    expect(sent.filter((t) => t.includes('MAPS_API_KEY'))).toHaveLength(1);
-    // Наступна доба: мітка іншого дня, але поріг уже пройдений.
-    sent.length = 0;
-    await secretExpiryTask(env, NOW + DAY);
-    expect(sent.filter((t) => t.includes('MAPS_API_KEY'))).toHaveLength(0);
-  });
-
-  it('за 7 днів - другий алерт попри перший', async () => {
-    const { env } = makeEnv({
-      [`${ROTATED_KEY_PREFIX}MAPS_API_KEY`]: new Date(NOW - (365 - 7) * DAY).toISOString(),
-      [EXPIRY_STATE_KEY]: { MAPS_API_KEY: 30 },
+  const texts = (d1: ReturnType<typeof makeEnv>['d1']) =>
+    d1.db
+      .prepare('SELECT payload_json FROM outbox')
+      .all()
+      .map((row) => JSON.parse(String(row.payload_json)).text as string);
+  async function metadata(
+    env: Env,
+    expiresAt: string | null,
+    rotateAfterDays: number | null = null,
+  ) {
+    await saveCredentialMetadata(
+      env,
+      {
+        id: 'MAPS_API_KEY:cloudflare',
+        version: 0,
+        rotatedAt: '2026-01-01',
+        expiresAt,
+        rotateAfterDays,
+      },
+      NOW,
+    );
+  }
+  async function trustGoogle(value: ReturnType<typeof makeEnv>, at: number, extra: string[] = []) {
+    value.store.set(
+      'googleToken',
+      JSON.stringify({
+        token: 'AT',
+        expMs: at + 3600000,
+        scope: [...CORE_SCOPES, ...extra].join(' '),
+        grantIdentity: await googleGrantIdentity(value.env),
+        scopeCheckedAt: new Date(at).toISOString(),
+      }),
+    );
+  }
+  it('unknown dates and old 365-day rotation facts never generate expiry alerts', async () => {
+    const { env, d1 } = makeEnv({ [`${ROTATED_KEY_PREFIX}MAPS_API_KEY`]: '2020-01-01T00:00:00Z' });
+    expect(await secretExpiryTask(env, NOW)).toMatchObject({
+      reminded: 0,
+      unknown: CREDENTIALS.length,
     });
-    const sent = stubTelegram();
+    expect(texts(d1)).toEqual([]);
+  });
+  it('reminds from a supplied expiry, once per threshold, not once per day', async () => {
+    const { env, d1 } = makeEnv();
+    await metadata(env, '2026-10-07');
+    expect(await secretExpiryTask(env, NOW)).toMatchObject({ reminded: 1 });
+    expect(texts(d1)[0]).toContain('Карти й маршрути');
+    expect(texts(d1)[0]).not.toContain('MAPS_API_KEY');
+    await secretExpiryTask(env, NOW + DAY);
+    expect(texts(d1)).toHaveLength(1);
+    await secretExpiryTask(env, NOW + 23 * DAY);
+    expect(texts(d1)).toHaveLength(2); // seven-day stage
+  });
+  it('rotation is opt-in and never called key expiry', async () => {
+    const { env, d1 } = makeEnv();
+    await metadata(env, null, 270);
     await secretExpiryTask(env, NOW);
-    expect(sent.some((t) => t.includes('MAPS_API_KEY') && t.includes('поріг 7'))).toBe(true);
+    expect(texts(d1)[0]).toContain('нагадування про ротацію');
+    expect(texts(d1)[0]).toContain('не означає');
   });
-
-  it('секрети без дати - один спільний рядок, не по одному на кожен', async () => {
-    const { env } = makeEnv();
-    const sent = stubTelegram();
-    const out = await secretExpiryTask(env, NOW);
-    expect(out).toMatchObject({ unknown: DATED_SECRETS.length });
-    const unknownMsgs = sent.filter((t) => t.includes('Не знаю дати ротації'));
-    expect(unknownMsgs).toHaveLength(1);
-    expect(unknownMsgs[0]).toContain('MAPS_API_KEY');
+  it('records a missed actual expiry without inventing key health or repeating the alarm daily', async () => {
+    const { env, d1 } = makeEnv();
+    await metadata(env, '2026-09-07');
+    expect(await secretExpiryTask(env, NOW)).toMatchObject({ reminded: 1 });
+    expect(texts(d1)[0]).toContain('вказаний строк дії вже завершився');
+    await secretExpiryTask(env, NOW + DAY);
+    expect(texts(d1)).toHaveLength(1);
   });
-
-  it('про невідомі дати не нагадує щодня (мітка на 30 діб)', async () => {
-    const { env } = makeEnv({ [UNKNOWN_MARK_KEY]: new Date(NOW - 5 * DAY).toISOString() });
-    const sent = stubTelegram();
+  it('does not claim a date-only key is already expired during its final calendar day', async () => {
+    const { env, d1 } = makeEnv();
+    await metadata(env, '2026-09-08');
     await secretExpiryTask(env, NOW);
-    expect(sent.some((t) => t.includes('Не знаю дати ротації'))).toBe(false);
+    expect(texts(d1)[0]).toContain('дата завершення — сьогодні');
+    expect(texts(d1)[0]).not.toContain('вже завершився');
   });
-
-  it('зайвий скоуп Google - алерт; рівно ті скоупи - тиша', async () => {
-    const extra = new Map<string, string>([
-      [
-        'googleToken',
-        JSON.stringify({
-          token: 'AT',
-          expMs: TOKEN_EXP(),
-          scope: [...CORE_SCOPES, 'https://www.googleapis.com/auth/gmail.send'].join(' '),
-        }),
-      ],
-    ]);
-    const { env } = makeEnv({}, { BRIEFING: memoryKv(extra) });
-    const sent = stubTelegram();
-    const out = await secretExpiryTask(env, NOW);
-    expect(out).toMatchObject({ scopes: 'extra' });
-    expect(sent.some((t) => t.includes('gmail.send'))).toBe(true);
-
-    const { env: clean } = makeEnv();
-    const quiet = stubTelegram();
-    expect(await secretExpiryTask(clean, NOW)).toMatchObject({ scopes: 'ok' });
-    expect(quiet.some((t) => t.includes('зайвих скоупів'))).toBe(false);
+  it('warns about verified wider Google access without exposing scope URIs', async () => {
+    const value = makeEnv();
+    await trustGoogle(value, NOW, ['https://www.googleapis.com/auth/gmail.send']);
+    expect(await secretExpiryTask(value.env, NOW)).toMatchObject({ scopes: 'extra' });
+    expect(texts(value.d1)[0]).toContain('надсилати пошту');
+    expect(texts(value.d1)[0]).not.toMatch(/https:\/\/www.googleapis|scripts\//);
+    await trustGoogle(value, NOW + DAY, ['https://www.googleapis.com/auth/gmail.send']);
+    expect(await secretExpiryTask(value.env, NOW + DAY)).toMatchObject({ scopes: 'quiet' });
+    expect(texts(value.d1)).toHaveLength(1);
   });
-
-  it('про зайві скоупи - раз на 30 діб, не щодня', async () => {
-    // Токен із зайвим скоупом живе, доки власник не перевидасть його руками,
-    // тобто тижнями. Щоденне «⚠️ Токен Google має 3 зайвих скоупів» він
-    // вимкне на третій день - разом із рештою алертів (ревʼю виправлень).
-    const scope = [...CORE_SCOPES, 'https://www.googleapis.com/auth/gmail.send'].join(' ');
-    const store = new Map<string, string>([
-      ['googleToken', JSON.stringify({ token: 'AT', expMs: TOKEN_EXP(), scope })],
-    ]);
-    const { env } = makeEnv({}, { BRIEFING: memoryKv(store) });
-    const sent = stubTelegram();
-    expect(await secretExpiryTask(env, NOW)).toMatchObject({ scopes: 'extra' });
-    // Наступна доба: мітка інша, скоупи ті самі - тиша.
-    expect(await secretExpiryTask(env, NOW + DAY)).toMatchObject({ scopes: 'extra-quiet' });
-    expect(sent.filter((t) => t.includes('зайвих прав'))).toHaveLength(1);
+  it('an unverified/stale token cache cannot generate a permission alert', async () => {
+    const value = makeEnv();
+    value.store.set(
+      'googleToken',
+      JSON.stringify({
+        token: 'AT',
+        expMs: NOW + 3600000,
+        scope: [...CORE_SCOPES, 'https://www.googleapis.com/auth/gmail.send'].join(' '),
+      }),
+    );
+    await secretExpiryTask(value.env, NOW);
+    expect(texts(value.d1)).toEqual([]);
   });
-
-  it('поза годиною і вдруге за добу - нічого', async () => {
+  it('outside its hour and repeated runs stay quiet', async () => {
     const { env, store } = makeEnv();
-    stubTelegram();
-    expect(await secretExpiryTask(env, NOW - 3 * 3_600_000)).toEqual({ skipped: 'hour' });
+    expect(await secretExpiryTask(env, NOW - 3 * 3600000)).toEqual({ skipped: 'hour' });
     await secretExpiryTask(env, NOW);
     expect(store.get(SECRET_EXPIRY_MARKER)).toBe('2026-09-08');
-    expect(await secretExpiryTask(env, NOW + 60_000)).toEqual({ skipped: 'done' });
-  });
-
-  it('година перевірки - 10:00 Києва', () => {
+    expect(await secretExpiryTask(env, NOW + 60000)).toEqual({ skipped: 'done' });
     expect(SECRET_EXPIRY_HOUR).toBe(10);
   });
 });
@@ -315,7 +297,7 @@ describe('quota-check', () => {
     // 09:00 Києва = 06:00 UTC.
     const at = Date.parse('2026-09-08T06:00:00.000Z');
     expect(await quotaCheckTask(env, at)).toMatchObject({ findings: 1 });
-    expect(sent.some((t) => t.includes('gemini_usd'))).toBe(true);
+    expect(sent.some((t) => t.includes('Генерація зображень'))).toBe(true);
     expect(store.get(QUOTA_CHECK_MARKER)).toBe('2026-09-08');
     expect(await quotaCheckTask(env, at + 60_000)).toEqual({ skipped: 'done' });
   });

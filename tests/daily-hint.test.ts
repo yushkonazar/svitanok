@@ -186,13 +186,10 @@ describe('pickHint - пріоритет і mute', () => {
         `INSERT INTO chains (id, kind, status, created_at, updated_at) VALUES ('tc1', 'trip', 'waiting', '2026-09-01T00:00:00Z', '2026-09-03T00:00:00Z')`,
       )
       .run();
-    expect((await pickHint(env, TODAY, AT_1010, []))?.topic).toBe('subscriptions');
+    expect((await pickHint(env, TODAY, AT_1010, []))?.topic).toBe('chains');
     d1.db.prepare(`UPDATE chains SET status = 'cancelled' WHERE id = 'tc1'`).run();
     expect((await pickHint(env, TODAY, AT_1010, []))?.topic).toBe('trips');
-    expect(await pickHint(env, TODAY, AT_1010, ['trips'])).toEqual({
-      topic: 'subscriptions',
-      text: 'Списання Spotify 4.99 USD - 07.09.',
-    });
+    expect((await pickHint(env, TODAY, AT_1010, ['trips']))?.topic).toBe('chains');
 
     // Ближче за три доби підказка мовчить: там працює `subscription-remind`
     // (етап 6 PR-2) з тим самим рядком і кнопкою - інакше вийшло б два

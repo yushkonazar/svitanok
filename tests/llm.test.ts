@@ -72,6 +72,20 @@ describe('briefing OpenAI client', () => {
 });
 
 describe('OpenAI degradation status', () => {
+  it('distinguishes project spending, exhausted credits and temporary throttling', () => {
+    const project = formatLlmDegradedMessage([
+      { tag: 'mail', message: 'project_spend_limit_exceeded' },
+    ])!;
+    expect(project).toContain('ліміт витрат проєкту');
+    expect(project).toContain('повтор запиту');
+    expect(
+      formatLlmDegradedMessage([{ tag: 'mail', message: 'credit_balance_exhausted' }]),
+    ).toContain('Вичерпано кредит');
+    expect(
+      formatLlmDegradedMessage([{ tag: 'mail', message: 'HTTP 429: rate_limit_exceeded' }]),
+    ).toContain('тимчасово');
+    expect(project).not.toMatch(/HTTP|співбесід|LLM|project_spend_limit/);
+  });
   it('calls out quota/rate limits rather than the removed Claude subscription', () => {
     expect(isUsageLimitError('OpenAI Responses HTTP 429: insufficient_quota')).toBe(true);
     const message = formatLlmDegradedMessage([

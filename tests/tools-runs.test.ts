@@ -83,7 +83,7 @@ describe('runs.query', () => {
       expect.objectContaining({ key: 'deepgram_min', value: 12.5, limit: 46_500 }),
     ]);
     expect(doc.quotas.limits).toEqual(QUOTA_LIMITS);
-    expect(doc.secrets.note).toMatch(/secret-expiry/);
+    expect(doc.secrets.note).toMatch(/Метадані|Строки/);
   });
 
   it('крива period - помилка; без DB - помилка, не порожній звіт', async () => {

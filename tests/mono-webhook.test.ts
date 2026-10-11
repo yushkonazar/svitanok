@@ -203,7 +203,8 @@ describe('прапорці «незвичного»', () => {
   it('новий мерчант + понад поріг (S-4-2)', () => {
     const flags = computeFlags({ ...base, amountUah: -134_000, knownMerchant: false });
     expect(flags).toEqual(['new_merchant', 'over_threshold']);
-    expect(isLoud(flags)).toBe(true);
+    expect(isLoud(flags)).toBe(false);
+    expect(isLoud([...flags, 'duplicate'])).toBe(true);
   });
 
   it('поріг - строго БІЛЬШЕ 1 000 грн, рівно тисяча не прапорець', () => {
@@ -490,38 +491,23 @@ describe('вебхук: шлях транзакції', () => {
     expect(outboxTexts(db)).toHaveLength(0);
   });
 
-  it('новий мерчант і велика сума - повідомлення з кнопками (S-4-2)', async () => {
+  it('новий продавець і велика сума зберігаються без сповіщення', async () => {
     const { env, db } = setup();
     await seedAccounts(env);
     await handleMonoWebhook(webhookRequest(statementBody(item())), env, undefined, NOON);
-    const [msg] = outboxTexts(db);
-    expect(msg!.text).toContain('1 340 грн');
-    expect(msg!.text).toContain('«Comfy»');
-    expect(msg!.text).toContain('новий мерчант, велика сума');
-    expect(msg!.text).toContain('Техніка за місяць: 1 340 грн.');
-    expect(msg!.reply_markup).toMatchObject({
-      inline_keyboard: [
-        [
-          { text: '🔎 Перевірити ціни', callback_data: 'm:fx:tx-1:price' },
-          { text: 'Ок', callback_data: 'm:fx:tx-1:ok' },
-        ],
-        [
-          { text: '✏️ Категорія', callback_data: 'm:fx:tx-1:cat' },
-          // PR-6 §2.2: великий чек у транспорті чи готелі - типовий початок
-          // поїздки, і питати про це варто там, де воно видно.
-          { text: '🧳 Це поїздка', callback_data: 'm:fx:tx-1:trip' },
-        ],
-      ],
-    });
+    expect(outboxTexts(db)).toHaveLength(0);
+    expect(
+      db.prepare('SELECT amount,flags_json FROM transactions WHERE id=?').get('tx-1'),
+    ).toMatchObject({ amount: -134_000, flags_json: '["new_merchant","over_threshold"]' });
   });
 
-  it('той самий id двічі - рівно один рядок і одне повідомлення', async () => {
+  it('той самий id двічі — один рядок, без повторних сповіщень', async () => {
     const { env, db } = setup();
     await seedAccounts(env);
     await handleMonoWebhook(webhookRequest(statementBody(item())), env, undefined, NOON);
     await handleMonoWebhook(webhookRequest(statementBody(item())), env, undefined, NOON);
     expect(db.prepare('SELECT COUNT(*) AS n FROM transactions').get()).toMatchObject({ n: 1 });
-    expect(outboxTexts(db)).toHaveLength(1);
+    expect(outboxTexts(db)).toHaveLength(0);
   });
 
   it('холд закрився остаточною сумою - рядок оновлюється, другого повідомлення немає', async () => {
@@ -549,7 +535,7 @@ describe('вебхук: шлях транзакції', () => {
       amount: -134_000,
       amount_uah: -134_000,
     });
-    expect(outboxTexts(db)).toHaveLength(1);
+    expect(outboxTexts(db)).toHaveLength(0);
   });
 
   it('дубль за 5 хв - своє питання і свої кнопки (S-4-4)', async () => {
@@ -578,8 +564,14 @@ describe('вебхук: шлях транзакції', () => {
     expect(dup.reply_markup).toMatchObject({
       inline_keyboard: [
         [
-          { text: 'Так, перевірю', callback_data: 'm:fx:g2:dupy' },
-          { text: 'Ні', callback_data: 'm:fx:g2:ok' },
+          {
+            text: 'Відкрити операцію',
+            web_app: { url: 'https://svitanok.yushko.dev/app/#/finance?transaction=g2' },
+          },
+        ],
+        [
+          { text: 'Перевірю списання', callback_data: 'm:fx:g2:review' },
+          { text: 'Це різні покупки', callback_data: 'm:fx:g2:different' },
         ],
       ],
     });
@@ -623,7 +615,20 @@ describe('вебхук: шлях транзакції', () => {
     };
     expect(row).toMatchObject({ amount: -1299, currency: 'USD', amount_uah: -53_700 });
     expect(JSON.parse(row.flags_json)).toContain('foreign');
-    expect(outboxTexts(db)[0]!.text).toContain('12,99 $ (537 грн)');
+    expect(outboxTexts(db)).toHaveLength(0);
+    expect(
+      transactionText({
+        ...row,
+        id: 'usd',
+        at: new Date(NOON).toISOString(),
+        mcc: 5732,
+        description: 'Apple',
+        category: 'техніка',
+        balance: null,
+        merchant: 'Apple',
+        flags: ['foreign'],
+      }),
+    ).toContain('12,99 $ (537 грн)');
   });
 });
 
@@ -649,7 +654,7 @@ describe('текст і кнопки (чисті функції)', () => {
   });
 
   it('id поза дозволеним алфавітом - кнопок немає, а не крива callback_data', () => {
-    expect(transactionButtons('ok_id=', false)).toHaveLength(2);
+    expect(transactionButtons('ok_id=', true)).toHaveLength(1);
     expect(transactionButtons('id:with:colons', false)).toEqual([]);
     expect(transactionButtons('x'.repeat(50), false)).toEqual([]);
   });
@@ -719,8 +724,8 @@ describe('звірка mono-reconcile', () => {
     expect(mono(second.calls)).toHaveLength(1);
     expect(out).toMatchObject({ done: true, imported: 1 });
     expect(db.prepare('SELECT COUNT(*) AS n FROM transactions').get()).toMatchObject({ n: 2 });
-    // Пропущена незвична покупка все одно доїжджає до власника.
-    expect(outboxTexts(db).some((m) => m.text.includes('«Comfy»'))).toBe(true);
+    // Імпорт не повертає сповіщення про нових продавців чи великі суми.
+    expect(outboxTexts(db).some((m) => m.text.includes('«Comfy»'))).toBe(false);
     // Третій тік уже нічого не робить.
     routeFetch([]);
     expect(await monoReconcileTask(env, NIGHT)).toEqual({ skipped: 'done' });
@@ -867,7 +872,7 @@ describe('POST /internal/test/mono', () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({
       inserted: true,
-      announced: true,
+      announced: false,
       category: 'техніка',
       flags: ['new_merchant', 'over_threshold'],
     });
@@ -876,7 +881,7 @@ describe('POST /internal/test/mono', () => {
     };
     expect(JSON.parse(raw.raw_json).test).toBe(1);
     // Місячна сума за категорією тестову покупку не рахує.
-    expect(outboxTexts(db)[0]!.text).not.toContain('Техніка за місяць');
+    expect(outboxTexts(db)).toHaveLength(0);
   });
 });
 

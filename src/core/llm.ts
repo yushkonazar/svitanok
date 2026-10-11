@@ -28,7 +28,9 @@ export interface RecordingLLMClient extends LLMClient {
 /** Provider-side quota/rate errors. The legacy CLI needed prose parsing; the
  * Responses API gives us an HTTP status and a machine-readable error code. */
 export function isUsageLimitError(text: string): boolean {
-  return /(?:http\s+429|rate[_ -]?limit|insufficient_quota|billing)/i.test(text);
+  return /(?:http\s+429|rate[_ -]?limit|spend_limit_exceeded|usage_limit_exceeded|credit_balance_exhausted|insufficient_quota|billing)/i.test(
+    text,
+  );
 }
 
 const MODULE_LABELS: Record<string, string> = {
@@ -50,11 +52,19 @@ export function formatLlmDegradedMessage(failures: LlmFailure[]): string | null 
       failure.message,
     ),
   );
-  const head = billing
-    ? '⚠️ Досягнуто ліміт витрат або вичерпано кредит OpenAI API. Перевір бюджет і баланс проєкту.'
-    : quota
-      ? '⚠️ OpenAI тимчасово обмежив запити.'
-      : '⚠️ Аналіз OpenAI зараз недоступний.';
+  const projectLimit = failures.some((failure) =>
+    /project_spend_limit_exceeded/i.test(failure.message),
+  );
+  const noCredit = failures.some((failure) => /credit_balance_exhausted/i.test(failure.message));
+  const head = projectLimit
+    ? '⚠️ Досягнуто ліміт витрат проєкту OpenAI. Перевір бюджет проєкту; повтор запиту сам по собі не допоможе.'
+    : noCredit
+      ? '⚠️ Вичерпано кредит OpenAI API. Перевір баланс проєкту.'
+      : billing
+        ? '⚠️ Досягнуто ліміт витрат або вичерпано кредит OpenAI API. Перевір бюджет і баланс проєкту.'
+        : quota
+          ? '⚠️ OpenAI тимчасово обмежив запити.'
+          : '⚠️ Не вдалося завершити додатковий аналіз.';
   return [head, `Брифінг надіслано без цих можливостей: ${affected.join(', ')}.`].join('\n');
 }
 

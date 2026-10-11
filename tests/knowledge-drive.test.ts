@@ -74,7 +74,7 @@ describe('knowledge Drive adapter', () => {
     const scopes = CORE_SCOPES.filter((scope) => !scope.endsWith('drive.readonly'));
     await expect(
       inspectKnowledgeDriveFile(envWithToken(scopes), { fileId: FILE_ID }),
-    ).rejects.toThrow(/читання Drive зараз недоступне[\s\S]*google-auth/);
+    ).rejects.toThrow(/читання Drive зараз недоступне[\s\S]*оновити дозволи/);
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 

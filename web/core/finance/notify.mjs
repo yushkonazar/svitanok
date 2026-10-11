@@ -3,10 +3,9 @@
 // формулюванні. Фінансист вмикається лише тоді, коли власник ПИТАЄ («чому це
 // незвичне?») - і пояснює вже пораховані прапорці (ADR-029).
 //
-// Тиша - штатний результат: без гучних прапорців (new_merchant, over_threshold,
-// duplicate) транзакція просто лягає в базу (S-4-1). `foreign` і `subscription`
-// самі собою не будять власника: перший лише пояснює курс, про другий нагадує
-// задача `subscription-remind` за два дні до списання.
+// Тиша — штатний результат. Новий продавець і велика сума залишаються
+// аналітичними ознаками, а не причиною переривати власника. Наразі повідомляємо
+// лише про можливий дубль. Планові платежі веде спільний облік Mini App.
 //
 // Назва мерчанта - ЗОВНІШНІЙ текст (його пише мерчант у полі description):
 // через cleanSource, без розмітки й посилань, щоб чужий рядок не став ані
@@ -18,6 +17,7 @@ import { enqueueOutbox, drainOutbox } from '../tg/outbox.mjs';
 import { assistantHomeTarget } from '../tg/home.mjs';
 import { FLAG_LABELS, isLoud } from './rules.mjs';
 import { categoryMonthTotal } from './store.mjs';
+import { financeMiniAppButton } from './links.mjs';
 
 /** Префікс кнопок фінансів у просторі `m:` (07 §9). */
 export const FX_CB = 'm:fx:';
@@ -27,30 +27,21 @@ export const TX_ID_RE = /^[A-Za-z0-9_=-]{1,44}$/;
 /**
  * Кнопки під повідомленням. Дубль питає інше, ніж звичайна незвична покупка,
  * тож і кнопки в нього свої.
- * @param {string} txId @param {boolean} duplicate
+ * @param {string} txId @param {boolean} duplicate @param {Env} [env] @param {string|number|null} [chatId]
  */
-export function transactionButtons(txId, duplicate) {
+export function transactionButtons(txId, duplicate, env, chatId = null) {
   if (!TX_ID_RE.test(txId)) return [];
+  const open = env && financeMiniAppButton(env, 'Відкрити операцію', 'transaction', txId, chatId);
   if (duplicate) {
     return [
+      ...(open ? [[open]] : []),
       [
-        { text: 'Так, перевірю', callback_data: `${FX_CB}${txId}:dupy` },
-        { text: 'Ні', callback_data: `${FX_CB}${txId}:ok` },
+        { text: 'Перевірю списання', callback_data: `${FX_CB}${txId}:review` },
+        { text: 'Це різні покупки', callback_data: `${FX_CB}${txId}:different` },
       ],
     ];
   }
-  return [
-    [
-      { text: '🔎 Перевірити ціни', callback_data: `${FX_CB}${txId}:price` },
-      { text: 'Ок', callback_data: `${FX_CB}${txId}:ok` },
-    ],
-    // «Це поїздка?» (PR-6 §2.2): великий чек у транспорті чи готелі - типовий
-    // початок поїздки, і питати про це варто там, де воно видно, а не потім.
-    [
-      { text: '✏️ Категорія', callback_data: `${FX_CB}${txId}:cat` },
-      { text: '🧳 Це поїздка', callback_data: `${FX_CB}${txId}:trip` },
-    ],
-  ];
+  return open ? [[open]] : [];
 }
 
 /**
@@ -74,7 +65,7 @@ export function transactionText(tx, extra = {}) {
       extra.minutesApart != null && extra.minutesApart > 0
         ? ` за ${extra.minutesApart} хв`
         : ' поспіль';
-    return `💳 Два списання по ${money} у «${merchant}»${apart} - дубль?`;
+    return `💳 Два списання по ${money} у «${merchant}»${apart}.\nЦе можуть бути різні покупки. Перевір, чи обидва списання очікувані.`;
   }
 
   const named = tx.flags
@@ -117,7 +108,7 @@ export async function announceTransaction(env, tx, nowMs) {
       },
     );
   }
-  const buttons = transactionButtons(tx.id, duplicate);
+  const buttons = transactionButtons(tx.id, duplicate, env, home.chatId);
   const minutesApart = tx.duplicateMinutes ?? null;
   await enqueueOutbox(
     env,

@@ -10,6 +10,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   CORE_SCOPES,
   SCOPE_BY_FEATURE,
+  SCOPE_INCLUDED_IN,
   auditScopes,
   parseGrantedScopes,
   hasFeatureScope,
@@ -84,7 +85,8 @@ describe('перелік скоупів ядра', () => {
   });
 
   it('кожна можливість посилається на скоуп зі списку', () => {
-    for (const scope of Object.values(SCOPE_BY_FEATURE)) expect(CORE_SCOPES).toContain(scope);
+    for (const scope of Object.values(SCOPE_BY_FEATURE))
+      expect([...CORE_SCOPES, ...Object.keys(SCOPE_INCLUDED_IN)]).toContain(scope);
   });
 });
 
@@ -95,6 +97,7 @@ describe('auditScopes', () => {
       ok: true,
       missing: [],
       extra: [],
+      redundant: [],
     });
   });
 
@@ -111,7 +114,7 @@ describe('auditScopes', () => {
     expect(audit.ok).toBe(false);
     expect(audit.missing).toEqual([]);
     expect(audit.extra).toEqual(['https://www.googleapis.com/auth/gmail.send']);
-    expect(extraScopesAlertText(audit.extra)).toContain('gmail.send');
+    expect(extraScopesAlertText(audit.extra)).toContain('надсилати пошту');
   });
 
   it('ширший ВИДАНИЙ скоуп покриває вужчий потрібний - можливість працює', () => {
@@ -149,10 +152,8 @@ describe('auditScopes', () => {
     }
     const audit = auditScopes(stage0);
     expect(audit.missing).toEqual([]);
-    expect(audit.extra).toEqual([
-      'https://www.googleapis.com/auth/calendar.readonly',
-      'https://www.googleapis.com/auth/contacts.readonly',
-    ]);
+    expect(audit.extra).toEqual(['https://www.googleapis.com/auth/calendar.readonly']);
+    expect(audit.redundant).toEqual(['https://www.googleapis.com/auth/contacts.readonly']);
   });
 
   it('ширший скоуп замість вужчого теж зайвий (drive проти drive.file)', () => {
@@ -160,12 +161,18 @@ describe('auditScopes', () => {
       ...CORE_SCOPES.filter((s) => !s.endsWith('drive.file')),
       'https://www.googleapis.com/auth/drive',
     ]);
-    expect(audit.missing).toEqual(['https://www.googleapis.com/auth/drive.file']);
+    expect(audit.missing).toEqual([]);
     expect(audit.extra).toEqual(['https://www.googleapis.com/auth/drive']);
   });
 
   it('невідомі скоупи (кеш без поля) нічого не блокують', () => {
-    expect(auditScopes(null)).toEqual({ known: false, ok: true, missing: [], extra: [] });
+    expect(auditScopes(null)).toEqual({
+      known: false,
+      ok: true,
+      missing: [],
+      extra: [],
+      redundant: [],
+    });
     expect(parseGrantedScopes('')).toBeNull();
     expect(parseGrantedScopes(undefined)).toBeNull();
     expect(hasFeatureScope(null, 'tasks')).toBe(true);
@@ -185,10 +192,10 @@ describe('барʼєр можливості (S-8-7)', () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch');
     const { env } = makeEnv(CORE_SCOPES.filter((s) => !s.endsWith('/tasks')).join(' '));
     await expect(createTask(env, { title: 'купити молоко' })).rejects.toThrow(
-      /Tasks зараз недоступні[\s\S]*google-auth/,
+      /Tasks зараз недоступні[\s\S]*оновити дозволи/,
     );
     expect(fetchSpy).not.toHaveBeenCalled();
-    expect(featureNotConnectedText('tasks')).toContain('auth/tasks');
+    expect(featureNotConnectedText('tasks')).not.toContain('auth/tasks');
   });
 
   it('Drive без скоупа - завантаження таблиці не починається', async () => {
@@ -196,7 +203,7 @@ describe('барʼєр можливості (S-8-7)', () => {
     const { env } = makeEnv(CORE_SCOPES.filter((s) => !s.endsWith('drive.file')).join(' '));
     await expect(
       uploadCsvAsSheet(env, { name: 'Сервіси', parentId: 'folder-1', csv: 'a,b\n1,2\n' }),
-    ).rejects.toThrow(/Drive зараз недоступний[\s\S]*google-auth/);
+    ).rejects.toThrow(/Drive зараз недоступний[\s\S]*оновити дозволи/);
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 });

@@ -844,10 +844,15 @@ describe('finance workspace · real migration and SQLite transactions', () => {
       },
       at,
     );
-    expect(await miniAppPaymentRemindTask(env, at)).toEqual({ queued: 1 });
-    expect(await miniAppPaymentRemindTask(env, at + 300000)).toEqual({ queued: 0 });
+    expect(await miniAppPaymentRemindTask(env, at)).toEqual({ queued: 0 });
+    const overdue = Date.parse('2026-10-11T08:00:00Z');
+    expect(await miniAppPaymentRemindTask(env, Date.parse('2026-10-10T08:00:00Z'))).toEqual({
+      queued: 0,
+    });
+    expect(await miniAppPaymentRemindTask(env, overdue)).toEqual({ queued: 1 });
+    expect(await miniAppPaymentRemindTask(env, overdue + 300000)).toEqual({ queued: 0 });
     d1.db.exec('DELETE FROM outbox');
-    expect(await miniAppPaymentRemindTask(env, at + 600000)).toEqual({ queued: 0 });
+    expect(await miniAppPaymentRemindTask(env, overdue + 600000)).toEqual({ queued: 0 });
     expect(await queueMiniAppNotice(env, 'checkin:2026-10-08:am', 'Чек-ін', at)).toBe(true);
     expect(await queueMiniAppNotice(env, 'checkin:2026-10-08:am', 'Чек-ін', at + 1)).toBe(false);
     await executeFinanceCommand(

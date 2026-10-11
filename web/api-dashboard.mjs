@@ -46,6 +46,7 @@ import {
   clearHiddenV2,
 } from './core/checkin/catalog.mjs';
 import { totalProgress, roadmapWeekly } from './roadmap-core.mjs';
+import { checkinWindows, extendCheckin } from './core/checkin/extensions.mjs';
 import { masteryHints, themeOfWeek, mockMaterials, masteryTopics } from './mastery-core.mjs';
 
 /** POST /api/vote {category, dir:'up', url?} -> preferenceWeights + інтерес.
@@ -157,22 +158,27 @@ export async function applyEvent(/** @type {Env} */ env, /** @type {any} */ body
   let ev = body;
   let dateKey = kyivDateKey();
   if (body.type === 'checkin') {
-    // Слот і добу визначає СЕРВЕР, а не клієнт: інакше «ранковий» чек-ін можна
-    // надіслати опівночі, перевівши годинник на телефоні. Клієнтський body.slot
-    // ігноруємо свідомо — він тут лише підказка для UI.
+    // Explicit date/slot selects only a server-authorized open window (including
+    // a one-time extension). Legacy clients without a date keep the clock route.
     const h = kyivHour();
     const prefs = (await loadSettings(env)).checkin;
     if (prefs?.version === 3 && body.questionVersion !== 3) return { locked: false, expired: true };
     const clock = checkinClock(kyivMinuteOfDay(), prefs);
-    const slot = clock.slot;
-    // Тиха зона (02:00–07:59) — жоден блок не відкритий, писати нічого.
+    const windows = body.dateKey ? await checkinWindows(env, prefs, Date.now()) : [];
+    const requested = windows.find(
+      (w) => w.dateKey === body.dateKey && w.slot === body.slot && w.open,
+    );
+    const slot = body.dateKey ? requested?.slot : clock.slot;
+    // No open/authorized target: never redirect the write into a different slot.
     if (!slot) return body.dateKey ? { locked: false, expired: true } : undefined;
     ev = { ...body, slot, checkinPreferencesV2: prefs };
-    dateKey = prefs
-      ? clock.previousDay
-        ? checkinDateKey(dateKey, 0)
-        : dateKey
-      : checkinDateKey(dateKey, h);
+    dateKey = requested
+      ? requested.dateKey
+      : prefs
+        ? clock.previousDay
+          ? checkinDateKey(dateKey, 0)
+          : dateKey
+        : checkinDateKey(dateKey, h);
     if (body.dateKey && (body.dateKey !== dateKey || body.slot !== slot))
       return { locked: false, expired: true };
   } else if (body.type === 'sleepStart') {
@@ -238,6 +244,19 @@ export async function handleEvent(/** @type {Request} */ request, /** @type {Env
   if (body.type === 'job_seen') return json({ ok: false, error: 'bad-params' }, 400);
   const auth = await checkPrimaryOwner(mutationInitData(request, body), env);
   if (!auth.ok) return json({ ok: false, error: auth.error }, auth.status);
+
+  if (body.type === 'checkin_extend') {
+    try {
+      const result = await extendCheckin(
+        env,
+        { dateKey: body.dateKey, slot: body.slot, key: body.key },
+        Date.now(),
+      );
+      return json(result, result.ok ? 200 : 409);
+    } catch {
+      return json({ ok: false, error: 'Не вдалося продовжити чек-ін. Спробуй ще раз.' }, 503);
+    }
+  }
 
   const result = await applyEvent(env, body);
   if (result?.expired)
@@ -410,5 +429,12 @@ export async function handleStats(/** @type {Request} */ request, /** @type {Env
   stats.checkinToday = store.checkins?.[stats.checkinDate] ?? null;
   stats.checkinGapIn =
     prefs?.version === 3 ? checkinGapV3(stats.checkinToday, clock.slot, Date.now()) : 0;
+  stats.checkinWindows = (await checkinWindows(env, prefs, Date.now())).map((w) => ({
+    ...w,
+    extensionAvailable:
+      w.extensionAvailable && w.open && !store.checkins?.[w.dateKey]?.[w.slot]?.confirmed,
+    gapIn: prefs?.version === 3 ? checkinGapV3(store.checkins?.[w.dateKey], w.slot, Date.now()) : 0,
+  }));
+  stats.checkinServerTime = new Date().toISOString();
   return json(stats);
 }

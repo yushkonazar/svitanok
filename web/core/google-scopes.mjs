@@ -47,6 +47,12 @@ export const CORE_SCOPES = Object.freeze([
  * @type {Record<string, readonly string[]>}
  */
 export const SCOPE_INCLUDED_IN = Object.freeze({
+  'https://www.googleapis.com/auth/calendar.events.readonly': [
+    'https://www.googleapis.com/auth/calendar.events',
+    'https://www.googleapis.com/auth/calendar.readonly',
+    'https://www.googleapis.com/auth/calendar',
+  ],
+  'https://www.googleapis.com/auth/contacts.readonly': ['https://www.googleapis.com/auth/contacts'],
   'https://www.googleapis.com/auth/calendar.events': ['https://www.googleapis.com/auth/calendar'],
   'https://www.googleapis.com/auth/drive.file': ['https://www.googleapis.com/auth/drive'],
   'https://www.googleapis.com/auth/drive.readonly': ['https://www.googleapis.com/auth/drive'],
@@ -62,6 +68,8 @@ export const SCOPE_INCLUDED_IN = Object.freeze({
  * @type {Record<string, string>}
  */
 export const SCOPE_BY_FEATURE = Object.freeze({
+  calendar_read: 'https://www.googleapis.com/auth/calendar.events.readonly',
+  contacts_read: 'https://www.googleapis.com/auth/contacts.readonly',
   calendar: 'https://www.googleapis.com/auth/calendar.events',
   mail: 'https://www.googleapis.com/auth/gmail.readonly',
   contacts: 'https://www.googleapis.com/auth/contacts',
@@ -73,6 +81,8 @@ export const SCOPE_BY_FEATURE = Object.freeze({
 /** Людська назва можливості для повідомлення власнику.
  *  @type {Record<string, string>} */
 const FEATURE_TITLE = Object.freeze({
+  calendar_read: 'Читання календаря',
+  contacts_read: 'Читання контактів',
   calendar: 'Календар',
   mail: 'Пошта',
   contacts: 'Контакти',
@@ -84,6 +94,8 @@ const FEATURE_TITLE = Object.freeze({
 /** Закінчення прикметника під рід назви можливості («недоступн-а/-е/-і»).
  *  @type {Record<string, string>} */
 const FEATURE_ENDING = Object.freeze({
+  calendar_read: 'е',
+  contacts_read: 'е',
   calendar: 'ий',
   mail: 'а',
   contacts: 'і',
@@ -111,15 +123,20 @@ export function parseGrantedScopes(raw) {
  * CORE_SCOPES означає, що токен дає більше, ніж ядро вміє й має право
  * робити.
  * @param {readonly string[] | null | undefined} granted
- * @returns {{ known: boolean, ok: boolean, missing: string[], extra: string[] }}
+ * @returns {{ known: boolean, ok: boolean, missing: string[], extra: string[], redundant: string[] }}
  */
 export function auditScopes(granted) {
-  if (!granted) return { known: false, ok: true, missing: [], extra: [] };
+  if (!granted) return { known: false, ok: true, missing: [], extra: [], redundant: [] };
   const have = new Set(granted);
   const need = new Set(CORE_SCOPES);
-  const missing = CORE_SCOPES.filter((s) => !have.has(s));
-  const extra = [...have].filter((s) => !need.has(s)).sort();
-  return { known: true, ok: missing.length === 0 && extra.length === 0, missing, extra };
+  const missing = CORE_SCOPES.filter(
+    (s) => !have.has(s) && !(SCOPE_INCLUDED_IN[s] ?? []).some((broad) => have.has(broad)),
+  );
+  const redundant = [...have]
+    .filter((s) => !need.has(s) && (SCOPE_INCLUDED_IN[s] ?? []).some((broad) => have.has(broad)))
+    .sort();
+  const extra = [...have].filter((s) => !need.has(s) && !redundant.includes(s)).sort();
+  return { known: true, ok: missing.length === 0 && extra.length === 0, missing, extra, redundant };
 }
 
 /**
@@ -152,7 +169,7 @@ export function featureNotConnectedText(feature) {
   // коли він дійде до перевидання токена.
   return [
     `⚠️ ${title} зараз недоступн${FEATURE_ENDING[feature] ?? 'е'} - Google не дав на це права.`,
-    `Що зробити: перевидати токен - node scripts/google-auth.mjs (потрібен скоуп ${SCOPE_BY_FEATURE[feature] ?? feature}; покрокове - docs/ops/secrets.md).`,
+    'Потрібно оновити дозволи підключення Google. Інші можливості залишаються доступними.',
   ].join(String.fromCharCode(10));
 }
 
@@ -163,8 +180,57 @@ export function featureNotConnectedText(feature) {
  * @param {string[]} extra
  */
 export function extraScopesAlertText(extra) {
-  return [
-    `⚠️ Токен Google має ${extra.length} зайвих прав понад те, що потрібне асистенту.`,
-    `Що зробити: перевидати токен - node scripts/google-auth.mjs (зайве: ${extra.join(', ')}; зайві права діють і тоді, коли код ними не користується).`,
-  ].join(String.fromCharCode(10));
+  const mailWrite = extra.some((scope) => /gmail\.(send|modify)|mail\.google\.com/.test(scope));
+  return mailWrite
+    ? '⚠️ Підключення Google дозволяє змінювати або надсилати пошту, хоча асистенту потрібне лише читання. Переглянь дозволи Google у налаштуваннях Світанку.'
+    : 'Доступ Google ширший, ніж потрібен поточним функціям. Варто переглянути його в налаштуваннях Світанку; автоматично нічого не змінював.';
+}
+
+/** Stable grant identity kept server-side only; no token values or hashes in UI.
+ * @param {Env} env */
+export async function googleGrantIdentity(env) {
+  if (!env.GOOGLE_CLIENT_ID || !env.GOOGLE_REFRESH_TOKEN) return null;
+  const value = new TextEncoder().encode(`${env.GOOGLE_CLIENT_ID}\0${env.GOOGLE_REFRESH_TOKEN}`);
+  const digest = await crypto.subtle.digest('SHA-256', value);
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+/** Read-only cached evidence. Never refresh OAuth or probe private data on opening settings.
+ * @param {Env} env @param {number} [nowMs] */
+export async function cachedGoogleAudit(env, nowMs = Date.now()) {
+  let cached = null;
+  try {
+    cached = JSON.parse((await env.BRIEFING.get('googleToken')) ?? 'null');
+  } catch {
+    /* unknown */
+  }
+  const configured = Boolean(
+    env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET && env.GOOGLE_REFRESH_TOKEN,
+  );
+  const identity = configured ? await googleGrantIdentity(env) : null;
+  const fresh =
+    configured &&
+    cached &&
+    Number(cached.expMs) > nowMs &&
+    (!cached.grantIdentity || cached.grantIdentity === identity);
+  const granted = fresh ? parseGrantedScopes(cached.scope) : null;
+  const checkedAt =
+    fresh &&
+    typeof cached.scopeCheckedAt === 'string' &&
+    Number.isFinite(Date.parse(cached.scopeCheckedAt)) &&
+    Date.parse(cached.scopeCheckedAt) <= nowMs
+      ? cached.scopeCheckedAt
+      : null;
+  const audit = auditScopes(granted);
+  return {
+    ...audit,
+    configured,
+    verified: Boolean(checkedAt && cached.grantIdentity === identity),
+    checkedAt,
+    features: Object.fromEntries(
+      Object.keys(SCOPE_BY_FEATURE).map((feature) => [
+        feature,
+        granted ? hasFeatureScope(granted, feature) : null,
+      ]),
+    ),
+  };
 }

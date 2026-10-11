@@ -17,6 +17,7 @@ import { PageHeading } from '../ui/PageHeading.tsx';
 import { TaxiHistory } from './TaxiHistory.tsx';
 import { FinanceReport } from './FinanceReport.tsx';
 import { PaymentDetail } from './PaymentDetail.tsx';
+import { TransactionDetail } from './TransactionDetail.tsx';
 import { PaymentGroups } from './PaymentGroups.tsx';
 import { FinanceExplanation } from './FinanceExplanation.tsx';
 import { PaymentCalendar } from './PaymentCalendar.tsx';
@@ -47,6 +48,7 @@ export function FinanceScreen() {
   }, []);
   const { data, isLoading, error, refetch } = useFinance();
   const [allOperations, setAllOperations] = useState(false);
+  const [pendingLimit, setPendingLimit] = useState(5);
   const [paymentsExpanded, setPaymentsExpanded] = useState(() => {
     try {
       return localStorage.getItem('svitanok.finance.paymentsExpanded') === 'true';
@@ -67,15 +69,29 @@ export function FinanceScreen() {
   const [reportOpen, setReportOpen] = useState(false);
   const [explainOpen, setExplainOpen] = useState(false);
   const [calendarOpen, setCalendarOpen] = useState(false);
-  const [detailId, setDetailId] = useState<string | null>(null);
+  const [localDetailId, setDetailId] = useState<string | null>(null);
+  const [params, setParams] = useSearchParams();
+  const detailId = localDetailId ?? params.get('payment');
+  const transactionId = params.get('transaction');
+  const closeDetail = () => {
+    setDetailId(null);
+    setParams(
+      (previous) => {
+        const next = new URLSearchParams(previous);
+        next.delete('payment');
+        next.delete('transaction');
+        return next;
+      },
+      { replace: true },
+    );
+  };
   const overviewScroll = useRef(0);
   useLayoutEffect(() => {
-    window.scrollTo(0, detailId || reportOpen ? 0 : overviewScroll.current);
-  }, [detailId, reportOpen]);
+    window.scrollTo(0, detailId || transactionId || reportOpen ? 0 : overviewScroll.current);
+  }, [detailId, transactionId, reportOpen]);
   const [dayChoice, setDays] = useState<number | null>(null);
   const days = dayChoice ?? (data?.finance.settings.incomePeriod === 'month' ? 30 : 7);
   const [form, setForm] = useState<FinanceFormRequest | null>(null);
-  const [params, setParams] = useSearchParams();
   const activeForm =
     form ??
     (params.get('action') === 'expense'
@@ -101,6 +117,20 @@ export function FinanceScreen() {
   const activePolicy = f.policies.filter((p) => Date.parse(p.effectiveAt) <= nowMs).at(-1)!;
   const latestWeek = f.taxiWeeks.find((w) => w.key === taxi.key);
   const detail = f.payments.find((p) => p.id === detailId);
+  const transaction = f.transactions.find((t) => t.id === transactionId);
+  const pendingTransactions = f.transactions.filter(
+    (t) => t.duplicateSuspected && t.attention?.status !== 'different',
+  );
+  const openTransaction = (id: string) => {
+    overviewScroll.current = window.scrollY;
+    setDetailId(null);
+    setParams((previous) => {
+      const next = new URLSearchParams(previous);
+      next.delete('payment');
+      next.set('transaction', id);
+      return next;
+    });
+  };
   const formNode = activeForm && (
     <FinanceForm
       key={`${activeForm.kind}-${activeForm.id ?? ''}`}
@@ -110,18 +140,45 @@ export function FinanceScreen() {
         if (['payment-paid', 'payment-close', 'payment-cancel'].includes(activeForm.kind))
           setDetailId(null);
         setForm(null);
-        setParams({}, { replace: true });
+        setParams(
+          (previous) => {
+            const next = new URLSearchParams(previous);
+            next.delete('action');
+            if (['payment-paid', 'payment-close', 'payment-cancel'].includes(activeForm.kind))
+              next.delete('payment');
+            return next;
+          },
+          { replace: true },
+        );
       }}
     />
   );
   const today = kyivParts(nowMs).date;
   if (reportOpen) return <FinanceReport onBack={() => setReportOpen(false)} />;
+  if (transaction)
+    return (
+      <>
+        <TransactionDetail
+          key={transaction.id}
+          transaction={transaction}
+          version={f.version}
+          onBack={closeDetail}
+          onClassify={() =>
+            setForm({
+              kind: transaction.bank ? 'classify' : 'edit-transaction',
+              id: transaction.id,
+            })
+          }
+        />
+        {formNode}
+      </>
+    );
   if (detail)
     return (
       <>
         <PaymentDetail
           payment={detail}
-          onBack={() => setDetailId(null)}
+          onBack={closeDetail}
           onEdit={() => setForm({ kind: 'payment', id: detail.id })}
           onPay={() => setForm({ kind: 'payment-paid', id: detail.id })}
           onCloseDebt={() => setForm({ kind: 'payment-close', id: detail.id })}
@@ -132,6 +189,18 @@ export function FinanceScreen() {
     );
   return (
     <div className="renewal-finance flex flex-col gap-5">
+      {(detailId || transactionId) && (
+        <div className="renewal-inset" role="status">
+          Цей запис недоступний у поточному обліку. Можливо, його видалено або він поза періодом
+          історії.
+          <button className="renewal-link" onClick={() => void refetch()}>
+            Оновити фінанси
+          </button>
+          <button className="renewal-link" onClick={closeDetail}>
+            До огляду
+          </button>
+        </div>
+      )}
       <PageHeading
         eyebrow="ГРОШІ БЕЗ ТУМАНУ"
         title="Знати, що є."
@@ -147,6 +216,37 @@ export function FinanceScreen() {
           </button>
         }
       />
+      {!!pendingTransactions.length && (
+        <section className="renewal-card">
+          <h2 className="text-lg font-bold">Списання для перевірки</h2>
+          <p className="renewal-muted">
+            Схожі операції — не обов’язково дублікати. Підтвердь, якщо це різні покупки.
+          </p>
+          {pendingTransactions.slice(0, pendingLimit).map((t) => (
+            <button
+              key={t.id}
+              className="renewal-list-row w-full text-left"
+              onClick={() => openTransaction(t.id)}
+            >
+              <span>
+                {t.description}
+                <small>
+                  {t.attention?.status === 'reviewing'
+                    ? 'Чекає твоєї перевірки'
+                    : 'Можливе повторне списання'}{' '}
+                  · {new Date(t.at).toLocaleDateString('uk-UA', { timeZone: 'Europe/Kyiv' })}
+                </small>
+              </span>
+              <strong>{moneyLabel(t.amountMinor, t.currency)}</strong>
+            </button>
+          ))}
+          {pendingTransactions.length > pendingLimit && (
+            <button className="renewal-link" onClick={() => setPendingLimit((limit) => limit + 10)}>
+              Показати ще ({pendingTransactions.length - pendingLimit})
+            </button>
+          )}
+        </section>
+      )}
       {data.demo && (
         <div className="renewal-inset renewal-muted">
           Демонстраційний облік. Зміни зберігаються лише в цьому браузері й не стосуються твоїх
@@ -428,17 +528,19 @@ export function FinanceScreen() {
             type="button"
             key={t.id}
             disabled={
-              !!t.reference || (!t.bank && !['expense', 'income', 'unclassified'].includes(t.kind))
+              !t.bank && (!!t.reference || !['expense', 'income', 'unclassified'].includes(t.kind))
             }
             className="renewal-list-row w-full text-left"
             onClick={() =>
-              setForm({
-                kind:
-                  !t.bank && ['expense', 'income'].includes(t.kind)
-                    ? 'edit-transaction'
-                    : 'classify',
-                id: t.id,
-              })
+              t.bank
+                ? openTransaction(t.id)
+                : setForm({
+                    kind:
+                      !t.bank && ['expense', 'income'].includes(t.kind)
+                        ? 'edit-transaction'
+                        : 'classify',
+                    id: t.id,
+                  })
             }
           >
             <span>

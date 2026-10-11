@@ -9,6 +9,9 @@
 // on - повний шлях для всього.
 
 import { tgCall } from '../telegram-client.mjs';
+import { acknowledgeFinanceAlert, financeAcknowledgementCard } from './finance/attention.mjs';
+import { readTransaction } from './finance/store.mjs';
+import { transactionText, transactionButtons } from './finance/notify.mjs';
 import { parseCommand } from '../tg-core.mjs';
 import { recordTrackedMessage, updateState } from '../kv-store.mjs';
 import { rememberAssistantQuestion } from '../assistant-memory.mjs';
@@ -129,6 +132,7 @@ import { BACKUP_MAX_ATTEMPTS } from './backup/task.mjs';
 import { startDayPlanChain } from './day-plan/chain.mjs';
 import { getDayPlan } from './day-plan/store.mjs';
 import { resolveSecurityHint } from './hints/daily-hint.mjs';
+import { checkinExtensionCallback } from './checkin/extensions.mjs';
 
 export const THREAD_DM = 'dm';
 /** Скільки транскрипта показуємо в «Я почув»: одне повідомлення з кнопками
@@ -1584,7 +1588,7 @@ export async function kickPendingThreads(env, nowMs = Date.now()) {
  * одразу, а робота - виконатись після відповіді, у тому ж waitUntil. Без
  * `defer` робота виконується інлайн (тести, майбутні викликачі).
  * @param {Env} env
- * @param {{ data?: unknown, chatId?: number | null, messageId?: number | null,
+ * @param {{ data?: unknown, fromId?: number | null, chatId?: number | null, messageId?: number | null,
  *   threadId?: number | string | null, replyMarkup?: unknown, messageText?: string | null }} parsed
  * @param {number} [nowMs]
  * @param {((work: () => Promise<void>) => void) | null} [defer]
@@ -1592,6 +1596,10 @@ export async function kickPendingThreads(env, nowMs = Date.now()) {
  */
 export async function handleBrainCallback(env, parsed, nowMs = Date.now(), defer = null) {
   const data = String(parsed.data ?? '');
+  if (data.startsWith('ci:extend:')) {
+    if (!isPrimaryOwner(env, parsed.fromId)) return 'Ця дія доступна лише власнику.';
+    return checkinExtensionCallback(env, parsed, nowMs);
+  }
   if (data.startsWith('er:')) {
     if (defer) {
       const toast = await contextReminderCallback(env, parsed, nowMs, false);
@@ -1842,13 +1850,13 @@ export async function handleBrainCallback(env, parsed, nowMs = Date.now(), defer
   // m:fx:<txId>:<choice> - кнопки під незвичною покупкою (S-4-2, S-4-4, етап 6
   // PR-1). Повідомлення будує ядро без моделі; модель вмикається лише тут,
   // коли власник САМ попросив («Перевірити ціни», «Категорія»).
-  const fx = data.match(/^m:fx:([A-Za-z0-9_=-]{1,44}):(price|ok|cat|dupy|trip)$/);
+  const fx = data.match(/^m:fx:([A-Za-z0-9_=-]{1,44}):(price|ok|cat|dupy|trip|review|different)$/);
   if (fx) {
     return financeCallbackToast(
       env,
       parsed,
       /** @type {string} */ (fx[1]),
-      /** @type {'price' | 'ok' | 'cat' | 'dupy'} */ (fx[2]),
+      /** @type {'price' | 'ok' | 'cat' | 'dupy' | 'trip' | 'review' | 'different'} */ (fx[2]),
       nowMs,
       defer,
     );
@@ -3220,14 +3228,57 @@ async function subscriptionCancelToast(env, parsed, subscriptionId, nowMs) {
  * мерчанта в нього не потрапляє (це зовнішній текст - Фінансист візьме його
  * сам через finance.query і за своїми правилами).
  * @param {Env} env
- * @param {{ chatId?: number | null, messageId?: number | null, threadId?: number | string | null }} parsed
- * @param {string} txId @param {'price' | 'ok' | 'cat' | 'dupy' | 'trip'} choice @param {number} nowMs
+ * @param {{ chatId?: number | null, messageId?: number | null, threadId?: number | string | null, replyMarkup?: unknown }} parsed
+ * @param {string} txId @param {'price' | 'ok' | 'cat' | 'dupy' | 'trip' | 'review' | 'different'} choice @param {number} nowMs
  * @param {((work: () => Promise<void>) => void) | null} defer
  */
 async function financeCallbackToast(env, parsed, txId, choice, nowMs, defer) {
   if (choice === 'ok' || choice === 'dupy') {
-    await clearKeyboard(env, parsed);
-    return choice === 'ok' ? 'Ок' : 'Добре, перевір';
+    try {
+      const row = await readTransaction(env, txId);
+      if (!row) return 'Операція вже недоступна.';
+      const flags = JSON.parse(String(row.flags_json ?? '[]'));
+      if (Array.isArray(flags) && flags.includes('duplicate'))
+        choice = choice === 'ok' ? 'different' : 'review';
+      else {
+        const text = `${transactionText({ ...row, merchant: row.description, flags: [] })}\n\nПереглянув повідомлення. Облік не змінював.`;
+        await replaceCallbackMessage(env, parsed, text, {
+          reply_markup: {
+            inline_keyboard: transactionButtons(txId, false, env, parsed.chatId ?? null),
+          },
+        });
+        return 'Переглянув. Це не підтвердження оплати.';
+      }
+    } catch {
+      return 'Не вдалося прочитати операцію. Спробуй ще раз.';
+    }
+  }
+  if (choice === 'review' || choice === 'different') {
+    try {
+      const result = await acknowledgeFinanceAlert(
+        env,
+        txId,
+        choice === 'review' ? 'reviewing' : 'different',
+        nowMs,
+      );
+      const card = financeAcknowledgementCard(
+        env,
+        result.row,
+        result.attention,
+        parsed.chatId ?? null,
+      );
+      const edited = await replaceCallbackMessage(env, parsed, card.text, {
+        reply_markup: card.reply_markup,
+      });
+      return edited
+        ? result.attention.status === 'different'
+          ? 'Позначив як різні покупки.'
+          : 'Позначив для перевірки.'
+        : 'Відповідь збережено. Картку не вдалося оновити; актуальний стан є у фінансах.';
+    } catch (/** @type {any} */ error) {
+      console.error('finance: acknowledgement failed', error?.name);
+      return 'Не вдалося зберегти відповідь. Спробуй ще раз — кнопки залишились.';
+    }
   }
   /** @type {ThreadTarget} */
   const target = { chatId: parsed.chatId ?? null, threadId: parsed.threadId ?? null };
@@ -3239,21 +3290,45 @@ async function financeCallbackToast(env, parsed, txId, choice, nowMs, defer) {
       : choice === 'trip'
         ? `ця покупка ${txId} - частина поїздки; спитай про дати й заведи поїздку`
         : `зміни категорію покупки ${txId}`;
-  const work = () =>
-    startOrQueueThreadText(env, target, threadKey, text, 'chat', nowMs).then(() => undefined);
-  await clearKeyboard(env, parsed);
+  const claimId = `finance:${target.chatId}:${parsed.messageId}`;
+  try {
+    if (!(await claimWorkerCardAction(env, claimId, 'legacy-followup', nowMs)))
+      return 'Цей запит уже прийнято.';
+  } catch {
+    return 'Не вдалося прийняти запит. Спробуй ще раз.';
+  }
+  const work = async () => {
+    try {
+      await startOrQueueThreadText(env, target, threadKey, text, 'chat', nowMs, null, null, true);
+      // Do not remove choices until the job is actually accepted by the queue.
+      await clearKeyboard(env, parsed);
+    } catch (error) {
+      await releaseWorkerCardAction(env, claimId, 'legacy-followup').catch(() => {});
+      if (parsed.messageId != null)
+        await replaceCallbackMessage(env, parsed, 'Не вдалося прийняти запит. Спробуй ще раз.', {
+          reply_markup: parsed.replyMarkup ?? { inline_keyboard: [] },
+        });
+      throw error;
+    }
+  };
   if (defer) {
     defer(() =>
       work().catch((/** @type {any} */ e) =>
         console.error('prerouter: кнопка фінансів впала', e?.message),
       ),
     );
-  } else await work();
+  } else {
+    try {
+      await work();
+    } catch {
+      return 'Не вдалося прийняти запит. Спробуй ще раз.';
+    }
+  }
   return choice === 'price'
-    ? 'Шукаю ціни'
+    ? 'Запит на перевірку цін прийнято'
     : choice === 'trip'
-      ? 'Питаю про поїздку'
-      : 'Слухаю категорію';
+      ? 'Запит про поїздку прийнято'
+      : 'Запит на зміну категорії прийнято';
 }
 
 /** Тост під кожну кнопку працівника - щоб власник бачив, що саме прийнято.

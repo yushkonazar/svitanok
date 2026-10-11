@@ -1,4 +1,5 @@
 import { AdaptivePreferences } from '../checkin/AdaptivePreferences.tsx';
+import { OperationsPanel } from './OperationsPanel.tsx';
 import { version as appVersion } from '../../../package.json';
 import { NEWS_SOURCE_CATALOG, DEFAULT_NEWS_SOURCES } from '../../../../core/brief/news-catalog.mjs';
 import { PageHeading } from '../ui/PageHeading.tsx';
@@ -371,6 +372,8 @@ export function SettingsScreen() {
           </p>
         )}
       </Section>
+
+      <OperationsPanel />
 
       <details className="renewal-card">
         <summary className="cursor-pointer font-semibold text-sm">

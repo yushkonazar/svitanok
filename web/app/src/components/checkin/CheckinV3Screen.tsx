@@ -13,7 +13,13 @@ import {
   answerLabelV3,
   type AdaptiveContext,
 } from '../../../../core/checkin/adaptive.mjs';
-import { useStats, useSaveCheckin, useSettings, useSaveSettings } from '../../api/hooks.ts';
+import {
+  useStats,
+  useSaveCheckin,
+  useSettings,
+  useSaveSettings,
+  useExtendCheckin,
+} from '../../api/hooks.ts';
 import { isSessionExpired } from '../../api/client.ts';
 import { resetCheckinDemo } from '../../api/checkin-demo.ts';
 import { type CheckinSlot } from '../../api/schema.ts';
@@ -291,16 +297,25 @@ function AnswerSummary({ slot, answers }: { slot: CheckinSlot; answers: Answers 
   );
 }
 
-export function CheckinV3Screen() {
+export function CheckinV3Screen({
+  target,
+}: {
+  target?: { date: string | null; slot: string | null };
+}) {
   const query = useStats(),
     settings = useSettings(),
     saveSettings = useSaveSettings(),
     save = useSaveCheckin(),
+    extend = useExtendCheckin(),
     now = useTick(1000);
   const [preview, setPreview] = useState<CheckinSlot>('morning'),
     [drafts, setDrafts] = useState<Record<string, Answers>>({}),
-    [early, setEarly] = useState<string | null>(null);
+    [early, setEarly] = useState<string | null>(null),
+    [selection, setSelection] = useState<{ date: string; slot: CheckinSlot } | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingDraft = useRef<{ slot: CheckinSlot; dateKey?: string; answers: Answers } | null>(
+    null,
+  );
   const upgraded = useRef(false);
   useEffect(() => {
     if (!settings.data || upgraded.current || settings.data.settings.checkin?.version === 3) return;
@@ -323,6 +338,25 @@ export function CheckinV3Screen() {
     },
     [],
   );
+  // Re-read server authority on boundaries, including a one-time extension.
+  useEffect(() => {
+    if (!inTelegram() || !query.data?.stats.checkinWindows) return;
+    const s = query.data.stats;
+    const serverNow =
+      Date.parse(s.checkinServerTime ?? '') +
+      Math.max(0, Date.now() - (query.data.receivedAtMs ?? query.dataUpdatedAt));
+    if (!Number.isFinite(serverNow)) return;
+    const next = s
+      .checkinWindows!.flatMap((w) => [Date.parse(w.startAt), Date.parse(w.endAt)])
+      .filter((ms) => ms > serverNow)
+      .sort((a, b) => a - b)[0];
+    if (!next) return;
+    const refresh = setTimeout(
+      () => void query.refetch(),
+      Math.min(2147483647, next - serverNow + 100),
+    );
+    return () => clearTimeout(refresh);
+  }, [query]);
   if (query.isLoading) return <LoadingSkeleton />;
   if (!query.data || isSessionExpired(query.error))
     return (
@@ -355,12 +389,44 @@ export function CheckinV3Screen() {
   if (inTelegram() && (!settings.data || settings.data.settings.checkin?.version !== 3))
     return <LoadingSkeleton />;
   const s = query.data.stats,
-    demo = !inTelegram(),
-    date = s.checkinDate ?? kyivParts(now).date;
+    demo = !inTelegram();
+  const elapsedMs = Math.max(0, now - (query.data.receivedAtMs ?? query.dataUpdatedAt));
+  const serverNow =
+    (s.checkinServerTime
+      ? Date.parse(s.checkinServerTime)
+      : (query.data.receivedAtMs ?? query.dataUpdatedAt)) + elapsedMs;
+  const openWindows = (s.checkinWindows ?? []).filter(
+    (w) => w.open && serverNow < Date.parse(w.endAt),
+  );
+  const defaultWindow =
+    openWindows.find((w) => w.dateKey === s.checkinDate && w.slot === s.checkinSlot) ??
+    openWindows[0];
+  const selected =
+    selection ??
+    (target?.date && slots.includes(target.slot as CheckinSlot)
+      ? { date: target.date, slot: target.slot as CheckinSlot }
+      : null);
+  const selectedWindow = selected
+    ? s.checkinWindows?.find((w) => w.dateKey === selected.date && w.slot === selected.slot)
+    : defaultWindow;
+  const date = demo
+    ? (s.checkinDate ?? kyivParts(now).date)
+    : (selected?.date ?? selectedWindow?.dateKey ?? s.checkinDate ?? kyivParts(now).date);
   const p = adaptivePreferences(settings.data?.settings.checkin);
-  const active = demo ? preview : s.checkinSlot;
+  const active = demo
+    ? preview
+    : selectedWindow
+      ? openWindows.includes(selectedWindow)
+        ? selectedWindow.slot
+        : null
+      : selected
+        ? null
+        : s.checkinWindows
+          ? null
+          : s.checkinSlot;
+  const day = date === s.checkinDate ? s.checkinToday : s.checkinRaw.records[date];
   const answers = (slot: CheckinSlot): Answers => {
-    const stored = s.checkinToday?.[slot] ?? {};
+    const stored = day?.[slot] ?? {};
     const prior = stored.confirmed || stored.questionVersion === 3 ? stored : {};
     return prior.confirmed
       ? prior
@@ -369,10 +435,11 @@ export function CheckinV3Screen() {
   const current = active ? answers(active) : {};
   // useTick can lag behind a just-received snapshot. Never turn a zero gap into +1 minute.
   // Optimistic autosaves update dataUpdatedAt, but must not restart the server countdown.
-  const elapsedMs = Math.max(0, now - (query.data.receivedAtMs ?? query.dataUpdatedAt));
   const elapsed = Math.floor(elapsedMs / 60000),
-    left = Math.max(0, (s.checkinSlotEndsIn ?? 0) - elapsed);
-  const gap = demo ? 0 : Math.max(0, (s.checkinGapIn ?? 0) - elapsed);
+    left = selectedWindow
+      ? Math.max(0, Math.ceil((Date.parse(selectedWindow.endAt) - serverNow) / 60000))
+      : Math.max(0, (s.checkinSlotEndsIn ?? 0) - elapsed);
+  const gap = demo ? 0 : Math.max(0, (selectedWindow?.gapIn ?? s.checkinGapIn ?? 0) - elapsed);
   const allowed = !gap || early === `${date}:${active}`;
   const nextSeconds = Math.max(
     0,
@@ -386,7 +453,7 @@ export function CheckinV3Screen() {
     const next = clearHiddenV3(
       slot,
       changed,
-      adaptiveContext({ ...s.checkinRaw.records, [date]: s.checkinToday ?? {} }, date, slot),
+      adaptiveContext({ ...s.checkinRaw.records, [date]: day ?? {} }, date, slot),
     );
     // Explicit clears cross the merge boundary, including values hidden by a changed gate.
     for (const k of Object.keys(old)) if (!(k in next) && k.endsWith('V3')) next[k] = null;
@@ -394,13 +461,18 @@ export function CheckinV3Screen() {
     writeDraft(storageKey, next);
     setDrafts((v) => ({ ...v, [storageKey]: next }));
     if (timer.current) clearTimeout(timer.current);
-    timer.current = setTimeout(
-      () => save.mutate({ slot, dateKey: demo ? undefined : date, answers: next }),
-      1200,
-    );
+    pendingDraft.current = { slot, dateKey: demo ? undefined : date, answers: next };
+    timer.current = setTimeout(() => {
+      timer.current = null;
+      const draft = pendingDraft.current;
+      pendingDraft.current = null;
+      if (draft) save.mutate(draft);
+    }, 1200);
   }
   function confirm(slot: CheckinSlot) {
     if (timer.current) clearTimeout(timer.current);
+    timer.current = null;
+    pendingDraft.current = null;
     save.mutate(
       {
         slot,
@@ -454,6 +526,78 @@ export function CheckinV3Screen() {
           </button>
         </section>
       )}
+      {!demo && (selected || openWindows.length > 1) && (
+        <section className="renewal-inset">
+          <p className="renewal-chart-note">
+            Чек-ін за {date.slice(8)}.{date.slice(5, 7)}.
+            {openWindows.length > 1 && ' Продовжений слот не замінює наступний.'}
+          </p>
+          {selected && !active && (
+            <p role="status" className="mt-2">
+              Цей чек-ін уже закритий. Збережені відповіді залишилися.
+            </p>
+          )}
+          <div className="renewal-segments mt-3">
+            {openWindows.map((w) => (
+              <button
+                key={`${w.dateKey}:${w.slot}`}
+                aria-pressed={date === w.dateKey && active === w.slot}
+                onClick={() => {
+                  if (timer.current) clearTimeout(timer.current);
+                  timer.current = null;
+                  const draft = pendingDraft.current;
+                  pendingDraft.current = null;
+                  if (draft) save.mutate(draft); // save the original date/slot before switching
+                  setSelection({ date: w.dateKey, slot: w.slot });
+                  extend.reset();
+                }}
+              >
+                {names[w.slot]} · {w.dateKey.slice(8)}.{w.dateKey.slice(5, 7)}
+              </button>
+            ))}
+          </div>
+        </section>
+      )}
+      {!demo && active && !current.confirmed && selectedWindow && (
+        <section className="renewal-inset">
+          <p role="status" className="renewal-chart-note">
+            {selectedWindow.extended ? 'Продовжено один раз' : 'Відкрито'} до{' '}
+            {new Date(selectedWindow.endAt).toLocaleString('uk-UA', {
+              timeZone: 'Europe/Kyiv',
+              day: '2-digit',
+              month: '2-digit',
+              hour: '2-digit',
+              minute: '2-digit',
+            })}
+            .
+          </p>
+          {selectedWindow.extensionAvailable && !extend.isSuccess && (
+            <button
+              className="renewal-secondary mt-3"
+              disabled={extend.isPending || save.isPending}
+              onClick={() => {
+                setSelection({ date, slot: active });
+                extend.mutate({ dateKey: date, slot: active, key: selectedWindow.key });
+              }}
+            >
+              {extend.isPending ? 'Продовжую…' : 'Ще годину'}
+            </button>
+          )}
+          {extend.isSuccess && !selectedWindow.extended && (
+            <p role="status" className="renewal-chart-note mt-2">
+              Продовжено. Оновлюю термін закриття.
+              <button className="renewal-link ml-2" onClick={() => void query.refetch()}>
+                Оновити
+              </button>
+            </p>
+          )}
+          {extend.error && (
+            <p role="alert" className="text-neg mt-2">
+              {extend.error.message}
+            </p>
+          )}
+        </section>
+      )}
       {(!active || current.confirmed === true) && (
         <section className="renewal-card text-center">
           <span className="renewal-pill">
@@ -492,7 +636,14 @@ export function CheckinV3Screen() {
           live = slot === active,
           confirmed = value.confirmed === true;
         return (
-          <section key={`${date}:${slot}`} className="renewal-card" data-checkin-slot={slot}>
+          <section
+            key={`${date}:${slot}`}
+            className="renewal-card"
+            data-checkin-slot={slot}
+            onClickCapture={() => {
+              if (live && !demo && !selected && s.checkinWindows) setSelection({ date, slot });
+            }}
+          >
             <div className="flex items-center justify-between gap-3">
               <h2 className="font-semibold">
                 {icons[slot]} {names[slot]}
@@ -520,7 +671,7 @@ export function CheckinV3Screen() {
                   onChange={(key, v) => change(slot, key, v)}
                   onConfirm={() => confirm(slot)}
                   context={adaptiveContext(
-                    { ...s.checkinRaw.records, [date]: s.checkinToday ?? {} },
+                    { ...s.checkinRaw.records, [date]: day ?? {} },
                     date,
                     slot,
                   )}

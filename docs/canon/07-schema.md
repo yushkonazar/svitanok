@@ -62,6 +62,33 @@ review_text, status, rating, due_at, created_at, updated_at)` зберігає �
 `SchedulerDO` зберігає компактний status у власному durable state і не створює
 рядок у `runs`; інакше щохвилинні перевірки спотворювали б модельну telemetry.
 
+### 1.1. Додаткові терміни чек-інів — ADR-041
+
+Міграція `0036_checkin_extensions.sql` (expand). `checkin_extensions`:
+`date_key TEXT NOT NULL`, `slot TEXT NOT NULL` (morning/afternoon/evening),
+`schedule_key TEXT NOT NULL`, `base_end TEXT NOT NULL`, `end_at TEXT NOT NULL`,
+`created_at TEXT NOT NULL`; первинний ключ `(date_key, slot)`, додаткових індексів немає.
+Часові поля — ISO-8601 UTC. Таблиця містить лише одноразовий термін, не відповіді.
+Метадані зберігаються для захисту від повторного продовження; backup/export/restore
+і повне видалення включають таблицю. Загальний розклад залишається у `settings.checkin`,
+а відповіді — у `stats.checkins[date_key][slot]`.
+Деталі рішення: [ADR-041](02-decisions.md), [поведінка й перевірки](../checkin-deadlines.md).
+
+### 1.2. Метадані доступів — ADR-042
+
+Expand-міграція `0037_credential_metadata.sql`. Таблиця `credential_metadata`:
+`id TEXT PRIMARY KEY` (allowlisted ім’я/місце), `rotated_at TEXT NULL`,
+`expires_at TEXT NULL`, `rotate_after_days INTEGER NULL` (1–3650),
+`version INTEGER NOT NULL`, `updated_at TEXT NOT NULL`.
+Дати оновлення/завершення — YYYY-MM-DD за Києвом, updated_at — ISO-8601 UTC.
+Немає полів для значення ключа. Дата оновлення сама не задає строк життя.
+
+`ops_notices`: `id TEXT PRIMARY KEY`, `claim TEXT NOT NULL`, `at TEXT NOT NULL`.
+Claim і outbox записуються атомарно; дата/поріг задають ідентичність повідомлення.
+Додаткових індексів немає. Метадані й claims зберігаються для обліку та
+ідемпотентності; включені в backup/export/restore і повне забуття.
+[ADR-042](02-decisions.md), [чинний інвентар і runbook](../ops/secrets.md).
+
 ## 2. Колекції - схема поля
 
 ```json

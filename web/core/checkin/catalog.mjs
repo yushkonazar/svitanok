@@ -168,10 +168,10 @@ export function checkinReminder(minute, prefs) {
   const s = clock.schedule,
     start = minuteOf(/** @type {KvBlob} */ (s)[clock.slot]) ?? 0;
   const elapsed = (minute - start + 1440) % 1440;
-  // One window per slot: late enough to respond, never outside its configured window.
+  // Deadline-based; a short slot is nudged at opening, never before it.
   const duration = elapsed + (clock.endsIn ?? 0),
-    at = Math.min(duration - 30, clock.slot === 'evening' ? 150 : duration - 60);
-  if (elapsed < at || elapsed >= at + 30) return null;
+    at = Math.max(0, duration - 90);
+  if (elapsed < at) return null;
   /** @type {Record<string,string>} */ const names = {
     morning: 'ранковий',
     afternoon: 'денний',
@@ -179,7 +179,7 @@ export function checkinReminder(minute, prefs) {
   };
   return {
     slot: clock.slot,
-    text: `Ще не підтвердив ${names[clock.slot]} чек-ін. Можна завершити зараз.`,
+    text: `Час на ${names[clock.slot]} чек-ін. Ще ${clock.endsIn} хв до закриття.`,
   };
 }
 /** @param {string[]} labels @returns {[string,number][]} */

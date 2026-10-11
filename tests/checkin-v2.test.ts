@@ -414,8 +414,8 @@ describe('check-in preferences and configured windows', () => {
   });
   it('reminds only inside configured active windows', () => {
     expect(checkinReminder(840, prefs)?.slot).toBe('morning');
-    expect(checkinReminder(890, prefs)).toBeNull();
+    expect(checkinReminder(890, prefs)?.slot).toBe('morning'); // retry window lasts until closing
     expect(checkinReminder(30, prefs)).toBeNull();
-    expect(checkinReminder(1410, prefs)?.slot).toBe('evening');
+    expect(checkinReminder(1410, prefs)).toBeNull(); // evening is deadline-based, not start+150
   });
 });

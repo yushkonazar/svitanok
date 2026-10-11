@@ -1,5 +1,6 @@
 import { DEFAULT_NEWS_SOURCES, NEWS_SOURCE_IDS } from './core/brief/news-catalog.mjs';
 import { normalizeCheckinPreferences } from './core/checkin/catalog.mjs';
+import { parseGrantedScopes, hasFeatureScope } from './core/google-scopes.mjs';
 // Чиста логіка налаштувань власника (роадмеп v3, F2). Worker читає/пише
 // canonical `settings` через StateStoreDO; KV mirror лишається оркестратору
 // (src/orchestrator.ts), щоб накладати тумблери модулів на config.yml. Тут —
@@ -169,11 +170,11 @@ export function connectorStatus({ hasGoogleCreds, scope }) {
     // інакше Mini App брехав би, що резолюція гостей уже працює.
     return { google: true, calendar: true, gmail: true, contacts: false };
   }
-  const scopes = scope.toLowerCase();
+  const scopes = parseGrantedScopes(scope);
   return {
     google: true,
-    calendar: scopes.includes('/auth/calendar'),
-    gmail: scopes.includes('/auth/gmail'),
-    contacts: scopes.includes('/auth/contacts'),
+    calendar: hasFeatureScope(scopes, 'calendar_read'),
+    gmail: hasFeatureScope(scopes, 'mail'),
+    contacts: hasFeatureScope(scopes, 'contacts_read'),
   };
 }
