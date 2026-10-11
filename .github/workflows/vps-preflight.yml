@@ -2,6 +2,11 @@ name: VPS preflight
 
 on:
   workflow_dispatch:
+    inputs:
+      check_openai_models:
+        description: 'Explicit paid synthetic Sol 6.1/Luna access probes (no owner data)'
+        type: boolean
+        default: false
 
 permissions: {}
 
@@ -9,7 +14,8 @@ jobs:
   preflight:
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    permissions: {}
+    permissions:
+      contents: read
     steps:
       - name: inspect release prerequisites without secrets
         env:
@@ -72,3 +78,11 @@ jobs:
             echo "ready=no"
           fi
           SCRIPT
+      - name: checkout synthetic model probe
+        if: inputs.check_openai_models
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: check Actions OpenAI model access
+        if: inputs.check_openai_models
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: node scripts/openai-release-preflight.mjs
