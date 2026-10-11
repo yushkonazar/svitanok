@@ -3,6 +3,8 @@
 // retain their command path. Writers enforce write tokens atomically with
 // the ledger. Both readers/writers fail explicitly without the DB binding.
 
+import { assertPersonalValue } from '../memory/safety.mjs';
+
 /** kind-и таблиці facts - дослівно 07 §1. */
 export const FACT_KINDS = [
   'profile',
@@ -128,11 +130,16 @@ export async function runFactsGet(env, args, nowMs = Date.now()) {
  *   review_at?: string, supersedes?: string, why?: string }} args
  * @param {number} nowMs
  * @param {{ actor?: 'model' | 'owner' | 'trusted_server' | 'undo', tainted?: boolean,
- *   why?: string, operation?: 'created' | 'updated' | 'restored', expectedEventId?: string }} [ledgerContext]
+ *   why?: string, operation?: 'created' | 'updated' | 'restored', expectedEventId?: string,
+ *   consentEventId?: string, refreshValidity?: boolean }} [ledgerContext]
  */
 export async function runFactsSet(env, args, nowMs, ledgerContext = undefined) {
   if (!FACT_KINDS.includes(args.kind)) throw new Error(`невідомий kind "${args.kind}"`);
   if (!args.key) throw new Error('key не може бути порожнім');
+  if (PERSONAL_FACT_KINDS.includes(args.kind)) {
+    assertPersonalValue(args.value);
+    assertPersonalValue(args.key);
+  }
   let source = normalizeFactSource(args.source);
   if (!source) throw new Error(`невідоме provenance source: "${String(args.source)}"`);
   if (ledgerContext?.actor === 'model' && isOwnerAssertion(source)) {
@@ -158,8 +165,12 @@ export async function runFactsSet(env, args, nowMs, ledgerContext = undefined) {
     current.id = await ensureFactId(env, { id: current.id, kind: args.kind, key: args.key });
   }
   const existingObservedAt = typeof current?.observed_at === 'string' ? current.observed_at : null;
-  const existingExpiresAt = typeof current?.expires_at === 'string' ? current.expires_at : null;
-  const existingReviewAt = typeof current?.review_at === 'string' ? current.review_at : null;
+  const refreshValidity =
+    ledgerContext?.actor === 'owner' && ledgerContext?.refreshValidity === true;
+  const existingExpiresAt =
+    !refreshValidity && typeof current?.expires_at === 'string' ? current.expires_at : null;
+  const existingReviewAt =
+    !refreshValidity && typeof current?.review_at === 'string' ? current.review_at : null;
   const effectiveObservedAt = observedAt ?? existingObservedAt;
   const effectiveExpiresAt = expiresAt ?? existingExpiresAt;
   const effectiveReviewAt = reviewAt ?? existingReviewAt;
@@ -176,12 +187,13 @@ export async function runFactsSet(env, args, nowMs, ledgerContext = undefined) {
        ) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
        WHERE COALESCE((SELECT id FROM fact_ledger WHERE kind = ? AND key = ? ORDER BY rowid DESC LIMIT 1), '') = ?
          AND (? = 1 OR NOT EXISTS (SELECT 1 FROM facts WHERE kind = ? AND key = ? AND source IN ('owner', 'owner_assertion')))
+         AND (? IS NULL OR COALESCE((SELECT id FROM fact_ledger WHERE kind='setting' AND key='personalization' ORDER BY rowid DESC LIMIT 1), '') = ?)
        ON CONFLICT (kind, key) DO UPDATE SET
          value_json = excluded.value_json, source = excluded.source,
          confidence = COALESCE(excluded.confidence, facts.confidence),
          observed_at = COALESCE(excluded.observed_at, facts.observed_at),
-         expires_at = COALESCE(excluded.expires_at, facts.expires_at),
-         review_at = COALESCE(excluded.review_at, facts.review_at),
+         expires_at = CASE WHEN ?=1 THEN excluded.expires_at ELSE COALESCE(excluded.expires_at, facts.expires_at) END,
+         review_at = CASE WHEN ?=1 THEN excluded.review_at ELSE COALESCE(excluded.review_at, facts.review_at) END,
          supersedes = COALESCE(excluded.supersedes, facts.supersedes),
          updated_at = excluded.updated_at`,
     )
@@ -204,6 +216,10 @@ export async function runFactsSet(env, args, nowMs, ledgerContext = undefined) {
       ledgerContext?.actor === 'model' ? 0 : 1,
       args.kind,
       args.key,
+      ledgerContext?.consentEventId ?? null,
+      ledgerContext?.consentEventId ?? null,
+      refreshValidity ? 1 : 0,
+      refreshValidity ? 1 : 0,
     );
   const writeEventId = crypto.randomUUID();
   const operation = ledgerContext?.operation ?? (current ? 'updated' : 'created');

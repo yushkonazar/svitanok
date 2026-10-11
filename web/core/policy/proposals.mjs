@@ -28,6 +28,9 @@ import {
   factWriteToken,
   PERSONAL_FACT_KINDS,
 } from '../tools/facts.mjs';
+import { explicitOwnerConsent } from '../memory/explicit.mjs';
+import { PERSONALIZATION_KEY, validateMemoryPreferences } from '../memory/preferences.mjs';
+import { MEMORY_VALUE_ERROR, assertPersonalValue } from '../memory/safety.mjs';
 import { runRecord } from '../tools/record.mjs';
 import {
   runRemindersCreate,
@@ -164,7 +167,7 @@ function driveNoteName(raw) {
  *   execute: (env: Env, payload: any, nowMs: number,
  *     ctx?: { chatId?: number | string | null, threadId?: number | string | null,
  *       internal?: Record<string, any>, policy?: { actor?: 'model' | 'owner' | 'trusted_server' | 'undo', tainted?: boolean,
- *       why?: string, expectedEventId?: string } })
+ *       why?: string, expectedEventId?: string, consentEventId?: string, refreshValidity?: boolean } })
  *     => Promise<{ prev?: unknown, result?: unknown }>,
  *   undo?: (env: Env, prev: any, nowMs: number) => Promise<void>,
  * }>}
@@ -1437,6 +1440,14 @@ const UNDO_LAST_MAX_AGE_MS = 24 * 60 * 60_000;
  *   | { mode: 'error', error: string }>}
  */
 export async function applyPolicy(env, action, nowMs) {
+  if (action.kind === 'facts.set' && PERSONAL_FACT_KINDS.includes(String(action.payload?.kind))) {
+    try {
+      assertPersonalValue(action.payload.value);
+      assertPersonalValue(action.payload.key);
+    } catch {
+      return { mode: 'error', error: MEMORY_VALUE_ERROR };
+    }
+  }
   const decision = decideLevel(action.kind, action.tainted, action.payload);
   if ('error' in decision) return { mode: 'error', error: decision.error };
   let level = decision.level;
@@ -1482,6 +1493,57 @@ export async function applyPolicy(env, action, nowMs) {
   // established command path; a preference/habit needs the owner's decision.
   if (action.kind === 'facts.set' && PERSONAL_FACT_KINDS.includes(String(action.payload?.kind))) {
     level = 'T1';
+  }
+
+  let ownerFact = null;
+  if (
+    action.kind === 'facts.set' &&
+    action.payload?.kind === 'setting' &&
+    action.payload?.key === PERSONALIZATION_KEY
+  ) {
+    try {
+      action = {
+        ...action,
+        payload: {
+          ...action.payload,
+          value: validateMemoryPreferences(action.payload.value),
+          source: 'owner_assertion',
+        },
+      };
+    } catch {
+      return { mode: 'error', error: 'Обери підтримуваний режим пам’яті та категорії.' };
+    }
+    level = 'T1';
+  }
+  if (action.kind === 'facts.set' && action.internal?.ownerFactEvidence) {
+    ownerFact = await explicitOwnerConsent(
+      env,
+      /** @type {Record<string, any>} */ (action.internal.ownerFactEvidence),
+      action.payload,
+      nowMs,
+    );
+    if (ownerFact) {
+      action = {
+        ...action,
+        payload: {
+          ...action.payload,
+          source: 'owner_assertion',
+          observed_at: new Date(nowMs).toISOString(),
+        },
+        internal: { ...action.internal, consentEventId: ownerFact.consentToken },
+      };
+      const current = (await runFactsGet(env, { kind: ownerFact.kind, key: ownerFact.key }))
+        .result[0];
+      if (
+        current &&
+        isOwnerAssertion(current.source) &&
+        !current.stale &&
+        !current.review_due &&
+        JSON.stringify(current.value) === JSON.stringify(ownerFact.value)
+      )
+        return { mode: 'executed', result: { saved: false, alreadySaved: true } };
+      level = 'T0';
+    }
   }
 
   // ⚠️ Гейт стоїть ПІСЛЯ ескалацій (security-ревʼю PR-6): обгортка
@@ -1580,7 +1642,10 @@ export async function applyPolicy(env, action, nowMs) {
   if (level === 'T0') {
     const executor = EXECUTORS[action.kind];
     if (!executor) return { mode: 'error', error: `no-executor: ${action.kind}` };
-    const policy = executionPolicyContext(action, 'model');
+    const policy = {
+      ...executionPolicyContext(action, ownerFact ? 'owner' : 'model'),
+      ...(ownerFact ? { refreshValidity: true } : {}),
+    };
     const { prev, result } = await executor.execute(env, action.payload, nowMs, {
       chatId: action.chatId ?? null,
       threadId: action.threadId ?? null,
@@ -1736,6 +1801,7 @@ export async function resolveProposal(env, input, nowMs) {
  */
 export function proposalExecutionError(error) {
   const raw = String(/** @type {any} */ (error)?.message ?? error ?? '');
+  if (raw === MEMORY_VALUE_ERROR) return raw;
   if (
     new Set([
       'Цей факт уже змінився. Перевір актуальне значення й повтори дію.',
@@ -1967,6 +2033,9 @@ function executionPolicyContext(action, actor) {
     actor,
     tainted: action.tainted === true,
     tainted_ever: action.taintedEver === true,
+    ...(typeof action.internal?.consentEventId === 'string'
+      ? { consentEventId: action.internal.consentEventId }
+      : {}),
     ...(typeof action.internal?.expectedEventId === 'string'
       ? { expectedEventId: action.internal.expectedEventId }
       : {}),

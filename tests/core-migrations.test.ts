@@ -274,6 +274,7 @@ const EXPECTED_COLUMNS: Record<string, string[]> = {
     'thread_id',
     'created_at',
     'claimed_at',
+    'owner_composed',
   ],
   reminders: [
     'id',
@@ -646,7 +647,7 @@ const columnsOf = (table: string): { name: string; pk: number }[] =>
   }[];
 
 describe('міграції D1 — файли', () => {
-  it('тридцять сім файлів 0001–0037, нумерація без дірок', () => {
+  it('тридцять вісім файлів 0001–0038, нумерація без дірок', () => {
     expect(files.map((f) => f.slice(0, 4))).toEqual([
       '0001',
       '0002',
@@ -685,6 +686,7 @@ describe('міграції D1 — файли', () => {
       '0035',
       '0036',
       '0037',
+      '0038',
     ]);
   });
 });

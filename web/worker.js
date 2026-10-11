@@ -15,6 +15,7 @@
 // вебхука Telegram, таблиця маршрутів і послідовний цикл крон-задач.
 
 import { verifyWebhookSecret, parseUpdate, isOwner, isDuplicate } from './tg-core.mjs';
+import { handleMemory } from './api-memory.mjs';
 import {
   isSleepStartCallback,
   parseReminderCancelCallbackData,
@@ -561,6 +562,7 @@ export default {
       return handleFinance(request, env);
     }
     if (url.pathname === '/api/credentials') return handleCredentials(request, env);
+    if (url.pathname === '/api/memory') return handleMemory(request, env);
     if (url.pathname === '/api/currency/history') return handleCurrencyHistory(request, env);
     if (url.pathname === '/api/daily-content') return handleDailyContent(request, env);
     if (url.pathname.startsWith('/api/news/image/')) return handleNewsImage(request, env);

@@ -14,7 +14,7 @@ export const CB_VERSION = 'v1';
  *             messageText: string|null }} ParsedCallback
  * @typedef {{ kind: 'message', updateId: number|null, fromId: number|null,
  *             chatId: number|null, messageId: number|null, threadId: number|null,
- *             text: string, location: { latitude: number, longitude: number }|null,
+ *             text: string, ownerComposed: boolean, location: { latitude: number, longitude: number }|null,
  *             voice: { fileId: string, durationS: number, fileSize: number|null }|null,
  *             document: { fileId: string, fileName: string, mimeType: string|null,
  *                         fileSize: number|null }|null }} ParsedMessage
@@ -171,6 +171,27 @@ export function parseUpdate(update) {
       messageId: m.message_id ?? null, // G1: щоб /clear міг видалити й вхідні власника
       threadId: m.message_thread_id ?? null,
       text: typeof m.text === 'string' ? m.text : '',
+      ownerComposed:
+        !m.forward_origin &&
+        !m.forward_from &&
+        !m.forward_from_chat &&
+        !m.forward_sender_name &&
+        !m.forward_date &&
+        !m.is_automatic_forward &&
+        !m.via_bot &&
+        !m.sender_chat &&
+        !m.business_connection_id &&
+        !m.quote &&
+        !m.from?.is_bot &&
+        !(
+          Array.isArray(m.entities)
+            ? m.entities
+            : Array.isArray(m.caption_entities)
+              ? m.caption_entities
+              : []
+        ).some((/** @type {any} */ entity) =>
+          ['blockquote', 'expandable_blockquote', 'pre', 'code'].includes(entity.type),
+        ),
       location,
       voice,
       document,

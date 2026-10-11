@@ -223,18 +223,19 @@ export const VOICE_CLAIM_STALE_MS = 90_000;
 /**
  * @typedef {{ kind: 'transcript', text: string } | { kind: 'file', fileId: string }} VoicePayload
  * @typedef {{ kind: string, text: string | null, fileId: string | null, durationS: number,
- *   chatId: string | null, threadId: string | null }} PendingVoice
+ *   chatId: string | null, threadId: string | null, ownerComposed: boolean }} PendingVoice
  */
 
 /**
  * Покласти очікування тапу. Повертає короткий id для v:<id>:<choice>.
  * @param {Env} env
  * @param {VoicePayload & { durationS: number, chatId: number | string | null,
- *   threadId: number | string | null }} entry
+ *   threadId: number | string | null, ownerComposed?: boolean }} entry
  * @param {number} nowMs
  */
 export async function savePendingVoice(env, entry, nowMs) {
   if (!env.DB) throw new Error('привʼязки DB немає - voice_pending недоступна');
+  const evidenceColumn = await voiceOwnerEvidenceAvailable(env);
   const id = crypto.randomUUID().replaceAll('-', '').slice(0, 12);
   // batch: чистка протухлих і вставка - один раунд-трип до D1.
   await env.DB.batch([
@@ -242,8 +243,8 @@ export async function savePendingVoice(env, entry, nowMs) {
       new Date(nowMs - VOICE_PENDING_TTL_MS).toISOString(),
     ),
     env.DB.prepare(
-      `INSERT INTO voice_pending (id, kind, text, file_id, duration_s, chat_id, thread_id, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO voice_pending (id, kind, text, file_id, duration_s, chat_id, thread_id, created_at${evidenceColumn ? ', owner_composed' : ''})
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?${evidenceColumn ? ', ?' : ''})`,
     ).bind(
       id,
       entry.kind,
@@ -253,6 +254,7 @@ export async function savePendingVoice(env, entry, nowMs) {
       entry.chatId == null ? null : String(entry.chatId),
       entry.threadId == null ? null : String(entry.threadId),
       new Date(nowMs).toISOString(),
+      ...(evidenceColumn ? [entry.ownerComposed === true ? 1 : 0] : []),
     ),
   ]);
   return id;
@@ -289,7 +291,21 @@ export async function claimPendingVoice(env, id, nowMs) {
     durationS: Number(row.duration_s) || 0,
     chatId: row.chat_id ?? null,
     threadId: row.thread_id ?? null,
+    ownerComposed: Number(row.owner_composed) === 1,
   };
+}
+
+/** Old schema remains usable, but cannot grant automatic voice attribution.
+ * @param {Env} env */
+export async function voiceOwnerEvidenceAvailable(env) {
+  if (!env.DB) return false;
+  try {
+    const rows =
+      (await env.DB.prepare('PRAGMA table_info(voice_pending)').bind().all()).results ?? [];
+    return rows.some((row) => row.name === 'owner_composed');
+  } catch {
+    return false;
+  }
 }
 
 /**
