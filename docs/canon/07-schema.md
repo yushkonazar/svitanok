@@ -62,6 +62,12 @@ review_text, status, rating, due_at, created_at, updated_at)` зберігає �
 `SchedulerDO` зберігає компактний status у власному durable state і не створює
 рядок у `runs`; інакше щохвилинні перевірки спотворювали б модельну telemetry.
 
+ADR-043: останній `fact_ledger.id` за kind/key є trusted optimistic token.
+Його записує ядро у `proposals.context_json`, не приймає з model payload.
+Set/delete/undo порівнює token у D1 batch; ledger insert не створюється
+при нульовій мутації. Нових колонок або міграцій для цього рішення немає.
+[Правила пам’яті](../personalization-boundaries.md).
+
 ### 1.1. Додаткові терміни чек-інів — ADR-041
 
 Міграція `0036_checkin_extensions.sql` (expand). `checkin_extensions`:
