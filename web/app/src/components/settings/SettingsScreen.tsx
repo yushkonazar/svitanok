@@ -1,5 +1,6 @@
 import { AdaptivePreferences } from '../checkin/AdaptivePreferences.tsx';
 import { OperationsPanel } from './OperationsPanel.tsx';
+import { MemoryPanel } from './MemoryPanel.tsx';
 import { version as appVersion } from '../../../package.json';
 import { NEWS_SOURCE_CATALOG, DEFAULT_NEWS_SOURCES } from '../../../../core/brief/news-catalog.mjs';
 import { PageHeading } from '../ui/PageHeading.tsx';
@@ -374,6 +375,7 @@ export function SettingsScreen() {
       </Section>
 
       <OperationsPanel />
+      <MemoryPanel />
 
       <details className="renewal-card">
         <summary className="cursor-pointer font-semibold text-sm">
@@ -486,7 +488,7 @@ export function SettingsScreen() {
       )}
 
       <div className="pt-1 text-center font-mono text-[10px] font-medium text-tx3">
-        Світанок · {appVersion}
+        Світанок · Mini App {appVersion}
         {!inTelegram() && ' · демо-режим'}
       </div>
     </div>

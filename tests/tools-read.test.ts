@@ -517,7 +517,7 @@ describe('facts.* на поточній схемі facts', () => {
     );
     const current = (await runFactsGet(env, { kind: 'setting', key: 'lang' })).result[0]!;
     await runFactsSet(env, { kind: 'setting', key: 'lang', value: 'en' }, NOW + 1_000, {
-      actor: 'model',
+      actor: 'owner',
     });
     await runFactsDelete(
       env,
@@ -545,13 +545,17 @@ describe('facts.* на поточній схемі facts', () => {
   });
 
   it('конкурентні перші upsert-и не лишають ledger із програним random id', async () => {
-    await Promise.all([
+    // Concurrency needs the transactional D1 contract, not the legacy
+    // single-statement fixture used for reader compatibility above.
+    env = workerEnv({ DB: d1Migrated(['0001_base.sql'], { atomicBatch: true }).stub });
+    const attempts = await Promise.allSettled([
       runFactsSet(env, { kind: 'setting', key: 'race', value: 1 }, NOW),
       runFactsSet(env, { kind: 'setting', key: 'race', value: 2 }, NOW + 1),
     ]);
     const current = (await runFactsGet(env, { kind: 'setting', key: 'race' })).result[0]!;
     const ledger = await runFactsLedger(env, { kind: 'setting', key: 'race', limit: 10 });
-    expect(ledger.result).toHaveLength(2);
+    expect(attempts.filter((attempt) => attempt.status === 'fulfilled')).toHaveLength(1);
+    expect(ledger.result).toHaveLength(1);
     expect(ledger.result.every((row) => row.fact_id === current.id)).toBe(true);
   });
 

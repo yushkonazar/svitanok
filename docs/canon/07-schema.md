@@ -62,6 +62,12 @@ review_text, status, rating, due_at, created_at, updated_at)` зберігає �
 `SchedulerDO` зберігає компактний status у власному durable state і не створює
 рядок у `runs`; інакше щохвилинні перевірки спотворювали б модельну telemetry.
 
+ADR-043: останній `fact_ledger.id` за kind/key є trusted optimistic token.
+Його записує ядро у `proposals.context_json`, не приймає з model payload.
+Set/delete/undo порівнює token у D1 batch; ledger insert не створюється
+при нульовій мутації. Нових колонок або міграцій для цього рішення немає.
+[Правила пам’яті](../personalization-boundaries.md).
+
 ### 1.1. Додаткові терміни чек-інів — ADR-041
 
 Міграція `0036_checkin_extensions.sql` (expand). `checkin_extensions`:
@@ -88,6 +94,40 @@ Claim і outbox записуються атомарно; дата/поріг з�
 Додаткових індексів немає. Метадані й claims зберігаються для обліку та
 ідемпотентності; включені в backup/export/restore і повне забуття.
 [ADR-042](02-decisions.md), [чинний інвентар і runbook](../ops/secrets.md).
+
+### 1.3. Походження голосу й режим пам’яті — ADR-044
+
+Expand-міграція `0038_voice_owner_evidence.sql` доповнює `voice_pending`
+полем `owner_composed INTEGER NOT NULL DEFAULT 0 CHECK(owner_composed IN (0,1))`.
+1 ставить лише trusted Telegram parser для оригінального повідомлення;
+pending transcript/file переносить цей прапорець після підтвердження.
+Старі pending rows залишаються 0. TTL таблиці — ті самі 5 хвилин;
+нових таблиць чи KV-ключів немає. Чинний backup/export/forget-all охоплює
+таблицю цілком, без збереження аудіобайтів.
+
+`facts(kind='setting', key='personalization')`: canonical JSON
+`{version:1, mode:'confirm'|'explicit', categories:('preferences'|'schedule'|'style')[]}`.
+Без підтвердженої, чинної owner assertion — confirm/порожні категорії.
+Налаштування не є дозволом читати нові джерела. Default не записується
+як удаване рішення власника. CAS token — останній ledger event; оновлення
+режиму й автоматичний запис використовують спільний guarded writer.
+
+`GET /api/memory?offset=N` — primary-owner-only signed initData, no-store:
+`preferences`, `preferencesToken`, `preferencesValid`, `entries` до 25,
+`candidates` до 50 відкритих T1 memory proposals, `offset`, `nextOffset`.
+Entry: opaque `id=kind:key`, людський label/text, bounded value, source,
+write token, updatedAt, stale/reviewDue, expiresAt/reviewAt. Private settings,
+prompt/run contents і ledger dump не повертаються.
+
+`POST /api/memory`: строго allowlisted `preferences`, `update`, `remove`,
+`resolve`; update/remove мають explicit confirm, update — renew; write
+commands мають snapshot token, resolve працює за stored proposal id.
+Owner identity/source не приймаються з тіла. Відповідь `acknowledged:true`
+означає завершену зміну; невдалий пізніший read не забирає acknowledgement.
+Прибирання fact не стирає ledger. Складені записи редагуються через чат;
+канонічне preference.<hash> не перейменовується під старим ключем.
+
+[ADR-044](02-decisions.md), [приймання](../personalization-boundaries.md).
 
 ## 2. Колекції - схема поля
 

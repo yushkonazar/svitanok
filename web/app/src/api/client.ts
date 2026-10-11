@@ -40,6 +40,58 @@ function authHeaders(): Record<string, string> {
   return inTelegram() && tg ? { 'X-Telegram-Init-Data': tg.initData } : {};
 }
 
+export async function fetchMemory(
+  offset = 0,
+): Promise<import('./memory-schema.ts').MemoryWorkspace> {
+  if (!inTelegram()) throw new Error('Пам’ять доступна в особистому чаті з ботом.');
+  const response = await fetch(`/api/memory?offset=${offset}`, {
+    cache: 'no-store',
+    headers: authHeaders(),
+  }).catch(() => {
+    throw new Error('Не вдалося завантажити пам’ять. Спробуй ще раз.');
+  });
+  throwIfSessionExpired(response);
+  if (!response.ok) throw new Error('Не вдалося завантажити пам’ять. Доступ має основний власник.');
+  const { memoryWorkspaceSchema } = await import('./memory-schema.ts');
+  const parsed = memoryWorkspaceSchema.safeParse(await response.json().catch(() => null));
+  if (!parsed.success) throw new Error('Формат пам’яті змінився. Онови застосунок.');
+  return parsed.data;
+}
+export async function changeMemory(
+  command: import('./memory-schema.ts').MemoryCommand,
+): Promise<import('./memory-schema.ts').MemoryMutationReceipt> {
+  const { MemoryChangeError, memoryWorkspaceSchema } = await import('./memory-schema.ts');
+  if (!inTelegram())
+    throw new MemoryChangeError('Цю зміну можна зробити лише в особистому чаті з ботом.');
+  const response = await fetch('/api/memory', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', ...authHeaders() },
+    body: JSON.stringify(command),
+  }).catch(() => {
+    throw new MemoryChangeError(
+      'Не отримав підтвердження зміни. Онови пам’ять перед повтором.',
+      true,
+    );
+  });
+  throwIfSessionExpired(response);
+  const body = await response.json().catch(() => null);
+  if (!response.ok)
+    throw new MemoryChangeError(
+      typeof body?.error === 'string' ? body.error : 'Не вдалося змінити пам’ять.',
+      response.status === 409 || response.status >= 500,
+    );
+  if (body?.acknowledged !== true)
+    throw new MemoryChangeError(
+      'Не отримав підтвердження зміни. Онови пам’ять перед повтором.',
+      true,
+    );
+  const snapshot = memoryWorkspaceSchema.safeParse(body);
+  return {
+    message: typeof body.message === 'string' && body.message ? body.message : 'Рішення збережено.',
+    snapshot: snapshot.success ? snapshot.data : null,
+  };
+}
+
 /** Private metadata only. Demo never reads/writes the owner's registry. */
 export async function fetchCredentials(): Promise<Credentials> {
   if (!inTelegram()) throw new Error('Відкрий налаштування в особистому чаті з ботом.');

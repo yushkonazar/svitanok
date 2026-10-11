@@ -15,6 +15,7 @@ import { transactionText, transactionButtons } from './finance/notify.mjs';
 import { parseCommand } from '../tg-core.mjs';
 import { recordTrackedMessage, updateState } from '../kv-store.mjs';
 import { rememberAssistantQuestion } from '../assistant-memory.mjs';
+import { directOwnerMemory, explicitMemoryInstruction } from './memory/direct.mjs';
 import { isPrimaryOwner } from '../auth-core.mjs';
 import { enqueueOutbox, drainOutbox } from './tg/outbox.mjs';
 import { assistantHomeTarget } from './tg/home.mjs';
@@ -593,7 +594,7 @@ const HELP_TEXT = [
 /**
  * Головний вхід з worker.js. true = оброблено новим шляхом (легасі не чіпати).
  * @param {Env} env
- * @param {{ kind?: string, chatId?: number | null, threadId?: number | string | null, text?: unknown, messageId?: number | null, fromId?: number | string | null, voice?: { fileId: string, durationS: number, fileSize: number | null } | null, document?: { fileId: string, fileName: string, mimeType: string | null, fileSize: number | null } | null }} parsed
+ * @param {{ kind?: string, chatId?: number | null, threadId?: number | string | null, text?: unknown, messageId?: number | null, fromId?: number | string | null, ownerComposed?: boolean, memoryOrigin?: string, voice?: { fileId: string, durationS: number, fileSize: number | null } | null, document?: { fileId: string, fileName: string, mimeType: string | null, fileSize: number | null } | null }} parsed
  * @param {number} [nowMs]
  * @param {{ messageId?: number | null, text?: string } | null} [voiceStatus]
  */
@@ -619,7 +620,12 @@ export async function prerouteMessage(env, parsed, nowMs = Date.now(), voiceStat
   // ADR-040): префікс не вимовиш, а легасі голосові ніколи не обробляв - новий
   // шлях нічого в нього не краде. Прогін стартує лише після тапу ✅.
   if (parsed.voice) {
-    await handleVoiceMessage(env, target, parsed.voice, nowMs);
+    await handleVoiceMessage(
+      env,
+      target,
+      { ...parsed.voice, ownerComposed: parsed.ownerComposed === true },
+      nowMs,
+    );
     return true;
   }
 
@@ -807,6 +813,16 @@ export async function prerouteMessage(env, parsed, nowMs = Date.now(), voiceStat
   if (await resolveReminderDraftAnswer(env, target, text, nowMs)) return true;
   if (await resolveTutorAnswer(env, target, threadKey, text, nowMs)) return true;
 
+  // Only exact owner-composed assertions in an explicitly enabled category.
+  // Questions, pending workflow answers and ambiguous text keep their paths.
+  const remembered = explicitMemoryInstruction(text)
+    ? await directOwnerMemory(env, parsed, text, nowMs).catch(() => null)
+    : null;
+  if (remembered) {
+    await deliverMemoryResult(env, target, remembered, nowMs, voiceStatus);
+    return true;
+  }
+
   const reminderTitle = incompleteReminderTitle(text, nowMs);
   if (reminderTitle) {
     const draftId = await saveReminderDraft(env, target, reminderTitle, nowMs);
@@ -919,6 +935,11 @@ export async function prerouteMessage(env, parsed, nowMs = Date.now(), voiceStat
     return true;
   }
 
+  const standaloneMemory = await directOwnerMemory(env, parsed, text, nowMs).catch(() => null);
+  if (standaloneMemory) {
+    await deliverMemoryResult(env, target, standaloneMemory, nowMs, voiceStatus);
+    return true;
+  }
   await routeThreadText(env, target, threadKey, text, nowMs, voiceStatus);
   return true;
 }
@@ -1229,7 +1250,7 @@ export async function startOrQueueThreadText(
  * (S-6-4; file_id чекає тапу в voice_pending, бо в callback_data не влазить).
  * @param {Env} env
  * @param {ThreadTarget} target
- * @param {{ fileId: string, durationS: number, fileSize?: number | null }} voice
+ * @param {{ fileId: string, durationS: number, fileSize?: number | null, ownerComposed?: boolean }} voice
  * @param {number} nowMs
  */
 async function handleVoiceMessage(env, target, voice, nowMs) {
@@ -1243,6 +1264,7 @@ async function handleVoiceMessage(env, target, voice, nowMs) {
         durationS: voice.durationS,
         chatId: target.chatId,
         threadId: target.threadId,
+        ownerComposed: voice.ownerComposed === true,
       },
       nowMs,
     );
@@ -1263,7 +1285,7 @@ async function handleVoiceMessage(env, target, voice, nowMs) {
  *  Повертає false, коли показати не вдалося, - викликач із claim-ом на це
  *  спирається (ряд лишається в грі для повторного тапу).
  *  @param {Env} env @param {ThreadTarget} target
- *  @param {{ fileId: string, durationS: number, fileSize?: number | null }} voice
+ *  @param {{ fileId: string, durationS: number, fileSize?: number | null, ownerComposed?: boolean }} voice
  *  @param {number} nowMs @returns {Promise<boolean>} */
 async function transcribeAndPresent(env, target, voice, nowMs) {
   const res = await transcribeVoice(env, voice, nowMs);
@@ -1291,6 +1313,7 @@ async function transcribeAndPresent(env, target, voice, nowMs) {
       durationS: voice.durationS,
       chatId: target.chatId,
       threadId: target.threadId,
+      ownerComposed: voice.ownerComposed === true,
     },
     nowMs,
   );
@@ -3552,6 +3575,8 @@ async function voiceCallbackToast(env, parsed, id, choice, nowMs, defer) {
               threadId: target.threadId,
               fromId: env.TELEGRAM_OWNER_USER_ID,
               messageId: parsed.messageId,
+              ownerComposed: row.ownerComposed === true,
+              memoryOrigin: 'confirmed_voice',
               text: env.ASSISTANT_V2 === 'shadow' ? `v2:${text}` : text,
             },
             nowMs,
@@ -3584,12 +3609,15 @@ async function voiceCallbackToast(env, parsed, id, choice, nowMs, defer) {
     const fileId = row.fileId;
     const durationS = row.durationS;
     await run(async () => {
-      const ok = await transcribeAndPresent(env, target, { fileId, durationS }, nowMs).catch(
-        (/** @type {any} */ e) => {
-          console.error('prerouter: розпізнавання довгого голосового впало', e?.message);
-          return false;
-        },
-      );
+      const ok = await transcribeAndPresent(
+        env,
+        target,
+        { fileId, durationS, ownerComposed: row.ownerComposed },
+        nowMs,
+      ).catch((/** @type {any} */ e) => {
+        console.error('prerouter: розпізнавання довгого голосового впало', e?.message);
+        return false;
+      });
       await finishPendingVoice(env, id, ok);
       // За успіху зрозуміло завершуємо первинне повідомлення. За збою не
       // чіпаємо його взагалі: кнопка лишається для повторного розпізнання.
@@ -4513,6 +4541,32 @@ async function reply(env, parsed, text, nowMs, extra = undefined, md = false) {
   await drainOutbox(env, { nowMs }).catch((/** @type {any} */ e) =>
     console.error('prerouter: драйн відповіді впав (sweeper добере)', e?.message),
   );
+}
+
+/** Finish a confirmed voice in its existing card, including undo/approval keys.
+ * @param {Env} env @param {ThreadTarget} target
+ * @param {{text:string, reply_markup?:unknown}} result @param {number} nowMs
+ * @param {{messageId?:number|null}|null} status */
+async function deliverMemoryResult(env, target, result, nowMs, status) {
+  if (!status?.messageId || target.chatId == null) {
+    await reply(env, target, result.text, nowMs, result);
+    return;
+  }
+  await enqueueOutbox(
+    env,
+    {
+      chatId: target.chatId,
+      kind: 'edit',
+      payload: {
+        message_id: status.messageId,
+        text: result.text,
+        reply_markup: result.reply_markup ?? { inline_keyboard: [] },
+        fallback_send: true,
+      },
+    },
+    nowMs,
+  );
+  await drainOutbox(env, { nowMs }).catch(() => {});
 }
 
 /** Статусник «Запит прийняв» - ПРЯМИЙ sendMessage (потрібен message_id для

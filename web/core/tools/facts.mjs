@@ -1,6 +1,9 @@
 // facts.get / facts.set (07-schema §4): локальні факти про власника в D1
-// `facts` (07 §1). set - T0 (запис у ВЛАСНУ базу, не назовні; кнопка «↩» -
-// справа policy у PR-8, тут лише дані). Обидва падають явно без привʼязки DB.
+// `facts` (07 §1). Policy confirms personal candidates; routine settings
+// retain their command path. Writers enforce write tokens atomically with
+// the ledger. Both readers/writers fail explicitly without the DB binding.
+
+import { assertPersonalValue } from '../memory/safety.mjs';
 
 /** kind-и таблиці facts - дослівно 07 §1. */
 export const FACT_KINDS = [
@@ -15,6 +18,24 @@ export const FACT_KINDS = [
 
 /** Canonical provenance classes. `owner`/`inferred` are compatibility aliases. */
 export const FACT_SOURCES = ['owner_assertion', 'observed_event', 'model_hypothesis'];
+
+export const PERSONAL_FACT_KINDS = ['profile', 'habit', 'contact', 'place', 'vehicle', 'inferred'];
+
+/** A ledger event is an immutable write token, including deletion/recreation.
+ * @param {Env} env @param {{kind: string, key: string}} args
+ */
+export async function factWriteToken(env, args) {
+  const rows =
+    (
+      await db(env)
+        .prepare(
+          'SELECT id FROM fact_ledger WHERE kind = ? AND key = ? ORDER BY rowid DESC LIMIT 1',
+        )
+        .bind(args.kind, args.key)
+        .all()
+    ).results ?? [];
+  return String(rows[0]?.id ?? '');
+}
 
 /** @param {unknown} source */
 export function normalizeFactSource(source) {
@@ -109,13 +130,25 @@ export async function runFactsGet(env, args, nowMs = Date.now()) {
  *   review_at?: string, supersedes?: string, why?: string }} args
  * @param {number} nowMs
  * @param {{ actor?: 'model' | 'owner' | 'trusted_server' | 'undo', tainted?: boolean,
- *   why?: string, operation?: 'created' | 'updated' | 'restored' }} [ledgerContext]
+ *   why?: string, operation?: 'created' | 'updated' | 'restored', expectedEventId?: string,
+ *   consentEventId?: string, refreshValidity?: boolean }} [ledgerContext]
  */
 export async function runFactsSet(env, args, nowMs, ledgerContext = undefined) {
   if (!FACT_KINDS.includes(args.kind)) throw new Error(`невідомий kind "${args.kind}"`);
   if (!args.key) throw new Error('key не може бути порожнім');
-  const source = normalizeFactSource(args.source);
+  if (PERSONAL_FACT_KINDS.includes(args.kind)) {
+    assertPersonalValue(args.value);
+    assertPersonalValue(args.key);
+  }
+  let source = normalizeFactSource(args.source);
   if (!source) throw new Error(`невідоме provenance source: "${String(args.source)}"`);
+  if (ledgerContext?.actor === 'model' && isOwnerAssertion(source)) {
+    throw new Error('Підтверди збереження цього факту.');
+  }
+  if (ledgerContext?.actor === 'owner' && PERSONAL_FACT_KINDS.includes(args.kind)) {
+    source = 'owner_assertion';
+  }
+  const expectedEventId = ledgerContext?.expectedEventId ?? (await factWriteToken(env, args));
   const confidence = normalizeConfidence(args.confidence);
   const observedAt = normalizeTimestamp(args.observed_at, 'observed_at');
   const expiresAt = normalizeTimestamp(args.expires_at, 'expires_at');
@@ -132,8 +165,12 @@ export async function runFactsSet(env, args, nowMs, ledgerContext = undefined) {
     current.id = await ensureFactId(env, { id: current.id, kind: args.kind, key: args.key });
   }
   const existingObservedAt = typeof current?.observed_at === 'string' ? current.observed_at : null;
-  const existingExpiresAt = typeof current?.expires_at === 'string' ? current.expires_at : null;
-  const existingReviewAt = typeof current?.review_at === 'string' ? current.review_at : null;
+  const refreshValidity =
+    ledgerContext?.actor === 'owner' && ledgerContext?.refreshValidity === true;
+  const existingExpiresAt =
+    !refreshValidity && typeof current?.expires_at === 'string' ? current.expires_at : null;
+  const existingReviewAt =
+    !refreshValidity && typeof current?.review_at === 'string' ? current.review_at : null;
   const effectiveObservedAt = observedAt ?? existingObservedAt;
   const effectiveExpiresAt = expiresAt ?? existingExpiresAt;
   const effectiveReviewAt = reviewAt ?? existingReviewAt;
@@ -147,13 +184,16 @@ export async function runFactsSet(env, args, nowMs, ledgerContext = undefined) {
       `INSERT INTO facts (
          id, kind, key, value_json, source, confidence, observed_at, expires_at, review_at, supersedes,
          created_at, updated_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+       WHERE COALESCE((SELECT id FROM fact_ledger WHERE kind = ? AND key = ? ORDER BY rowid DESC LIMIT 1), '') = ?
+         AND (? = 1 OR NOT EXISTS (SELECT 1 FROM facts WHERE kind = ? AND key = ? AND source IN ('owner', 'owner_assertion')))
+         AND (? IS NULL OR COALESCE((SELECT id FROM fact_ledger WHERE kind='setting' AND key='personalization' ORDER BY rowid DESC LIMIT 1), '') = ?)
        ON CONFLICT (kind, key) DO UPDATE SET
          value_json = excluded.value_json, source = excluded.source,
          confidence = COALESCE(excluded.confidence, facts.confidence),
          observed_at = COALESCE(excluded.observed_at, facts.observed_at),
-         expires_at = COALESCE(excluded.expires_at, facts.expires_at),
-         review_at = COALESCE(excluded.review_at, facts.review_at),
+         expires_at = CASE WHEN ?=1 THEN excluded.expires_at ELSE COALESCE(excluded.expires_at, facts.expires_at) END,
+         review_at = CASE WHEN ?=1 THEN excluded.review_at ELSE COALESCE(excluded.review_at, facts.review_at) END,
          supersedes = COALESCE(excluded.supersedes, facts.supersedes),
          updated_at = excluded.updated_at`,
     )
@@ -170,10 +210,22 @@ export async function runFactsSet(env, args, nowMs, ledgerContext = undefined) {
       supersedes ?? null,
       iso,
       iso,
+      args.kind,
+      args.key,
+      expectedEventId,
+      ledgerContext?.actor === 'model' ? 0 : 1,
+      args.kind,
+      args.key,
+      ledgerContext?.consentEventId ?? null,
+      ledgerContext?.consentEventId ?? null,
+      refreshValidity ? 1 : 0,
+      refreshValidity ? 1 : 0,
     );
+  const writeEventId = crypto.randomUUID();
   const operation = ledgerContext?.operation ?? (current ? 'updated' : 'created');
   const ledgerWrite = factLedgerStatement(db(env), {
-    id: crypto.randomUUID(),
+    id: writeEventId,
+    only_after_write: true,
     fact_id: factId,
     resolve_fact_id: true,
     kind: args.kind,
@@ -190,7 +242,8 @@ export async function runFactsSet(env, args, nowMs, ledgerContext = undefined) {
     created_at: iso,
   });
   await runWrites(env, [factWrite, ledgerWrite]);
-  return { result: { saved: true, kind: args.kind, key: args.key } };
+  await assertFactWrite(env, writeEventId);
+  return { result: { saved: true, kind: args.kind, key: args.key }, writeEventId };
 }
 
 /**
@@ -253,20 +306,25 @@ export async function runFactsLedger(env, args) {
  * @param {{ kind: string, key: string, why?: string }} args
  * @param {number} nowMs
  * @param {{ actor?: 'model' | 'owner' | 'trusted_server' | 'undo', tainted?: boolean,
- *   why?: string, operation?: 'deleted' }} [ledgerContext]
+ *   why?: string, operation?: 'deleted', expectedEventId?: string }} [ledgerContext]
  */
 export async function runFactsDelete(env, args, nowMs, ledgerContext = undefined) {
   if (!FACT_KINDS.includes(args.kind)) throw new Error(`невідомий kind "${args.kind}"`);
   if (!args.key) throw new Error('key не може бути порожнім');
+  const expectedEventId = ledgerContext?.expectedEventId ?? (await factWriteToken(env, args));
   const current = (await runFactsGet(env, { kind: args.kind, key: args.key })).result[0] ?? null;
   if (!current) return { result: { deleted: false, kind: args.kind, key: args.key } };
   current.id = await ensureFactId(env, { id: current.id, kind: args.kind, key: args.key });
   const iso = new Date(nowMs).toISOString();
   const deleteWrite = db(env)
-    .prepare('DELETE FROM facts WHERE id = ? AND kind = ? AND key = ?')
-    .bind(current.id, args.kind, args.key);
+    .prepare(
+      "DELETE FROM facts WHERE id = ? AND kind = ? AND key = ? AND COALESCE((SELECT id FROM fact_ledger WHERE kind = ? AND key = ? ORDER BY rowid DESC LIMIT 1), '') = ?",
+    )
+    .bind(current.id, args.kind, args.key, args.kind, args.key, expectedEventId);
+  const writeEventId = crypto.randomUUID();
   const ledgerWrite = factLedgerStatement(db(env), {
-    id: crypto.randomUUID(),
+    id: writeEventId,
+    only_after_write: true,
     fact_id: current.id,
     kind: current.kind,
     key: current.key,
@@ -282,6 +340,7 @@ export async function runFactsDelete(env, args, nowMs, ledgerContext = undefined
     created_at: iso,
   });
   await runWrites(env, [deleteWrite, ledgerWrite]);
+  await assertFactWrite(env, writeEventId);
   return { result: { deleted: true, id: current.id, kind: current.kind, key: current.key } };
 }
 
@@ -295,10 +354,12 @@ export async function runFactsDelete(env, args, nowMs, ledgerContext = undefined
  *   confidence: number | null, observed_at: string | null, expires_at: string | null,
  *   review_at: string | null, supersedes: string | null, created_at: string }} snapshot
  * @param {number} nowMs
+ * @param {string} [expectedEventId]
  */
-export async function restoreFactsSnapshot(env, snapshot, nowMs) {
+export async function restoreFactsSnapshot(env, snapshot, nowMs, expectedEventId = undefined) {
   if (!FACT_KINDS.includes(snapshot.kind)) throw new Error(`невідомий kind "${snapshot.kind}"`);
   if (!snapshot.key) throw new Error('key не може бути порожнім');
+  expectedEventId ??= await factWriteToken(env, snapshot);
   const source = normalizeFactSource(snapshot.source);
   if (!source) throw new Error('snapshot містить невідоме provenance source');
   const confidence = snapshot.confidence == null ? null : normalizeConfidence(snapshot.confidence);
@@ -316,7 +377,8 @@ export async function restoreFactsSnapshot(env, snapshot, nowMs) {
       `INSERT INTO facts (
          id, kind, key, value_json, source, confidence, observed_at, expires_at, review_at, supersedes,
          created_at, updated_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+       WHERE COALESCE((SELECT id FROM fact_ledger WHERE kind = ? AND key = ? ORDER BY rowid DESC LIMIT 1), '') = ?
        ON CONFLICT (kind, key) DO UPDATE SET
          value_json = excluded.value_json, source = excluded.source, confidence = excluded.confidence,
          observed_at = excluded.observed_at, expires_at = excluded.expires_at,
@@ -336,9 +398,14 @@ export async function restoreFactsSnapshot(env, snapshot, nowMs) {
       supersedes,
       createdAt,
       iso,
+      snapshot.kind,
+      snapshot.key,
+      expectedEventId,
     );
+  const writeEventId = crypto.randomUUID();
   const ledgerWrite = factLedgerStatement(db(env), {
-    id: crypto.randomUUID(),
+    id: writeEventId,
+    only_after_write: true,
     fact_id: snapshot.id,
     kind: snapshot.kind,
     key: snapshot.key,
@@ -354,6 +421,15 @@ export async function restoreFactsSnapshot(env, snapshot, nowMs) {
     created_at: iso,
   });
   await runWrites(env, [factWrite, ledgerWrite]);
+  await assertFactWrite(env, writeEventId);
+}
+
+/** @param {Env} env @param {string} id */
+async function assertFactWrite(env, id) {
+  const rows = (await db(env).prepare('SELECT id FROM fact_ledger WHERE id = ?').bind(id).all())
+    .results;
+  if (!rows?.length)
+    throw new Error('Цей факт уже змінився. Перевір актуальне значення й повтори дію.');
 }
 
 /** Build a ledger insert from data already normalized by the fact writer.
@@ -371,7 +447,7 @@ function factLedgerStatement(database, row) {
       `INSERT INTO fact_ledger (
          id, fact_id, kind, key, operation, value_json, source, confidence,
          observed_at, expires_at, review_at, supersedes, actor, tainted, why, created_at
-       ) VALUES (?, ${factIdValue}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       ) ${row.only_after_write ? 'SELECT' : 'VALUES ('} ?, ${factIdValue}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?${row.only_after_write ? ' WHERE changes() = 1' : ')'}`,
     )
     .bind(
       row.id,
