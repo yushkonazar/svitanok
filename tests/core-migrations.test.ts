@@ -177,6 +177,7 @@ const EXPECTED_COLUMNS: Record<string, string[]> = {
   ],
   finance_commands: ['id', 'payload_hash', 'at'],
   finance_notices: ['id', 'claim', 'at'],
+  checkin_extensions: ['date_key', 'slot', 'schedule_key', 'base_end', 'end_at', 'created_at'],
   facts: [
     'id',
     'kind',
@@ -501,6 +502,7 @@ const EXPECTED_COLUMNS: Record<string, string[]> = {
  * якої тут немає, зобовʼязана мати PK рівно `['id']` — перевіряється для всіх.
  */
 const EXPECTED_PK: Record<string, string[]> = {
+  checkin_extensions: ['date_key', 'slot'],
   sessions: ['thread_id'],
   places: ['place_id'],
   instructions: ['name'],
@@ -635,7 +637,7 @@ const columnsOf = (table: string): { name: string; pk: number }[] =>
   }[];
 
 describe('міграції D1 — файли', () => {
-  it('тридцять п’ять файлів 0001–0035, нумерація без дірок', () => {
+  it('тридцять шість файлів 0001–0036, нумерація без дірок', () => {
     expect(files.map((f) => f.slice(0, 4))).toEqual([
       '0001',
       '0002',
@@ -672,6 +674,7 @@ describe('міграції D1 — файли', () => {
       '0033',
       '0034',
       '0035',
+      '0036',
     ]);
   });
 });

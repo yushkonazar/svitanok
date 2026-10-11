@@ -1,5 +1,5 @@
 import { checkinGapV3 } from './core/checkin/adaptive.mjs';
-import { checkinReminder, checkinClock } from './core/checkin/catalog.mjs';
+import { checkinWindows, checkinNoticePayload } from './core/checkin/extensions.mjs';
 // Крон-задачі Worker'а (Фаза 5, модуляризація worker.js, план A2 §5).
 //
 // ОДИН крон раз на 5 хвилин — і десяток задач усередині. Кожна САМА вирішує, чи
@@ -32,7 +32,6 @@ import {
   recordReliability,
   shouldSendCheckinNudge,
   isCheckinSlotFilled,
-  matchCheckinNudgeWindow,
   inSleepNudgeWindow,
   staleSleepNudges,
   shouldSendSleepNudge,
@@ -587,23 +586,14 @@ export async function autoBriefDispatch(/** @type {Env} */ env) {
   }
 }
 
-/**
- * П'ятихвилинний крон-гейт: вікно слоту (matchCheckinNudgeWindow) -> зібрати
- * три прапорці з KV (тихі години/вже нагадали/слот заповнено) -> чиста
- * shouldSendCheckinNudge (stats-core.mjs, тестована без KV/fetch) вирішує.
- * Ідемпотентно за добу — не більше одного check-in ping незалежно від слоту.
- * Три окремі слоти лишаються для самого журналу, але не означають три
- * автоматичні нагадування в один день.
- */
+/** Deadline-based reminders, once per original date/slot. Extension changes
+ * the deadline, not the notice identity, so it never generates a second ping. */
 export async function checkinNudgeCheck(/** @type {Env} */ env) {
   const home = assistantHomeTarget(env);
   if (!env.TELEGRAM_BOT_TOKEN || !home) return;
-  const minuteOfDay = kyivMinuteOfDay(new Date());
+  const nowMs = Date.now();
+  const minuteOfDay = kyivMinuteOfDay(new Date(nowMs));
   const checkinSettings = await loadSettings(env);
-  const win = checkinSettings.checkin
-    ? checkinReminder(minuteOfDay, checkinSettings.checkin)
-    : matchCheckinNudgeWindow(minuteOfDay);
-  if (!win) return;
   // «Ще не заповнив чек-ін» - корисний, але не критичний пінг. За обраним
   // власником режимом «лише важливе» він вимкнений, доки власник явно не
   // попросить routine_nudges.checkins=true. Особисті нагадування й аварійні
@@ -616,52 +606,58 @@ export async function checkinNudgeCheck(/** @type {Env} */ env) {
     loadStats(env),
     shouldDeliverProactive(env, 'nudge'),
   ]);
-  const today = kyivDateKey();
-  const clock = checkinClock(minuteOfDay, settings.checkin);
-  const dateKey = settings.checkin
-    ? clock.previousDay
-      ? checkinDateKey(today, 0)
-      : today
-    : checkinDateKey(today, kyivHour());
-  if (
-    settings.checkin?.version === 3 &&
-    checkinGapV3(store.checkins?.[dateKey], win.slot, Date.now()) > 0
-  )
-    return;
-  const due = shouldSendCheckinNudge({
-    quiet: isQuietMinute(settings, minuteOfDay),
-    alreadyNudgedToday: miniApp
-      ? store.checkinNudgeDates?.[win.slot] === today
-      : Object.values(store.checkinNudgeDates ?? {}).includes(today),
-    // ⚠️ НЕ Boolean(...): порожній обʼєкт істинний. Саме на цьому нагадування
-    // й ламалось — відмітив відповідь, зняв повторним тапом, слот лишився як
-    // `{}`, і нудж на добу зникав. Тепер предикат ОДИН на весь проєкт.
-    slotFilled: miniApp
-      ? Boolean(store.checkins?.[dateKey]?.[win.slot]?.confirmed)
-      : isCheckinSlotFilled(store.checkins?.[dateKey], win.slot),
-  });
-  if (!due || !attention.deliver) return;
-
-  if (miniApp) {
-    await queueMiniAppNotice(env, `checkin:${dateKey}:${win.slot}`, win.text, Date.now());
-  } else
-    await tgCall(env, 'sendMessage', {
-      chat_id: home.chatId,
-      message_thread_id: home.threadId ?? undefined,
-      text: win.text,
+  const windows = await checkinWindows(env, settings.checkin, nowMs);
+  for (const win of windows) {
+    if (!win.open || nowMs < Math.max(Date.parse(win.startAt), Date.parse(win.endAt) - 90 * 60000))
+      continue;
+    const dateKey = win.dateKey;
+    if (
+      settings.checkin?.version === 3 &&
+      checkinGapV3(store.checkins?.[dateKey], win.slot, nowMs) > 0
+    )
+      continue;
+    const due = shouldSendCheckinNudge({
+      quiet: isQuietMinute(settings, minuteOfDay),
+      alreadyNudgedToday: store.checkinNudgeDates?.[win.slot] === dateKey,
+      // ⚠️ НЕ Boolean(...): порожній обʼєкт істинний. Саме на цьому нагадування
+      // й ламалось — відмітив відповідь, зняв повторним тапом, слот лишився як
+      // `{}`, і нудж на добу зникав. Тепер предикат ОДИН на весь проєкт.
+      slotFilled: miniApp
+        ? Boolean(store.checkins?.[dateKey]?.[win.slot]?.confirmed)
+        : isCheckinSlotFilled(store.checkins?.[dateKey], win.slot),
     });
+    if (!due || !attention.deliver) continue;
 
-  // Позначаємо ПІСЛЯ надсилання, окремим безпечним patch на свіжий stats —
-  // не тим самим `store`, що читали для рішення `due` (той міг устигнути
-  // застаріти, поки лист Telegram); sendMessage (побічний ефект) уже
-  // стався РАЗ вище, тож сам patch — чиста, спокійно повторювана мутація.
-  // НЕ normalize() тут — воно не знає про checkinNudgeDates (ad-hoc поле
-  // поза emptyStore-схемою) і мовчки прибрало б його; той самий контракт,
-  // що мав ОРИГІНАЛЬНИЙ код (прямий спред store, без normalize).
-  await updateStats(env, (curStore) => ({
-    ...curStore,
-    checkinNudgeDates: { ...(curStore.checkinNudgeDates ?? {}), [win.slot]: today },
-  }));
+    const { text, reply_markup } = checkinNoticePayload(env, win, home.chatId);
+
+    if (miniApp) {
+      if (
+        !(await queueMiniAppNotice(env, `checkin:${dateKey}:${win.slot}`, text, nowMs, {
+          reply_markup,
+          checkin_notice: { dateKey, slot: win.slot, key: win.key },
+        }))
+      )
+        continue;
+    } else
+      await tgCall(env, 'sendMessage', {
+        chat_id: home.chatId,
+        message_thread_id: home.threadId ?? undefined,
+        text,
+        reply_markup,
+      });
+
+    // Позначаємо ПІСЛЯ надсилання, окремим безпечним patch на свіжий stats —
+    // не тим самим `store`, що читали для рішення `due` (той міг устигнути
+    // застаріти, поки лист Telegram); sendMessage (побічний ефект) уже
+    // стався РАЗ вище, тож сам patch — чиста, спокійно повторювана мутація.
+    // НЕ normalize() тут — воно не знає про checkinNudgeDates (ad-hoc поле
+    // поза emptyStore-схемою) і мовчки прибрало б його; той самий контракт,
+    // що мав ОРИГІНАЛЬНИЙ код (прямий спред store, без normalize).
+    await updateStats(env, (curStore) => ({
+      ...curStore,
+      checkinNudgeDates: { ...(curStore.checkinNudgeDates ?? {}), [win.slot]: dateKey },
+    }));
+  }
 }
 
 /**

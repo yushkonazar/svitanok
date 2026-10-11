@@ -37,7 +37,7 @@ import type { FunnelStage } from '../components/jobs/stages.ts';
 // в демо (де postEvent — no-op, тож інвалідацію пропускаємо, щоб зміна лишилась).
 
 export function useStats() {
-  return useQuery({ queryKey: ['stats'], queryFn: fetchStats });
+  return useQuery({ queryKey: ['stats'], queryFn: fetchStats, refetchOnWindowFocus: 'always' });
 }
 export function useNewsSnapshot() {
   return useQuery({
@@ -662,9 +662,9 @@ const CHECKIN_SCOPE = { id: 'checkin-write' };
  * — рівно та гонка, заради якої налаштування переробляли на повний PUT.
  * Дебаунс живе в екрані; scope серіалізує те, що все-таки полетіло підряд.
  *
- * `slot` тут — лише підказка: сервер визначає блок сам за київською годиною
- * (клієнтському годиннику не віримо) і може відповідь ЗІГНОРУВАТИ, якщо час
- * блоку вже минув. Тому onSettled перепитує ['stats'] — авторитет там.
+ * Date/slot explicitly selects a server-authorized window, not another slot
+ * that happens to be open now. A closed window is rejected; authority stays
+ * on the server and onSettled re-reads it.
  */
 export function useSaveCheckin() {
   const qc = useQueryClient();
@@ -672,12 +672,31 @@ export function useSaveCheckin() {
     scope: CHECKIN_SCOPE,
     mutationFn: (vars: { slot: CheckinSlot; dateKey?: string; answers: Record<string, unknown> }) =>
       postEvent('checkin', { ...vars.answers, slot: vars.slot, dateKey: vars.dateKey }),
-    onMutate: async ({ slot, answers }) => {
+    onMutate: async ({ slot, dateKey, answers }) => {
       await qc.cancelQueries({ queryKey: ['stats'] });
       const prev = qc.getQueryData<StatsResult>(['stats']);
       patchStats(qc, (s) => ({
         ...s,
-        checkinToday: { ...s.checkinToday, [slot]: { ...s.checkinToday?.[slot], ...answers } },
+        ...(dateKey && dateKey !== s.checkinDate
+          ? {}
+          : {
+              checkinToday: {
+                ...s.checkinToday,
+                [slot]: { ...s.checkinToday?.[slot], ...answers },
+              },
+            }),
+        checkinRaw: dateKey
+          ? {
+              ...s.checkinRaw,
+              records: {
+                ...s.checkinRaw.records,
+                [dateKey]: {
+                  ...s.checkinRaw.records[dateKey],
+                  [slot]: { ...s.checkinRaw.records[dateKey]?.[slot], ...answers },
+                },
+              },
+            }
+          : s.checkinRaw,
       }));
       return { prev };
     },
@@ -687,6 +706,17 @@ export function useSaveCheckin() {
     onSettled: (_data, _error, vars) => {
       if (inTelegram() || vars.answers.confirmed) qc.invalidateQueries({ queryKey: ['stats'] });
     },
+  });
+}
+
+/** Explicit one-shot extension; no optimistic deadline or automatic answers. */
+export function useExtendCheckin() {
+  const qc = useQueryClient();
+  return useMutation({
+    scope: CHECKIN_SCOPE,
+    mutationFn: (target: { dateKey: string; slot: CheckinSlot; key: string }) =>
+      postEvent('checkin_extend', target),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['stats'] }),
   });
 }
 

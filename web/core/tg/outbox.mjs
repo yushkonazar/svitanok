@@ -13,6 +13,7 @@
 import { recordTrackedMessage } from '../../kv-store.mjs';
 import { assistantHomeTarget } from './home.mjs';
 import { renderContextDelivery, recoverContextDeliveries } from '../reminders/context-store.mjs';
+import { renderCheckinNotice } from '../checkin/extensions.mjs';
 import {
   splitMessage,
   nextAttemptAt,
@@ -245,7 +246,7 @@ export async function drainOutbox(env, opts = {}) {
     first = false;
     // Виняток fetch (мережа впала, не HTTP-помилка) - ретрай цього ряда, а не
     // обрив усього драйну з рядом, навічно завислим у 'sending'.
-    const outcome = await sendRow(env, row).catch((/** @type {any} */ e) => {
+    const outcome = await sendRow(env, row, nowMs).catch((/** @type {any} */ e) => {
       console.error(`outbox: відправка ${row.id} кинула виняток`, e?.message);
       return {
         ok: false,
@@ -314,8 +315,9 @@ async function tgApi(env, method, body) {
  * розмітки лікується одразу повтором без parse_mode (fallback Rich → plain).
  * @param {Env} env
  * @param {OutboxRow} row
+ * @param {number} nowMs
  */
-async function sendRow(env, row) {
+async function sendRow(env, row, nowMs) {
   /** @type {Record<string, unknown>} */
   let payload;
   try {
@@ -325,6 +327,17 @@ async function sendRow(env, row) {
     return { ok: false, retryAfterSec: null };
   }
   const atMostOnce = payload.delivery_safety === 'at-most-once';
+  if (payload.checkin_notice && typeof payload.checkin_notice === 'object') {
+    const notice = await renderCheckinNotice(
+      env,
+      /** @type {{dateKey:string,slot:string,key:string}} */ (payload.checkin_notice),
+      nowMs,
+      row.chat_id,
+    );
+    if (!notice) return { ok: true }; // consumed, no stale Telegram notification
+    payload = { ...payload, ...notice };
+  }
+  delete payload.checkin_notice;
   if (typeof payload.context_delivery_id === 'string') {
     try {
       payload = { ...payload, ...(await renderContextDelivery(env, payload.context_delivery_id)) };

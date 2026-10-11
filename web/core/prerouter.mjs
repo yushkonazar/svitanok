@@ -132,6 +132,7 @@ import { BACKUP_MAX_ATTEMPTS } from './backup/task.mjs';
 import { startDayPlanChain } from './day-plan/chain.mjs';
 import { getDayPlan } from './day-plan/store.mjs';
 import { resolveSecurityHint } from './hints/daily-hint.mjs';
+import { checkinExtensionCallback } from './checkin/extensions.mjs';
 
 export const THREAD_DM = 'dm';
 /** Скільки транскрипта показуємо в «Я почув»: одне повідомлення з кнопками
@@ -1587,7 +1588,7 @@ export async function kickPendingThreads(env, nowMs = Date.now()) {
  * одразу, а робота - виконатись після відповіді, у тому ж waitUntil. Без
  * `defer` робота виконується інлайн (тести, майбутні викликачі).
  * @param {Env} env
- * @param {{ data?: unknown, chatId?: number | null, messageId?: number | null,
+ * @param {{ data?: unknown, fromId?: number | null, chatId?: number | null, messageId?: number | null,
  *   threadId?: number | string | null, replyMarkup?: unknown, messageText?: string | null }} parsed
  * @param {number} [nowMs]
  * @param {((work: () => Promise<void>) => void) | null} [defer]
@@ -1595,6 +1596,10 @@ export async function kickPendingThreads(env, nowMs = Date.now()) {
  */
 export async function handleBrainCallback(env, parsed, nowMs = Date.now(), defer = null) {
   const data = String(parsed.data ?? '');
+  if (data.startsWith('ci:extend:')) {
+    if (!isPrimaryOwner(env, parsed.fromId)) return 'Ця дія доступна лише власнику.';
+    return checkinExtensionCallback(env, parsed, nowMs);
+  }
   if (data.startsWith('er:')) {
     if (defer) {
       const toast = await contextReminderCallback(env, parsed, nowMs, false);

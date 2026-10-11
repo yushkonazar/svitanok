@@ -63,6 +63,7 @@ export const BACKUP_TABLES = [
   'finance_payments',
   'finance_commands',
   'finance_notices',
+  'checkin_extensions',
   'inbox_messages',
   'inbox_digests',
   'collections',

@@ -10,6 +10,7 @@ import { dateLabel, dateLabelFromIso } from './lib/dateLabel.ts';
 import { useBriefing, useStats } from './api/hooks.ts';
 import { useFinance } from './api/finance-hooks.ts';
 import { financePathForStartParam } from '../../core/finance/links.mjs';
+import { checkinPathForStartParam } from '../../core/checkin/windows.mjs';
 import { Fog } from './components/ui/Fog.tsx';
 import { SessionExpired } from './components/ui/SessionExpired.tsx';
 
@@ -129,6 +130,8 @@ function TabIcon({ id, active }: { id: TabId; active: boolean }) {
 
 // start_param -> шлях. Приймаємо і id ('stats'), і шлях ('/stats').
 function pathForStartParam(param: string): string | null {
+  const checkin = checkinPathForStartParam(param);
+  if (checkin) return checkin;
   const finance = financePathForStartParam(param);
   if (finance) return finance;
   const tab = TABS.find((t) => t.id === param || t.path === `/${param}` || t.path === param);

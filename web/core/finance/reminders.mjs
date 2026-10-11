@@ -25,8 +25,8 @@ export async function readMiniAppNotificationSettings(env) {
     .first();
 }
 
-/** @param {Env} env @param {string} id @param {string} text @param {number} nowMs */
-export async function queueMiniAppNotice(env, id, text, nowMs) {
+/** @param {Env} env @param {string} id @param {string} text @param {number} nowMs @param {Record<string,unknown>} [extra] */
+export async function queueMiniAppNotice(env, id, text, nowMs, extra = {}) {
   const home = assistantHomeTarget(env);
   if (!env.DB || !home) return false;
   const claim = crypto.randomUUID(),
@@ -44,7 +44,7 @@ export async function queueMiniAppNotice(env, id, text, nowMs) {
       `mini-app:${id}`,
       String(home.chatId),
       home.threadId == null ? null : String(home.threadId),
-      JSON.stringify({ text }),
+      JSON.stringify({ ...extra, text }),
       at,
       id,
       claim,
