@@ -223,7 +223,13 @@ export async function readFinanceWorkspace(env, nowMs = Date.now(), range) {
       .first();
     const row = accounts.find((a) => a.monoId === bank.id);
     const accountId = row?.id ?? `mono:${bank.id}`;
-    const override = creditLimits[accountId];
+    const storedOverride = creditLimits[accountId];
+    const override =
+      storedOverride && typeof storedOverride === 'object' ? storedOverride.minor : storedOverride;
+    const limitChangedAt =
+      typeof storedOverride?.changedAt === 'string' ? Date.parse(storedOverride.changedAt) : null;
+    const balancePending =
+      limitChangedAt != null && (!bank.asOf || limitChangedAt > Date.parse(bank.asOf));
     const manualLimit = Number.isSafeInteger(override) && override >= 0;
     const creditLimit = manualLimit ? override : (bank.creditLimitMinor ?? null);
     const freshSnapshot =
@@ -239,7 +245,11 @@ export async function readFinanceWorkspace(env, nowMs = Date.now(), range) {
       kind: 'mono',
       currency: bank.currency,
       balanceMinor:
-        available === null || creditLimit === null ? null : sumMoney([available, -creditLimit]),
+        balancePending || available === null || creditLimit === null
+          ? null
+          : sumMoney([available, -creditLimit]),
+      balancePending,
+      bankCreditLimitMinor: bank.creditLimitMinor ?? null,
       availableMinor: available,
       creditLimitMinor: creditLimit,
       creditLimitSource: manualLimit ? 'manual' : creditLimit === null ? 'unknown' : 'bank',
@@ -495,7 +505,15 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
       .first();
     const limits = jsonObject(row?.credit_limits_json);
     if (payload.creditLimitMinor === null) delete limits[found.id];
-    else limits[found.id] = minor(payload.creditLimitMinor);
+    else {
+      const value = minor(payload.creditLimitMinor),
+        previous = limits[found.id];
+      const previousMinor = previous && typeof previous === 'object' ? previous.minor : previous;
+      limits[found.id] = {
+        minor: value,
+        changedAt: previousMinor === value && previous?.changedAt ? previous.changedAt : now,
+      };
+    }
     update('UPDATE finance_settings SET credit_limits_json = ?, updated_at = ? WHERE id = ?', [
       JSON.stringify(limits),
       now,

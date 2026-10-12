@@ -9,6 +9,8 @@ export const financeAccountSchema = z.object({
   balanceMinor: money.nullable(),
   availableMinor: money.nullable().optional(),
   creditLimitMinor: money.nullable().optional(),
+  bankCreditLimitMinor: money.nullable().optional(),
+  balancePending: z.boolean().optional(),
   creditLimitSource: z.string().optional(),
   asOf: z.string().nullable(),
   monoId: z.string().nullable(),
@@ -132,6 +134,7 @@ export const financeSchema = z.object({
       imported: z.number(),
       updated: z.number(),
       requestedAt: z.string(),
+      balanceUpdatedAt: z.string().nullable().optional(),
       completedAt: z.string().nullable(),
       message: z.string().nullable(),
     })

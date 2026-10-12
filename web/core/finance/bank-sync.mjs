@@ -1,6 +1,6 @@
-import { statement, STATEMENT_PAGE, MonoTooSoonError } from '../adapters/mono.mjs';
-import { readMonoAccounts, ingestTransaction } from './store.mjs';
-import { claimMonoStatementRefresh } from './bank-refresh.mjs';
+import { statement, clientInfo, STATEMENT_PAGE, MonoTooSoonError } from '../adapters/mono.mjs';
+import { readMonoAccounts, writeMonoAccounts, ingestTransaction } from './store.mjs';
+import { claimMonoStatementRefresh, claimMonoClientRefresh } from './bank-refresh.mjs';
 export const BANK_SYNC_KEY = 'mono_bank_refresh';
 const WINDOW = 31 * 86400;
 /** @param {Env} env @param {unknown} accountId @param {unknown} transactionId @param {number} nowMs */
@@ -24,9 +24,8 @@ export async function bankRefreshTasks(env, accountId, transactionId, nowMs) {
   const raw = target ? JSON.parse(String(target.raw_json ?? '{}')) : null;
   if (transactionId && (!target || !selected.some((a) => a.id === raw?.account)))
     throw new Error('Некоректна операція обраної картки');
-  const tasks = [];
+  const tasks = selected.map((account) => ({ account, fromS: toS - WINDOW, toS }));
   for (const account of selected) {
-    tasks.push({ account, fromS: toS - WINDOW, toS });
     const old = await env.DB.prepare(
       "SELECT MIN(at) AS oldest FROM transactions WHERE json_extract(raw_json,'$.account')=? AND json_extract(raw_json,'$.hold')=1 AND COALESCE(json_extract(raw_json,'$.test'),0)<>1",
     )
@@ -48,12 +47,13 @@ export async function publishBankSync(env, job) {
     id: job.id,
     active: job.active,
     phase: job.phase,
-    done: job.index,
-    total: job.tasks.length,
+    done: job.index + (job.accountsDone ? 1 : 0),
+    total: job.tasks.length + (job.accountId ? 1 : 0),
     accountId: job.tasks[job.index]?.account.id ?? null,
     imported: job.imported,
     updated: job.updated,
     requestedAt: job.requestedAt,
+    balanceUpdatedAt: job.balanceUpdatedAt ?? null,
     completedAt: job.completedAt ?? null,
     message: job.message ?? null,
   };
@@ -73,12 +73,54 @@ export async function advanceBankSync(ctx, env, job, nowMs) {
   }
   if (!env.DB) throw new Error('Finance DB unavailable');
   const database = env.DB;
+  if (job.phase === 'accounts') {
+    try {
+      await claimMonoClientRefresh(env, nowMs);
+      const info = await clientInfo(env);
+      if (!info.accounts.length) throw new Error('Monobank did not return accounts');
+      const observedAt = new Date().toISOString();
+      const accounts = info.accounts.map((a) => ({
+        id: a.id,
+        currency: a.currency,
+        maskedPan: a.maskedPan,
+        balanceMinor: a.balanceMinor,
+        creditLimitMinor: a.creditLimitMinor,
+        asOf: observedAt,
+      }));
+      await writeMonoAccounts(env, accounts, Date.parse(observedAt));
+      if (!job.balancesOnly && job.index === 0 && !job.chunks && job.accountId) {
+        job.tasks = await bankRefreshTasks(env, job.accountId, job.transactionId, nowMs);
+      } else
+        for (const task of job.tasks) {
+          const fresh = accounts.find((a) => a.id === task.account.id);
+          if (fresh) task.account = fresh;
+        }
+      job.accountsDone = true;
+      job.balanceUpdatedAt = observedAt;
+      job.phase = job.resumePhase ?? 'fetch';
+      delete job.resumePhase;
+      job.message = null;
+    } catch (error) {
+      if (error instanceof MonoTooSoonError) {
+        job.message = 'Чекаємо дозволеного банком проміжку для оновлення залишків карток.';
+        await ctx.storage.put('bank-refresh', job);
+        await ctx.storage.setAlarm(Date.now() + 61000);
+        await publishBankSync(env, job);
+        return;
+      }
+      throw error; // The DO retries transient failures and publishes a recoverable error.
+    }
+    await ctx.storage.put('bank-refresh', job);
+    await ctx.storage.setAlarm(Date.now() + 50);
+    await publishBankSync(env, job);
+    return;
+  }
   const task = job.tasks[job.index];
   if (!task) {
     job.active = false;
     job.phase = 'done';
     job.completedAt = new Date(nowMs).toISOString();
-    job.message = 'Виписки звірено з банком.';
+    job.message = 'Дані Monobank оновлено.';
     await ctx.storage.put('bank-refresh', job);
     await publishBankSync(env, job);
     return;

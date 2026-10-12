@@ -816,7 +816,7 @@ describe('звірка mono-reconcile', () => {
     expect(outboxTexts(db)[0]!.text).toContain('Звірка Mono впала');
     const expected = monoWebhookUrl(env, 'https://svitanok.yushko.dev');
     routeFetch([{ match: 'client-info', body: clientBody(expected) }]);
-    expect(await monoReconcileTask(env, NIGHT)).toMatchObject({ accounts: 1 });
+    expect(await monoReconcileTask(env, NIGHT + 60000)).toMatchObject({ accounts: 1 });
   });
 });
 

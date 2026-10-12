@@ -54,12 +54,15 @@ export function FinanceScreen() {
   const [bankOpen, setBankOpen] = useState(false);
   const [bankBusy, setBankBusy] = useState(false);
   const [bankError, setBankError] = useState('');
-  const refreshBank = async () => {
-    if (bankBusy) return;
+  const [operationsSource, setOperationsSource] = useState<'all' | 'mono' | 'manual'>('all');
+  const refreshBank = async (accountId = bankAccount) => {
+    if (bankBusy || data?.finance.bankSync?.active) return;
+    setBankOpen(true);
+    setOperationsSource('mono');
     setBankBusy(true);
     setBankError('');
     try {
-      query.setQueryData(FINANCE_QUERY, await refreshFinanceBank(bankAccount));
+      query.setQueryData(FINANCE_QUERY, await refreshFinanceBank(accountId));
     } catch (e) {
       setBankError(e instanceof Error ? e.message : 'Не вдалося запустити оновлення.');
     } finally {
@@ -138,6 +141,9 @@ export function FinanceScreen() {
   const latestWeek = f.taxiWeeks.find((w) => w.key === taxi.key);
   const detail = f.payments.find((p) => p.id === detailId);
   const transaction = f.transactions.find((t) => t.id === transactionId);
+  const operations = view.txs.filter(
+    (t) => operationsSource === 'all' || (operationsSource === 'mono' ? t.bank : !t.bank),
+  );
   const pendingTransactions = f.transactions.filter(
     (t) => t.duplicateSuspected && t.attention?.status !== 'different',
   );
@@ -535,11 +541,22 @@ export function FinanceScreen() {
           <h2 id="finance-bank-operations" className="text-lg font-bold">
             Останні операції
           </h2>
-          <button className="renewal-link" onClick={() => setBankOpen((value) => !value)}>
-            Оновити Monobank ↻
+          <button
+            className="renewal-link"
+            disabled={bankBusy || !!f.bankSync?.active}
+            aria-busy={bankBusy || !!f.bankSync?.active}
+            onClick={() => void refreshBank()}
+          >
+            {bankBusy || f.bankSync?.active ? 'Оновлюю…' : 'Оновити Monobank'}{' '}
+            <span
+              aria-hidden="true"
+              className={bankBusy || f.bankSync?.active ? 'inline-block animate-spin' : ''}
+            >
+              ↻
+            </span>
           </button>
         </div>
-        {(bankOpen || f.bankSync?.active) && (
+        {(bankOpen || f.bankSync?.active || f.bankSync?.phase === 'error') && (
           <BankRefreshPanel
             finance={f}
             accountId={bankAccount}
@@ -549,13 +566,35 @@ export function FinanceScreen() {
             error={bankError}
           />
         )}
+        <div className="flex flex-wrap gap-2 my-3" role="group" aria-label="Джерело операцій">
+          {(
+            [
+              ['all', 'Усі'],
+              ['mono', 'Monobank'],
+              ['manual', 'Ручні'],
+            ] as const
+          ).map(([source, label]) => (
+            <button
+              type="button"
+              key={source}
+              aria-pressed={operationsSource === source}
+              className={operationsSource === source ? 'renewal-button' : 'renewal-secondary'}
+              onClick={() => {
+                setOperationsSource(source);
+                setAllOperations(false);
+              }}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
         {!!view.unclassified.length && (
           <p className="renewal-muted mb-3">
             {view.unclassified.length} операцій потребують уточнення типу. Перекази й невизначені
             надходження не зараховані в дохід автоматично.
           </p>
         )}
-        {(allOperations ? view.txs.slice(0, 40) : view.txs.slice(0, 5)).map((t) => (
+        {(allOperations ? operations.slice(0, 40) : operations.slice(0, 5)).map((t) => (
           <button
             type="button"
             key={t.id}
@@ -598,14 +637,14 @@ export function FinanceScreen() {
             </b>
           </button>
         ))}
-        {view.txs.length > 5 && (
+        {operations.length > 5 && (
           <button className="renewal-secondary mt-3" onClick={() => setAllOperations((v) => !v)}>
             {allOperations
               ? 'Показати останні 5'
-              : `Усі операції (${Math.min(view.txs.length, 40)})`}
+              : `Усі операції (${Math.min(operations.length, 40)})`}
           </button>
         )}
-        {!view.txs.length && <p className="renewal-muted">За цей період операцій немає.</p>}
+        {!operations.length && <p className="renewal-muted">За цей період операцій немає.</p>}
       </section>
       <BudgetPlan finance={f} nowMs={nowMs} />
       <ForecastPlan
@@ -692,9 +731,10 @@ export function FinanceScreen() {
       <AccountsPanel
         finance={f}
         onAction={setForm}
+        bankBusy={bankBusy || !!f.bankSync?.active}
         onRefreshBank={(id) => {
           setBankAccount(id);
-          setBankOpen(true);
+          void refreshBank(id);
           document
             .getElementById('finance-bank-operations')
             ?.scrollIntoView({ block: 'start', behavior: 'smooth' });

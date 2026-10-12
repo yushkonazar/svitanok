@@ -25,7 +25,7 @@ import {
   monoReconcileComplete,
   monoReconcileRelease,
 } from '../mono-reconcile/client.mjs';
-import { claimMonoStatementRefresh } from './bank-refresh.mjs';
+import { claimMonoStatementRefresh, claimMonoClientRefresh } from './bank-refresh.mjs';
 import { MONO_RECONCILE_LEASE_MS } from '../mono-reconcile/contract.mjs';
 import {
   hasAnyTransaction,
@@ -191,6 +191,7 @@ export async function monoReconcileTask(env, nowMs = Date.now()) {
  * @param {(state: ReconcileState) => Promise<void>} writeState
  */
 async function phaseClient(env, state, nowMs, writeState) {
+  await claimMonoClientRefresh(env, nowMs);
   const info = await clientInfo(env);
   const accounts = info.accounts.map((a) => ({
     id: a.id,

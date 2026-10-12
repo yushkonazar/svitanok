@@ -5,10 +5,12 @@ export function AccountsPanel({
   finance: f,
   onAction,
   onRefreshBank,
+  bankBusy = false,
 }: {
   finance: Finance;
   onAction: (r: FinanceFormRequest) => void;
   onRefreshBank?: (accountId: string) => void;
+  bankBusy?: boolean;
 }) {
   return (
     <details className="renewal-card renewal-disclosure">
@@ -34,7 +36,13 @@ export function AccountsPanel({
             <p
               className={`finance-account-balance ${a.balanceMinor != null && a.balanceMinor < 0 ? 'text-neg' : ''}`}
             >
-              {a.balanceMinor == null ? 'Потрібен залишок' : moneyLabel(a.balanceMinor, a.currency)}
+              {a.balancePending
+                ? bankBusy
+                  ? 'Оновлюємо баланс'
+                  : 'Онови дані Monobank'
+                : a.balanceMinor == null
+                  ? 'Потрібен залишок'
+                  : moneyLabel(a.balanceMinor, a.currency)}
             </p>
             {a.kind === 'mono' && (
               <>
@@ -48,10 +56,23 @@ export function AccountsPanel({
                     : moneyLabel(a.creditLimitMinor, a.currency)}
                 </p>
                 {onRefreshBank && (
-                  <button className="renewal-link" onClick={() => onRefreshBank(a.id)}>
+                  <button
+                    className="renewal-link"
+                    disabled={bankBusy}
+                    aria-busy={bankBusy}
+                    onClick={() => onRefreshBank(a.id)}
+                  >
                     Оновити виписку ↻
                   </button>
                 )}
+                {a.creditLimitSource === 'manual' &&
+                  a.bankCreditLimitMinor != null &&
+                  a.bankCreditLimitMinor !== a.creditLimitMinor && (
+                    <p className="renewal-chart-note">
+                      У Monobank ліміт {moneyLabel(a.bankCreditLimitMinor, a.currency)}; тут
+                      використовується твій ручний ліміт. Перевір налаштування.
+                    </p>
+                  )}
                 <button
                   className="renewal-link"
                   onClick={() => onAction({ kind: 'credit-limit', id: a.id })}
@@ -70,7 +91,7 @@ export function AccountsPanel({
             )}
             <small className="renewal-muted">
               {a.asOf
-                ? `Оновлено ${new Date(a.asOf).toLocaleDateString('uk-UA')}`
+                ? `Оновлено ${new Date(a.asOf).toLocaleString('uk-UA', { timeZone: 'Europe/Kyiv', dateStyle: 'short', timeStyle: 'short' })}`
                 : 'Початковий залишок'}
             </small>
           </article>

@@ -46,7 +46,23 @@ export async function handleFinance(request, env) {
         to,
         nowMs,
       );
-    } else result = body ? await executeFinanceCommand(env, body) : await readFinanceWorkspace(env);
+    } else {
+      result = body ? await executeFinanceCommand(env, body) : await readFinanceWorkspace(env);
+      if (body?.type === 'credit-limit' && env.MONO_RECONCILE) {
+        // The setting is saved even if starting its refresh fails; the response stays a success.
+        try {
+          await env.MONO_RECONCILE.getByName(MONO_RECONCILE_DO_NAME).requestRefresh(
+            body.payload?.accountId,
+            undefined,
+            nowMs,
+            true,
+          );
+        } catch {
+          console.error('mono credit limit: refresh could not be started');
+        }
+        result = await readFinanceWorkspace(env, nowMs);
+      }
+    }
     const response = json(result);
     response.headers.set('cache-control', 'private, no-store');
     return response;
