@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import worker from '../web/worker.js';
 import { memoryKv } from './helpers/kv.js';
 import { buildInitData } from './helpers/init-data.js';
@@ -69,7 +69,17 @@ function ctx() {
 
 beforeEach(() => {
   kv = new Map();
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(
+      async () =>
+        new Response(JSON.stringify({ ok: true, result: true }), {
+          headers: { 'content-type': 'application/json' },
+        }),
+    ),
+  );
 });
+afterEach(() => vi.unstubAllGlobals());
 
 describe("updateState — конкурентний писар 'state' не губиться", () => {
   it('подія дашборда (jobPrefs) і паралельна зміна роадмепу виживають обидві', async () => {

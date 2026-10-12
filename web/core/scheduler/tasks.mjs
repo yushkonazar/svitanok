@@ -54,6 +54,8 @@ import { reconcileMemoryProjection } from '../memory.mjs';
 import { reconcileKnowledgeProjection } from '../knowledge-base.mjs';
 import { tripMonitorTask } from '../trips/monitor.mjs';
 import { refreshNewsSnapshot } from '../brief/news-snapshot.mjs';
+import { leisureCatalogTask } from '../leisure/catalog.mjs';
+import { reconcileLeisureCalendar } from '../leisure/calendar.mjs';
 
 /**
  * @typedef {{
@@ -65,6 +67,8 @@ import { refreshNewsSnapshot } from '../brief/news-snapshot.mjs';
 
 /** @type {Record<string, SchedulerTaskDef>} */
 export const SCHEDULER_TASKS = {
+  'leisure-catalog': { periodMin: 30, run: leisureCatalogTask },
+  'leisure-calendar': { periodMin: 5, run: reconcileLeisureCalendar },
   'mini-app-news': { periodMin: 5, run: refreshNewsSnapshot }, // Snapshot gates 3/6/12h and bounded translation retries.
   // Носій заміру джитера і канарка shadow-режиму: єдина задача, що
   // ВИКОНУЄТЬСЯ (а не логується) і в shadow — без побічних ефектів.

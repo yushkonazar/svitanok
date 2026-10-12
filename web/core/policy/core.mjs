@@ -12,6 +12,7 @@ import { parseRecurrence } from '../reminders/recurrence.mjs';
  * @type {Record<string, 'T0' | 'T1' | 'T2'>}
  */
 export const ACTION_LEVELS = {
+  'leisure.change': 'T1',
   // T0 - виконати одразу, «Записав … ↩» (undo 10 хв)
   'facts.set': 'T0',
   record: 'T0',

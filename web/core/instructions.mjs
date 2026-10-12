@@ -30,6 +30,8 @@ const BUILTIN_TOOLS = ['WebSearch', 'WebFetch', 'Read', 'Grep', 'Glob'];
  * Друкарську помилку («calendar.raed») цей список ловить так само.
  */
 export const CANON_TOOLS = [
+  'leisure.query',
+  'leisure.change',
   'data.read',
   // Явна перевага власника до повного ранкового briefing-а: лише allowlisted
   // block id + verdict useful/less/hide, без контенту або вільного тексту.

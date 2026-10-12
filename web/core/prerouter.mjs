@@ -3859,6 +3859,19 @@ function factValueForDisplay(value) {
  */
 function proposalLabel(kind, obj) {
   const o = /** @type {Record<string, unknown>} */ (obj && typeof obj === 'object' ? obj : {});
+  if (kind === 'leisure.change' && typeof o.payload_json === 'string') {
+    try {
+      const payload = JSON.parse(o.payload_json);
+      if (payload.title)
+        return {
+          label: String(payload.title).replace(SANITIZE_RE, ' ').trim().slice(0, 80),
+          guests: [],
+          link: null,
+        };
+    } catch {
+      /* The command boundary rejects malformed JSON. */
+    }
+  }
   // Порядок: назва → дата (plan.*) → файл (export) → короткий текст → колекція
   // → номер → id. Довгий text (чернетка плану) - не підпис (приймання 05.09, B4).
   const shortText = typeof o.text === 'string' && o.text.length <= 80 ? o.text : null;

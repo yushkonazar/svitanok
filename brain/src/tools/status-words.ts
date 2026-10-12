@@ -8,6 +8,8 @@
 
 /** Точні збіги за coreName інструмента. */
 const EXACT: Record<string, string> = {
+  'leisure.query': 'Дивлюсь добірку дозвілля',
+  'leisure.change': 'Оновлюю дозвілля',
   'mail.search': 'Читаю пошту',
   'mail.read': 'Читаю лист',
   'inbox.search': 'Гортаю чати',

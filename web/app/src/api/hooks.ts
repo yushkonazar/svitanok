@@ -350,7 +350,8 @@ export function useToggleSaveItem() {
       return ctx;
     },
     onError: (_e, _v, ctx) => restoreSaved(qc, ctx),
-    onSettled: () => {
+    onSettled: (_data, _error, vars) => {
+      if (vars.kind === 'leisure') void qc.invalidateQueries({ queryKey: ['leisure'] });
       if (inTelegram()) invalidateSaved(qc);
       else qc.invalidateQueries({ queryKey: ['saved'] });
     },

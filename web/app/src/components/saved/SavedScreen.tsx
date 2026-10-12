@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { PageHeading } from '../ui/PageHeading.tsx';
 import { useReading, markRead } from '../../lib/reading.ts';
 import type { SavedItem } from '../../api/schema.ts';
@@ -26,6 +27,7 @@ const KINDS: Array<{ id: string; icon: string; label: string }> = [
   { id: 'quote', icon: '🏛', label: 'Думки' },
   { id: 'fact', icon: '🧠', label: 'Факти' },
   { id: 'question', icon: '🎤', label: 'Питання' },
+  { id: 'leisure', icon: '✦', label: 'Дозвілля' },
 ];
 
 /** Незнайомий kind не мовчить і не зникає — падає в «Інше» з нейтральною іконкою. */
@@ -42,6 +44,7 @@ function shortDate(ts: string): string {
 }
 
 function Row({ item, i }: { item: SavedItem; i: number }) {
+  const navigate = useNavigate();
   const reading = useReading();
   const readKey = item.url || `${item.kind}:${item.id}`;
   const delItem = useToggleSaveItem();
@@ -94,7 +97,15 @@ function Row({ item, i }: { item: SavedItem; i: number }) {
       style={entry}
     >
       <div className="min-w-0 flex-1">
-        {isLink ? (
+        {item.kind === 'leisure' ? (
+          <button
+            type="button"
+            className="block w-full text-left text-[14px] font-medium leading-[1.55] text-a2"
+            onClick={() => navigate(`/leisure?item=${encodeURIComponent(item.id ?? '')}`)}
+          >
+            {item.title}
+          </button>
+        ) : isLink ? (
           <button
             type="button"
             onClick={() => {

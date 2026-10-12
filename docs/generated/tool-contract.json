@@ -394,6 +394,47 @@
       "tainting": "always",
       "execution": { "route": "core" }
     },
+    "leisure.change": {
+      "args": {
+        "properties": {
+          "command_id": { "maxLength": 80, "minLength": 8, "type": "string" },
+          "id": { "maxLength": 320, "type": "string" },
+          "op": {
+            "enum": [
+              "settings",
+              "save",
+              "reaction",
+              "visit",
+              "plan",
+              "cancel",
+              "outcome",
+              "refresh",
+              "calendar-check",
+              "clear"
+            ],
+            "type": "string"
+          },
+          "payload_json": { "maxLength": 20000, "type": "string" }
+        },
+        "required": ["op", "payload_json"],
+        "type": "object"
+      },
+      "tainting": "never",
+      "execution": { "route": "policy", "kind": "leisure.change" }
+    },
+    "leisure.query": {
+      "args": {
+        "properties": {
+          "id": { "maxLength": 320, "type": "string" },
+          "plan_json": { "maxLength": 20000, "type": "string" },
+          "query": { "maxLength": 160, "type": "string" },
+          "view": { "enum": ["week", "saved", "plans", "visits"], "type": "string" }
+        },
+        "type": "object"
+      },
+      "tainting": "always",
+      "execution": { "route": "core" }
+    },
     "mail.read": {
       "args": {
         "properties": { "id": { "maxLength": 128, "type": "string" } },

@@ -42,6 +42,7 @@ export const DOMAIN_ICON = {
  * @type {Record<string, { icon: string, done: string, ask: string }>}
  */
 export const ACTION_PHRASE = {
+  'leisure.change': { icon: DOMAIN_ICON.place, done: 'Оновив дозвілля', ask: 'Оновити дозвілля' },
   'facts.set': { icon: DOMAIN_ICON.memory, done: 'Запамʼятав', ask: 'Запамʼятати' },
   'facts.delete': { icon: DOMAIN_ICON.memory, done: 'Видалив факт', ask: 'Видалити факт' },
   record: { icon: DOMAIN_ICON.collection, done: 'Записав', ask: 'Записати' },
