@@ -1,5 +1,6 @@
+import { refreshFinanceBank } from '../../api/client.ts';
 import { afterEach, expect, it, vi } from 'vitest';
-import { cleanup, render, screen, fireEvent } from '@testing-library/react';
+import { cleanup, render, screen, fireEvent, waitFor, act, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import { FinanceScreen } from './FinanceScreen.tsx';
@@ -7,6 +8,10 @@ import { readFinanceDemo } from '../../api/finance-demo.ts';
 import { setVerticalSwipes } from '../../telegram.ts';
 import { useFinance } from '../../api/finance-hooks.ts';
 import type { Finance } from '../../api/finance-schema.ts';
+vi.mock('../../api/client.ts', async (original) => ({
+  ...(await original<typeof import('../../api/client.ts')>()),
+  refreshFinanceBank: vi.fn(),
+}));
 vi.mock('../../api/finance-hooks.ts', () => ({ FINANCE_QUERY: ['finance'], useFinance: vi.fn() }));
 vi.mock('../../telegram.ts', async (original) => ({
   ...(await original<typeof import('../../telegram.ts')>()),
@@ -22,6 +27,7 @@ vi.mock('./PaymentDetail.tsx', () => ({
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  vi.mocked(refreshFinanceBank).mockReset();
 });
 
 function renderFinance(path: string, finance = readFinanceDemo()) {
@@ -113,4 +119,73 @@ it('disables the native Telegram dismiss gesture throughout finances, including 
   expect(setVerticalSwipes).toHaveBeenLastCalledWith(false);
   unmount();
   expect(setVerticalSwipes).toHaveBeenLastCalledWith(true);
+});
+
+it('starts refresh with one click and visibly disables it while the request is pending', async () => {
+  const finance = readFinanceDemo();
+  let finish: ((data: { finance: Finance; demo: boolean }) => void) | undefined;
+  vi.mocked(refreshFinanceBank).mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+  );
+  renderFinance('/finance', finance);
+  fireEvent.click(screen.getByRole('button', { name: 'Оновити Monobank' }));
+  await waitFor(() => expect(refreshFinanceBank).toHaveBeenCalledExactlyOnceWith('all'));
+  const button = screen.getByRole('button', { name: 'Оновлюю…' });
+  expect(button).toBeDisabled();
+  expect(button).toHaveAttribute('aria-busy', 'true');
+  fireEvent.click(button);
+  expect(refreshFinanceBank).toHaveBeenCalledOnce();
+  await act(async () => finish!({ finance, demo: false }));
+  expect(screen.getByRole('button', { name: 'Оновити Monobank' })).toBeEnabled();
+});
+it('keeps the running state visible after the initial request has returned', () => {
+  const finance = readFinanceDemo();
+  finance.bankSync = {
+    id: 'test',
+    active: true,
+    phase: 'accounts',
+    done: 0,
+    total: 3,
+    accountId: null,
+    imported: 0,
+    updated: 0,
+    requestedAt: new Date().toISOString(),
+    completedAt: null,
+    message: 'Оновлюємо залишки карток.',
+  };
+  renderFinance('/finance', finance);
+  expect(screen.getByRole('button', { name: 'Оновлюю…' })).toBeDisabled();
+  expect(screen.getByRole('status')).toHaveTextContent('Оновлюємо залишки карток');
+});
+it('shows a newly imported bank operation even when newer manual entries fill the first five positions', () => {
+  const finance = readFinanceDemo(),
+    base = finance.transactions[0]!;
+  finance.transactions = [
+    ...Array.from({ length: 6 }, (_, i) => ({
+      ...base,
+      id: `manual-${i}`,
+      bank: false,
+      description: `Готівка ${i}`,
+      at: new Date(Date.now() - 1000).toISOString(),
+    })),
+    {
+      ...base,
+      id: 'grocery',
+      bank: true,
+      description: 'Супермаркет',
+      amountMinor: -75000,
+      amountUah: -75000,
+      at: new Date(Date.now() - 300000).toISOString(),
+    },
+  ];
+  renderFinance('/finance', finance);
+  const operations = within(
+    screen.getByRole('heading', { name: 'Останні операції' }).closest('section')!,
+  );
+  expect(operations.queryByText('Супермаркет')).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: 'Monobank' }));
+  expect(operations.getByText('Супермаркет')).toBeInTheDocument();
 });

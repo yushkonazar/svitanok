@@ -21,7 +21,11 @@ export function BankRefreshPanel({
     <div className="renewal-inset">
       <label className="renewal-field">
         Картка для оновлення виписки
-        <select value={accountId} onChange={(e) => onAccountChange(e.target.value)} disabled={busy}>
+        <select
+          value={accountId}
+          onChange={(e) => onAccountChange(e.target.value)}
+          disabled={busy || !!status?.active}
+        >
           <option value="all">Усі картки Monobank</option>
           {finance.accounts
             .filter((a) => a.kind === 'mono')
@@ -37,6 +41,7 @@ export function BankRefreshPanel({
         className="renewal-secondary"
         disabled={busy || !!status?.active || !accountId}
         onClick={onRefresh}
+        aria-busy={busy || !!status?.active}
       >
         {busy
           ? 'Запускаю оновлення…'
@@ -46,13 +51,27 @@ export function BankRefreshPanel({
       </button>
       {status?.active ? (
         <p className="renewal-muted" role="status">
-          Оновлення у фоні · {status.done}/{status.total} відрізків виписки · нових:{' '}
-          {status.imported}, оновлених: {status.updated}.{' '}
-          {status.message ?? 'Список оновиться автоматично.'}
+          Баланс і виписка · {status.done}/{status.total} етапів · нових: {status.imported},
+          оновлених: {status.updated}. {status.message ?? 'Список оновиться автоматично.'}
         </p>
       ) : status?.phase === 'done' ? (
         <p className="renewal-muted" role="status">
-          Виписки звірено з Monobank. Нових: {status.imported}, оновлених: {status.updated}.
+          {status.balanceUpdatedAt
+            ? 'Залишки, ліміти й виписки оновлено.'
+            : 'Виписки оновлено; залишки можна звірити кнопкою вище.'}{' '}
+          Нових: {status.imported}, оновлених: {status.updated}.
+          {status.balanceUpdatedAt && (
+            <>
+              {' '}
+              Залишки звірено{' '}
+              {new Date(status.balanceUpdatedAt).toLocaleTimeString('uk-UA', {
+                timeZone: 'Europe/Kyiv',
+                hour: '2-digit',
+                minute: '2-digit',
+              })}
+              .
+            </>
+          )}
           Позначка hold може залишитись, якщо її досі передає API банку.
         </p>
       ) : message ? (

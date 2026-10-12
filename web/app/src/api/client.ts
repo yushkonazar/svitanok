@@ -183,7 +183,7 @@ export async function postNewsAction(
 
 export async function fetchFinance() {
   if (!inTelegram()) return { finance: readFinanceDemo(), demo: true };
-  const res = await fetch('/api/finance', { headers: authHeaders() });
+  const res = await fetch('/api/finance', { headers: authHeaders(), cache: 'no-store' });
   throwIfSessionExpired(res);
   if (!res.ok) throw new Error('Не вдалося завантажити фінанси. Спробуй знову.');
   return { finance: financeSchema.parse(await res.json()), demo: false };

@@ -18,33 +18,45 @@ export class MonoReconcileDO extends DurableObject {
     return next;
   }
 
-  /** @param {unknown} accountId @param {unknown} [transactionId] @param {number} [nowMs] */
-  async requestRefresh(accountId, transactionId, nowMs = Date.now()) {
+  /** @param {unknown} accountId @param {unknown} [transactionId] @param {number} [nowMs] @param {boolean} [balancesOnly] */
+  async requestRefresh(accountId, transactionId, nowMs = Date.now(), balancesOnly = false) {
     return this.#serial(async () => {
       const env = /** @type {Env} */ (this.env),
         tasks = await bankRefreshTasks(env, accountId, transactionId, nowMs);
       const active = /** @type {any} */ (await this.ctx.storage.get('bank-refresh'));
       if (active?.active) {
-        for (const task of tasks)
-          if (
-            !active.tasks.some(
-              (/** @type {any} */ existing) =>
-                existing.account.id === task.account.id &&
-                existing.fromS <= task.fromS &&
-                existing.toS >= task.toS - 60,
+        if ((balancesOnly || !active.accountsDone) && active.phase !== 'accounts') {
+          active.resumePhase = active.phase;
+          active.phase = 'accounts';
+          active.accountsDone = false;
+        }
+        if (!active.accountId) active.accountId = accountId;
+        else if (active.accountId !== accountId) active.accountId = 'all';
+        if (!balancesOnly)
+          for (const task of tasks)
+            if (
+              !active.tasks.some(
+                (/** @type {any} */ existing) =>
+                  existing.account.id === task.account.id &&
+                  existing.fromS <= task.fromS &&
+                  existing.toS >= task.toS - 60,
+              )
             )
-          )
-            active.tasks.push(task);
+              active.tasks.push(task);
         await this.ctx.storage.put('bank-refresh', active);
+        await this.ctx.storage.setAlarm(Date.now() + 50);
         await publishBankSync(env, active);
         return;
       }
       const job = {
         id: crypto.randomUUID(),
         active: true,
-        phase: 'fetch',
+        phase: 'accounts',
         index: 0,
-        tasks,
+        tasks: balancesOnly ? [] : tasks,
+        accountId,
+        transactionId,
+        balancesOnly,
         imported: 0,
         updated: 0,
         requestedAt: new Date(nowMs).toISOString(),
