@@ -53,8 +53,14 @@ export const TOOLS = {
       properties: {
         plan_json: { type: 'string', maxLength: 20000 },
         id: { type: 'string', maxLength: 320 },
-        view: { type: 'string', enum: ['week', 'saved', 'plans', 'visits'] },
+        view: { type: 'string', enum: ['week', 'saved', 'plans', 'visits', 'places'] },
         query: { type: 'string', maxLength: 160 },
+        category: {
+          type: 'string',
+          enum: ['exhibition', 'festival', 'concert', 'show', 'cinema', 'food', 'trip'],
+        },
+        offset: { type: 'number', minimum: 0 },
+        limit: { type: 'number', minimum: 1, maximum: 40 },
       },
     },
     tainting: true,

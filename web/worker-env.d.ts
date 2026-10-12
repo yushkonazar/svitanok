@@ -291,6 +291,9 @@ interface Env {
   GOOGLE_TRANSLATE_API_KEY?: string;
   /** Existing project key; public RSS editor only, with its own monthly quota. */
   OPENAI_API_KEY?: string;
+  LEISURE_CATALOG?: import('@cloudflare/workers-types').DurableObjectNamespace<
+    import('./core/leisure/catalog-do.mjs').LeisureCatalogDO
+  >;
   NEWS_REFRESH?: import('@cloudflare/workers-types').DurableObjectNamespace<
     import('./core/brief/news-refresh-do.mjs').NewsRefreshDO
   >;

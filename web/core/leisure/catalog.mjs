@@ -20,7 +20,7 @@ export const PUBLIC_LEISURE_SOURCES = [
   {
     id: 'art',
     name: 'Муніципальний мистецький центр',
-    url: 'https://www.lvivart.center/wp-json/wp/v2/events?per_page=12',
+    url: 'https://www.lvivart.center/wp-json/wp/v2/events?per_page=40',
   },
   { id: 'planeta', name: 'Планета кіно', url: 'https://planetakino.ua/' },
   {
@@ -79,7 +79,7 @@ export function sourceLinks(html, base, accept) {
 /** @param {string} url @returns {Promise<string>} */
 async function sourceText(url) {
   let target = new URL(url);
-  for (let redirects = 0; redirects < 4; redirects++) {
+  for (let redirects = 0; redirects < 3; redirects++) {
     if (
       !SOURCE_HOSTS.has(target.hostname) ||
       target.protocol !== 'https:' ||
@@ -247,15 +247,50 @@ export function articleCandidate(html, url, source) {
     registration: /попередн[яьої]+\s+реєстрац|попередньої\s+реєстрац/i.test(body),
   };
 }
+/** Recheck only an already approved, selected public event page. Never infer cancellation from page chrome.
+ * @param {any} item @param {number} nowMs */
+export async function checkLeisureSource(item, nowMs) {
+  if (['food', 'cinema'].includes(item.category)) return { item, verified: false };
+  const html = await sourceText(item.sourceUrl);
+  const nodes = structuredNodes(html)
+    .map((n) => eventCandidate(n, item.source, item.sourceUrl))
+    .filter((n) => n !== null);
+  const same = nodes.find(
+    (n) => n.title.toLocaleLowerCase('uk') === item.title.toLocaleLowerCase('uk'),
+  );
+  const article = same ?? articleCandidate(html, item.sourceUrl, item.source);
+  if (!article || article.title.toLocaleLowerCase('uk') !== item.title.toLocaleLowerCase('uk'))
+    return { item, verified: false };
+  const updated = await normalizeLeisureItem({ ...article, category: item.category }, nowMs);
+  if (!updated) return { item, verified: false };
+  return {
+    item: {
+      ...item,
+      ...updated,
+      id: item.id,
+      sourceUrl: item.sourceUrl,
+      venueId: item.venueId,
+      placeId: item.placeId,
+      status: same ? updated.status : item.status,
+      checkedAt: new Date(nowMs).toISOString(),
+    },
+    verified: Boolean(same),
+  };
+}
 /** @param {any} source @param {number} nowMs @param {any} settings */
 export async function collectSource(source, nowMs, settings) {
   if (source.id === 'planeta') return collectPlaneta(nowMs, settings);
-  if (source.id === 'nearby') return collectNearby(source, nowMs);
+  if (source.id === 'nearby') return collectNearby(source, nowMs, settings);
   const html = await sourceText(source.url);
   /** @type {any[]} */ let raw = [];
+  const offset = Number(settings.sourceOffset ?? 0),
+    limit = Number(settings.sourceBatch ?? 48);
+  /** @type {number|null} */ let nextOffset;
   if (source.id === 'art') {
     const data = JSON.parse(html);
-    for (const entry of (Array.isArray(data) ? data : []).slice(0, 6)) {
+    const entries = Array.isArray(data) ? data : [];
+    nextOffset = entries.length > offset + limit ? offset + limit : null;
+    for (const entry of entries.slice(offset, offset + limit)) {
       const url = httpLink(entry.link);
       if (url && SOURCE_HOSTS.has(new URL(url).hostname)) {
         try {
@@ -276,12 +311,12 @@ export async function collectSource(source, nowMs, settings) {
     const unique = [...new Map(candidates.map((c) => [c.sourceUrl, c])).values()];
     const today = kyivDateKey(new Date(nowMs)),
       horizon = addDaysToDateKey(leisureWeek(nowMs), 20);
-    for (const candidate of unique
-      .filter(
-        (c) =>
-          c.startDate && c.startDate.slice(0, 10) >= today && c.startDate.slice(0, 10) <= horizon,
-      )
-      .slice(0, 12)) {
+    const filteredCandidates = unique.filter(
+      (c) =>
+        c.startDate && c.startDate.slice(0, 10) >= today && c.startDate.slice(0, 10) <= horizon,
+    );
+    nextOffset = filteredCandidates.length > offset + limit ? offset + limit : null;
+    for (const candidate of filteredCandidates.slice(offset, offset + limit)) {
       if (new URL(candidate.sourceUrl).hostname !== 'concert.ua') continue;
       try {
         const leaf = await sourceText(candidate.sourceUrl);
@@ -310,7 +345,8 @@ export async function collectSource(source, nowMs, settings) {
           !/\/c-|\/events\/$|afisha|podii-tsoho-tyzhnia/.test(u.pathname)
         : u.hostname === 'jamfactory.ua' && /^\/events\/[^/]+\/$/.test(u.pathname),
     );
-    for (const url of links.slice(0, 6)) {
+    nextOffset = links.length > offset + limit ? offset + limit : null;
+    for (const url of links.slice(offset, offset + limit)) {
       try {
         const leaf = await sourceText(url);
         const entries = structuredNodes(leaf)
@@ -334,11 +370,11 @@ export async function collectSource(source, nowMs, settings) {
     } catch {
       /* A malformed date only removes that candidate. */
     }
-  return result;
+  return Object.assign(result, { nextOffset });
 }
 /** Official nearby-place directory. Availability and admission are not invented.
- * @param {any} source @param {number} nowMs */
-export async function collectNearby(source, nowMs) {
+ * @param {any} source @param {number} nowMs @param {any} [settings] */
+export async function collectNearby(source, nowMs, settings = {}) {
   const html = await sourceText(source.url);
   const links = sourceLinks(
     html,
@@ -349,7 +385,10 @@ export async function collectNearby(source, nowMs) {
   );
   const weekIndex = Math.floor(Date.parse(`${leisureWeek(nowMs)}T12:00:00Z`) / (7 * 86400000));
   const offset = links.length ? (weekIndex * 6) % links.length : 0;
-  const chosen = [...links.slice(offset), ...links.slice(0, offset)].slice(0, 6);
+  const rotated = [...links.slice(offset), ...links.slice(0, offset)],
+    start = Number(settings.sourceOffset ?? 0),
+    limit = Number(settings.sourceBatch ?? 24);
+  const chosen = rotated.slice(start, start + limit);
   const results = [];
   for (const url of chosen) {
     try {
@@ -382,7 +421,9 @@ export async function collectNearby(source, nowMs) {
       /* A place without verified source data is omitted. */
     }
   }
-  return results;
+  return Object.assign(results, {
+    nextOffset: rotated.length > start + limit ? start + limit : null,
+  });
 }
 /** Verified schedule data for the explicitly selected cinema/date. No checkout requests.
  * @param {number} nowMs @param {any} settings */
@@ -540,16 +581,26 @@ export async function refreshLeisureCatalog(env, nowMs = Date.now(), cinemaOnly 
         'кав’ярні десерти Львів',
       ];
       const weekIndex = Math.floor(Date.parse(`${leisureWeek(nowMs)}T12:00:00Z`) / (7 * 86400000));
-      const places = await placesSearch(
-        env,
-        {
-          query: foodQueries[weekIndex % foodQueries.length] ?? 'ресторани Львів',
-          city: 'Львів',
-          limit: 8,
-        },
-        nowMs,
+      const outputs = await Promise.allSettled(
+        [0, 1, 2, 3].map((offset) =>
+          placesSearch(
+            env,
+            {
+              query: foodQueries[(weekIndex + offset) % foodQueries.length] ?? 'ресторани Львів',
+              city: 'Львів',
+              limit: 8,
+            },
+            nowMs,
+          ),
+        ),
       );
-      if (places.source !== 'api') throw new Error('places-not-fresh');
+      const fresh = outputs.flatMap((r) =>
+        r.status === 'fulfilled' && r.value.source === 'api' ? [r.value] : [],
+      );
+      if (!fresh.length) throw new Error('places-not-fresh');
+      const places = {
+        places: [...new Map(fresh.flatMap((r) => r.places).map((p) => [p.place_id, p])).values()],
+      };
       for (const place of places.places) {
         const item = await normalizeLeisureItem(
           {
@@ -557,6 +608,7 @@ export async function refreshLeisureCatalog(env, nowMs = Date.now(), cinemaOnly 
             address: place.address,
             venue: place.name,
             placeId: place.place_id,
+            placeType: place.place_type,
             lat: place.lat,
             lon: place.lon,
             category: 'food',
@@ -604,16 +656,25 @@ export async function leisureCatalogTask(env, nowMs = Date.now()) {
   if (!env.DB) return;
   const settings = await leisureSettings(env);
   if (!settings.enabled) return;
-  const today = kyivDateKey(new Date(nowMs)),
-    week = leisureWeek(nowMs),
+  const week = leisureWeek(nowMs),
+    today = kyivDateKey(new Date(nowMs)),
     hour = kyivHour(new Date(nowMs));
-  if (today !== week || hour < settings.updateHour) return;
   const row = await env.DB.prepare('SELECT data_json FROM leisure_editions WHERE week=?')
     .bind(week)
     .first();
-  if (!row) return refreshLeisureCatalog(env, nowMs);
-  const edition = JSON.parse(String(row.data_json));
-  if (!edition.ids.length && nowMs - Date.parse(edition.createdAt) >= 3 * 3600000)
-    return refreshLeisureCatalog(env, nowMs);
-  if (hour >= 20 && !edition.cinemaUpdatedAt) return refreshLeisureCatalog(env, nowMs, true);
+  const edition = row ? JSON.parse(String(row.data_json)) : null;
+  if (edition && edition.catalogVersion !== 2)
+    return env.LEISURE_CATALOG?.getByName('owner').request('full', nowMs);
+  if (today === week && hour >= settings.updateHour - 1 && !edition)
+    return env.LEISURE_CATALOG?.getByName('owner').request('full', nowMs);
+  if (
+    hour >= settings.updateHour &&
+    edition &&
+    (String(edition.cinemaUpdatedAt ?? '').slice(0, 10) !==
+      new Date(nowMs).toISOString().slice(0, 10) ||
+      (today === week &&
+        hour >= 20 &&
+        kyivHour(new Date(edition.cinemaUpdatedAt ?? edition.createdAt)) < 20))
+  )
+    return env.LEISURE_CATALOG?.getByName('owner').request('daily', nowMs);
 }

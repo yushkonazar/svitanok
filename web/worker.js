@@ -45,6 +45,7 @@ export { WeeklyReviewStateDO } from './core/weekly-review-state/do.mjs';
 export { MonoAlertGateDO } from './core/mono-alert-gate/do.mjs';
 export { SteamCheckStateDO } from './core/steam-check-state/do.mjs';
 export { NewsRefreshDO } from './core/brief/news-refresh-do.mjs';
+export { LeisureCatalogDO } from './core/leisure/catalog-do.mjs';
 // Workflow плану дня (етап 3 PR-8) - той самий контракт деплою, що й DO.
 export { DayPlanChain } from './core/day-plan/chain.mjs';
 export { IdeaAnalysis } from './core/ideas/analysis.mjs';

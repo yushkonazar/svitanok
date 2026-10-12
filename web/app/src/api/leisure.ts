@@ -48,6 +48,10 @@ export const leisureItemSchema = z.object({
   genre: z.string().default(''),
   durationMinutes: z.number().nullable().default(null),
   age: z.string().default(''),
+  placeType: z.string().default(''),
+  bookingUrl: z.string().nullable().default(null),
+  siteUrl: z.string().nullable().default(null),
+  placeDetails: z.record(z.string(), z.unknown()).optional(),
 });
 const stopSchema = z.object({
   itemId: z.string(),
@@ -74,6 +78,7 @@ export const leisurePlanSchema = z.object({
   calendarId: z.string().nullable(),
   calendarState: z.enum(['none', 'pending', 'delete-pending', 'error', 'synced', 'conflict']),
   reason: z.string().optional(),
+  estimatedBudgetMinor: z.number().nullable().optional(),
 });
 const visitSchema = z.object({
   id: z.string(),
@@ -87,6 +92,7 @@ const visitSchema = z.object({
   rating: z.enum(['liked', 'neutral', 'disliked']).nullable(),
   reason: z.string(),
   planId: z.string().nullable(),
+  legacy: z.boolean().default(false),
 });
 const reactionSchema = z.object({
   id: z.string(),
@@ -95,6 +101,21 @@ const reactionSchema = z.object({
   itemId: z.string(),
   venueId: z.string().nullable(),
   verdict: z.string(),
+  reasonCode: z.string().nullable().default(null),
+  reason: z.string().default(''),
+  at: z.string().nullable().default(null),
+});
+const familiaritySchema = z.object({
+  id: z.string(),
+  kind: z.literal('familiarity'),
+  revision: z.number(),
+  itemId: z.string(),
+  venueId: z.string().nullable(),
+  title: z.string(),
+  mode: z.enum(['count', 'many', 'unknown', 'clear']),
+  previousCount: z.number().nullable(),
+  trackingSince: z.string(),
+  cleared: z.boolean().default(false),
 });
 export const leisureWorkspaceSchema = z.object({
   version: z.literal(1),
@@ -111,11 +132,41 @@ export const leisureWorkspaceSchema = z.object({
     telegram: z.literal(false),
   }),
   items: z.array(leisureItemSchema),
-  records: z.array(z.discriminatedUnion('kind', [leisurePlanSchema, visitSchema, reactionSchema])),
+  knownPlaces: z
+    .record(
+      z.string(),
+      z.object({
+        familiar: z.boolean(),
+        frequent: z.boolean(),
+        previousCount: z.number().nullable(),
+        trackedCount: z.number(),
+        legacyCount: z.number(),
+        since: z.string().nullable(),
+      }),
+    )
+    .default({}),
+  records: z.array(
+    z.discriminatedUnion('kind', [
+      leisurePlanSchema,
+      visitSchema,
+      reactionSchema,
+      familiaritySchema,
+    ]),
+  ),
   saved: z.array(z.string()),
   historyLimit: z.number(),
   historyTotal: z.number().default(0),
   editionHistory: z.array(z.record(z.string(), z.unknown())).optional(),
+  refresh: z
+    .object({
+      active: z.boolean(),
+      done: z.number(),
+      total: z.number(),
+      requestedAt: z.string(),
+      completedAt: z.string().nullable(),
+    })
+    .nullable()
+    .optional(),
   edition: z
     .object({
       week: z.string(),
@@ -136,6 +187,24 @@ export const leisureWorkspaceSchema = z.object({
         }),
       ),
       cinemaUpdatedAt: z.string().nullable(),
+      rankings: z
+        .array(
+          z.object({
+            id: z.string(),
+            score: z.number(),
+            reasons: z.array(z.string()),
+            known: z.object({
+              familiar: z.boolean(),
+              frequent: z.boolean(),
+              previousCount: z.number().nullable(),
+              trackedCount: z.number(),
+              legacyCount: z.number(),
+              since: z.string().nullable(),
+            }),
+          }),
+        )
+        .default([]),
+      profileSignals: z.number().default(0),
     })
     .nullable(),
 });
@@ -143,6 +212,20 @@ const receiptSchema = z.object({
   message: z.string(),
   id: z.string().optional(),
   available: z.boolean().optional(),
+  place: z.record(z.string(), z.unknown()).optional(),
+  legs: z
+    .array(
+      z.object({
+        from: z.string(),
+        to: z.string(),
+        available: z.boolean(),
+        minutes: z.number().optional(),
+        distanceM: z.number().optional(),
+        gapMinutes: z.number().optional(),
+        enoughTime: z.boolean().optional(),
+      }),
+    )
+    .optional(),
   conflicts: z
     .array(
       z.object({
@@ -167,7 +250,7 @@ export interface LeisureCommand {
 }
 export const LEISURE_QUERY = ['leisure'] as const;
 const headers = (): Record<string, string> =>
-  inTelegram() && tg ? { 'X-Telegram-Init-Data': tg.initData } : {};
+  inTelegram() && tg ? { 'X-Telegram-Init-Data': tg.initData, 'X-Leisure-Format': '2' } : {};
 function session(response: Response) {
   if (response.status === 401 || response.status === 403)
     throw new SessionExpiredError(response.status);
@@ -215,6 +298,7 @@ export function useLeisure() {
     queryFn: () => fetchLeisure(),
     staleTime: 60000,
     refetchOnWindowFocus: true,
+    refetchInterval: (query) => (query.state.data?.refresh?.active ? 15000 : false),
   });
 }
 export function useLeisureChange() {

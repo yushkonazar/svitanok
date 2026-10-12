@@ -1,6 +1,9 @@
 import { leisureWorkspaceSchema, type LeisureWorkspace, type LeisureCommand } from './leisure.ts';
 
 let demo: LeisureWorkspace | null = null;
+export function resetLeisureDemo() {
+  demo = null;
+}
 export function readLeisureDemo(): LeisureWorkspace {
   if (demo) return structuredClone(demo);
   const today = new Date().toISOString().slice(0, 10),
@@ -147,8 +150,38 @@ export async function changeLeisureDemo(command: LeisureCommand) {
       itemId: item.id,
       venueId: item.venueId,
       verdict: String(payload.verdict),
+      reasonCode: payload.reasonCode ? String(payload.reasonCode) : null,
+      reason: String(payload.reason ?? ''),
+      at: new Date().toISOString(),
     });
   }
+  if (command.op === 'familiarity' && item) {
+    const id = `familiarity-${item.venueId ?? item.id}`;
+    const old = data.records.find((r) => r.id === id);
+    data.records = data.records.filter((r) => r.id !== id);
+    data.records.push({
+      id,
+      kind: 'familiarity',
+      revision: (old?.revision ?? 0) + 1,
+      itemId: item.id,
+      venueId: item.venueId,
+      title: item.title,
+      mode: payload.mode as 'unknown' | 'many' | 'count' | 'clear',
+      previousCount: payload.mode === 'count' ? Number(payload.previousCount) : null,
+      trackingSince: new Date().toISOString(),
+      cleared: payload.mode === 'clear',
+    });
+  }
+  if (command.op === 'source-check' || command.op === 'place-check')
+    return {
+      receipt: {
+        message: 'Демо: сайт і графік перевіряються в Telegram.',
+        place: { hours: [], site: null, source: 'demo' },
+      },
+      workspace: data,
+    };
+  if (command.op === 'journey-check')
+    return { receipt: { message: 'Демо: дорога не перевіряється.', legs: [] }, workspace: data };
   if (command.op === 'visit' && item) {
     const old = data.records.find((r) => r.id === payload.visitId && r.kind === 'visit');
     id = old?.id ?? `visit-${command.commandId}`;
@@ -165,6 +198,7 @@ export async function changeLeisureDemo(command: LeisureCommand) {
       rating: (payload.rating ?? null) as 'liked' | 'neutral' | 'disliked' | null,
       reason: String(payload.reason ?? ''),
       planId: payload.planId ? String(payload.planId) : null,
+      legacy: payload.legacy === true,
     });
   }
   if (command.op === 'calendar-check')
@@ -202,6 +236,8 @@ export async function changeLeisureDemo(command: LeisureCommand) {
       kind: 'plan',
       revision: (old?.revision ?? 0) + 1,
       title: String(payload.title),
+      estimatedBudgetMinor:
+        payload.estimatedBudgetMinor == null ? null : Number(payload.estimatedBudgetMinor),
       stops,
       startAt: stops[0]!.startAt,
       endAt: stops.at(-1)!.endAt,
@@ -224,6 +260,47 @@ export async function changeLeisureDemo(command: LeisureCommand) {
   if (command.op === 'clear') {
     data.records = [];
     data.saved = [];
+  }
+  if (data.edition) {
+    data.edition.profileSignals = data.records.filter(
+      (r) => r.kind === 'reaction' && ['interested', 'uninterested'].includes(r.verdict),
+    ).length;
+    data.edition.rankings = data.items
+      .map((i) => {
+        const positive = data.records.find(
+          (r) => r.kind === 'reaction' && r.itemId === i.id && r.verdict === 'interested',
+        );
+        const previous = data.records.find(
+          (r) =>
+            r.kind === 'familiarity' &&
+            (i.venueId ? r.venueId === i.venueId : r.itemId === i.id) &&
+            !r.cleared,
+        );
+        const fam = previous?.kind === 'familiarity' ? previous : null;
+        const visits = data.records.filter(
+          (r) => r.kind === 'visit' && (i.venueId ? r.venueId === i.venueId : r.itemId === i.id),
+        );
+        return {
+          id: i.id,
+          score: positive ? 30 : 10,
+          reasons: positive
+            ? ['Ти позначив цей варіант як цікавий']
+            : ['Демо: рейтинг навчається на оцінках'],
+          known: {
+            familiar: !!fam || !!visits.length,
+            frequent: fam?.mode === 'many',
+            previousCount: fam?.previousCount ?? null,
+            trackedCount: visits.filter((r) => r.kind === 'visit' && !r.legacy && r.visitedOn)
+              .length,
+            legacyCount: visits.filter((r) => r.kind === 'visit' && (r.legacy || !r.visitedOn))
+              .length,
+            since: fam?.trackingSince ?? null,
+          },
+        };
+      })
+      .sort((a, b) => b.score - a.score);
+    data.edition.ids = data.edition.rankings.map((r) => r.id);
+    data.knownPlaces = Object.fromEntries(data.edition.rankings.map((r) => [r.id, r.known]));
   }
   demo = leisureWorkspaceSchema.parse(data);
   return {

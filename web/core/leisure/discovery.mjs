@@ -1,0 +1,251 @@
+// Explicit owner feedback only. Ranking is local, explainable and never an LLM call.
+export const FEEDBACK_REASONS = [
+  'genre',
+  'format',
+  'topic',
+  'audience',
+  'place',
+  'price',
+  'time',
+  'other',
+];
+const GENRES = {
+  action: /бойовик|екшн|action/i,
+  thriller: /трилер|thriller/i,
+  comedy: /комеді|comedy/i,
+  drama: /драм|drama/i,
+  scifi: /фантаст|sci.?fi|science fiction/i,
+  fantasy: /фентез|fantasy/i,
+  horror: /жах|horror/i,
+  animation: /анімац|мульт|animation/i,
+  documentary: /документ|documentary/i,
+  romance: /романт|мелодрам|romance/i,
+  adventure: /пригод|adventure/i,
+  crime: /кримін|детектив|crime|mystery/i,
+  history: /історич|historical/i,
+  musical: /мюзикл|musical/i,
+};
+/** @type {Record<string,string>} */
+export const FEATURE_LABELS = {
+  action: 'бойовик',
+  thriller: 'трилер',
+  comedy: 'комедія',
+  drama: 'драма',
+  scifi: 'фантастика',
+  fantasy: 'фентезі',
+  horror: 'жахи',
+  animation: 'анімація',
+  documentary: 'документальне',
+  romance: 'романтика',
+  adventure: 'пригоди',
+  crime: 'детектив / кримінал',
+  history: 'історичне',
+  musical: 'мюзикл',
+  standup: 'стендап',
+  jazz: 'джаз',
+  classical: 'класична музика',
+  theatre: 'театр',
+  children: 'дитяча аудиторія',
+  cafe: 'кав’ярня',
+  restaurant: 'ресторан',
+  bakery: 'пекарня',
+  bar: 'бар',
+};
+/** Tags describe explicit source words, not a guessed personality or partner preference. @param {any} item */
+export function leisureFeatures(item) {
+  const features = [`category:${item.category}`];
+  for (const [key, re] of Object.entries(GENRES))
+    if (re.test(item.genre ?? '')) features.push(`genre:${key}`);
+  const text = `${item.title ?? ''} ${item.genre ?? ''}`;
+  for (const [key, re] of Object.entries({
+    standup: /стендап|stand.?up/i,
+    jazz: /джаз|jazz/i,
+    classical: /класичн|симфонічн/i,
+    theatre: /театр|вистава/i,
+  }))
+    if (re.test(text)) features.push(`format:${key}`);
+  if (/для дітей|дитяч(?:ий|а|і)|для малюків/i.test(text)) features.push('audience:children');
+  const type = String(item.placeType ?? '');
+  if (/cafe|coffee/.test(type)) features.push('format:cafe');
+  else if (/bakery/.test(type)) features.push('format:bakery');
+  else if (/bar|pub/.test(type)) features.push('format:bar');
+  else if (/restaurant/.test(type)) features.push('format:restaurant');
+  if (item.venueId) features.push(`place:${item.venueId}`);
+  // Topics are exact title words; a dislike of an artist cannot reject every concert.
+  const stop = new Set([
+    'львів',
+    'львові',
+    'концерт',
+    'виставка',
+    'фестиваль',
+    'подія',
+    'планета',
+    'кіно',
+    'україна',
+    'україни',
+    'новий',
+    'нова',
+    'вистава',
+    'ресторан',
+    'кавярня',
+  ]);
+  for (const word of String(item.title ?? '')
+    .toLocaleLowerCase('uk')
+    .match(/[\p{L}\p{N}]{4,}/gu) ?? [])
+    if (!stop.has(word)) features.push(`topic:${word}`);
+  return [...new Set(features)];
+}
+/** @param {any[]} records */
+export function leisurePlaceIndex(records) {
+  const index = new Map();
+  const get = (/** @type {string} */ key) => {
+    if (!index.has(key))
+      index.set(key, {
+        familiar: false,
+        frequent: false,
+        previousCount: null,
+        trackedCount: 0,
+        legacyCount: 0,
+        since: null,
+      });
+    return index.get(key);
+  };
+  for (const record of records) {
+    if (!['visit', 'familiarity'].includes(record.kind)) continue;
+    const row = get(record.venueId ? `venue:${record.venueId}` : `item:${record.itemId}`);
+    if (record.kind === 'visit') {
+      row.familiar = true;
+      if (record.legacy || !record.visitedOn) row.legacyCount++;
+      else row.trackedCount++;
+    }
+    if (record.kind === 'familiarity' && !record.cleared && record.mode !== 'clear')
+      Object.assign(row, {
+        familiar: true,
+        frequent: record.mode === 'many',
+        previousCount: record.mode === 'count' ? record.previousCount : null,
+        since: record.trackingSince ?? null,
+      });
+  }
+  return index;
+}
+/** @param {any} item @param {any[]} records @param {Map<string,any>} [index] */
+export function knownLeisurePlace(item, records, index = leisurePlaceIndex(records)) {
+  return (
+    index.get(item.venueId ? `venue:${item.venueId}` : `item:${item.id}`) ?? {
+      familiar: false,
+      frequent: false,
+      previousCount: null,
+      trackedCount: 0,
+      legacyCount: 0,
+      since: null,
+    }
+  );
+}
+/** The whole verified collection stays browseable; scores change its order. @param {any[]} items @param {any[]} records @param {string[]} previousIds @param {any} settings @param {number} nowMs */
+export function rankLeisureItems(items, records, previousIds, settings, nowMs) {
+  void settings;
+  const byId = new Map(items.map((i) => [i.id, i]));
+  const knownIndex = leisurePlaceIndex(records);
+  const weights = new Map();
+  const feedback = records.filter(
+    (r) => r.kind === 'reaction' && ['interested', 'uninterested'].includes(r.verdict),
+  );
+  for (const r of feedback) {
+    const tags = r.features ?? (byId.has(r.itemId) ? leisureFeatures(byId.get(r.itemId)) : []);
+    const direction = r.verdict === 'interested' ? 1 : -1;
+    const reason = r.reasonCode ?? 'other';
+    const applicable =
+      r.verdict === 'interested'
+        ? tags.filter((/** @type {string} */ t) => !t.startsWith('topic:'))
+        : ['genre', 'format', 'topic', 'audience', 'place'].includes(reason)
+          ? tags.filter((/** @type {string} */ t) => t.startsWith(`${reason}:`))
+          : [];
+    for (const tag of applicable)
+      weights.set(
+        tag,
+        (weights.get(tag) ?? 0) +
+          (direction * (tag.startsWith('category:') ? 0.3 : 3)) / Math.max(1, applicable.length),
+      );
+  }
+  for (const r of records.filter((r) => r.kind === 'visit' && r.rating)) {
+    if (r.category === 'cinema' && r.rating === 'liked') {
+      const tags = r.features ?? (byId.has(r.itemId) ? leisureFeatures(byId.get(r.itemId)) : []);
+      const genres = tags.filter((/** @type {string} */ tag) => tag.startsWith('genre:'));
+      for (const tag of genres)
+        weights.set(tag, (weights.get(tag) ?? 0) + 2 / Math.max(1, genres.length));
+    } else if (r.venueId && r.category !== 'cinema')
+      weights.set(
+        `place:${r.venueId}`,
+        (weights.get(`place:${r.venueId}`) ?? 0) +
+          (r.rating === 'liked' ? 3 : r.rating === 'disliked' ? -3 : 0),
+      );
+  }
+  const previous = new Set(previousIds);
+  const planned = new Set(
+    records
+      .filter((r) => r.kind === 'plan' && r.status === 'planned')
+      .flatMap((r) => r.stops?.map((/** @type {any} */ stop) => stop.itemId) ?? []),
+  );
+  const visited = new Set(records.filter((r) => r.kind === 'visit').map((r) => r.itemId));
+  return items
+    .map((item) => {
+      const tags = leisureFeatures(item),
+        reasons = [];
+      let score =
+        10 +
+        (item.address ? 2 : 0) +
+        (item.startAt || item.sessions?.length ? 2 : 0) +
+        (item.price?.min != null ? 1 : 0);
+      const exact = feedback.find((r) => r.itemId === item.id);
+      if (exact?.verdict === 'interested') {
+        score += planned.has(item.id) || visited.has(item.id) ? 3 : 20;
+        reasons.push('Ти позначив цей варіант як цікавий');
+      }
+      let evidence = 0;
+      for (const tag of tags) {
+        const weight = Math.max(-8, Math.min(8, weights.get(tag) ?? 0));
+        score += weight;
+        evidence += Math.abs(weight);
+        if (weight > 0.2 && !tag.startsWith('category:') && !tag.startsWith('topic:')) {
+          const label = FEATURE_LABELS[tag.split(':')[1] ?? ''];
+          if (label) reasons.push(`Твої позитивні оцінки: ${label}`);
+        }
+      }
+      if (!previous.has(item.id)) {
+        score += 2;
+        reasons.push('Новий варіант у каталозі');
+      }
+      if (previous.has(item.id)) score -= 2;
+      if (planned.has(item.id)) {
+        score -= 6;
+        reasons.push('Уже є у твоєму плані');
+      }
+      const known = knownLeisurePlace(item, records, knownIndex);
+      if (known.familiar)
+        reasons.push(
+          known.frequent ? 'Твоє знайоме місце · бували багато разів' : 'Ви вже бували тут',
+        );
+      if (
+        item.category === 'cinema' &&
+        item.sessions?.some((/** @type {any} */ s) => Date.parse(s.startAt) > nowMs)
+      )
+        reasons.push('Є майбутні підтверджені сеанси');
+      if (item.category !== 'cinema' && item.startDate) reasons.push('Опубліковані дати події');
+      if (!evidence && !exact)
+        reasons.push('Профіль ще навчається; порядок враховує повноту даних');
+      return {
+        id: item.id,
+        score: Math.round(score * 10) / 10,
+        reasons: [...new Set(reasons)].slice(0, 3),
+        known,
+      };
+    })
+    .sort(
+      (a, b) =>
+        b.score - a.score ||
+        String(byId.get(a.id)?.startAt ?? byId.get(a.id)?.startDate ?? '').localeCompare(
+          String(byId.get(b.id)?.startAt ?? byId.get(b.id)?.startDate ?? ''),
+        ) ||
+        a.id.localeCompare(b.id),
+    );
+}

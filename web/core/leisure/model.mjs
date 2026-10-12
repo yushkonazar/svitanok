@@ -1,3 +1,4 @@
+import { rankLeisureItems } from './discovery.mjs';
 import { kyivDateKey } from '../../kyiv-time.mjs';
 import { addDaysToDateKey } from '../../reminders-core.mjs';
 
@@ -20,6 +21,10 @@ export const LEISURE_OPERATIONS = [
   'outcome',
   'refresh',
   'calendar-check',
+  'familiarity',
+  'place-check',
+  'journey-check',
+  'source-check',
   'clear',
 ];
 export const DEFAULT_LEISURE_SETTINGS = {
@@ -132,7 +137,10 @@ export async function normalizeLeisureItem(raw, nowMs) {
     raw.priceMin >= 0 &&
     (raw.priceMin > 0 || raw.free === true);
   return {
-    id: await leisureId('item', raw.identity ?? sourceUrl.split('#')[0]),
+    id: await leisureId(
+      'item',
+      raw.placeId ? `place:${raw.placeId}` : (raw.identity ?? sourceUrl.split('#')[0]),
+    ),
     venueId,
     placeId: raw.placeId ?? null,
     category: raw.category,
@@ -176,6 +184,9 @@ export async function normalizeLeisureItem(raw, nowMs) {
     studentNote: cleanText(raw.studentNote, 300),
     durationMinutes: Number(raw.durationMinutes) > 0 ? Math.round(raw.durationMinutes) : null,
     genre: cleanText(raw.genre, 120),
+    placeType: cleanText(raw.placeType, 100),
+    bookingUrl: httpLink(raw.bookingUrl),
+    siteUrl: httpLink(raw.siteUrl),
     age: cleanText(raw.age, 30),
     sessions: Array.isArray(raw.sessions)
       ? raw.sessions
@@ -204,82 +215,55 @@ export function selectLeisureEdition(items, records, previousIds, settings, nowM
   const week = leisureWeek(nowMs),
     end = addDaysToDateKey(week, 6),
     horizon = addDaysToDateKey(week, 20);
-  const excluded = new Set(
+  const hidden = new Set(
     records
-      .filter((r) => (r.kind === 'reaction' && r.verdict === 'uninterested') || r.kind === 'visit')
+      .filter(
+        (r) =>
+          r.kind === 'reaction' &&
+          (r.verdict === 'uninterested' || (r.verdict === 'later' && String(r.at ?? '') >= week)),
+      )
       .map((r) => r.itemId),
   );
-  const venues = new Set(
-    records.filter((r) => r.kind === 'visit' && r.venueId).map((r) => r.venueId),
-  );
-  const planned = new Set(
-    records
-      .filter((r) => r.kind === 'plan' && !['cancelled', 'not-went'].includes(r.status))
-      .flatMap((r) => r.stops.map((/** @type {any} */ s) => s.itemId)),
-  );
-  const scores = new Map();
-  for (const record of records)
-    if (record.kind === 'visit' && record.rating && record.category)
-      scores.set(
-        record.category,
-        (scores.get(record.category) ?? 0) +
-          (record.rating === 'liked' ? 1 : record.rating === 'disliked' ? -1 : 0),
-      );
   const eligible = items.filter(
     (i) =>
       settings.categories.includes(i.category) &&
-      !excluded.has(i.id) &&
-      !planned.has(i.id) &&
+      !hidden.has(i.id) &&
       !['sold-out', 'cancelled', 'postponed'].includes(i.status) &&
       (!i.endDate || i.endDate >= kyivDateKey(new Date(nowMs))) &&
+      (!i.endAt || Date.parse(i.endAt) > nowMs || i.category === 'cinema') &&
       (!i.startDate || i.startDate <= horizon) &&
-      !(i.category === 'food' && venues.has(i.venueId)),
+      (i.category !== 'cinema' ||
+        !i.sessions?.length ||
+        i.sessions.some((/** @type {any} */ s) => Date.parse(s.startAt) > nowMs)),
   );
   const dedupe = new Set();
-  const fresh = eligible
-    .filter((i) => !previousIds.includes(i.id))
-    .sort(
-      (a, b) =>
-        (scores.get(b.category) ?? 0) - (scores.get(a.category) ?? 0) ||
-        (a.startDate ?? week).localeCompare(b.startDate ?? week) ||
-        a.title.localeCompare(b.title, 'uk'),
-    )
-    .filter((i) => {
-      if (!i.startDate || (!i.venue && !i.address)) return true;
-      const key = [
-        i.title.toLocaleLowerCase('uk').replace(/[^\p{L}\p{N}]/gu, ''),
-        i.startAt ?? i.startDate,
-        (i.venue ?? i.address).toLocaleLowerCase('uk').replace(/[^\p{L}\p{N}]/gu, ''),
-      ].join('|');
-      if (dedupe.has(key)) return false;
-      dedupe.add(key);
-      return true;
-    });
-  /** @type {any[]} */ const selected = [];
-  const orderedCategories = [...settings.categories].sort(
-    (a, b) => (scores.get(b) ?? 0) - (scores.get(a) ?? 0),
-  );
-  for (let round = 0; round < 12 && selected.length < 12; round++)
-    for (const category of orderedCategories) {
-      const next = fresh.find(
-        (i) =>
-          i.category === category && (!i.startDate || i.startDate <= end) && !selected.includes(i),
-      );
-      if (
-        next &&
-        selected.length < 12 &&
-        (category !== 'trip' || !selected.some((i) => i.category === 'trip'))
-      )
-        selected.push(next);
-    }
-  const future = fresh.filter((i) => i.startDate && i.startDate > end).slice(0, 3);
+  const unique = eligible.filter((i) => {
+    const key = i.placeId
+      ? `place:${i.placeId}`
+      : i.category === 'cinema'
+        ? `film:${i.title.toLocaleLowerCase('uk')}`
+        : `${i.title.toLocaleLowerCase('uk').replace(/[^\p{L}\p{N}]/gu, '')}|${i.startAt ?? i.startDate ?? ''}|${(i.venue ?? i.address ?? '').toLocaleLowerCase('uk')}`;
+    if (dedupe.has(key)) return false;
+    dedupe.add(key);
+    return true;
+  });
+  const ranking = rankLeisureItems(unique, records, previousIds, settings, nowMs);
+  const lookup = new Map(unique.map((i) => [i.id, i]));
   return {
     week,
     until: end,
-    ids: selected.map((i) => i.id),
-    futureIds: future.map((i) => i.id),
+    ids: ranking
+      .filter((r) => !lookup.get(r.id).startDate || lookup.get(r.id).startDate <= end)
+      .map((r) => r.id),
+    futureIds: ranking.filter((r) => lookup.get(r.id).startDate > end).map((r) => r.id),
+    rankings: ranking,
+    profileSignals: records.filter(
+      (r) =>
+        (r.kind === 'reaction' && ['interested', 'uninterested'].includes(r.verdict)) ||
+        (r.kind === 'visit' && ['liked', 'disliked'].includes(r.rating)),
+    ).length,
     createdAt: new Date(nowMs).toISOString(),
-    reason: 'За обраними напрямками, актуальністю та історією явних відгуків.',
+    reason: 'Повний перевірений каталог, впорядкований за твоїми явними оцінками й актуальністю.',
   };
 }
 /** @param {any} raw */
@@ -320,8 +304,18 @@ export function normalizeLeisurePlan(raw) {
   const title = cleanText(raw.title, 180);
   if (!title || stops.some((/** @type {any} */ s) => !s.itemId))
     throw new LeisureError('Укажи назву плану й обери місця.');
+  const estimatedBudgetMinor =
+    raw.estimatedBudgetMinor == null ? null : Number(raw.estimatedBudgetMinor);
+  if (
+    estimatedBudgetMinor != null &&
+    (!Number.isSafeInteger(estimatedBudgetMinor) ||
+      estimatedBudgetMinor < 0 ||
+      estimatedBudgetMinor > 10000000000)
+  )
+    throw new LeisureError('Перевір орієнтовний бюджет.');
   return {
     title,
+    estimatedBudgetMinor,
     stops,
     startAt: stops[0].startAt,
     endAt: stops[stops.length - 1].endAt,
