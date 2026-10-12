@@ -136,7 +136,10 @@ export function Sheet({
   }, []);
 
   const focusables = useCallback(
-    () => Array.from(panelRef.current?.querySelectorAll<HTMLElement>(FOCUSABLE) ?? []),
+    () =>
+      Array.from(panelRef.current?.querySelectorAll<HTMLElement>(FOCUSABLE) ?? []).filter(
+        (el) => !el.closest('[hidden]'),
+      ),
     [],
   );
 

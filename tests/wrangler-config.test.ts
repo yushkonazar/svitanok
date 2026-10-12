@@ -66,6 +66,7 @@ describe('web/wrangler.jsonc', () => {
       { name: 'STEAM_CHECK_STATE', class_name: 'SteamCheckStateDO' },
       { name: 'BRIEF_DISPATCH', class_name: 'BriefDispatchDO' },
       { name: 'NEWS_REFRESH', class_name: 'NewsRefreshDO' },
+      { name: 'LEISURE_CATALOG', class_name: 'LeisureCatalogDO' },
     ]);
     expect(cfg.exports).toEqual({
       AgentRun: { type: 'durable-object', storage: 'sqlite' },
@@ -86,6 +87,7 @@ describe('web/wrangler.jsonc', () => {
       SteamCheckStateDO: { type: 'durable-object', storage: 'sqlite' },
       BriefDispatchDO: { type: 'durable-object', storage: 'sqlite' },
       NewsRefreshDO: { type: 'durable-object', storage: 'sqlite' },
+      LeisureCatalogDO: { type: 'durable-object', storage: 'sqlite' },
     });
     // Легасі-масив `migrations` і `exports` взаємовиключні — тримаємо лише другий.
     expect(cfg.migrations).toBeUndefined();

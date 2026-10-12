@@ -21,7 +21,7 @@ export async function runLeisureQuery(env, args, nowMs) {
   const workspace = await readLeisureWorkspace(
       env,
       nowMs,
-      Boolean(args.id || ['plans', 'visits'].includes(args.view)),
+      Boolean(args.id || ['plans', 'visits', 'places'].includes(args.view)),
     ),
     view = args.view ?? 'week',
     query = String(args.query ?? '').toLocaleLowerCase('uk');
@@ -33,36 +33,56 @@ export async function runLeisureQuery(env, args, nowMs) {
         : view === 'week'
           ? [...(workspace.edition?.ids ?? []), ...(workspace.edition?.futureIds ?? [])]
           : workspace.records
-              .filter((r) => r.kind === (view === 'plans' ? 'plan' : 'visit'))
+              .filter((r) =>
+                view === 'places'
+                  ? ['visit', 'familiarity'].includes(r.kind)
+                  : r.kind === (view === 'plans' ? 'plan' : 'visit'),
+              )
               .flatMap((r) =>
                 r.itemId ? [r.itemId] : r.stops.map((/** @type {any} */ s) => s.itemId),
               ),
   );
-  const items = workspace.items
+  const ranking = new Map(
+    (workspace.edition?.rankings ?? []).map((/** @type {any} */ r, /** @type {number} */ n) => [
+      r.id,
+      n,
+    ]),
+  );
+  const matches = workspace.items
     .filter(
       (i) =>
         ids.has(i.id) &&
+        (!args.category || i.category === args.category) &&
         (!query || `${i.title} ${i.venue ?? ''}`.toLocaleLowerCase('uk').includes(query)),
     )
-    .slice(0, args.id ? 1 : 18)
-    .map((i) => ({
-      ...i,
-      sessions: i.sessions.slice(0, args.id ? 40 : 4),
-      sessionCount: i.sessions.length,
-    }));
+    .sort((a, b) => (ranking.get(a.id) ?? 100000) - (ranking.get(b.id) ?? 100000));
+  const offset = args.id ? 0 : Math.max(0, Math.floor(Number(args.offset ?? 0)));
+  const limit = args.id ? 1 : Math.max(1, Math.min(40, Math.floor(Number(args.limit ?? 18))));
+  const items = matches.slice(offset, offset + limit).map((i) => ({
+    ...i,
+    sessions: i.sessions.slice(0, args.id ? 40 : 4),
+    sessionCount: i.sessions.length,
+    ranking: workspace.edition?.rankings.find((/** @type {any} */ r) => r.id === i.id),
+    known: workspace.knownPlaces[i.id],
+  }));
   return {
     result: wrapExternal(
       'leisure',
       JSON.stringify({
         items,
+        total: matches.length,
+        offset,
+        nextOffset: offset + limit < matches.length ? offset + limit : null,
         records: workspace.records
           .filter(
             (r) =>
               (view === 'plans'
                 ? r.kind === 'plan'
-                : view === 'visits'
-                  ? r.kind === 'visit'
-                  : r.kind === 'plan' || r.kind === 'visit') &&
+                : view === 'places'
+                  ? ['visit', 'familiarity'].includes(r.kind)
+                  : view === 'visits'
+                    ? r.kind === 'visit'
+                    : r.kind === 'plan' || r.kind === 'visit') &&
               (!query ||
                 String(r.title ?? '')
                   .toLocaleLowerCase('uk')

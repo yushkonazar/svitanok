@@ -28,10 +28,10 @@ const LANGUAGE = 'uk';
 const REGION = 'UA';
 /** Text Search: лише поля SKU Pro (id/displayName/formattedAddress/location/googleMapsUri). */
 export const SEARCH_FIELD_MASK =
-  'places.id,places.displayName,places.formattedAddress,places.location,places.googleMapsUri';
+  'places.id,places.displayName,places.formattedAddress,places.location,places.googleMapsUri,places.primaryType';
 /** Place Details: телефон/сайт/години - SKU Enterprise (свідомо, для обраного закладу). */
 export const DETAILS_FIELD_MASK =
-  'id,displayName,formattedAddress,location,nationalPhoneNumber,internationalPhoneNumber,websiteUri,regularOpeningHours,googleMapsUri';
+  'id,displayName,formattedAddress,location,nationalPhoneNumber,internationalPhoneNumber,websiteUri,regularOpeningHours,googleMapsUri,priceRange';
 export const ROUTES_FIELD_MASK = 'routes.duration,routes.distanceMeters';
 /** Режими routes.eta (S-1-9: пішки/транспорт/авто) → travelMode Routes API. */
 export const TRAVEL_MODES = /** @type {const} */ ({
@@ -45,9 +45,9 @@ const NEAR_RADIUS_M = 15_000;
 
 /**
  * @typedef {{ place_id: string, name: string, address: string | null, lat: number | null,
- *   lon: number | null, maps_uri: string | null }} PlaceCandidate
+ *   lon: number | null, maps_uri: string | null, place_type?: string }} PlaceCandidate
  * @typedef {PlaceCandidate & { phone: string | null, site: string | null,
- *   hours: string[], rating_owner: number | null, is_favorite: boolean, visits: number,
+ *   hours: string[], price_range?: any, periods?: any[], rating_owner: number | null, is_favorite: boolean, visits: number,
  *   fetched_at: string | null }} PlaceDetails
  */
 
@@ -109,6 +109,7 @@ function candidateOf(p) {
     lat: typeof p.location?.latitude === 'number' ? p.location.latitude : null,
     lon: typeof p.location?.longitude === 'number' ? p.location.longitude : null,
     maps_uri: typeof p.googleMapsUri === 'string' ? p.googleMapsUri : null,
+    place_type: typeof p.primaryType === 'string' ? p.primaryType : '',
   };
 }
 
@@ -116,9 +117,11 @@ function candidateOf(p) {
 function detailsOfRow(row) {
   /** @type {string[]} */
   let hours = [];
+  /** @type {any} */ let metadata = {};
   if (row.hours_json) {
     try {
       const parsed = JSON.parse(String(row.hours_json));
+      metadata = parsed ?? {};
       if (Array.isArray(parsed?.weekday)) hours = parsed.weekday.map(String);
     } catch {
       console.error(`places: битий hours_json у ${String(row.place_id)}`);
@@ -131,6 +134,8 @@ function detailsOfRow(row) {
     lat: row.lat == null ? null : Number(row.lat),
     lon: row.lon == null ? null : Number(row.lon),
     maps_uri: row.maps_uri == null ? null : String(row.maps_uri),
+    price_range: metadata.priceRange ?? null,
+    periods: Array.isArray(metadata.periods) ? metadata.periods : [],
     phone: row.phone == null ? null : String(row.phone),
     site: row.site == null ? null : String(row.site),
     hours,
@@ -296,7 +301,11 @@ export async function placeDetails(env, placeId, nowMs) {
       base.lon,
       phone,
       site,
-      JSON.stringify({ weekday: hours }),
+      JSON.stringify({
+        weekday: hours,
+        periods: json.regularOpeningHours?.periods ?? [],
+        priceRange: json.priceRange ?? null,
+      }),
       base.maps_uri,
       iso,
     )
@@ -312,6 +321,8 @@ export async function placeDetails(env, placeId, nowMs) {
       phone,
       site,
       hours,
+      price_range: json.priceRange ?? null,
+      periods: json.regularOpeningHours?.periods ?? [],
       rating_owner: row?.rating_owner == null ? null : Number(row.rating_owner),
       is_favorite: Number(row?.is_favorite) === 1,
       visits: Number(row?.visits) || 0,

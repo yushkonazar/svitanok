@@ -1,4 +1,11 @@
 import { loadStats, updateStats } from '../../kv-store.mjs';
+import {
+  FEEDBACK_REASONS,
+  leisureFeatures,
+  knownLeisurePlace,
+  leisurePlaceIndex,
+} from './discovery.mjs';
+import { placeDetails, routesEta } from '../adapters/maps.mjs';
 import { readCalendarRange } from '../../google.mjs';
 import { kyivDateKey } from '../../kyiv-time.mjs';
 import {
@@ -10,6 +17,7 @@ import {
   dateKey,
   leisureWeek,
   normalizeLeisurePlan,
+  httpLink,
   selectLeisureEdition,
 } from './model.mjs';
 
@@ -44,6 +52,30 @@ export async function leisureItems(env) {
 }
 /** @param {Env} env @param {any[]} items */
 export async function upsertLeisureItems(env, items) {
+  const canonical = [];
+  for (const i of items) {
+    const row = i.placeId
+      ? await leisureDb(env)
+          .prepare(
+            "SELECT id,data_json FROM leisure_items WHERE venue_id=? AND category='food' LIMIT 1",
+          )
+          .bind(i.venueId)
+          .first()
+      : null;
+    const previous = row ? JSON.parse(String(row.data_json)) : null;
+    canonical.push(
+      previous
+        ? {
+            ...i,
+            id: String(row?.id ?? i.id),
+            placeDetails: i.placeDetails ?? previous.placeDetails,
+            siteUrl: i.siteUrl ?? previous.siteUrl,
+            bookingUrl: i.bookingUrl ?? previous.bookingUrl,
+          }
+        : i,
+    );
+  }
+  items = canonical;
   if (!items.length) return;
   for (let offset = 0; offset < items.length; offset += 40)
     await leisureDb(env).batch(
@@ -74,42 +106,60 @@ export async function readLeisureWorkspace(env, nowMs = Date.now(), allHistory =
     leisureSettings(env),
     db
       .prepare(
-        `SELECT * FROM leisure_records WHERE kind IN ('plan','visit','reaction') ORDER BY updated_at DESC${allHistory ? '' : ' LIMIT 250'}`,
+        `SELECT * FROM leisure_records WHERE kind IN ('plan','visit','reaction','familiarity') ORDER BY updated_at DESC`,
       )
       .all(),
     db.prepare('SELECT * FROM leisure_editions ORDER BY week DESC LIMIT 1').first(),
     loadStats(env),
   ]);
-  const records = rows.results.map(recordOf);
+  const allRecords = rows.results.map(recordOf);
+  const recent = allRecords.slice(0, 250),
+    recentIds = new Set(recent.map((r) => r.id));
+  const records = allHistory
+    ? allRecords
+    : [
+        ...recent,
+        ...allRecords.filter(
+          (r) => !recentIds.has(r.id) && ['familiarity', 'reaction'].includes(r.kind),
+        ),
+      ];
   const saved = (stats.saved ?? [])
     .filter((/** @type {any} */ s) => s.kind === 'leisure')
     .map((/** @type {any} */ s) => String(s.id));
   const edition = editionRow ? JSON.parse(String(editionRow.data_json)) : null;
-  const hidden = new Set(
-    records
-      .filter((r) => r.kind === 'reaction' && r.verdict === 'uninterested')
-      .map((r) => r.itemId),
-  );
-  for (const record of records) if (record.kind === 'visit') hidden.add(record.itemId);
-  const planned = new Set(
-    records
-      .filter((r) => r.kind === 'plan' && !['cancelled', 'not-went'].includes(r.status))
-      .flatMap((r) => r.stops.map((/** @type {any} */ s) => s.itemId)),
+  const historyRows = await db
+    .prepare('SELECT data_json FROM leisure_editions WHERE week < ?')
+    .bind(leisureWeek(nowMs))
+    .all();
+  const previousIds = historyRows.results.flatMap((r) => {
+    const old = JSON.parse(String(r.data_json));
+    return old.offeredIds ?? [...old.ids, ...old.futureIds];
+  });
+  const selected = selectLeisureEdition(
+    items.filter((i) => nowMs - Date.parse(i.checkedAt) <= 8 * 86400000),
+    allRecords,
+    previousIds,
+    settings,
+    nowMs,
   );
   const needed = new Set([
     ...saved,
-    ...(edition?.ids ?? []),
-    ...(edition?.futureIds ?? []),
+    ...selected.ids,
+    ...selected.futureIds,
     ...records.flatMap((r) =>
       r.itemId ? [r.itemId] : (r.stops?.map((/** @type {any} */ s) => s.itemId) ?? []),
     ),
   ]);
   const total = await db
     .prepare(
-      "SELECT COUNT(*) AS count FROM leisure_records WHERE kind IN ('plan','visit','reaction')",
+      "SELECT COUNT(*) AS count FROM leisure_records WHERE kind IN ('plan','visit','reaction','familiarity')",
     )
     .first();
+  const knownIndex = leisurePlaceIndex(allRecords);
   return {
+    knownPlaces: Object.fromEntries(
+      items.map((i) => [i.id, knownLeisurePlace(i, allRecords, knownIndex)]),
+    ),
     version: 1,
     generatedAt: new Date(nowMs).toISOString(),
     settings,
@@ -119,17 +169,14 @@ export async function readLeisureWorkspace(env, nowMs = Date.now(), allHistory =
     edition: edition
       ? {
           ...edition,
-          ids: edition.ids.filter(
-            (/** @type {string} */ id) => !hidden.has(id) && !planned.has(id),
-          ),
-          futureIds: edition.futureIds.filter(
-            (/** @type {string} */ id) => !hidden.has(id) && !planned.has(id),
-          ),
+          ...selected,
+          createdAt: edition.createdAt,
           stale: edition.week !== leisureWeek(nowMs),
         }
       : null,
     historyLimit: allHistory ? records.length : 250,
     historyTotal: Number(total?.count ?? 0),
+    refresh: (await leisureRecord(env, 'catalog-job')) ?? null,
     ...(allHistory
       ? {
           editionHistory: (
@@ -146,7 +193,11 @@ export async function publishLeisureEdition(env, items, sources, nowMs, cinemaOn
   await upsertLeisureItems(env, items);
   const [settings, records, editions, allItems] = await Promise.all([
     leisureSettings(env),
-    db.prepare("SELECT * FROM leisure_records WHERE kind IN ('visit','reaction','plan')").all(),
+    db
+      .prepare(
+        "SELECT * FROM leisure_records WHERE kind IN ('visit','reaction','plan','familiarity')",
+      )
+      .all(),
     db.prepare('SELECT data_json FROM leisure_editions WHERE week < ?').bind(week).all(),
     leisureItems(env),
   ]);
@@ -170,21 +221,9 @@ export async function publishLeisureEdition(env, items, sources, nowMs, cinemaOn
     settings,
     nowMs,
   );
-  const selectedIds = selected.ids;
-  // A cinema supplement changes this edition, preserving its other choices and history.
-  if (cinemaOnly && current) {
-    const byId = new Map(allItems.map((i) => [i.id, i]));
-    const filmIds = selectedIds.filter((id) => byId.get(id)?.category === 'cinema').slice(0, 3);
-    selected.ids = [
-      ...current.ids
-        .filter((/** @type {string} */ id) => byId.get(id)?.category !== 'cinema')
-        .slice(0, 12 - filmIds.length),
-      ...filmIds,
-    ];
-    selected.futureIds = current.futureIds;
-  }
   const edition = {
     ...selected,
+    catalogVersion: 2,
     offeredIds: [
       ...new Set([
         ...(current?.offeredIds ?? current?.ids ?? []),
@@ -195,12 +234,16 @@ export async function publishLeisureEdition(env, items, sources, nowMs, cinemaOn
     ],
     sources:
       cinemaOnly && current
-        ? [...current.sources.filter((/** @type {any} */ s) => s.id !== 'planeta'), ...sources]
+        ? [
+            ...current.sources.filter(
+              (/** @type {any} */ s) => !sources.some((next) => next.id === s.id),
+            ),
+            ...sources,
+          ]
         : sources,
-    cinemaUpdatedAt:
-      cinemaOnly && sources.some((s) => s.id === 'planeta' && s.status === 'ok')
-        ? new Date(nowMs).toISOString()
-        : (current?.cinemaUpdatedAt ?? null),
+    cinemaUpdatedAt: sources.some((s) => s.id === 'planeta' && s.status === 'ok')
+      ? new Date(nowMs).toISOString()
+      : (current?.cinemaUpdatedAt ?? null),
   };
   // Failed collection cannot replace an existing useful edition with an empty list.
   if (!items.length && current) {
@@ -354,7 +397,10 @@ export async function executeLeisureCommand(env, raw, nowMs = Date.now()) {
     ? await db.prepare('SELECT data_json FROM leisure_items WHERE id=?').bind(id).first()
     : null;
   const selectedItem = item ? JSON.parse(String(item.data_json)) : null;
-  if (['save', 'reaction', 'visit'].includes(op) && !selectedItem)
+  if (
+    ['save', 'reaction', 'visit', 'familiarity', 'place-check', 'source-check'].includes(op) &&
+    !selectedItem
+  )
     throw new LeisureError('Цього варіанта вже немає. Онови добірку.', 404);
   if (op === 'settings') {
     const previous = await leisureSettings(env);
@@ -412,8 +458,10 @@ export async function executeLeisureCommand(env, raw, nowMs = Date.now()) {
       return stats;
     });
   } else if (op === 'reaction') {
-    if (!['uninterested', 'later', 'clear'].includes(payload.verdict))
+    if (!['interested', 'uninterested', 'later', 'clear'].includes(payload.verdict))
       throw new LeisureError('Обери реакцію на варіант.');
+    if (payload.reasonCode != null && !FEEDBACK_REASONS.includes(payload.reasonCode))
+      throw new LeisureError('Обери коректну причину.');
     const key = `reaction-${id}`,
       current = await leisureRecord(env, key);
     await writeCommandRecord(
@@ -424,10 +472,115 @@ export async function executeLeisureCommand(env, raw, nowMs = Date.now()) {
         itemId: id,
         venueId: selectedItem.venueId,
         verdict: payload.verdict,
+        reasonCode: payload.reasonCode ?? null,
+        reason: cleanText(payload.reason, 300),
+        features: leisureFeatures(selectedItem),
+        at: new Date(nowMs).toISOString(),
       },
       nowMs,
       current?.revision ?? null,
     );
+  } else if (op === 'familiarity') {
+    if (!['unknown', 'many', 'count', 'clear'].includes(payload.mode))
+      throw new LeisureError('Обери, що пам’ятаєш про попередні відвідування.');
+    const previousCount = payload.mode === 'count' ? Number(payload.previousCount) : null;
+    if (
+      payload.mode === 'count' &&
+      (!Number.isSafeInteger(previousCount) ||
+        Number(previousCount) < 1 ||
+        Number(previousCount) > 100000)
+    )
+      throw new LeisureError('Укажи цілу додатну кількість попередніх відвідувань.');
+    const key = `familiarity-${selectedItem.venueId ?? id}`;
+    const current = await leisureRecord(env, key);
+    if (payload.revision != null && Number(payload.revision) !== (current?.revision ?? 0))
+      throw new LeisureError('Попередній досвід уже змінився. Онови дані.', 409);
+    await writeCommandRecord(
+      env,
+      {
+        id: key,
+        kind: 'familiarity',
+        itemId: id,
+        venueId: selectedItem.venueId,
+        title: selectedItem.title,
+        mode: payload.mode,
+        previousCount,
+        trackingSince: current?.trackingSince ?? new Date(nowMs).toISOString(),
+        cleared: payload.mode === 'clear',
+      },
+      nowMs,
+      current?.revision ?? null,
+    );
+    receipt = {
+      message: 'Попередній досвід збережено. Нові відвідування рахуватимуться окремо.',
+      id: key,
+    };
+  } else if (op === 'source-check') {
+    const { checkLeisureSource } = await import('./catalog.mjs');
+    const result = await checkLeisureSource(selectedItem, nowMs);
+    if (result.item !== selectedItem) await upsertLeisureItems(env, [result.item]);
+    return {
+      message: result.verified
+        ? 'Дату й статус звірено з джерелом.'
+        : 'Сторінка доступна. Остаточні умови перевір у джерелі.',
+      status: result.item.status,
+    };
+  } else if (op === 'place-check') {
+    if (!selectedItem.placeId) throw new LeisureError('Для цього місця ще немає Google Place ID.');
+    const details = await placeDetails(env, selectedItem.placeId, nowMs);
+    const updated = {
+      ...selectedItem,
+      siteUrl: httpLink(details.place.site),
+      hours: details.place.hours.join(' · '),
+      placeDetails: { ...details.place, source: details.source },
+    };
+    await upsertLeisureItems(env, [updated]);
+    return { message: 'Інформацію закладу перевірено.', place: updated.placeDetails };
+  } else if (op === 'journey-check') {
+    const normalized = normalizeLeisurePlan(payload),
+      items = await leisureItems(env),
+      lookup = new Map(items.map((i) => [i.id, i]));
+    const legs = [];
+    for (let n = 1; n < normalized.stops.length; n++) {
+      const a = normalized.stops[n - 1],
+        b = normalized.stops[n],
+        ai = lookup.get(a.itemId),
+        bi = lookup.get(b.itemId);
+      const address = (/** @type {any} */ item, /** @type {any} */ stop) =>
+        item?.sessions?.find((/** @type {any} */ session) => session.id === stop.sessionId)
+          ?.address ?? item?.address;
+      const from = address(ai, a),
+        to = address(bi, b);
+      if (!from || !to) {
+        legs.push({ from: a.itemId, to: b.itemId, available: false });
+        continue;
+      }
+      try {
+        const eta = await routesEta(
+          env,
+          {
+            from: { address: from },
+            to: { address: to },
+            mode: 'car',
+            departAtMs: Date.parse(a.endAt),
+          },
+          nowMs,
+        );
+        const gap = Math.floor((Date.parse(b.startAt) - Date.parse(a.endAt)) / 60000);
+        legs.push({
+          from: a.itemId,
+          to: b.itemId,
+          available: true,
+          minutes: eta.duration_min,
+          distanceM: eta.distance_m,
+          gapMinutes: gap,
+          enoughTime: gap >= eta.duration_min,
+        });
+      } catch {
+        legs.push({ from: a.itemId, to: b.itemId, available: false });
+      }
+    }
+    return { message: 'Дорогу перевірено.', legs };
   } else if (op === 'visit') {
     if (payload.rating != null && !['liked', 'neutral', 'disliked'].includes(payload.rating))
       throw new LeisureError('Обери коротку оцінку.');
@@ -461,6 +614,8 @@ export async function executeLeisureCommand(env, raw, nowMs = Date.now()) {
         category: selectedItem.category,
         title: selectedItem.title,
         visitedOn,
+        features: leisureFeatures(selectedItem),
+        legacy: payload.legacy === true || existingVisit?.legacy === true,
         rating: payload.rating ?? null,
         reason: cleanText(payload.reason, 500),
         planId: plan?.id ?? existingVisit?.planId ?? null,
@@ -574,8 +729,8 @@ export async function executeLeisureCommand(env, raw, nowMs = Date.now()) {
       await syncLeisurePlan(env, plan.id, nowMs);
     }
   } else if (op === 'refresh') {
-    const { refreshLeisureCatalog } = await import('./catalog.mjs');
-    receipt = await refreshLeisureCatalog(env, nowMs, false);
+    if (!env.LEISURE_CATALOG) throw new LeisureError('Фонове оновлення ще налаштовується.', 503);
+    receipt = await env.LEISURE_CATALOG.getByName('owner').request('full', nowMs);
   } else if (op === 'clear') {
     if (payload.confirmed !== true)
       throw new LeisureError(

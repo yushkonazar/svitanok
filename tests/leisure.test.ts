@@ -152,7 +152,7 @@ describe('verified leisure facts and selection', () => {
       }),
     ).toThrow('перетинаються');
   });
-  it('excludes previous editions, visits, plans, sold-out and expired items while keeping a future section', async () => {
+  it('keeps previous, familiar and planned choices browseable while excluding unavailable facts', async () => {
     const candidates = await Promise.all(
       ['new', 'previous', 'visited', 'planned', 'sold', 'expired', 'future'].map((name) =>
         item({
@@ -178,7 +178,7 @@ describe('verified leisure facts and selection', () => {
       DEFAULT_LEISURE_SETTINGS,
       NOW,
     );
-    expect(result.ids).toEqual([candidates[0]!.id]);
+    expect(new Set(result.ids)).toEqual(new Set(candidates.slice(0, 4).map((i) => i.id)));
     expect(result.futureIds).toEqual([candidates[6]!.id]);
   });
   it('does not interpret a missed outing as dislike, and deduplicates the same event across sources', async () => {
@@ -236,12 +236,12 @@ describe('Nuxt literal reader', () => {
 });
 
 describe('shared leisure ledger', () => {
-  it('moves visited recommendations out of the feed and lets the owner plan a repeat at a saved venue', async () => {
+  it('marks visited choices as familiar and permits planning a repeat without hiding the catalogue', async () => {
     const { env, db } = setup(),
       i = await item({ category: 'food', startDate: null, endDate: null });
     await publishLeisureEdition(env, [i], [], NOW);
     await executeLeisureCommand(env, command('visit', { visitedOn: null }, i.id), NOW);
-    expect((await readLeisureWorkspace(env, NOW)).edition.ids).toEqual([]);
+    expect((await readLeisureWorkspace(env, NOW)).edition.ids).toContain(i.id);
     await upsertLeisureItems(env, [
       { ...i, checkedAt: new Date(NOW - 30 * 86400000).toISOString() },
     ]);
@@ -808,14 +808,14 @@ describe('public source parsing', () => {
       ),
     ).rejects.toThrow('source-too-large');
   });
-  it('publishes a bounded partial package, uses Places once and prevents immediate repeated refreshes', async () => {
+  it('publishes a partial package, deduplicates multiple Places searches and prevents immediate repeated refreshes', async () => {
     const { env, db } = setup();
     const withMaps = workerEnv({ ...env, MAPS_API_KEY: 'test-maps' });
     const fetchMock = vi.fn(async () => new Response('unavailable', { status: 503 }));
     vi.stubGlobal('fetch', fetchMock);
     const receipt = await refreshLeisureCatalog(withMaps, NOW);
     expect(receipt.message).toBe('Добірку оновлено.');
-    expect(maps.search).toHaveBeenCalledTimes(1);
+    expect(maps.search).toHaveBeenCalledTimes(4);
     const workspace = await readLeisureWorkspace(withMaps, NOW);
     expect(workspace.edition.ids).toHaveLength(1);
     expect(workspace.edition.sources.find((s: { id: string }) => s.id === 'places')).toMatchObject({
@@ -834,21 +834,15 @@ describe('public source parsing', () => {
     ).toMatchObject({ status: 'unavailable' });
     db.close();
   });
-  it('schedules a Monday morning edition and retries failed cinema publication without marking it fresh', async () => {
+  it('hands scheduled collection to independent catalogue invocations without making scheduler HTTP requests', async () => {
     const { env, db } = setup();
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => new Response('unavailable', { status: 503 })),
-    );
-    await leisureCatalogTask(env, NOW - 3600000);
-    expect(fetch).not.toHaveBeenCalled();
-    await leisureCatalogTask(env, NOW);
-    expect((await readLeisureWorkspace(env, NOW)).edition).not.toBeNull();
-    const count = vi.mocked(fetch).mock.calls.length;
-    await leisureCatalogTask(env, NOW + 60000);
-    expect(fetch).toHaveBeenCalledTimes(count);
-    await leisureCatalogTask(env, NOW + 12 * 3600000);
-    expect((await readLeisureWorkspace(env, NOW)).edition.cinemaUpdatedAt).toBeNull();
+    const request = vi.fn(async () => ({ message: 'queued' }));
+    const configured = workerEnv({ ...env, LEISURE_CATALOG: { getByName: () => ({ request }) } });
+    const fetcher = vi.fn();
+    vi.stubGlobal('fetch', fetcher);
+    await leisureCatalogTask(configured, NOW - 3600000);
+    expect(request).toHaveBeenCalledWith('full', NOW - 3600000);
+    expect(fetcher).not.toHaveBeenCalled();
     db.close();
   });
   it('keeps Forum and King Cross sessions separate and leaves prices unknown', async () => {

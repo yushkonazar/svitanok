@@ -98,7 +98,7 @@ describe('placesSearch', () => {
     // Літерал, не константа модуля: маска = SKU Pro; зайве поле (rating,
     // websiteUri…) тягне Enterprise, і тест мусить це побачити.
     expect(headers['X-Goog-FieldMask']).toBe(
-      'places.id,places.displayName,places.formattedAddress,places.location,places.googleMapsUri',
+      'places.id,places.displayName,places.formattedAddress,places.location,places.googleMapsUri,places.primaryType',
     );
     expect(SEARCH_FIELD_MASK).toBe(headers['X-Goog-FieldMask']);
     // Ключ НЕ в URL (логи/історія).
@@ -245,7 +245,7 @@ describe('placeDetails', () => {
     );
     const headers = calls[0]!.init?.headers as Record<string, string>;
     expect(headers['X-Goog-FieldMask']).toBe(
-      'id,displayName,formattedAddress,location,nationalPhoneNumber,internationalPhoneNumber,websiteUri,regularOpeningHours,googleMapsUri',
+      'id,displayName,formattedAddress,location,nationalPhoneNumber,internationalPhoneNumber,websiteUri,regularOpeningHours,googleMapsUri,priceRange',
     );
     expect(DETAILS_FIELD_MASK).toBe(headers['X-Goog-FieldMask']);
     expect(await quotaUsed(env, 'places_details', NOW)).toBe(1);

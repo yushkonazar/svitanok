@@ -51,6 +51,7 @@ export interface WorkerEnvOverrides extends Partial<
     | 'STEAM_CHECK_STATE'
     | 'BRIEF_DISPATCH'
     | 'NEWS_REFRESH'
+    | 'LEISURE_CATALOG'
     | 'DB'
     | 'AI'
     | 'VECTORIZE'
@@ -76,6 +77,7 @@ export interface WorkerEnvOverrides extends Partial<
   STEAM_CHECK_STATE?: unknown;
   BRIEF_DISPATCH?: unknown;
   NEWS_REFRESH?: unknown;
+  LEISURE_CATALOG?: unknown;
   DB?: unknown;
   // AI/VECTORIZE (памʼять, ADR-038) - та сама доктрина, що DB: стаб на одну-дві
   // операції, а не імітація повного інтерфейсу Workers AI/Vectorize.

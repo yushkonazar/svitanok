@@ -410,6 +410,10 @@
               "outcome",
               "refresh",
               "calendar-check",
+              "familiarity",
+              "place-check",
+              "journey-check",
+              "source-check",
               "clear"
             ],
             "type": "string"
@@ -425,10 +429,16 @@
     "leisure.query": {
       "args": {
         "properties": {
+          "category": {
+            "enum": ["exhibition", "festival", "concert", "show", "cinema", "food", "trip"],
+            "type": "string"
+          },
           "id": { "maxLength": 320, "type": "string" },
+          "limit": { "maximum": 40, "minimum": 1, "type": "number" },
+          "offset": { "minimum": 0, "type": "number" },
           "plan_json": { "maxLength": 20000, "type": "string" },
           "query": { "maxLength": 160, "type": "string" },
-          "view": { "enum": ["week", "saved", "plans", "visits"], "type": "string" }
+          "view": { "enum": ["week", "saved", "plans", "visits", "places"], "type": "string" }
         },
         "type": "object"
       },

@@ -24,15 +24,18 @@ export async function handleLeisure(request, env) {
       receipt = await executeLeisureCommand(env, body);
       acknowledged = true;
     }
+    const workspace = await readLeisureWorkspace(
+      env,
+      Date.now(),
+      request.method === 'GET' && new URL(request.url).searchParams.get('history') === 'all',
+    );
+    if (request.headers.get('X-Leisure-Format') !== '2')
+      workspace.records = workspace.records.filter((r) => r.kind !== 'familiarity');
     return reply({
       ok: true,
       acknowledged,
       receipt,
-      workspace: await readLeisureWorkspace(
-        env,
-        Date.now(),
-        request.method === 'GET' && new URL(request.url).searchParams.get('history') === 'all',
-      ),
+      workspace,
     });
   } catch (/** @type {any} */ error) {
     if (acknowledged)

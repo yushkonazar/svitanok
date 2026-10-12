@@ -110,6 +110,7 @@
       // atomically so manual /brief and a cron tick cannot both invoke it.
       { "name": "BRIEF_DISPATCH", "class_name": "BriefDispatchDO" },
       { "name": "NEWS_REFRESH", "class_name": "NewsRefreshDO" },
+      { "name": "LEISURE_CATALOG", "class_name": "LeisureCatalogDO" },
     ],
   },
   "exports": {
@@ -131,6 +132,7 @@
     "SteamCheckStateDO": { "type": "durable-object", "storage": "sqlite" },
     "BriefDispatchDO": { "type": "durable-object", "storage": "sqlite" },
     "NewsRefreshDO": { "type": "durable-object", "storage": "sqlite" },
+    "LeisureCatalogDO": { "type": "durable-object", "storage": "sqlite" },
   },
   // Workflows (07 §6): перший - DayPlanChain (етап 3 PR-8, ADR-035): живе від
   // вечірнього «Що завтра?» до вечірнього огляду з waitForEvent на кнопки і
