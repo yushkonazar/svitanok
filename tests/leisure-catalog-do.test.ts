@@ -170,9 +170,14 @@ describe('isolated resumable catalogue batches', () => {
     mocks.collect.mockRejectedValue(new Error('network'));
     await collector.alarm();
     await collector.alarm();
+    await collector.alarm();
     const data = await readLeisureWorkspace(env, now);
     expect(data.edition.ids).toEqual([a.id]);
-    expect(data.edition.sources[0].status).toBe('unavailable');
+    expect(data.edition.sources[0]).toMatchObject({
+      status: 'unavailable',
+      errorCode: 'source-fetch-failed',
+    });
+    expect(mocks.collect).toHaveBeenCalledTimes(2);
     expect(data.refresh.active).toBe(false);
     db.close();
   });
@@ -223,4 +228,21 @@ describe('isolated resumable catalogue batches', () => {
     expect(data.items[0]).toMatchObject({ placeType: 'cafe', price: { min: null } });
     db.close();
   });
+});
+
+it('recovers an approved public source after one bounded retry and clears the outage marker', async () => {
+  const { collector, storage, env } = setup();
+  await collector.request();
+  const job = storage.get('job')!;
+  job.tasks = [{ id: 'concert', offset: 0 }];
+  storage.set('job', job);
+  mocks.collect
+    .mockRejectedValueOnce(new Error('source-http-503'))
+    .mockResolvedValueOnce([await example()]);
+  await collector.alarm();
+  expect(storage.get('job')!.index).toBe(0);
+  await collector.alarm();
+  await collector.alarm();
+  const data = await readLeisureWorkspace(env, now);
+  expect(data.edition.sources[0]).toMatchObject({ status: 'ok', errorCode: null, count: 1 });
 });

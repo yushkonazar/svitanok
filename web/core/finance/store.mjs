@@ -129,7 +129,7 @@ export async function readMerchantRules(env) {
  *
  * @param {Env} env
  * @param {{ item: import('../adapters/mono.mjs').MonoStatementItem, account: string,
- *   accountCurrency: string, test?: boolean, silent?: boolean }} input
+ *   accountCurrency: string, test?: boolean, silent?: boolean, versioned?:boolean }} input
  * @returns {Promise<{ inserted: boolean, updated?: boolean, tx: StoredTx | null }>}
  */
 export async function ingestTransaction(env, input) {
@@ -141,7 +141,13 @@ export async function ingestTransaction(env, input) {
       .first()
   );
   if (existing) {
-    const updated = await settleHold(env, existing, item, accountCurrency);
+    const updated = await settleHold(
+      env,
+      existing,
+      item,
+      accountCurrency,
+      input.versioned ?? false,
+    );
     return { inserted: false, updated, tx: null };
   }
 
@@ -202,7 +208,7 @@ export async function ingestTransaction(env, input) {
   }
 
   const raw = { ...item, account, ...(input.test ? { test: 1 } : {}) };
-  const { meta } = await db(env)
+  const insertion = db(env)
     .prepare(
       `INSERT INTO transactions
          (id, at, amount, currency, amount_uah, mcc, description, category, flags_json, balance, note, raw_json)
@@ -221,8 +227,18 @@ export async function ingestTransaction(env, input) {
       JSON.stringify(flags),
       item.balance,
       JSON.stringify(raw),
-    )
-    .run();
+    );
+  const result = input.versioned
+    ? (
+        await db(env).batch([
+          insertion,
+          db(env).prepare(
+            "UPDATE finance_settings SET version=version+1 WHERE id='owner' AND changes()>0",
+          ),
+        ])
+      )[0]
+    : await insertion.run();
+  const meta = result?.meta;
   if (!meta?.changes) return { inserted: false, tx: null };
   return {
     inserted: true,
@@ -250,9 +266,9 @@ export async function ingestTransaction(env, input) {
  * Прапорці не перераховуємо: власнику вже сказали, а «незвичність» від
  * копійок різниці не міняється.
  * @param {Env} env @param {{ id: string, raw_json: string | null }} existing
- * @param {import('../adapters/mono.mjs').MonoStatementItem} item @param {string} accountCurrency
+ * @param {import('../adapters/mono.mjs').MonoStatementItem} item @param {string} accountCurrency @param {boolean} versioned
  */
-async function settleHold(env, existing, item, accountCurrency) {
+async function settleHold(env, existing, item, accountCurrency, versioned) {
   if (item.hold) return false;
   /** @type {any} */
   let raw;
@@ -263,26 +279,46 @@ async function settleHold(env, existing, item, accountCurrency) {
   }
   if (raw?.hold !== true) return false;
   const amountUah = accountCurrency === 'UAH' ? item.amount : null;
-  const { meta } = await db(env)
+  const updating = db(env)
     .prepare(
-      `UPDATE transactions SET amount = ?, amount_uah = ?, balance = ?,
-         raw_json = json_patch(COALESCE(raw_json, '{}'), ?)
-       WHERE id = ?`,
+      `UPDATE transactions SET amount = ?, amount_uah = ?, balance = ?, at=?,
+         raw_json = json_set(json_patch(COALESCE(raw_json, '{}'), ?),'$.financeBankAmountChanged',json(CASE WHEN json_extract(raw_json,'$.financeBankVerifiedByOwner')=1 AND json_extract(raw_json,'$.financeConfirmedAmountMinor') IS NOT NULL AND json_extract(raw_json,'$.financeConfirmedAmountMinor')<>? THEN 'true' ELSE 'false' END))
+       WHERE id = ? AND json_extract(raw_json,'$.hold')=1`,
     )
     .bind(
       item.operationAmount,
       amountUah,
       item.balance,
+      new Date(item.timeS * 1000).toISOString(),
       JSON.stringify({
+        timeS: item.timeS,
         hold: false,
         amount: item.amount,
         operationAmount: item.operationAmount,
         balance: item.balance,
       }),
+      amountUah ?? item.amount,
       item.id,
-    )
-    .run();
-  return Boolean(meta?.changes);
+    );
+  const useVersion =
+    versioned ||
+    Boolean(
+      await db(env)
+        .prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name='finance_settings'")
+        .bind()
+        .first(),
+    );
+  const result = useVersion
+    ? (
+        await db(env).batch([
+          updating,
+          db(env).prepare(
+            "UPDATE finance_settings SET version=version+1 WHERE id='owner' AND changes()>0",
+          ),
+        ])
+      )[0]
+    : await updating.run();
+  return Boolean(result?.meta?.changes);
 }
 
 /**

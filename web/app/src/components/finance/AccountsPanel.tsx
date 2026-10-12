@@ -4,9 +4,11 @@ import { moneyLabel } from '../../lib/financeView.ts';
 export function AccountsPanel({
   finance: f,
   onAction,
+  onRefreshBank,
 }: {
   finance: Finance;
   onAction: (r: FinanceFormRequest) => void;
+  onRefreshBank?: (accountId: string) => void;
 }) {
   return (
     <details className="renewal-card renewal-disclosure">
@@ -45,6 +47,11 @@ export function AccountsPanel({
                     ? 'невідомий'
                     : moneyLabel(a.creditLimitMinor, a.currency)}
                 </p>
+                {onRefreshBank && (
+                  <button className="renewal-link" onClick={() => onRefreshBank(a.id)}>
+                    Оновити виписку ↻
+                  </button>
+                )}
                 <button
                   className="renewal-link"
                   onClick={() => onAction({ kind: 'credit-limit', id: a.id })}

@@ -1,3 +1,4 @@
+import { bankRefreshTasks, publishBankSync, advanceBankSync } from '../finance/bank-sync.mjs';
 import { DurableObject } from 'cloudflare:workers';
 import { MONO_RECONCILE_KEY } from './contract.mjs';
 
@@ -15,6 +16,76 @@ export class MonoReconcileDO extends DurableObject {
       () => undefined,
     );
     return next;
+  }
+
+  /** @param {unknown} accountId @param {unknown} [transactionId] @param {number} [nowMs] */
+  async requestRefresh(accountId, transactionId, nowMs = Date.now()) {
+    return this.#serial(async () => {
+      const env = /** @type {Env} */ (this.env),
+        tasks = await bankRefreshTasks(env, accountId, transactionId, nowMs);
+      const active = /** @type {any} */ (await this.ctx.storage.get('bank-refresh'));
+      if (active?.active) {
+        for (const task of tasks)
+          if (
+            !active.tasks.some(
+              (/** @type {any} */ existing) =>
+                existing.account.id === task.account.id &&
+                existing.fromS <= task.fromS &&
+                existing.toS >= task.toS - 60,
+            )
+          )
+            active.tasks.push(task);
+        await this.ctx.storage.put('bank-refresh', active);
+        await publishBankSync(env, active);
+        return;
+      }
+      const job = {
+        id: crypto.randomUUID(),
+        active: true,
+        phase: 'fetch',
+        index: 0,
+        tasks,
+        imported: 0,
+        updated: 0,
+        requestedAt: new Date(nowMs).toISOString(),
+      };
+      await this.ctx.storage.put('bank-refresh', job);
+      await this.ctx.storage.setAlarm(Date.now() + 50);
+      await publishBankSync(env, job);
+    });
+  }
+  /** @override */
+  async alarm() {
+    return this.#serial(async () => {
+      const env = /** @type {Env} */ (this.env);
+      try {
+        await advanceBankSync(
+          this.ctx,
+          env,
+          await this.ctx.storage.get('bank-refresh'),
+          Date.now(),
+        );
+      } catch {
+        const job = /** @type {any} */ (await this.ctx.storage.get('bank-refresh'));
+        if (!job) return;
+        job.failures = (job.failures ?? 0) + 1;
+        if (job.failures > 3) {
+          job.active = false;
+          job.phase = 'error';
+          job.completedAt = new Date().toISOString();
+          job.message =
+            'Оновлення перервано. Збережені операції залишились; можна повторити звірку.';
+          if (job.chunks)
+            await this.ctx.storage.delete(
+              Array.from({ length: job.chunks }, (_, n) => `bank-page-${n}`),
+            );
+        } else job.message = 'Тимчасова помилка запису. Оновлення буде повторено автоматично.';
+        await this.ctx.storage.put('bank-refresh', job);
+        // Also retries publishing a completed/error status after a database outage.
+        await this.ctx.storage.setAlarm(Date.now() + 30000);
+        await publishBankSync(env, job);
+      }
+    });
   }
 
   /** @param {unknown} legacyValue */

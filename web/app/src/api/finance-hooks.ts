@@ -7,7 +7,9 @@ export function useFinance(enabled = true) {
     queryFn: fetchFinance,
     enabled,
     staleTime: 30_000,
-    refetchInterval: enabled ? 60_000 : false,
+    refetchInterval: enabled
+      ? (query) => (query.state.data?.finance.bankSync?.active ? 3000 : 60000)
+      : false,
     refetchOnWindowFocus: 'always',
   });
 }

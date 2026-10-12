@@ -49,7 +49,7 @@ it('shows international subscriptions and unlinked transfer debits, submitting a
       description: 'Foreign subscription',
       category: 'цифрові сервіси',
       kind: 'expense',
-      accountId: 'mono:sample',
+      accountId: 'mono:demo',
     },
     {
       id: 'transfer',
@@ -63,7 +63,7 @@ it('shows international subscriptions and unlinked transfer debits, submitting a
       description: 'Loan transfer',
       category: 'фінанси',
       kind: 'transfer',
-      accountId: 'mono:sample',
+      accountId: 'mono:demo',
     },
   ];
   open({ kind: 'payment-paid', id: pay.id }, f);
@@ -545,7 +545,7 @@ it('switches from a virtual bank reserve to a real cash contribution with a vali
   );
 });
 
-it('shows a held deposit and refreshes it into a selectable transfer without clearing the form', async () => {
+it('shows a held deposit with a distinct API marker and updates its status without clearing the form', async () => {
   const f = readFinanceDemo();
   const tx = {
     id: 'held-deposit',
@@ -575,12 +575,7 @@ it('shows a held deposit and refreshes it into a selectable transfer without cle
     </QueryClientProvider>,
   );
   fireEvent.change(screen.getByLabelText('Як обліковуємо переказ?'), { target: { value: 'bank' } });
-  expect(screen.getByRole('region', { name: 'Операції в очікуванні' })).toHaveTextContent(
-    '8 000,00',
-  );
-  expect(
-    screen.getByLabelText('Операція Monobank').querySelector('option[value="held-deposit"]'),
-  ).toBeNull();
+  expect(screen.getByRole('option', { name: /Термінал mono.*hold у API/ })).toBeInTheDocument();
   const refreshed = {
     demo: true,
     finance: {
@@ -589,8 +584,10 @@ it('shows a held deposit and refreshes it into a selectable transfer without cle
     },
   };
   vi.mocked(refreshFinanceBank).mockResolvedValueOnce(refreshed);
-  fireEvent.click(screen.getByRole('button', { name: 'Оновити список' }));
-  await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Виписку звірено'));
+  fireEvent.click(screen.getByRole('button', { name: 'Оновити список Monobank ↻' }));
+  await waitFor(() =>
+    expect(screen.getByRole('status')).toHaveTextContent('Демонстраційний список оновлено'),
+  );
   expect(screen.getByLabelText('Як обліковуємо переказ?')).toHaveValue('bank');
   expect(screen.getByLabelText('Другий рахунок · готівка або ручний')).toHaveValue('cash');
   expect(
@@ -603,12 +600,129 @@ it('keeps the transfer form open and offers another refresh after a network erro
   const { close } = open({ kind: 'transfer' });
   fireEvent.change(screen.getByLabelText('Як обліковуємо переказ?'), { target: { value: 'bank' } });
   vi.mocked(refreshFinanceBank).mockRejectedValueOnce(new Error('Не вдалося оновити список'));
-  fireEvent.click(screen.getByRole('button', { name: 'Оновити список' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Оновити список Monobank ↻' }));
   await waitFor(() =>
     expect(screen.getByRole('alert')).toHaveTextContent('Не вдалося оновити список'),
   );
-  expect(screen.getByRole('button', { name: 'Оновити список' })).toBeEnabled();
+  expect(screen.getByRole('button', { name: 'Оновити список Monobank ↻' })).toBeEnabled();
   expect(screen.getByLabelText('Як обліковуємо переказ?')).toHaveValue('bank');
   expect(close).not.toHaveBeenCalled();
   expect(postFinance).not.toHaveBeenCalled();
+});
+
+it('requires owner confirmation before linking an Apple payment whose bank API still returns hold', async () => {
+  const f = readFinanceDemo();
+  const pay = f.payments.find((p) => p.kind === 'subscription')!;
+  f.transactions = [
+    {
+      id: 'apple-hold',
+      at: new Date().toISOString(),
+      bank: true,
+      bankHold: true,
+      reference: null,
+      amountMinor: -299,
+      amountUah: -13464,
+      currency: 'USD',
+      description: 'Apple',
+      category: 'цифрові сервіси',
+      kind: 'expense',
+      accountId: 'mono:demo',
+    },
+  ];
+  open({ kind: 'payment-paid', id: pay.id }, f);
+  fireEvent.change(screen.getByLabelText('Як сплачено?'), { target: { value: 'bank' } });
+  fireEvent.change(screen.getByLabelText('Банківська операція'), {
+    target: { value: 'apple-hold' },
+  });
+  fireEvent.click(screen.getByRole('button', { name: 'Підтвердити й зберегти' }));
+  await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent(/Monobank/));
+  expect(postFinance).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByLabelText('У Monobank ця операція вже успішно пройшла'));
+  fireEvent.click(screen.getByRole('button', { name: 'Підтвердити й зберегти' }));
+  await waitFor(() => expect(postFinance).toHaveBeenCalledOnce());
+  expect(postFinance).toHaveBeenCalledWith(
+    expect.objectContaining({
+      payload: expect.objectContaining({
+        transactionId: 'apple-hold',
+        amountMinor: 13464,
+        bankHoldConfirmed: true,
+      }),
+    }),
+  );
+});
+for (const kind of ['payment-paid', 'goal-move', 'taxi-settle', 'transfer'] as const) {
+  it(`refreshes the bank instead of only cached data in ${kind}`, async () => {
+    const f = readFinanceDemo();
+    const id =
+      kind === 'payment-paid'
+        ? f.payments[0]!.id
+        : kind === 'taxi-settle'
+          ? f.taxiWeeks[0]?.key
+          : undefined;
+    open({ kind, id }, f);
+    const label =
+      kind === 'payment-paid'
+        ? 'Як сплачено?'
+        : kind === 'goal-move'
+          ? 'Спосіб внеску'
+          : kind === 'taxi-settle'
+            ? 'Як розрахувались?'
+            : 'Як обліковуємо переказ?';
+    fireEvent.change(screen.getByLabelText(label), { target: { value: 'bank' } });
+    fireEvent.change(screen.getByLabelText('Картка для оновлення виписки'), {
+      target: { value: 'all' },
+    });
+    vi.mocked(refreshFinanceBank).mockResolvedValueOnce({ finance: f, demo: true });
+    fireEvent.click(screen.getByRole('button', { name: 'Оновити список Monobank ↻' }));
+    await waitFor(() => expect(refreshFinanceBank).toHaveBeenCalledWith('all'));
+    expect(postFinance).not.toHaveBeenCalled();
+  });
+}
+
+it('shows payments from all cards initially and refreshes the card of the selected operation', async () => {
+  const f = readFinanceDemo();
+  const mono = f.accounts.find((a) => a.kind === 'mono')!;
+  f.accounts.push({ ...mono, id: 'mono:second', name: 'Інша картка' });
+  f.transactions = [
+    {
+      id: 'recent',
+      at: new Date().toISOString(),
+      amountMinor: -10000,
+      amountUah: -10000,
+      currency: 'UAH',
+      category: 'продукти',
+      description: 'Інша покупка',
+      kind: 'expense',
+      bank: true,
+      reference: null,
+      accountId: 'mono:demo',
+    },
+    {
+      id: 'apple-other-card',
+      at: new Date().toISOString(),
+      amountMinor: -13464,
+      amountUah: -13464,
+      currency: 'UAH',
+      category: 'цифрові сервіси',
+      description: 'Apple з іншої картки',
+      kind: 'expense',
+      bank: true,
+      reference: null,
+      accountId: 'mono:second',
+    },
+  ];
+  open({ kind: 'payment-paid', id: f.payments[0]!.id }, f);
+  fireEvent.change(screen.getByLabelText('Як сплачено?'), { target: { value: 'bank' } });
+  expect(screen.getByLabelText('Картка для оновлення виписки')).toHaveValue('all');
+  expect(screen.getByRole('option', { name: /Apple з іншої картки/ })).toBeInTheDocument();
+  fireEvent.change(screen.getByLabelText('Банківська операція'), {
+    target: { value: 'apple-other-card' },
+  });
+  expect(screen.getByLabelText('Картка для оновлення виписки')).toHaveValue('mono:second');
+  vi.mocked(refreshFinanceBank).mockResolvedValueOnce({ finance: f, demo: true });
+  fireEvent.click(screen.getByRole('button', { name: 'Оновити список Monobank ↻' }));
+  await waitFor(() =>
+    expect(refreshFinanceBank).toHaveBeenCalledWith('mono:second', 'apple-other-card'),
+  );
+  expect(screen.getByLabelText('Банківська операція')).toHaveValue('apple-other-card');
 });

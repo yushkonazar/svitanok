@@ -333,7 +333,8 @@ export function writeFinanceDemo(command: FinanceCommand) {
       const bank = f.transactions.find((t) => t.id === p.transactionId);
       if (
         !bank?.bank ||
-        bank.bankHold ||
+        (bank.bankHold && p.bankHoldConfirmed !== true) ||
+        bank.bankMissingFromStatement ||
         bank.reference ||
         bank.currency !== 'UAH' ||
         !bank.amountMinor ||
@@ -361,6 +362,7 @@ export function writeFinanceDemo(command: FinanceCommand) {
       }
       bank.kind = 'transfer';
       bank.reference = id;
+      if (bank.bankHold && p.bankHoldConfirmed === true) bank.bankVerifiedByOwner = true;
       bank.category = 'перекази й готівка';
       break;
     }
@@ -479,7 +481,8 @@ export function writeFinanceDemo(command: FinanceCommand) {
         p.transactionId &&
         (!bankTx ||
           !bankTx.bank ||
-          bankTx.bankHold ||
+          (bankTx.bankHold && p.bankHoldConfirmed !== true) ||
+          bankTx.bankMissingFromStatement ||
           bankTx.reference ||
           bankTx.currency !== 'UAH' ||
           bankTx.amountMinor !== actual)
@@ -498,6 +501,7 @@ export function writeFinanceDemo(command: FinanceCommand) {
       if (bankTx) {
         bankTx.kind = 'taxi-settlement';
         bankTx.reference = w.key;
+        if (bankTx.bankHold && p.bankHoldConfirmed === true) bankTx.bankVerifiedByOwner = true;
         bankTx.category = 'таксі';
       } else if (actual) tx(actual, 'taxi-settlement', str('accountId'), ':settlement', w.key);
       break;
@@ -542,7 +546,8 @@ export function writeFinanceDemo(command: FinanceCommand) {
       if (
         p.transactionId &&
         (!bank?.bank ||
-          bank.bankHold ||
+          (bank.bankHold && p.bankHoldConfirmed !== true) ||
+          bank.bankMissingFromStatement ||
           bank.reference ||
           bank.currency !== 'UAH' ||
           bank.amountMinor !== -amount)
@@ -573,6 +578,7 @@ export function writeFinanceDemo(command: FinanceCommand) {
       if (bank) {
         bank.kind = 'transfer';
         bank.reference = `goal:${p.goalId}`;
+        if (bank.bankHold && p.bankHoldConfirmed === true) bank.bankVerifiedByOwner = true;
         bank.category = 'заощадження';
       } else if (kind === 'external')
         tx(-amount, 'transfer', accountId!, ':goal', `goal:${p.goalId}`);
@@ -813,7 +819,8 @@ export function writeFinanceDemo(command: FinanceCommand) {
         p.transactionId &&
         (!bankTx ||
           !bankTx.bank ||
-          bankTx.bankHold ||
+          (bankTx.bankHold && p.bankHoldConfirmed !== true) ||
+          bankTx.bankMissingFromStatement ||
           bankTx.reference ||
           bankPaymentAmount(bankTx) !== -amount)
       )
@@ -822,6 +829,8 @@ export function writeFinanceDemo(command: FinanceCommand) {
       const transaction = bankTx ?? f.transactions[0];
       transaction.kind = 'expense';
       transaction.reference = pay.id;
+      if (transaction.bankHold && p.bankHoldConfirmed === true)
+        transaction.bankVerifiedByOwner = true;
       transaction.category = pay.category;
       transaction.description = pay.name;
       if (pay.remainingMinor != null)
