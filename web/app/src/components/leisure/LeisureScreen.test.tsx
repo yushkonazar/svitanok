@@ -60,6 +60,19 @@ describe('leisure mobile interactions', () => {
       ).toBe('clear'),
     );
   });
+  it('closes and hides a not-this-week choice without recording a dislike', async () => {
+    const { cache } = await setup();
+    fireEvent.click(screen.getAllByRole('button', { name: /Деталі/ })[0]!);
+    const title = screen.getByRole('dialog').querySelector('h2')?.textContent;
+    fireEvent.click(screen.getByRole('button', { name: 'Нецікаво' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Не на цей тиждень' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Приховати варіант' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect((cache.getQueryData(['leisure']) as LeisureWorkspace).records[0]).toMatchObject({
+      verdict: 'later',
+    });
+    if (title) expect(screen.queryByRole('heading', { name: title })).not.toBeInTheDocument();
+  });
   it('uses Interesting as its own learning signal without implicitly saving or planning', async () => {
     const { cache } = await setup();
     fireEvent.click(screen.getAllByRole('button', { name: /Деталі/ })[0]!);

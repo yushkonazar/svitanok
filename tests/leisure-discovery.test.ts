@@ -132,6 +132,26 @@ describe('full discovery and explicit learning', () => {
     expect(next.ids).toHaveLength(2);
     expect(new Set(next.rankings.map((r) => r.score)).size).toBe(1);
   });
+  it('applies not-this-week in Kyiv time even before UTC Monday starts', async () => {
+    const a = await item(1),
+      early = Date.parse('2026-10-18T21:30:00Z');
+    const r = {
+      kind: 'reaction',
+      itemId: a.id,
+      verdict: 'later',
+      at: new Date(early).toISOString(),
+    };
+    expect(selectLeisureEdition([a], [r], [], DEFAULT_LEISURE_SETTINGS, early).ids).toEqual([]);
+    expect(
+      selectLeisureEdition(
+        [a],
+        [r],
+        [],
+        DEFAULT_LEISURE_SETTINGS,
+        Date.parse('2026-10-26T08:00:00Z'),
+      ).ids,
+    ).toEqual([a.id]);
+  });
   it('marks many earlier visits without creating a count and counts new visits independently', async () => {
     const { env, db } = setup(),
       cafe = await item(1, { category: 'food', placeId: 'cafe-1', address: 'Львів, 1' });

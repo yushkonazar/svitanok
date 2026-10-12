@@ -220,7 +220,10 @@ export function selectLeisureEdition(items, records, previousIds, settings, nowM
       .filter(
         (r) =>
           r.kind === 'reaction' &&
-          (r.verdict === 'uninterested' || (r.verdict === 'later' && String(r.at ?? '') >= week)),
+          (r.verdict === 'uninterested' ||
+            (r.verdict === 'later' &&
+              Number.isFinite(Date.parse(r.at ?? '')) &&
+              kyivDateKey(new Date(r.at)) >= week)),
       )
       .map((r) => r.itemId),
   );

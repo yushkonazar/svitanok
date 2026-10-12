@@ -371,7 +371,13 @@ export function LeisureScreen() {
   const hidden = new Set(
     data.records
       .filter((r) => r.kind === 'reaction')
-      .filter((r) => r.verdict === 'uninterested')
+      .filter(
+        (r) =>
+          r.verdict === 'uninterested' ||
+          (r.verdict === 'later' &&
+            r.at &&
+            toKyivInput(r.at).slice(0, 10) >= (data.edition?.week ?? '')),
+      )
       .map((r) => r.itemId),
   );
   const baseIds =
