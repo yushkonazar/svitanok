@@ -26,6 +26,10 @@ export const financeTxSchema = z.object({
   accountId: z.string().nullable(),
   bank: z.boolean(),
   bankHold: z.boolean().optional(),
+  bankMissingFromStatement: z.boolean().optional(),
+  bankVerifiedByOwner: z.boolean().optional(),
+  bankAmountChanged: z.boolean().optional(),
+  bankCheckedAt: z.string().nullable().optional(),
   reference: z.string().nullable(),
   personalTaxiType: z.string().nullable().optional(),
   attention: z
@@ -117,6 +121,22 @@ export const financeSchema = z.object({
   ok: z.literal(true),
   version: z.number().int(),
   generatedAt: z.string(),
+  bankSync: z
+    .object({
+      id: z.string(),
+      active: z.boolean(),
+      phase: z.string(),
+      done: z.number(),
+      total: z.number(),
+      accountId: z.string().nullable(),
+      imported: z.number(),
+      updated: z.number(),
+      requestedAt: z.string(),
+      completedAt: z.string().nullable(),
+      message: z.string().nullable(),
+    })
+    .nullable()
+    .optional(),
   settings: z.object({
     incomePeriod: z.enum(['week', 'month']),
     taxiVisible: z.boolean(),

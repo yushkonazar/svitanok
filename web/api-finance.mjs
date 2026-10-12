@@ -1,3 +1,4 @@
+import { MONO_RECONCILE_DO_NAME } from './core/mono-reconcile/contract.mjs';
 import { refreshMonoAccount } from './core/finance/bank-refresh.mjs';
 import { MonoTooSoonError } from './core/adapters/mono.mjs';
 import { buildFinanceReport, validateReportRange } from './core/finance/reporting.mjs';
@@ -28,7 +29,13 @@ export async function handleFinance(request, env) {
       to = url.searchParams.get('to');
     let result;
     if (body?.type === 'bank-refresh') {
-      await refreshMonoAccount(env, body.payload?.accountId, nowMs);
+      if (request.headers.get('X-Finance-Sync') === '2' && env.MONO_RECONCILE)
+        await env.MONO_RECONCILE.getByName(MONO_RECONCILE_DO_NAME).requestRefresh(
+          body.payload?.accountId,
+          body.payload?.transactionId,
+          nowMs,
+        );
+      else await refreshMonoAccount(env, body.payload?.accountId, nowMs);
       result = await readFinanceWorkspace(env, nowMs);
     } else if (!body && (from != null || to != null)) {
       if (!from || !to) throw new FinanceValidation('Вкажи початок і кінець періоду');

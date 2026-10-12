@@ -2,8 +2,10 @@ import { useState, useLayoutEffect, useEffect, useRef } from 'react';
 import { setVerticalSwipes } from '../../telegram.ts';
 import { useTick } from '../../lib/useTick.ts';
 import { useSearchParams } from 'react-router-dom';
-import { useFinance } from '../../api/finance-hooks.ts';
-import { isSessionExpired } from '../../api/client.ts';
+import { useFinance, FINANCE_QUERY } from '../../api/finance-hooks.ts';
+import { useQueryClient } from '@tanstack/react-query';
+import { BankRefreshPanel } from './BankRefreshPanel.tsx';
+import { isSessionExpired, refreshFinanceBank } from '../../api/client.ts';
 import { financeView, moneyLabel } from '../../lib/financeView.ts';
 import { sumMoney, calculateTaxiWeek } from '../../../../core/finance/planning.mjs';
 import { LoadingSkeleton, ErrorState } from '../ui/states.tsx';
@@ -47,6 +49,24 @@ export function FinanceScreen() {
     return () => setVerticalSwipes(true);
   }, []);
   const { data, isLoading, error, refetch } = useFinance();
+  const query = useQueryClient();
+  const [bankAccount, setBankAccount] = useState('all');
+  const [bankOpen, setBankOpen] = useState(false);
+  const [bankBusy, setBankBusy] = useState(false);
+  const [bankError, setBankError] = useState('');
+  const refreshBank = async () => {
+    if (bankBusy) return;
+    setBankBusy(true);
+    setBankError('');
+    try {
+      query.setQueryData(FINANCE_QUERY, await refreshFinanceBank(bankAccount));
+    } catch (e) {
+      setBankError(e instanceof Error ? e.message : 'Не вдалося запустити оновлення.');
+    } finally {
+      setBankBusy(false);
+    }
+  };
+
   const [allOperations, setAllOperations] = useState(false);
   const [pendingLimit, setPendingLimit] = useState(5);
   const [paymentsExpanded, setPaymentsExpanded] = useState(() => {
@@ -512,11 +532,23 @@ export function FinanceScreen() {
 
       <section className="renewal-card">
         <div className="renewal-section-head">
-          <h2 className="text-lg font-bold">Останні операції</h2>
-          <button className="renewal-link" onClick={() => refetch()}>
-            Оновити ↻
+          <h2 id="finance-bank-operations" className="text-lg font-bold">
+            Останні операції
+          </h2>
+          <button className="renewal-link" onClick={() => setBankOpen((value) => !value)}>
+            Оновити Monobank ↻
           </button>
         </div>
+        {(bankOpen || f.bankSync?.active) && (
+          <BankRefreshPanel
+            finance={f}
+            accountId={bankAccount}
+            onAccountChange={setBankAccount}
+            onRefresh={() => void refreshBank()}
+            busy={bankBusy}
+            error={bankError}
+          />
+        )}
         {!!view.unclassified.length && (
           <p className="renewal-muted mb-3">
             {view.unclassified.length} операцій потребують уточнення типу. Перекази й невизначені
@@ -547,6 +579,15 @@ export function FinanceScreen() {
               <b>{t.description}</b>
               <small>
                 {t.category} · {LABELS[t.kind] ?? t.kind} ·{' '}
+                {t.bankAmountChanged
+                  ? 'Сума змінилася · '
+                  : t.bankMissingFromStatement
+                    ? 'Потрібна звірка · '
+                    : t.bankHold
+                      ? t.bankVerifiedByOwner
+                        ? 'Підтверджено тобою · '
+                        : 'hold у API · '
+                      : ''}{' '}
                 {new Date(t.at).toLocaleDateString('uk-UA', { timeZone: 'Europe/Kyiv' })}
               </small>
             </span>
@@ -648,7 +689,17 @@ export function FinanceScreen() {
         </p>
       </section>
 
-      <AccountsPanel finance={f} onAction={setForm} />
+      <AccountsPanel
+        finance={f}
+        onAction={setForm}
+        onRefreshBank={(id) => {
+          setBankAccount(id);
+          setBankOpen(true);
+          document
+            .getElementById('finance-bank-operations')
+            ?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+        }}
+      />
       <SpendingRhythm finance={f} nowMs={nowMs} />
       <section className="renewal-card">
         <h2 className="text-lg font-bold">Історія фінансів</h2>

@@ -365,3 +365,67 @@ it('allocates rounded taxi kopecks consistently between adjacent daily reports',
   expect(first.taxiEarnedMinor + second.taxiEarnedMinor).toBe(full.taxiEarnedMinor);
   expect(full.taxiEarnedMinor).toBe(1);
 });
+
+describe('explicit owner confirmation of successful bank operations with a stale API hold', () => {
+  for (const type of ['bank-transfer', 'goal-move', 'taxi-settle', 'payment-paid']) {
+    it(`requires confirmation, links ${type} once and preserves the provider hold`, async () => {
+      const { env, send, bank, shift } = setup();
+      let payload: Record<string, unknown>;
+      let expectedCash: number;
+      if (type === 'bank-transfer') {
+        await send('account-balance', {
+          accountId: 'cash',
+          balanceMinor: 800000,
+          at: '2026-10-08T10:00:00Z',
+        });
+        await bank('owner-verified', 200000, undefined, true);
+        payload = { transactionId: 'owner-verified', accountId: 'cash' };
+        expectedCash = 600000;
+      } else if (type === 'taxi-settle') {
+        await shift();
+        await bank('owner-verified', -190000, undefined, true);
+        payload = { transactionId: 'owner-verified', weekKey: '2026-09-28', amountMinor: -190000 };
+        expectedCash = 260000;
+      } else if (type === 'goal-move') {
+        await send('goal', { name: 'Ціль', targetMinor: 1000000 });
+        const goal = (await readFinanceWorkspace(env, NOW)).goals[0]!;
+        await bank('owner-verified', -13464, undefined, true);
+        payload = {
+          transactionId: 'owner-verified',
+          goalId: goal.id,
+          amountMinor: 13464,
+          mode: 'bank',
+        };
+        expectedCash = 0;
+      } else {
+        await send('payment', {
+          name: 'Apple',
+          kind: 'subscription',
+          amountMinor: 13464,
+          nextDate: '2026-10-08',
+          anchorDay: 8,
+          recurrence: 'month',
+          category: 'цифрові сервіси',
+        });
+        const pay = (await readFinanceWorkspace(env, NOW)).payments[0]!;
+        await bank('owner-verified', -13464, undefined, true);
+        payload = { transactionId: 'owner-verified', paymentId: pay.id, amountMinor: 13464 };
+        expectedCash = 0;
+      }
+      const before = await readFinanceWorkspace(env, NOW);
+      for (const confirmation of [undefined, false, 'true'])
+        await expect(send(type, { ...payload, bankHoldConfirmed: confirmation })).rejects.toThrow();
+      expect((await readFinanceWorkspace(env, NOW)).version).toBe(before.version);
+      await send(type, { ...payload, bankHoldConfirmed: true });
+      const after = await readFinanceWorkspace(env, NOW);
+      const linked = after.transactions.find((t) => t.id === 'owner-verified')!;
+      expect(linked).toMatchObject({ bankHold: true, bankVerifiedByOwner: true });
+      expect(linked.reference).toBeTruthy();
+      expect(after.accounts.find((a) => a.id === 'cash')!.balanceMinor).toBe(expectedCash);
+      expect(after.transactions.filter((t) => t.bank)).toHaveLength(1);
+      await expect(send(type, { ...payload, bankHoldConfirmed: true })).rejects.toThrow();
+      if (type === 'payment-paid') expect(after.payments[0]!.nextDate).toBe('2026-11-08');
+      if (type === 'goal-move') expect(after.goalMoves[0]!.amountMinor).toBe(13464);
+    });
+  }
+});

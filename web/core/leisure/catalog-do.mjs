@@ -156,7 +156,8 @@ export class LeisureCatalogDO extends DurableObject {
     const source = PUBLIC_LEISURE_SOURCES.find((s) => s.id === task.id);
     let nextOffset = null,
       count = 0,
-      state = 'unavailable';
+      state = 'unavailable',
+      errorCode = null;
     try {
       let items;
       if (task.item) {
@@ -208,8 +209,24 @@ export class LeisureCatalogDO extends DurableObject {
       await upsertLeisureItems(env, items);
       count = items.length;
       state = count ? 'ok' : 'empty';
-    } catch {
-      /* An unavailable source never invalidates other sources or creates filler. */
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '';
+      errorCode =
+        /^source-[a-z-]+(?:-\d{3})?$|^planeta-schedule-unavailable$|^places-not-fresh$/.test(
+          message,
+        )
+          ? message
+          : error instanceof Error && /Timeout|Abort/.test(error.name)
+            ? 'source-timeout'
+            : 'source-fetch-failed';
+      // One bounded retry of the approved source, with no new domains or model calls.
+      if (source && !task.retried) {
+        task.retried = true;
+        await this.ctx.storage.put('job', job);
+        await this.status(job);
+        await this.ctx.storage.setAlarm(Date.now() + 30000);
+        return;
+      }
     }
     const prior = job.sources.find((/** @type {any} */ s) => s.id === task.id);
     const status = {
@@ -218,6 +235,7 @@ export class LeisureCatalogDO extends DurableObject {
       url: source?.url ?? task.item?.sourceUrl ?? 'https://maps.google.com/',
       status: count + (prior?.count ?? 0) > 0 ? 'ok' : state,
       checkedAt: new Date(now).toISOString(),
+      errorCode,
       count: count + (prior?.count ?? 0),
     };
     job.sources = job.sources.filter((/** @type {any} */ s) => s.id !== task.id);

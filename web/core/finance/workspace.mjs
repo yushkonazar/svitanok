@@ -137,6 +137,11 @@ export async function readFinanceWorkspace(env, nowMs = Date.now(), range) {
     db
       .prepare('SELECT * FROM subscriptions WHERE status = ? ORDER BY next_at LIMIT 100')
       .bind('active'),
+    db
+      .prepare(
+        "SELECT value_json FROM facts WHERE kind='setting' AND key='mono_bank_refresh' LIMIT 1",
+      )
+      .bind(),
   ]);
   /** @type {(index: number) => KvBlob[]} */
   const rows = (index) => /** @type {KvBlob[]} */ (result[index]?.results ?? []);
@@ -265,10 +270,17 @@ export async function readFinanceWorkspace(env, nowMs = Date.now(), range) {
       amountUah: r.amount_uah == null ? null : Number(r.amount_uah),
       category: String(r.category ?? 'інше'),
       description: String(r.description ?? ''),
-      kind: String(raw.financeKind ?? inferred),
+      kind:
+        raw.bankMissingFromStatement && raw.hold && !raw.financeBankVerifiedByOwner
+          ? 'unclassified'
+          : String(raw.financeKind ?? inferred),
       accountId: raw.financeAccount ?? (raw.account ? `mono:${raw.account}` : null),
       bank: Boolean(raw.account),
       bankHold: Boolean(raw.hold),
+      bankMissingFromStatement: Boolean(raw.bankMissingFromStatement),
+      bankVerifiedByOwner: Boolean(raw.financeBankVerifiedByOwner),
+      bankAmountChanged: Boolean(raw.financeBankAmountChanged),
+      bankCheckedAt: typeof raw.bankCheckedAt === 'string' ? raw.bankCheckedAt : null,
       reference: raw.financeReference ?? null,
       personalTaxiType: raw.financePersonalTaxiType ?? null,
       attention: parseFinanceAttention(r.raw_json),
@@ -286,6 +298,7 @@ export async function readFinanceWorkspace(env, nowMs = Date.now(), range) {
     ok: true,
     version: Number(settings.version),
     generatedAt: new Date(nowMs).toISOString(),
+    bankSync: rows(11)[0]?.value_json ? jsonObject(rows(11)[0]?.value_json) : null,
     settings: {
       incomePeriod: String(settings.income_period),
       taxiVisible: Boolean(settings.taxi_visible),
@@ -568,7 +581,8 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
     if (
       !bankTx ||
       !bankTx.bank ||
-      bankTx.bankHold ||
+      (bankTx.bankHold && payload.bankHoldConfirmed !== true) ||
+      bankTx.bankMissingFromStatement ||
       bankTx.reference ||
       bankTx.currency !== 'UAH' ||
       !bankTx.amountMinor ||
@@ -613,7 +627,11 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
       "UPDATE transactions SET category=?,raw_json=json_patch(COALESCE(raw_json,'{}'),?) WHERE id=?",
       [
         'перекази й готівка',
-        JSON.stringify({ financeKind: 'transfer', financeReference: id }),
+        JSON.stringify({
+          financeKind: 'transfer',
+          financeReference: id,
+          ...bankVerification(bankTx, payload, now),
+        }),
         bankTx.id,
       ],
     );
@@ -809,7 +827,8 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
       payload.transactionId &&
       (!bankTx ||
         !bankTx.bank ||
-        bankTx.bankHold ||
+        (bankTx.bankHold && payload.bankHoldConfirmed !== true) ||
+        bankTx.bankMissingFromStatement ||
         bankTx.reference ||
         bankTx.currency !== 'UAH' ||
         bankTx.amountMinor !== actual ||
@@ -836,7 +855,11 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
         "UPDATE transactions SET category = ?, raw_json = json_patch(COALESCE(raw_json, '{}'), ?) WHERE id = ?",
         [
           'таксі',
-          JSON.stringify({ financeKind: 'taxi-settlement', financeReference: key }),
+          JSON.stringify({
+            financeKind: 'taxi-settlement',
+            financeReference: key,
+            ...bankVerification(bankTx, payload, now),
+          }),
           bankTx.id,
         ],
       );
@@ -936,7 +959,8 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
       payload.transactionId &&
       (!bankTx ||
         !bankTx.bank ||
-        bankTx.bankHold ||
+        (bankTx.bankHold && payload.bankHoldConfirmed !== true) ||
+        bankTx.bankMissingFromStatement ||
         bankTx.reference ||
         bankTx.currency !== 'UAH' ||
         bankTx.amountMinor !== -amount ||
@@ -976,7 +1000,11 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
         "UPDATE transactions SET category=?,raw_json=json_patch(COALESCE(raw_json,'{}'),?) WHERE id=?",
         [
           'заощадження',
-          JSON.stringify({ financeKind: 'transfer', financeReference: `goal:${goal.id}` }),
+          JSON.stringify({
+            financeKind: 'transfer',
+            financeReference: `goal:${goal.id}`,
+            ...bankVerification(bankTx, payload, now),
+          }),
           bankTx.id,
         ],
       );
@@ -1442,7 +1470,8 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
       payload.transactionId &&
       (!existingTx ||
         !existingTx.bank ||
-        existingTx.bankHold ||
+        (existingTx.bankHold && payload.bankHoldConfirmed !== true) ||
+        existingTx.bankMissingFromStatement ||
         existingTx.reference ||
         bankPaymentAmount(existingTx) !== -amount ||
         !['expense', 'unclassified', 'transfer'].includes(existingTx.kind))
@@ -1534,6 +1563,7 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
           JSON.stringify({
             financeKind: 'expense',
             financeReference: payment.id,
+            ...bankVerification(existingTx, payload, now),
             financePrincipalMinor: principal,
             financeOverpaymentMinor: extraPaid,
           }),
@@ -1607,4 +1637,16 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
   if (!outcome.at(-1)?.meta?.changes)
     throw new FinanceConflict('Дані змінилися. Онови екран і повтори дію.');
   return { ok: true, duplicate: false };
+}
+
+/** Keep the bank flag intact; this records the owner's independent confirmation only.
+ * @param {any} tx @param {any} payload @param {string} at */
+function bankVerification(tx, payload, at) {
+  return tx?.bankHold && payload.bankHoldConfirmed === true
+    ? {
+        financeBankVerifiedByOwner: true,
+        financeBankVerifiedAt: at,
+        financeConfirmedAmountMinor: bankPaymentAmount(tx),
+      }
+    : {};
 }

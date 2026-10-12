@@ -188,12 +188,12 @@ export async function fetchFinance() {
   if (!res.ok) throw new Error('Не вдалося завантажити фінанси. Спробуй знову.');
   return { finance: financeSchema.parse(await res.json()), demo: false };
 }
-export async function refreshFinanceBank(accountId: string) {
+export async function refreshFinanceBank(accountId: string, transactionId?: string) {
   if (!inTelegram()) return fetchFinance();
   const res = await fetch('/api/finance', {
     method: 'POST',
-    headers: { ...authHeaders(), 'Content-Type': 'application/json' },
-    body: JSON.stringify({ type: 'bank-refresh', payload: { accountId } }),
+    headers: { ...authHeaders(), 'Content-Type': 'application/json', 'X-Finance-Sync': '2' },
+    body: JSON.stringify({ type: 'bank-refresh', payload: { accountId, transactionId } }),
   });
   throwIfSessionExpired(res);
   if (!res.ok) {
