@@ -1040,7 +1040,7 @@ function PlanForm({
           <h3>
             {index + 1}. {lookup.get(s.itemId)?.title ?? 'Варіант'}
           </h3>
-          <div className="leisure-fields">
+          <div className="leisure-fields leisure-plan-times">
             <label>
               Початок
               <input
@@ -1062,24 +1062,33 @@ function PlanForm({
           <p className="leisure-secondary">
             {s.sessionId
               ? 'Початок за розкладом. Завершення за тривалістю фільму, рекламу можна врахувати вручну.'
-              : 'Це обраний тобою час. Звір його з графіком і джерелом.'}
+              : 'Можеш змінити дату й час. Графік закладу або події перевір у джерелі.'}
           </p>
-          <label className="leisure-check">
-            <input
-              type="checkbox"
-              checked={s.tickets}
-              onChange={(e) => edit(index, { tickets: e.target.checked })}
-            />
-            Квитки / реєстрацію підтверджено
-          </label>
-          <label className="leisure-check">
-            <input
-              type="checkbox"
-              checked={s.reservation}
-              onChange={(e) => edit(index, { reservation: e.target.checked })}
-            />
-            Бронювання підтверджено
-          </label>
+          {(s.tickets ||
+            !lookup.get(s.itemId) ||
+            !['food', 'trip'].includes(lookup.get(s.itemId)!.category) ||
+            lookup.get(s.itemId)?.registration) && (
+            <label className="leisure-check">
+              <input
+                type="checkbox"
+                checked={s.tickets}
+                onChange={(e) => edit(index, { tickets: e.target.checked })}
+              />
+              Квитки / реєстрацію підтверджено
+            </label>
+          )}
+          {(s.reservation ||
+            !lookup.get(s.itemId) ||
+            lookup.get(s.itemId)?.category === 'food') && (
+            <label className="leisure-check">
+              <input
+                type="checkbox"
+                checked={s.reservation}
+                onChange={(e) => edit(index, { reservation: e.target.checked })}
+              />
+              Бронювання підтверджено
+            </label>
+          )}
           <button
             type="button"
             className="leisure-text-button"

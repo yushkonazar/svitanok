@@ -34,6 +34,16 @@ async function setup() {
   return { cache, data };
 }
 describe('leisure mobile interactions', () => {
+  it('uses reservation confirmation for a restaurant without asking about tickets', async () => {
+    await setup();
+    fireEvent.click(screen.getByRole('button', { name: 'Заклади' }));
+    fireEvent.click(screen.getAllByRole('button', { name: /Деталі/ })[0]!);
+    fireEvent.click(screen.getByRole('button', { name: 'Додати до плану вечора' }));
+    expect(screen.getByLabelText('Бронювання підтверджено')).toBeInTheDocument();
+    expect(screen.queryByLabelText('Квитки / реєстрацію підтверджено')).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Початок')).toHaveAttribute('type', 'datetime-local');
+    expect(screen.getByLabelText('Завершення')).toHaveAttribute('type', 'datetime-local');
+  });
   it('requires fresh calendar approval after changing the composition of a plan', async () => {
     const { data } = await setup();
     fireEvent.click(screen.getAllByRole('button', { name: /Деталі/ })[0]!);
