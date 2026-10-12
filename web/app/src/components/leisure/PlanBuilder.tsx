@@ -89,6 +89,8 @@ export function PlanBuilder({
     ),
     [journey, setJourney] = useState<LeisureReceipt['legs']>(),
     [allowJourney, setAllowJourney] = useState(false),
+    [sourceWarnings, setSourceWarnings] = useState<string[]>([]),
+    [allowSources, setAllowSources] = useState(false),
     [additionSession, setAdditionSession] = useState('');
   const goStage = (next: number) => {
     setStage(next);
@@ -124,6 +126,8 @@ export function PlanBuilder({
   const invalidateCheck = () => {
     checkVersion.current++;
     setCheck(null);
+    setSourceWarnings([]);
+    setAllowSources(false);
     setJourney(undefined);
     setAllowJourney(false);
     setAllowConflict(false);
@@ -441,16 +445,26 @@ export function PlanBuilder({
                 prepared = payload();
               setChecking(true);
               void (async () => {
-                for (const stop of stops)
-                  if (lookup.get(stop.itemId)?.placeId) await send('place-check', {}, stop.itemId);
-                  else if (
-                    lookup.get(stop.itemId) &&
-                    !['cinema', 'food'].includes(lookup.get(stop.itemId)!.category)
-                  )
-                    await send('source-check', {}, stop.itemId);
+                const warnings: string[] = [];
+                for (const stop of stops) {
+                  const item = lookup.get(stop.itemId);
+                  const operation = item?.placeId
+                    ? 'place-check'
+                    : item && !['cinema', 'food'].includes(item.category)
+                      ? 'source-check'
+                      : null;
+                  if (operation)
+                    try {
+                      await send(operation, {}, stop.itemId);
+                    } catch {
+                      warnings.push(item?.title ?? 'Варіант');
+                    }
+                }
                 const route = stops.length > 1 ? await send('journey-check', prepared) : null;
                 const result = await send('calendar-check', prepared, existing?.id);
                 if (version === checkVersion.current) {
+                  setSourceWarnings(warnings);
+                  setAllowSources(false);
                   setJourney(route?.legs);
                   setCheck(result);
                 }
@@ -466,6 +480,25 @@ export function PlanBuilder({
         >
           {checking ? 'Перевіряю…' : 'Перевірити календар'}
         </Button>
+        {sourceWarnings.length > 0 && (
+          <div className="leisure-notice">
+            <strong>Джерело тимчасово недоступне</strong>
+            <p>{sourceWarnings.join(' · ')}</p>
+            <p className="leisure-secondary">
+              Автоматично звірити графік і статус не вдалося. Відкрий посилання на попередньому
+              етапі й перевір дату, час та доступність самостійно. Підтверджене скасування все одно
+              не дозволить зберегти план.
+            </p>
+            <label className="leisure-check">
+              <input
+                type="checkbox"
+                checked={allowSources}
+                onChange={(e) => setAllowSources(e.target.checked)}
+              />
+              Самостійно звірив дату, час і доступність
+            </label>
+          </div>
+        )}
         {journey?.map((leg, index) => (
           <p key={`${leg.from}-${leg.to}`} className="leisure-notice">
             Дорога {index + 1}:{' '}
@@ -528,6 +561,7 @@ export function PlanBuilder({
           disabled={
             busy ||
             checking ||
+            (sourceWarnings.length > 0 && !allowSources) ||
             (journey?.some((leg) => leg.available && !leg.enoughTime) && !allowJourney) ||
             !stops.length ||
             !check ||
