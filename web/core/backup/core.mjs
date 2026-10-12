@@ -24,6 +24,10 @@ export const BACKUP_DOC_VERSION = 2;
  * стабільний порядок робить diff двох бекапів читабельним).
  */
 export const BACKUP_TABLES = [
+  'leisure_items',
+  'leisure_editions',
+  'leisure_records',
+  'leisure_commands',
   'facts',
   'fact_ledger',
   'sessions',

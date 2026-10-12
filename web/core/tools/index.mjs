@@ -33,6 +33,8 @@ import { runFinanceQuery } from './finance.mjs';
 import { runInboxSearch } from './inbox.mjs';
 import { runTripContext } from './trip.mjs';
 import { TRIP_WORKSPACE_OPS } from './trip-workspace.mjs';
+import { runLeisureQuery } from './leisure.mjs';
+import { LEISURE_OPERATIONS } from '../leisure/model.mjs';
 
 /**
  * @typedef {{
@@ -45,6 +47,35 @@ import { TRIP_WORKSPACE_OPS } from './trip-workspace.mjs';
 
 /** @type {Record<string, InternalToolDef>} */
 export const TOOLS = {
+  'leisure.query': {
+    args: {
+      type: 'object',
+      properties: {
+        plan_json: { type: 'string', maxLength: 20000 },
+        id: { type: 'string', maxLength: 320 },
+        view: { type: 'string', enum: ['week', 'saved', 'plans', 'visits'] },
+        query: { type: 'string', maxLength: 160 },
+      },
+    },
+    tainting: true,
+    run: runLeisureQuery,
+  },
+  'leisure.change': {
+    args: {
+      type: 'object',
+      required: ['op', 'payload_json'],
+      properties: {
+        op: { type: 'string', enum: LEISURE_OPERATIONS },
+        id: { type: 'string', maxLength: 320 },
+        payload_json: { type: 'string', maxLength: 20000 },
+        command_id: { type: 'string', minLength: 8, maxLength: 80 },
+      },
+    },
+    write: { kind: 'leisure.change' },
+    run: () => {
+      throw new Error('leisure.change виконується через policy');
+    },
+  },
   'data.read': {
     args: {
       type: 'object',

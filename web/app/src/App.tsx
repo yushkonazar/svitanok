@@ -13,6 +13,7 @@ import { financePathForStartParam } from '../../core/finance/links.mjs';
 import { checkinPathForStartParam } from '../../core/checkin/windows.mjs';
 import { Fog } from './components/ui/Fog.tsx';
 import { SessionExpired } from './components/ui/SessionExpired.tsx';
+import { NavigationPager } from './components/ui/NavigationPager.tsx';
 
 // Оболонка дашборда (дизайн v2, Svitanok.dc.html): туман-фон, хедер (лого/дата/
 // тема), скрол-контент, таб-бар-пігулка. Кожен таб = маршрут (deep-link
@@ -23,20 +24,16 @@ import { SessionExpired } from './components/ui/SessionExpired.tsx';
 // повноекранний режим із власним хедером і без таб-бара (пʼятий таб роздув би
 // пігулку, а заходять туди зрідка).
 
-// ⚠️ Пʼять табів — СТЕЛЯ. Поміряно рендером у найгіршому випадку (активна
-// «Статистика», найдовший підпис): пігулка 317px. Вона живе у fixed inset-x-0,
-// тобто міряється проти ширини екрана: на 390px запас 73px, на вузькому 360px —
-// 43px, на 320px лишається 3px. Шостого таба не буде — наступний екран робити
-// повноекранним маршрутом (як /saved), а не табом.
+// По пʼять розділів на сторінці навігації. Свайп змінює лише панель,
+// а перехід відбувається після натискання: чернетка відкритого екрана живе далі.
 const TABS = [
   { id: 'today', path: '/', label: 'Сьогодні' },
   { id: 'news', path: '/news', label: 'Новини' },
   { id: 'checkin', path: '/checkin', label: 'Чек-ін' },
   { id: 'stats', path: '/stats', label: 'Мій стан' },
   { id: 'finance', path: '/finance', label: 'Фінанси' },
+  { id: 'leisure', path: '/leisure', label: 'Дозвілля' },
 ] as const;
-
-type TabId = (typeof TABS)[number]['id'];
 
 const SETTINGS_PATH = '/settings';
 const SAVED_PATH = '/saved';
@@ -71,6 +68,11 @@ const SettingsScreen = lazy(() =>
 const SavedScreen = lazy(() =>
   import('./components/saved/SavedScreen.tsx').then((module) => ({ default: module.SavedScreen })),
 );
+const LeisureScreen = lazy(() =>
+  import('./components/leisure/LeisureScreen.tsx').then((module) => ({
+    default: module.LeisureScreen,
+  })),
+);
 
 /**
  * Повноекранні маршрути — НЕ таби: власний хедер «‹ Назва», без таб-бара.
@@ -84,7 +86,7 @@ const FULL: Array<{ path: string; title: string }> = [
 /** Усі відомі маршрути — і таби, і повноекранні (для редіректу/deep-link). */
 const KNOWN_PATHS: string[] = [...TABS.map((t) => t.path), ...FULL.map((f) => f.path)];
 
-function TabIcon({ id, active }: { id: TabId; active: boolean }) {
+function TabIcon({ id, active }: { id: string; active: boolean }) {
   const sw = active ? 2 : 1.6;
   const common = {
     fill: 'none',
@@ -92,6 +94,12 @@ function TabIcon({ id, active }: { id: TabId; active: boolean }) {
     strokeWidth: sw,
     strokeLinecap: 'round' as const,
   };
+  if (id === 'leisure')
+    return (
+      <svg width="18" height="18" viewBox="0 0 24 24" {...common}>
+        <path d="m12 3 2.7 5.5 6.1.9-4.4 4.3 1 6.1-5.4-2.9-5.4 2.9 1-6.1-4.4-4.3 6.1-.9Z" />
+      </svg>
+    );
   if (id === 'today')
     return (
       <svg width="17" height="17" viewBox="0 0 24 24" {...common}>
@@ -132,6 +140,7 @@ function TabIcon({ id, active }: { id: TabId; active: boolean }) {
 function pathForStartParam(param: string): string | null {
   if (param === 'access') return '/settings?panel=access';
   if (param === 'memory') return '/settings?panel=memory';
+  if (param.startsWith('leisure_')) return `/leisure?item=${encodeURIComponent(param.slice(8))}`;
   const checkin = checkinPathForStartParam(param);
   if (checkin) return checkin;
   const finance = financePathForStartParam(param);
@@ -402,7 +411,11 @@ export function App() {
         <main
           key={full ? full.path : active.id}
           style={{ animation: 'fadeUp .32s ease-out backwards' }}
-          className={full ? 'px-5 pb-10 pt-2.5' : 'px-5 pb-[120px] pt-1.5'}
+          className={
+            full
+              ? 'px-5 pb-10 pt-2.5'
+              : 'px-5 pb-[calc(144px_+_env(safe-area-inset-bottom))] pt-1.5'
+          }
         >
           {/* Межа помилок — саме ТУТ, навколо вмісту, а не навколо застосунку:
               шапка, таб-бар і навігація мусять пережити падіння екрана, інакше з
@@ -429,6 +442,8 @@ export function App() {
                 <FinanceScreen />
               ) : active.id === 'checkin' ? (
                 <CheckinScreen />
+              ) : active.id === 'leisure' ? (
+                <LeisureScreen />
               ) : (
                 <StatsScreen />
               )}
@@ -439,39 +454,13 @@ export function App() {
 
       {/* TAB BAR — пігулка, активний таб розкривається з підписом. У
           налаштуваннях сховано (повноекранний режим, як у макеті). */}
-      <nav
+      <NavigationPager
+        tabs={TABS}
+        activePath={active.path}
         hidden={!!full}
-        className="renewal-navigation pointer-events-none fixed inset-x-0 bottom-[18px] z-30 flex justify-center"
-      >
-        <div
-          className="renewal-nav-inner pointer-events-auto flex gap-1 border border-glassb bg-bg2 p-1.5 backdrop-blur-[28px]"
-          style={{ boxShadow: '0 12px 40px rgba(0,0,0,.5)' }}
-        >
-          {TABS.map((t) => {
-            const on = t.id === active.id;
-            return (
-              <button
-                key={t.id}
-                type="button"
-                aria-label={t.label}
-                aria-current={on ? 'page' : undefined}
-                onClick={() => {
-                  navigate(t.path);
-                  haptic('light');
-                }}
-                // sheen — лише на АКТИВНІЙ: вона градієнтна й найбільша на екрані
-                // (≈125px), тож саме на ній відблиск і видно. Пігулка живе в
-                // fixed-таббарі, тобто рух присутній на кожному екрані завжди.
-                className={on ? 'renewal-nav-tab is-active' : 'renewal-nav-tab text-tx3'}
-                style={on ? { background: 'var(--grad)', color: 'var(--color-onacc)' } : undefined}
-              >
-                <TabIcon id={t.id} active={on} />
-                <span>{t.label}</span>
-              </button>
-            );
-          })}
-        </div>
-      </nav>
+        onNavigate={navigate}
+        icon={(id, active) => <TabIcon id={id} active={active} />}
+      />
     </div>
   );
 }

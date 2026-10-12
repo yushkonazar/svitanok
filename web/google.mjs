@@ -661,11 +661,22 @@ export async function readCalendarRange(
  * @param {Env} env
  * @param {{ title: string, startIso: string, endIso: string, reminderMinutes?: number,
  *           location?: string|null, attendees?: string[]|null,
- *           transparent?: boolean, silent?: boolean }} opts
+ *           transparent?: boolean, silent?: boolean, id?: string, description?: string }} opts
  */
 export async function createCalendarEvent(
   env,
-  { title, startIso, endIso, reminderMinutes, location, attendees, transparent, silent },
+  {
+    title,
+    startIso,
+    endIso,
+    reminderMinutes,
+    location,
+    attendees,
+    transparent,
+    silent,
+    id,
+    description,
+  },
 ) {
   const token = await googleAccessToken(env);
   if (!token) return { ok: false };
@@ -675,8 +686,9 @@ export async function createCalendarEvent(
     const res = await fetch(url.toString(), {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, 'content-type': 'application/json' },
-      body: JSON.stringify(
-        buildCreateEventBody({
+      signal: AbortSignal.timeout(15000),
+      body: JSON.stringify({
+        ...buildCreateEventBody({
           title,
           startIso,
           endIso,
@@ -686,8 +698,11 @@ export async function createCalendarEvent(
           transparent,
           silent,
         }),
-      ),
+        ...(id ? { id } : {}),
+        ...(description ? { description } : {}),
+      }),
     });
+    if (res.status === 409 && id) return { ok: false, id, exists: true };
     if (!res.ok) {
       console.error('google calendar create HTTP', res.status, await res.text().catch(() => ''));
       return { ok: false };
@@ -714,26 +729,47 @@ function calendarEventUrl(/** @type {string} */ eventId) {
  * обʼєкт у {items:[...]} замість дублювати нормалізацію.
  */
 export async function getCalendarEvent(/** @type {Env} */ env, /** @type {string} */ eventId) {
+  const outcome = await inspectCalendarEvent(env, eventId);
+  return outcome.state === 'found' ? outcome.event : null;
+}
+
+/** Distinguish a user-deleted event from a temporary network/auth failure.
+ * @param {Env} env @param {string} eventId */
+export async function inspectCalendarEvent(env, eventId) {
   const token = await googleAccessToken(env);
-  if (!token) return null;
+  if (!token) return { state: 'unavailable', event: null };
   try {
     const res = await fetch(calendarEventUrl(eventId), {
       headers: { Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(15000),
     });
+    if (res.status === 404 || res.status === 410) return { state: 'missing', event: null };
     if (!res.ok) {
       if (res.status !== 404) {
         console.error('google calendar get HTTP', res.status, await res.text().catch(() => ''));
       }
-      return null;
+      return { state: 'unavailable', event: null };
     }
     const json = /** @type {any} */ (await res.json());
     const event = parseEvents({ items: [json] })[0];
     return event
-      ? { ...event, hasAttendees: Array.isArray(json.attendees) && json.attendees.length > 0 }
-      : null;
+      ? {
+          state: 'found',
+          event: {
+            ...event,
+            hasAttendees: Array.isArray(json.attendees) && json.attendees.length > 0,
+          },
+          audit: {
+            title: String(json.summary ?? ''),
+            location: String(json.location ?? ''),
+            description: String(json.description ?? ''),
+          },
+          etag: typeof json.etag === 'string' ? json.etag : undefined,
+        }
+      : { state: 'unavailable', event: null };
   } catch (/** @type {any} */ err) {
     console.error('google calendar get failed', err.message);
-    return null;
+    return { state: 'unavailable', event: null };
   }
 }
 
@@ -741,9 +777,9 @@ export async function getCalendarEvent(/** @type {Env} */ env, /** @type {string
  *  `sendUpdates=all`, коли патч зачіпає attendees (PR-10) — той самий мотив, що create. */
 /**
  * @param {Env} env
- * @param {{ eventId: string, patch: KvBlob }} opts
+ * @param {{ eventId: string, patch: KvBlob, etag?: string }} opts
  */
-export async function updateCalendarEvent(env, { eventId, patch }) {
+export async function updateCalendarEvent(env, { eventId, patch, etag }) {
   const token = await googleAccessToken(env);
   if (!token) return { ok: false };
   try {
@@ -753,9 +789,15 @@ export async function updateCalendarEvent(env, { eventId, patch }) {
     }
     const res = await fetch(url.toString(), {
       method: 'PATCH',
-      headers: { Authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'content-type': 'application/json',
+        ...(etag ? { 'If-Match': etag } : {}),
+      },
+      signal: AbortSignal.timeout(15000),
       body: JSON.stringify(patch),
     });
+    if (res.status === 412) return { ok: false, conflict: true };
     if (!res.ok) {
       console.error('google calendar update HTTP', res.status, await res.text().catch(() => ''));
       return { ok: false };
@@ -775,16 +817,18 @@ export async function updateCalendarEvent(env, { eventId, patch }) {
  */
 /**
  * @param {Env} env
- * @param {{ eventId: string }} opts
+ * @param {{ eventId: string, etag?: string }} opts
  */
-export async function deleteCalendarEvent(env, { eventId }) {
+export async function deleteCalendarEvent(env, { eventId, etag }) {
   const token = await googleAccessToken(env);
   if (!token) return { ok: false };
   try {
     const res = await fetch(calendarEventUrl(eventId), {
       method: 'DELETE',
-      headers: { Authorization: `Bearer ${token}` },
+      headers: { Authorization: `Bearer ${token}`, ...(etag ? { 'If-Match': etag } : {}) },
+      signal: AbortSignal.timeout(15000),
     });
+    if (res.status === 412) return { ok: false, conflict: true };
     if (!res.ok && res.status !== 404 && res.status !== 410) {
       console.error('google calendar delete HTTP', res.status, await res.text().catch(() => ''));
       return { ok: false };

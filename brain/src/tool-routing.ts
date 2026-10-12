@@ -10,6 +10,24 @@ type Route = { words: readonly string[]; tools: readonly string[] };
 
 const ROUTES: readonly Route[] = [
   {
+    words: [
+      'дозвіл',
+      'афіш',
+      'фестивал',
+      'концерт',
+      'виставк',
+      'стендап',
+      'кіно',
+      'forum lviv',
+      'king cross',
+      'наш вихід',
+      'наступний вихід',
+      'не пішли',
+      'були в',
+    ],
+    tools: ['leisure_query', 'leisure_change', 'calendar_read', 'places_details', 'routes_eta'],
+  },
+  {
     words: ['брифінг', 'зведенн', 'корисн', 'менше такого', 'сховай', 'приховай', 'покажи знов'],
     tools: ['briefing_feedback'],
   },
@@ -28,6 +46,7 @@ const ROUTES: readonly Route[] = [
     ],
     tools: [
       'calendar_read',
+      'leisure_query',
       'plan_intent',
       'plan_draft',
       'plan_accept',
@@ -128,6 +147,8 @@ const ROUTES: readonly Route[] = [
       'trip_context',
       'trip_expense',
       'trip_workspace',
+      'leisure_query',
+      'leisure_change',
       'delegate',
     ],
   },

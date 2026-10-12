@@ -53,6 +53,7 @@ import { startTableChain, cancelTableChain, findActiveTableChain } from '../chai
 import { startTripChain, cancelTripChain } from '../chains/trip.mjs';
 import { runTripExpense, undoTripExpense } from '../tools/trip-expenses.mjs';
 import { runTripWorkspace, undoTripWorkspace } from '../tools/trip-workspace.mjs';
+import { runLeisureChange } from '../tools/leisure.mjs';
 import { importSteamWishlist } from '../steam/check.mjs';
 import {
   startPriceTrack,
@@ -173,6 +174,7 @@ function driveNoteName(raw) {
  * }>}
  */
 export const EXECUTORS = {
+  'leisure.change': { execute: (env, payload, nowMs) => runLeisureChange(env, payload, nowMs) },
   'trip.workspace': {
     execute: (env, payload, nowMs, ctx) => runTripWorkspace(env, payload, nowMs, ctx),
     undo: (env, snapshot) => undoTripWorkspace(env, snapshot),

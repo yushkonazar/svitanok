@@ -1,0 +1,53 @@
+.navigation-pager {
+  width: calc(100% - 28px);
+  max-width: 452px;
+  border-radius: 20px;
+  padding: 6px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
+  touch-action: pan-y;
+}
+.navigation-pager-tabs {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 2px;
+}
+.navigation-pager-controls {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 44px;
+}
+.navigation-pager-controls button {
+  min-width: 44px;
+  min-height: 44px;
+  border-radius: 12px;
+  font-size: 22px;
+  color: var(--color-a2);
+}
+.navigation-pager-controls button:disabled {
+  opacity: 0.25;
+}
+.navigation-pager-controls > span {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 12px;
+}
+.navigation-pager-controls i {
+  display: block;
+  width: 5px;
+  height: 5px;
+  border-radius: 8px;
+  background: var(--color-tx3);
+  opacity: 0.4;
+}
+.navigation-pager-controls i.is-current {
+  width: 16px;
+  background: var(--color-a2);
+  opacity: 1;
+}
+@media (min-width: 900px) {
+  .navigation-pager {
+    max-width: 612px;
+  }
+}

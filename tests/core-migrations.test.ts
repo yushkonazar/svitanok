@@ -27,6 +27,28 @@ it('кожна D1-міграція явно оголошує expand або contr
 
 /** Очікувані колонки звичайних таблиць — дослівно з 07-schema §1. */
 const EXPECTED_COLUMNS: Record<string, string[]> = {
+  leisure_items: [
+    'id',
+    'venue_id',
+    'category',
+    'start_date',
+    'end_date',
+    'data_json',
+    'checked_at',
+  ],
+  leisure_editions: ['week', 'data_json', 'created_at'],
+  leisure_records: [
+    'id',
+    'kind',
+    'item_id',
+    'venue_id',
+    'at',
+    'data_json',
+    'revision',
+    'updated_at',
+    'sync_claim_until',
+  ],
+  leisure_commands: ['id', 'receipt_json', 'created_at'],
   work_contexts: [
     'id',
     'scope_key',
@@ -515,6 +537,7 @@ const EXPECTED_PK: Record<string, string[]> = {
   checkin_extensions: ['date_key', 'slot'],
   sessions: ['thread_id'],
   places: ['place_id'],
+  leisure_editions: ['week'],
   instructions: ['name'],
   // Append-only журнал без власного ключа — лише rowid.
   instruction_history: [],
@@ -535,6 +558,8 @@ type IndexSpec = { cols: string[]; unique?: boolean };
  * жодного індексу поза PK — звірка точна, зайвий індекс теж провалює тест.
  */
 const EXPECTED_INDEXES: Record<string, IndexSpec[]> = {
+  leisure_items: [{ cols: ['start_date', 'end_date'] }, { cols: ['venue_id'] }],
+  leisure_records: [{ cols: ['kind', 'at'] }, { cols: ['item_id', 'kind'] }],
   work_contexts: [
     { cols: ['scope_key'], unique: true },
     { cols: ['chat_id', 'thread_id', 'opened_at'] },
@@ -647,7 +672,7 @@ const columnsOf = (table: string): { name: string; pk: number }[] =>
   }[];
 
 describe('міграції D1 — файли', () => {
-  it('тридцять вісім файлів 0001–0038, нумерація без дірок', () => {
+  it('тридцять девʼять файлів 0001–0039, нумерація без дірок', () => {
     expect(files.map((f) => f.slice(0, 4))).toEqual([
       '0001',
       '0002',
@@ -687,6 +712,7 @@ describe('міграції D1 — файли', () => {
       '0036',
       '0037',
       '0038',
+      '0039',
     ]);
   });
 });
