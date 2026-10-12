@@ -65,6 +65,32 @@ async function main() {
         const box = (await dialog.count()) ? await dialog.boundingBox() : null;
         if (overflow || (box && (box.x < 0 || box.x + box.width > width + 1)))
           throw new Error(`overflow ${width} ${name}`);
+        const fieldOverflow = await page.evaluate(() =>
+          [...document.querySelectorAll('.leisure-fields input')].some((input) => {
+            const field = input.getBoundingClientRect();
+            const label = input.closest('label').getBoundingClientRect();
+            return field.left < label.left - 1 || field.right > label.right + 1;
+          }),
+        );
+        if (fieldOverflow) throw new Error(`field overflow ${width} ${name}`);
+        if (name.endsWith('plan')) {
+          const overlaps = await page.evaluate(() => {
+            const fields = [...document.querySelectorAll('.leisure-plan-times input')];
+            return fields.some((a, index) =>
+              fields.slice(index + 1).some((b) => {
+                const first = a.getBoundingClientRect(),
+                  second = b.getBoundingClientRect();
+                return (
+                  first.left < second.right &&
+                  first.right > second.left &&
+                  first.top < second.bottom &&
+                  first.bottom > second.top
+                );
+              }),
+            );
+          });
+          if (overlaps) throw new Error(`date/time overlap ${width}`);
+        }
         if (errors.length) throw new Error(errors.join('\n'));
         report.push({ width, screen: name, overflow: false });
         if (width === 393) await page.screenshot({ path: path.join(output, `${name}.png`) });
@@ -76,6 +102,11 @@ async function main() {
       await page.getByRole('button', { name: 'Додати до плану вечора' }).click();
       await page.getByLabel('Назва', { exact: true }).fill('Наше побачення');
       await verify('plan');
+      await page.getByRole('button', { name: 'Закрити' }).click();
+      await page.getByRole('button', { name: 'Заклади', exact: true }).click();
+      await page.getByRole('button', { name: 'Деталі', exact: false }).first().click();
+      await page.getByRole('button', { name: 'Додати до плану вечора' }).click();
+      await verify('restaurant-plan');
       await page.getByRole('button', { name: 'Закрити' }).click();
       await page.getByRole('button', { name: 'Кіно', exact: true }).click();
       await page.getByRole('button', { name: 'Деталі', exact: false }).first().click();

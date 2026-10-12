@@ -236,6 +236,7 @@
 .leisure-field,
 .leisure-fields label {
   display: block;
+  min-width: 0;
   color: var(--color-tx2);
   font-size: 12px;
   margin: 12px 0;
@@ -259,7 +260,29 @@
 }
 .leisure-screen input[type='date'],
 .leisure-screen input[type='datetime-local'] {
+  appearance: none;
+  min-inline-size: 0;
+  inline-size: 100%;
   overflow: hidden;
+}
+.leisure-screen input::-webkit-date-and-time-value {
+  min-width: 0;
+  text-align: left;
+}
+/* Localized date/time controls need the full card width in iOS WebKit. */
+.leisure-plan-times {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 14px;
+  margin: 18px 0 14px;
+}
+.leisure-plan-times label {
+  margin: 0;
+}
+.leisure-stop {
+  min-width: 0;
+}
+.leisure-stop h3 {
+  overflow-wrap: anywhere;
 }
 .leisure-check {
   display: flex;
