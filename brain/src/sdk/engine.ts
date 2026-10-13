@@ -104,6 +104,7 @@ export function createSdkEngine(): RunEngine {
       let sessionId: string | null = null;
       let apiMs: number | null = null;
       let partial = '';
+      let modelBreakdown: EngineOutcome['modelBreakdown'];
       try {
         const q = query({
           prompt: inputText,
@@ -149,20 +150,57 @@ export function createSdkEngine(): RunEngine {
             // Час у API моделі проти повного часу прогону (замір швидкості,
             // 06.09): різниця - накладні CLI/сесії, не генерація.
             if (typeof message.duration_api_ms === 'number') apiMs = message.duration_api_ms;
+            // Result receipts are cumulative for this query. Replace, never add.
+            modelBreakdown = Object.entries(message.modelUsage ?? {}).map(([model, item]) => {
+              const known = [
+                item.inputTokens,
+                item.outputTokens,
+                item.cacheReadInputTokens,
+                item.cacheCreationInputTokens,
+              ].every((n) => Number.isSafeInteger(n) && n >= 0);
+              return {
+                model,
+                usage: {
+                  inputTokens:
+                    item.inputTokens + item.cacheReadInputTokens + item.cacheCreationInputTokens,
+                  outputTokens: item.outputTokens,
+                  totalTokens:
+                    item.inputTokens +
+                    item.cacheReadInputTokens +
+                    item.cacheCreationInputTokens +
+                    item.outputTokens,
+                  cachedInputTokens: item.cacheReadInputTokens,
+                  cacheWriteTokens: item.cacheCreationInputTokens,
+                },
+                usageComplete: known,
+                estimatedCostUsd:
+                  known &&
+                  item.costBasis !== 'unknown' &&
+                  Number.isFinite(item.costUSD) &&
+                  item.costUSD >= 0
+                    ? item.costUSD
+                    : null,
+              };
+            });
             if (message.subtype === 'success') {
               finalText = message.result;
             } else {
               // 'error_max_turns' | 'error_during_execution' | usage-limit -
               // явна помилка прогону: agent.ts доставить її власнику чесно, а
               // для працівника на стелі ходів віддасть частковий текст (S-7-5).
-              throw new EngineStopError(message.subtype, partial);
+              throw new EngineStopError(message.subtype, partial, {
+                provider: 'claude',
+                model: opts.model,
+                apiMs,
+                modelBreakdown,
+              });
             }
           }
         }
       } finally {
         opts.abortSignal.removeEventListener('abort', onAbort);
       }
-      return { finalText, sessionId, apiMs, provider: 'claude', model: opts.model };
+      return { finalText, sessionId, apiMs, provider: 'claude', model: opts.model, modelBreakdown };
     },
 
     // Транскрипт із локального сховища SDK (HOME=data на VPS) - для згортки

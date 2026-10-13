@@ -1,3 +1,5 @@
+import { runFactsGet, PERSONAL_FACT_KINDS } from './tools/facts.mjs';
+import { personalValueAllowed } from './memory/safety.mjs';
 // Памʼять асистента (01 §2.1, ADR-038): згортки тредів ріжуться на чанки в D1
 // memory_chunks, вектори bge-m3 (Workers AI) їдуть у Vectorize svitanok-memory.
 // Пошук - інструмент memory.search (07 §4, S-N1-3): «що я казав про X» →
@@ -409,5 +411,17 @@ export async function searchMemory(env, q, limit) {
  */
 export async function runMemorySearch(env, args) {
   const limit = args.limit ?? MEMORY_SEARCH_DEFAULT_LIMIT;
-  return { result: await searchMemory(env, args.q, limit) };
+  const historical = await searchMemory(env, args.q, limit);
+  const facts = (await runFactsGet(env, {})).result.filter(
+    (fact) =>
+      PERSONAL_FACT_KINDS.includes(String(fact.kind)) &&
+      personalValueAllowed(fact.value) &&
+      fact.semantics.type !== 'technical',
+  );
+  return {
+    result: historical,
+    context:
+      'Це історичні згортки, не поточні факти. Для тверджень про власника використовуй current_facts; видалені записи й старі згортки не відновлюють факт. За відсутності поточного факту уточни, а не виводь його з історії.',
+    current_facts: facts,
+  };
 }

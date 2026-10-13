@@ -577,16 +577,16 @@
 
 /* Approved prerelease: warm editorial hierarchy and consistent surfaces. */
 :root:not([data-theme='light']) {
-  --color-bg: #17121f;
-  --color-bg2: #251e2f;
-  --color-tx: #f2e9ef;
-  --color-tx2: #bbaec0;
-  --color-tx3: #9889a2;
-  --color-a2: #ffc08c;
-  --color-a1: #f08e91;
-  --color-glassb: #4a3a50;
-  --color-glass: rgba(223, 198, 218, 0.045);
-  --grad: linear-gradient(130deg, #ffc08c, #ef9995);
+  --color-bg: #10121b;
+  --color-bg2: #1b1e2a;
+  --color-tx: #f4f2ef;
+  --color-tx2: #c5cad6;
+  --color-tx3: #a9b0c0;
+  --color-a2: #ffaf83;
+  --color-a1: #ff967d;
+  --color-glassb: #34394a;
+  --color-glass: rgba(223, 215, 210, 0.045);
+  --grad: linear-gradient(130deg, #ffaf83, #f3a68f);
 }
 .renewal-shell {
   padding-top: 10px;
@@ -1616,4 +1616,81 @@
   .checkin-followup {
     animation: none;
   }
+}
+
+/* Warm morning: restrained feedback without remounts or moving content. */
+.schedule-fields {
+  align-items: end;
+}
+.schedule-fields .renewal-field > span {
+  min-height: 2.8em;
+}
+.renewal-chart-note {
+  font-size: 12px;
+  color: var(--color-tx3);
+}
+.renewal-primary,
+.renewal-secondary {
+  transition:
+    background-color 150ms ease,
+    border-color 150ms ease,
+    box-shadow 150ms ease;
+}
+.renewal-primary:focus-visible,
+.renewal-secondary:focus-visible,
+.renewal-field :focus-visible {
+  outline: 2px solid var(--color-a2);
+  outline-offset: 3px;
+}
+.renewal-primary:not(:disabled):active,
+.renewal-secondary:not(:disabled):active {
+  box-shadow: inset 0 0 0 2px var(--color-a2);
+}
+.system-metrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.system-metrics strong {
+  display: block;
+  font-size: 24px;
+  font-variant-numeric: tabular-nums;
+}
+.system-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: baseline;
+  margin-top: 12px;
+}
+.system-row > * {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+@media (prefers-reduced-motion: reduce) {
+  .renewal-primary,
+  .renewal-secondary {
+    transition: none;
+  }
+}
+:root[data-calm='true'] .renewal-primary,
+:root[data-calm='true'] .renewal-secondary {
+  transition: none;
+}
+
+.renewal-primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 44px;
+  max-width: 100%;
+  padding: 11px 16px;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  background: var(--color-a2);
+  color: var(--color-onacc);
+  font-size: 13px;
+  font-weight: 650;
+  text-align: center;
 }

@@ -6,6 +6,7 @@
 // Browser Rendering - окремий спайк).
 
 import { runFactsGet } from '../tools/facts.mjs';
+import { isMemoryRecord } from '../memory/semantics.mjs';
 import { formatMoney } from '../format.mjs';
 
 /** @typedef {{ key: string, name: string, per100: number | null, fuel: string | null }} Vehicle */
@@ -18,17 +19,34 @@ import { formatMoney } from '../format.mjs';
  */
 export async function listVehicles(env) {
   const { result } = await runFactsGet(env, { kind: 'vehicle' });
-  return /** @type {any[]} */ (result).map((r) => {
-    const v = r.value ?? {};
-    return {
-      key: String(r.key),
-      name: String(v.name ?? v.title ?? r.key),
-      per100: Number.isFinite(Number(v.per100 ?? v.consumption))
-        ? Number(v.per100 ?? v.consumption)
-        : null,
-      fuel: v.fuel == null ? null : String(v.fuel),
-    };
-  });
+  return /** @type {any[]} */ (result)
+    .filter(
+      (r) =>
+        !r.stale &&
+        !r.review_due &&
+        (isMemoryRecord(r.value)
+          ? r.source === 'owner_assertion' &&
+            r.value.type === 'resource' &&
+            r.value.domain === 'transport'
+          : r.source === 'owner_assertion' && typeof r.value === 'object' && r.value !== null),
+    )
+    .map((r) => {
+      const record = r.value;
+      const v = isMemoryRecord(record)
+        ? {
+            ...record.properties,
+            name: `${record.subject}${record.relation === 'family' ? ' · сімейне авто' : ''}`,
+          }
+        : (record ?? {});
+      return {
+        key: String(r.key),
+        name: String(v.name ?? v.title ?? r.key),
+        per100: Number.isFinite(Number(v.per100 ?? v.consumption))
+          ? Number(v.per100 ?? v.consumption)
+          : null,
+        fuel: v.fuel == null ? null : String(v.fuel),
+      };
+    });
 }
 
 /** Ціна пального з `facts.setting.fuel_price` ({A95: 58.4} або число, грн/л). @param {Env} env @param {string | null} fuel */

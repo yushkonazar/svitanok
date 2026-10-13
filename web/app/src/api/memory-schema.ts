@@ -8,6 +8,15 @@ export const memoryEntrySchema = z.object({
   id: z.string(),
   label: z.string(),
   value: z.unknown(),
+  semantics: z
+    .object({
+      type: z.string(),
+      domain: z.string(),
+      relation: z.string(),
+      structured: z.boolean(),
+      needsReview: z.boolean(),
+    })
+    .optional(),
   text: z.string(),
   editable: z.boolean(),
   source: z.enum(['owner_assertion', 'observed_event', 'model_hypothesis']),
@@ -34,6 +43,7 @@ export const memoryWorkspaceSchema = z.object({
     }),
   ),
   offset: z.number().int().nonnegative(),
+  truncated: z.boolean().optional(),
   nextOffset: z.number().int().nonnegative().nullable(),
 });
 export type MemoryPreferences = z.infer<typeof memoryPreferencesSchema>;

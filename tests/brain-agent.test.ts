@@ -916,3 +916,55 @@ describe('makeRunner: «стоп» і ескалація (ADR-039)', () => {
     });
   });
 });
+
+it('records per-model Claude receipts without also billing the aggregate', async () => {
+  const client = makeClient({
+    instruction: vi.fn(async (_runId: string, name: string): Promise<InstructionOutcome> => ({
+      ok: true,
+      name,
+      version_hash: await instructionHash(TEST_INSTRUCTION_BODY),
+      body_md: TEST_INSTRUCTION_BODY,
+    })),
+  });
+  const runner = makeRunner({
+    client,
+    engine: {
+      async readTranscript() {
+        return null;
+      },
+      async run() {
+        return {
+          finalText: 'Готово.',
+          sessionId: null,
+          provider: 'claude',
+          model: 'aggregate',
+          estimatedCostUsd: 99,
+          modelBreakdown: [
+            {
+              model: 'first',
+              usage: { inputTokens: 10, outputTokens: 5 },
+              usageComplete: true,
+              estimatedCostUsd: 0.01,
+            },
+            {
+              model: 'second',
+              usage: { inputTokens: 3, outputTokens: 1 },
+              usageComplete: true,
+              estimatedCostUsd: 0.002,
+            },
+          ],
+        };
+      },
+    },
+  });
+  await runner(req());
+  const steps = client.reportRuns.mock.calls[0]![1] as Array<{
+    kind: string;
+    name: string;
+    note: string;
+  }>;
+  const models = steps.filter((step) => step.kind === 'model');
+  expect(models.map((step) => step.name)).toEqual(['claude:first', 'claude:second']);
+  expect(models[0]!.note).toContain('cost_usd=0.01000000');
+  expect(JSON.stringify(models)).not.toContain('99.00000000');
+});

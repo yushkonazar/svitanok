@@ -33,7 +33,20 @@ const TABS = [
   { id: 'stats', path: '/stats', label: 'Мій стан' },
   { id: 'finance', path: '/finance', label: 'Фінанси' },
   { id: 'leisure', path: '/leisure', label: 'Дозвілля' },
+  { id: 'system', path: '/system', label: 'Система' },
 ] as const;
+
+const SystemScreen = lazy(() =>
+  import('./components/system/SystemScreen.tsx').then((module) => ({
+    default: module.SystemScreen,
+  })),
+);
+
+const MemoryScreen = lazy(() =>
+  import('./components/settings/MemoryPanel.tsx').then((module) => ({
+    default: () => <module.MemoryPanel standalone />,
+  })),
+);
 
 const SETTINGS_PATH = '/settings';
 const SAVED_PATH = '/saved';
@@ -81,6 +94,7 @@ const LeisureScreen = lazy(() =>
 const FULL: Array<{ path: string; title: string }> = [
   { path: SETTINGS_PATH, title: 'Налаштування' },
   { path: SAVED_PATH, title: 'Збережене' },
+  { path: '/memory', title: 'Пам’ять асистента' },
 ];
 
 /** Усі відомі маршрути — і таби, і повноекранні (для редіректу/deep-link). */
@@ -94,6 +108,13 @@ function TabIcon({ id, active }: { id: string; active: boolean }) {
     strokeWidth: sw,
     strokeLinecap: 'round' as const,
   };
+  if (id === 'system')
+    return (
+      <svg width="18" height="18" viewBox="0 0 24 24" {...common}>
+        <rect x="3" y="4" width="18" height="13" rx="2" />
+        <path d="M8 21h8M12 17v4M6 11h3l2-4 3 7 2-3h2" />
+      </svg>
+    );
   if (id === 'leisure')
     return (
       <svg width="18" height="18" viewBox="0 0 24 24" {...common}>
@@ -139,7 +160,7 @@ function TabIcon({ id, active }: { id: string; active: boolean }) {
 // start_param -> шлях. Приймаємо і id ('stats'), і шлях ('/stats').
 function pathForStartParam(param: string): string | null {
   if (param === 'access') return '/settings?panel=access';
-  if (param === 'memory') return '/settings?panel=memory';
+  if (param === 'memory') return '/memory';
   if (param.startsWith('leisure_')) return `/leisure?item=${encodeURIComponent(param.slice(8))}`;
   const checkin = checkinPathForStartParam(param);
   if (checkin) return checkin;
@@ -431,6 +452,8 @@ export function App() {
               {full ? (
                 full.path === SETTINGS_PATH ? (
                   <SettingsScreen />
+                ) : full.path === '/memory' ? (
+                  <MemoryScreen />
                 ) : (
                   <SavedScreen />
                 )
@@ -442,6 +465,8 @@ export function App() {
                 <FinanceScreen />
               ) : active.id === 'checkin' ? (
                 <CheckinScreen />
+              ) : active.id === 'system' ? (
+                <SystemScreen />
               ) : active.id === 'leisure' ? (
                 <LeisureScreen />
               ) : (

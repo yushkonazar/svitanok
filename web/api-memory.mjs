@@ -6,6 +6,7 @@ import {
   executeMemoryCommand,
   MemoryOperationError,
 } from './core/memory/workspace.mjs';
+import { MEMORY_TYPES } from './core/memory/semantics.mjs';
 import { MEMORY_VALUE_ERROR } from './core/memory/safety.mjs';
 
 /** Private, lazy memory workspace. No new external sources or paid model calls.
@@ -27,6 +28,10 @@ export async function handleMemory(request, env) {
     rawOffset = url.searchParams.get('offset') ?? '0';
   if (!/^\d{1,5}$/.test(rawOffset) || Number(rawOffset) > 10000)
     return reply({ ok: false, error: 'Неправильна сторінка пам’яті.' }, 400);
+  const group = url.searchParams.get('group') ?? 'all',
+    search = (url.searchParams.get('search') ?? '').trim();
+  if (!['all', 'review', ...MEMORY_TYPES].includes(group) || search.length > 80)
+    return reply({ ok: false, error: 'Неправильний фільтр пам’яті.' }, 400);
   const nowMs = Date.now();
   let command,
     acknowledged = false,
@@ -70,7 +75,12 @@ export async function handleMemory(request, env) {
       ok: true,
       acknowledged,
       message,
-      ...(await readMemoryWorkspace(env, nowMs, command ? 0 : Number(rawOffset))),
+      ...(await readMemoryWorkspace(
+        env,
+        nowMs,
+        command ? 0 : Number(rawOffset),
+        command ? { group: 'all', search: '' } : { group, search },
+      )),
     });
   } catch {
     return acknowledged

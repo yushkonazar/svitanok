@@ -157,7 +157,7 @@ it('explains why a stale removal confirmation cannot be used', async () => {
   fireEvent.click(await screen.findByRole('button', { name: 'Прибрати' }));
   const data = workspace();
   data.entries[0]!.token = 'event-2';
-  act(() => qc.setQueryData(['memory', 0], data));
+  act(() => qc.setQueryData(['memory', 0, 'all', ''], data));
   expect(await screen.findByRole('alert')).toHaveTextContent('Факт уже змінився');
   expect(screen.getByRole('button', { name: 'Так, прибрати' })).toBeDisabled();
 });
@@ -206,4 +206,42 @@ it('shows read failures instead of pretending that memory is empty', async () =>
   open();
   expect(await screen.findByRole('alert')).toHaveTextContent('Не вдалося завантажити');
   expect(screen.queryByText('На цій сторінці немає персональних фактів.')).not.toBeInTheDocument();
+});
+
+it('edits a semantic record in a stable modal without writing until save', async () => {
+  const data = workspace();
+  data.entries[0] = {
+    ...data.entries[0]!,
+    id: 'vehicle:example',
+    label: 'Ціль',
+    value: {
+      schemaVersion: 2,
+      type: 'aspiration',
+      domain: 'transport',
+      subject: 'Приклад авто',
+      relation: 'wants',
+    },
+    text: 'Хочу: Приклад авто',
+  };
+  mocks.fetch.mockResolvedValue(data);
+  open();
+  fireEvent.click(await screen.findByRole('button', { name: 'Змінити' }));
+  expect(screen.getByRole('dialog', { name: 'Редагування пам’яті' })).toBeInTheDocument();
+  fireEvent.change(screen.getByLabelText('Тип запису'), { target: { value: 'preference' } });
+  expect(screen.getByLabelText('Зв’язок із записом')).toHaveValue('likes');
+  expect(mocks.change).not.toHaveBeenCalled();
+  mocks.change.mockResolvedValue({ message: 'Збережено.', snapshot: data });
+  fireEvent.click(screen.getByRole('button', { name: 'Зберегти факт' }));
+  await waitFor(() =>
+    expect(mocks.change).toHaveBeenCalledWith(
+      expect.objectContaining({
+        value: expect.objectContaining({
+          type: 'preference',
+          relation: 'likes',
+          subject: 'Приклад авто',
+        }),
+      }),
+      expect.anything(),
+    ),
+  );
 });

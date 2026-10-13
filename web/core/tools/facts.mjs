@@ -4,6 +4,7 @@
 // the ledger. Both readers/writers fail explicitly without the DB binding.
 
 import { assertPersonalValue } from '../memory/safety.mjs';
+import { assertMemoryRecord, memorySemantics } from '../memory/semantics.mjs';
 
 /** kind-и таблиці facts - дослівно 07 §1. */
 export const FACT_KINDS = [
@@ -99,6 +100,7 @@ export async function runFactsGet(env, args, nowMs = Date.now()) {
         kind: r.kind,
         key: r.key,
         value: safeParse(String(r.value_json)),
+        semantics: memorySemantics(String(r.kind), String(r.key), safeParse(String(r.value_json))),
         source: normalizeFactSource(r.source) ?? 'model_hypothesis',
         confidence: r.confidence == null ? null : Number(r.confidence),
         observed_at: r.observed_at ?? null,
@@ -138,6 +140,7 @@ export async function runFactsSet(env, args, nowMs, ledgerContext = undefined) {
   if (!args.key) throw new Error('key не може бути порожнім');
   if (PERSONAL_FACT_KINDS.includes(args.kind)) {
     assertPersonalValue(args.value);
+    assertMemoryRecord(args.value);
     assertPersonalValue(args.key);
   }
   let source = normalizeFactSource(args.source);
