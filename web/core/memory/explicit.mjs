@@ -1,5 +1,7 @@
 import { personalValueAllowed } from './safety.mjs';
 import { readMemoryPreferences } from './preferences.mjs';
+import { runFactsGet, PERSONAL_FACT_KINDS } from '../tools/facts.mjs';
+import { isMemoryRecord } from './semantics.mjs';
 /** Deterministic first-party subset. Anything ambiguous follows normal policy.
  * @param {unknown} input */
 export async function extractExplicitFact(input) {
@@ -97,7 +99,7 @@ export async function explicitOwnerConsent(env, evidence, payload, nowMs = Date.
     evidence.messageId <= 0
   )
     return null;
-  const fact = await extractExplicitFact(evidence.text);
+  const fact = await resolveExplicitFact(env, await extractExplicitFact(evidence.text), nowMs);
   if (
     !fact ||
     fact.kind !== payload.kind ||
@@ -112,4 +114,46 @@ export async function explicitOwnerConsent(env, evidence, payload, nowMs = Date.
   )
     return null;
   return { ...fact, consentToken: consent.token };
+}
+
+/** Reuse a confirmed preference address, including a reclassified legacy
+ * address. Ambiguous/expired matches leave the deterministic automatic lane.
+ * @param {Env} env @param {Awaited<ReturnType<typeof extractExplicitFact>>} fact @param {number} nowMs */
+export async function resolveExplicitFact(env, fact, nowMs) {
+  if (!fact || fact.category !== 'preferences') return fact;
+  const subject = String(/** @type {any} */ (fact.value).preference)
+    .trim()
+    .toLocaleLowerCase('uk-UA');
+  const rows = (await runFactsGet(env, {}, nowMs)).result;
+  const matches = rows.filter((row) => {
+    if (
+      !PERSONAL_FACT_KINDS.includes(String(row.kind)) ||
+      row.source !== 'owner_assertion' ||
+      !personalValueAllowed(row.value)
+    )
+      return false;
+    const value = /** @type {any} */ (row.value);
+    const stored =
+      isMemoryRecord(value) && value.type === 'preference'
+        ? value.subject
+        : value && typeof value === 'object' && ['like', 'dislike'].includes(value.stance)
+          ? value.preference
+          : null;
+    return typeof stored === 'string' && stored.trim().toLocaleLowerCase('uk-UA') === subject;
+  });
+  if (matches.length > 1 || matches.some((row) => row.stale || row.review_due)) return null;
+  const existing = matches[0];
+  if (!existing) return fact;
+  const value = /** @type {any} */ (existing.value);
+  return {
+    ...fact,
+    kind: String(existing.kind),
+    key: String(existing.key),
+    value: isMemoryRecord(value)
+      ? {
+          ...value,
+          relation: /** @type {any} */ (fact.value).stance === 'like' ? 'likes' : 'dislikes',
+        }
+      : fact.value,
+  };
 }
