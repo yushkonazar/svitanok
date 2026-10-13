@@ -29,6 +29,7 @@ const d1FromSqlite = () => {
   const db = new DatabaseSync(':memory:');
   for (const migration of [
     '0001_base.sql',
+    '0014_fact_provenance.sql',
     '0015_memory_projection.sql',
     '0018_openai_transcripts.sql',
   ]) {

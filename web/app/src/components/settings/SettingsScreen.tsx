@@ -30,7 +30,6 @@ import { Switch, Chip, SettingRow } from '../ui/controls.tsx';
 import { cascade } from '../ui/Cascade.tsx';
 import { useQueryClient, useIsMutating, useMutationState } from '@tanstack/react-query';
 import { DeletionReceiptsBlock } from './DeletionReceiptsBlock.tsx';
-import { WorkerQualityBlock } from './WorkerQualityBlock.tsx';
 
 // Екран «Налаштування» (дизайн v2, Svitanok.dc.html; роадмеп v3, F2).
 //
@@ -461,16 +460,14 @@ export function SettingsScreen() {
       </Section>
 
       <OperationsPanel />
-      <MemoryPanel />
+      <MemoryPanel catalog={false} />
 
-      <details className="renewal-card">
-        <summary className="cursor-pointer font-semibold text-sm">
-          Стан сервісів і діагностика
-        </summary>
-        <div className="mt-5">
-          <WorkerQualityBlock />
-        </div>
-      </details>
+      <Link to="/system" className="renewal-card">
+        <h2 className="font-semibold">Система й діагностика →</h2>
+        <p className="renewal-chart-note mt-2">
+          Працівники, доставка, квоти API й технічні події — в окремій приватній панелі.
+        </p>
+      </Link>
 
       <Section title="БЛОКИ «СЬОГОДНІ» Й БРИФІНГУ">
         {MODULES.map((m, i) => {

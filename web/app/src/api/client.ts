@@ -42,12 +42,17 @@ function authHeaders(): Record<string, string> {
 
 export async function fetchMemory(
   offset = 0,
+  group = 'all',
+  search = '',
 ): Promise<import('./memory-schema.ts').MemoryWorkspace> {
   if (!inTelegram()) throw new Error('Пам’ять доступна в особистому чаті з ботом.');
-  const response = await fetch(`/api/memory?offset=${offset}`, {
-    cache: 'no-store',
-    headers: authHeaders(),
-  }).catch(() => {
+  const response = await fetch(
+    `/api/memory?offset=${offset}${group === 'all' && !search ? '' : `&group=${encodeURIComponent(group)}&search=${encodeURIComponent(search)}`}`,
+    {
+      cache: 'no-store',
+      headers: authHeaders(),
+    },
+  ).catch(() => {
     throw new Error('Не вдалося завантажити пам’ять. Спробуй ще раз.');
   });
   throwIfSessionExpired(response);
@@ -759,4 +764,24 @@ export async function postVote(category: string, url: string): Promise<VoteResul
   if (!res.ok) throw new Error(`Голос не зараховано (${res.status})`);
   const data = (await res.json()) as { weight?: number; voted?: VoteDir };
   return { weight: data.weight ?? 0, voted: data.voted ?? null };
+}
+
+export async function fetchSystem(): Promise<import('./system-schema.ts').SystemSnapshot> {
+  if (!inTelegram()) throw new Error('Відкрий панель в особистому чаті з ботом.');
+  const response = await fetch('/api/system', { cache: 'no-store', headers: authHeaders() }).catch(
+    () => {
+      throw new Error('Не вдалося оновити стан системи.');
+    },
+  );
+  throwIfSessionExpired(response);
+  if (!response.ok)
+    throw new Error(
+      response.status === 403
+        ? 'Панель доступна лише основному власнику.'
+        : 'Системний огляд зараз недоступний.',
+    );
+  const { systemSchema } = await import('./system-schema.ts');
+  const parsed = systemSchema.safeParse(await response.json().catch(() => null));
+  if (!parsed.success) throw new Error('Формат системного огляду змінився. Онови застосунок.');
+  return parsed.data;
 }

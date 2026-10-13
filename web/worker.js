@@ -57,6 +57,7 @@ import { SCHEDULER_DO_NAME } from './core/scheduler/do.mjs';
 import { handleInternal } from './core/internal/router.mjs';
 import { handleMonoWebhook, handleMonoTest, MONO_WEBHOOK_PREFIX } from './core/finance/webhook.mjs';
 import { prerouteMessage, handleBrainCallback } from './core/prerouter.mjs';
+import { handleSystem } from './api-system.mjs';
 import { handleAssistantStatus } from './core/assistant-status.mjs';
 import { drainOutbox } from './core/tg/outbox.mjs';
 import {
@@ -614,6 +615,7 @@ export default {
     }
     // Стан нового асистента для власника (етап 1, PR-10): планувальник,
     // прогони, квоти. Приватний (initData), при off — 404 зсередини.
+    if (url.pathname === '/api/system') return handleSystem(request, env);
     if (url.pathname === '/api/assistant-status' && request.method === 'GET') {
       return handleAssistantStatus(request, env);
     }

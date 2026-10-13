@@ -26,7 +26,7 @@ export function AdaptivePreferences() {
             вечірній запис належить попередньому дню. Нагадування вмикаються окремо у фінансових
             налаштуваннях.
           </p>
-          <div className="renewal-form-grid">
+          <div className="renewal-form-grid schedule-fields">
             {(['morning', 'afternoon', 'evening', 'end'] as const).map((key, i) => (
               <label className="renewal-field" key={key}>
                 <span>

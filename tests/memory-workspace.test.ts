@@ -72,6 +72,39 @@ afterEach(() => {
 });
 
 describe('first-party explicit memory', () => {
+  it('updates a reclassified preference rather than creating a hashed duplicate', async () => {
+    const { env } = setup();
+    await enable(env);
+    await runFactsSet(
+      env,
+      {
+        kind: 'habit',
+        key: 'favorite_dish',
+        value: {
+          schemaVersion: 2,
+          type: 'preference',
+          domain: 'food',
+          subject: 'Салат у ресторані Приклад',
+          relation: 'likes',
+        },
+        source: 'owner_assertion',
+      },
+      NOW,
+    );
+    const result = await directOwnerMemory(
+      env,
+      owner,
+      'Запам’ятай: не люблю салат у ресторані Приклад',
+      NOW + 1000,
+    );
+    expect(result?.text).toContain('Пам’ятаю');
+    const workspace = await readMemoryWorkspace(env, NOW + 2000);
+    expect(workspace.entries).toHaveLength(1);
+    expect(workspace.entries[0]).toMatchObject({
+      id: 'habit:favorite_dish',
+      value: { relation: 'dislikes', domain: 'food' },
+    });
+  });
   it.each(['Люблю азійську кухню.', 'Я люблю азійську кухню', 'Запам’ятай: люблю азійську кухню'])(
     'recognizes one owner preference: %s',
     async (text) => {

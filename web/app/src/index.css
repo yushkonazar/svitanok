@@ -12,20 +12,20 @@
    Світлу вмикає <html data-theme="light"> — перевизначає ті самі змінні. */
 @theme {
   /* тло / поверхні */
-  --color-bg: #100c19;
-  --color-bg2: #21182f;
+  --color-bg: #10121b;
+  --color-bg2: #1b1e2a;
   --color-glass: rgba(255, 255, 255, 0.05);
   --color-glassb: rgba(255, 231, 216, 0.17);
   --color-hair: rgba(255, 255, 255, 0.08);
 
   /* текст */
   --color-tx: #f2f1ec;
-  --color-tx2: rgba(242, 241, 236, 0.78);
-  --color-tx3: rgba(242, 241, 236, 0.6);
+  --color-tx2: #c5cad6;
+  --color-tx3: #a9b0c0;
 
   /* акценти */
-  --color-a1: #ff6e7a;
-  --color-a2: #ffa45c;
+  --color-a1: #ff967d;
+  --color-a2: #ffaf83;
   --color-onacc: #1b0812;
   --color-pos: oklch(0.8 0.14 155);
   --color-neg: oklch(0.72 0.17 25);
@@ -92,11 +92,11 @@
   --color-glassb: rgba(120, 55, 60, 0.12);
   --color-hair: rgba(60, 30, 40, 0.1);
   --color-tx: #2a1b22;
-  --color-tx2: rgba(42, 27, 34, 0.62);
-  --color-tx3: rgba(42, 27, 34, 0.42);
+  --color-tx2: #605460;
+  --color-tx3: #6f626d;
   --color-a1: #e8566a;
   --color-a2: #ec7a38;
-  --color-onacc: #fff6f0;
+  --color-onacc: #281c16;
   --color-pos: oklch(0.56 0.14 155);
   --color-neg: oklch(0.56 0.18 25);
   --color-info: #5a63cf;

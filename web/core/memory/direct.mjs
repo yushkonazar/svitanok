@@ -1,4 +1,4 @@
-import { extractExplicitFact } from './explicit.mjs';
+import { extractExplicitFact, resolveExplicitFact } from './explicit.mjs';
 import { readMemoryPreferences } from './preferences.mjs';
 import { applyPolicy, proposalExecutionError } from '../policy/proposals.mjs';
 import { memoryValueText } from './workspace.mjs';
@@ -22,14 +22,16 @@ export async function directOwnerMemory(env, parsed, text, nowMs) {
     Number(parsed.messageId) < 1
   )
     return null;
-  const fact = await extractExplicitFact(text);
-  if (!fact) return null;
+  const extracted = await extractExplicitFact(text);
+  if (!extracted) return null;
   const consent = await readMemoryPreferences(env, nowMs);
   if (
     consent.preferences.mode !== 'explicit' ||
-    !consent.preferences.categories.includes(fact.category)
+    !consent.preferences.categories.includes(extracted.category)
   )
     return null;
+  const fact = await resolveExplicitFact(env, extracted, nowMs);
+  if (!fact) return null;
   // A standalone preference must not steal an answer to a previous question.
   // An explicit remember command is a separate owner instruction.
   if (!explicitMemoryInstruction(text)) {

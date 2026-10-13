@@ -193,7 +193,12 @@ describe('trip.brief', () => {
     const { env } = setup();
     await runFactsSet(
       env,
-      { kind: 'vehicle', key: 'octavia', value: { name: 'Octavia', per100: 8, fuel: 'A95' } },
+      {
+        kind: 'vehicle',
+        key: 'octavia',
+        source: 'owner_assertion',
+        value: { name: 'Octavia', per100: 8, fuel: 'A95' },
+      },
       NOW,
     );
     await runFactsSet(env, { kind: 'place', key: 'home', value: { city: 'Львів' } }, NOW);

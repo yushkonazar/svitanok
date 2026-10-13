@@ -74,18 +74,19 @@ async function readWorkerQuality(env) {
       `SELECT name, COUNT(*) AS calls,
               SUM(CASE WHEN ok = 1 THEN 1 ELSE 0 END) AS succeeded,
               SUM(CASE WHEN ok = 0 THEN 1 ELSE 0 END) AS failed,
-              AVG(ms) AS avg_ms, MAX(ms) AS max_ms
+              AVG(CASE WHEN note LIKE '%latency_unknown=1%' THEN NULL ELSE ms END) AS avg_ms, MAX(CASE WHEN note LIKE '%latency_unknown=1%' THEN NULL ELSE ms END) AS max_ms,
+              COUNT(CASE WHEN note LIKE '%latency_unknown=1%' THEN NULL ELSE ms END) AS latency_samples
        FROM run_steps
-       WHERE kind = 'model' AND name GLOB 'worker:*:openai:*' AND at >= ?
+       WHERE kind = 'model' AND (name GLOB 'worker:*:openai:*' OR name GLOB 'worker:*:claude:*') AND at >= ?
        GROUP BY name`,
     )
     .bind(since)
     .all();
-  /** @type {Map<string, {calls:number,succeeded:number,failed:number,totalMs:number,maxMs:number|null,results:number}>} */
+  /** @type {Map<string, {calls:number,succeeded:number,failed:number,totalMs:number,latencySamples:number,maxMs:number|null,results:number}>} */
   const totals = new Map();
   for (const row of /** @type {Record<string, unknown>[]} */ (results ?? [])) {
     const name = String(row.name ?? '');
-    const match = name.match(/^worker:([a-z][a-z0-9-]{1,31}):openai:/);
+    const match = name.match(/^worker:([a-z][a-z0-9-]{1,31}):(?:openai|claude):/);
     if (!match?.[1]) continue;
     const worker = match[1];
     const calls = integer(row.calls);
@@ -94,6 +95,7 @@ async function readWorkerQuality(env) {
       succeeded: 0,
       failed: 0,
       totalMs: 0,
+      latencySamples: 0,
       maxMs: null,
       results: 0,
     };
@@ -102,7 +104,11 @@ async function readWorkerQuality(env) {
     item.failed += integer(row.failed);
     const avgMs = finite(row.avg_ms);
     const maxMs = finite(row.max_ms);
-    if (avgMs != null) item.totalMs += avgMs * calls;
+    const latencySamples = row.latency_samples == null ? calls : integer(row.latency_samples);
+    if (avgMs != null) {
+      item.totalMs += avgMs * latencySamples;
+      item.latencySamples += latencySamples;
+    }
     if (maxMs != null) item.maxMs = Math.max(item.maxMs ?? 0, maxMs);
     totals.set(worker, item);
   }
@@ -133,6 +139,7 @@ async function readWorkerQuality(env) {
       succeeded: 0,
       failed: 0,
       totalMs: 0,
+      latencySamples: 0,
       maxMs: null,
       results: 0,
     };
@@ -173,8 +180,11 @@ async function readWorkerQuality(env) {
       sample_size: item.calls,
       succeeded: item.succeeded,
       failed: item.failed,
-      success_rate_pct: item.calls ? Math.round((100 * item.succeeded) / item.calls) : null,
-      avg_latency_ms: item.calls ? Math.round(item.totalMs / item.calls) : null,
+      success_rate_pct:
+        item.succeeded + item.failed
+          ? Math.round((100 * item.succeeded) / (item.succeeded + item.failed))
+          : null,
+      avg_latency_ms: item.latencySamples ? Math.round(item.totalMs / item.latencySamples) : null,
       max_latency_ms: item.maxMs,
       feedback: ratings.get(worker) ?? { good: 0, bad: 0 },
     }))
@@ -227,7 +237,7 @@ function shapeRun(row, steps) {
 
 /** Малі allowlisted token-метрики з model step, без читання довільної note. */
 /** @param {unknown} note */
-function parseModelTelemetry(note) {
+export function parseModelTelemetry(note) {
   const text = typeof note === 'string' ? note : '';
   /** @param {string} key */
   const field = (key) => {
@@ -268,6 +278,7 @@ function parseModelTelemetry(note) {
 
 /** @param {unknown} value */
 function finite(value) {
+  if (value == null || value === '') return null;
   const n = Number(value);
   return Number.isFinite(n) ? n : null;
 }

@@ -11,6 +11,13 @@ import {
   PERSONALIZATION_KEY,
 } from './preferences.mjs';
 import { personalValueAllowed, assertPersonalValue } from './safety.mjs';
+import {
+  assertMemoryRecord,
+  isMemoryRecord,
+  memorySemantics,
+  memoryRecordText,
+  MEMORY_TYPE_LABELS,
+} from './semantics.mjs';
 import { resolveProposal } from '../policy/proposals.mjs';
 
 export class MemoryOperationError extends Error {
@@ -59,6 +66,7 @@ function labelFor(kind, key) {
  * @param {unknown} value @param {number} [depth] @returns {string} */
 export function memoryValueText(value, depth = 0) {
   if (value == null) return 'Не задано';
+  if (isMemoryRecord(value)) return memoryRecordText(value);
   if (typeof value === 'string') return value;
   if (typeof value === 'boolean') return value ? 'Так' : 'Ні';
   if (typeof value === 'number') return String(value);
@@ -94,7 +102,10 @@ function entryFor(row, nowMs) {
     typeof time === 'string' && Number.isFinite(Date.parse(time)) && Date.parse(time) <= nowMs;
   return {
     id: `${row.kind}:${row.key}`,
-    label: labelFor(row.kind, row.key),
+    label: isMemoryRecord(value)
+      ? (MEMORY_TYPE_LABELS[value.type] ?? labelFor(row.kind, row.key))
+      : labelFor(row.kind, row.key),
+    semantics: memorySemantics(String(row.kind), String(row.key), value),
     value: safe ? value : null,
     text: safe
       ? memoryValueText(value)
@@ -111,7 +122,12 @@ function entryFor(row, nowMs) {
 }
 /** Only allowlisted fields, no run inputs, prompts, notes or whole proposal payloads.
  * @param {Env} env @param {number} nowMs @param {number} [offset] */
-export async function readMemoryWorkspace(env, nowMs, offset = 0) {
+export async function readMemoryWorkspace(
+  env,
+  nowMs,
+  offset = 0,
+  filter = { group: 'all', search: '' },
+) {
   if (!env.DB) throw new Error('Memory database unavailable');
   const consent = await readMemoryPreferences(env, nowMs);
   const kinds = PERSONAL_FACT_KINDS.map(() => '?').join(','),
@@ -119,9 +135,9 @@ export async function readMemoryWorkspace(env, nowMs, offset = 0) {
   const rows =
     (
       await env.DB.prepare(
-        `SELECT f.*, COALESCE((SELECT id FROM fact_ledger WHERE kind=f.kind AND key=f.key ORDER BY rowid DESC LIMIT 1), '') AS write_token FROM facts f WHERE f.kind IN (${kinds}) OR (f.kind='setting' AND f.key IN (${keys})) ORDER BY f.kind, f.key LIMIT 26 OFFSET ?`,
+        `SELECT f.*, COALESCE((SELECT id FROM fact_ledger WHERE kind=f.kind AND key=f.key ORDER BY rowid DESC LIMIT 1), '') AS write_token FROM facts f WHERE f.kind IN (${kinds}) OR (f.kind='setting' AND f.key IN (${keys})) ORDER BY f.kind, f.key LIMIT 1001`,
       )
-        .bind(...PERSONAL_FACT_KINDS, ...LEGACY_KEYS, offset)
+        .bind(...PERSONAL_FACT_KINDS, ...LEGACY_KEYS)
         .all()
     ).results ?? [];
   const pending =
@@ -158,7 +174,9 @@ export async function readMemoryWorkspace(env, nowMs, offset = 0) {
       candidates.push({
         id: String(row.id),
         type: row.kind === 'facts.delete' ? 'remove' : 'save',
-        label: labelFor(payload.kind, payload.key),
+        label: isMemoryRecord(payload.value)
+          ? (MEMORY_TYPE_LABELS[payload.value.type] ?? labelFor(payload.kind, payload.key))
+          : labelFor(payload.kind, payload.key),
         text:
           row.kind === 'facts.delete'
             ? `Прибрати: ${personalValueAllowed(currentValue) ? memoryValueText(currentValue) : 'прихований запис'}?`
@@ -170,17 +188,32 @@ export async function readMemoryWorkspace(env, nowMs, offset = 0) {
       /* Malformed/old/private settings proposals are not memory cards. */
     }
   }
+  const entries = rows
+    .slice(0, 1000)
+    .filter((row) => personalValueAllowed(row.key))
+    .map((row) => entryFor(row, nowMs))
+    .filter(
+      (entry) =>
+        (filter.group === 'all' ||
+          (filter.group === 'review'
+            ? entry.semantics.needsReview ||
+              entry.stale ||
+              entry.reviewDue ||
+              entry.source === 'model_hypothesis'
+            : entry.semantics.type === filter.group)) &&
+        `${entry.label} ${entry.text}`
+          .toLocaleLowerCase('uk-UA')
+          .includes(filter.search.toLocaleLowerCase('uk-UA')),
+    );
   return {
     preferences: consent.preferences,
     preferencesToken: consent.token,
     preferencesValid: consent.valid,
-    entries: rows
-      .slice(0, 25)
-      .filter((row) => personalValueAllowed(row.key))
-      .map((row) => entryFor(row, nowMs)),
+    entries: entries.slice(offset, offset + 25),
+    truncated: rows.length > 1000,
     candidates,
     offset,
-    nextOffset: rows.length > 25 ? offset + 25 : null,
+    nextOffset: entries.length > offset + 25 ? offset + 25 : null,
   };
 }
 
@@ -223,6 +256,7 @@ export function validateMemoryCommand(input) {
         if (!Object.hasOwn(body, 'value') || typeof body.renew !== 'boolean')
           throw new Error('Немає нового значення або вибору актуальності.');
         assertPersonalValue(body.value);
+        assertMemoryRecord(body.value);
       }
     }
   }
@@ -314,10 +348,13 @@ export async function executeMemoryCommand(env, body, nowMs) {
       !before ||
       !after ||
       typeof after !== 'object' ||
-      typeof after.preference !== 'string' ||
-      !['like', 'dislike'].includes(after.stance) ||
-      String(before.preference).toLocaleLowerCase('uk-UA') !==
-        after.preference.toLocaleLowerCase('uk-UA')
+      (isMemoryRecord(after)
+        ? after.type !== 'preference' || !['likes', 'dislikes'].includes(after.relation)
+        : typeof after.preference !== 'string' || !['like', 'dislike'].includes(after.stance)) ||
+      String(isMemoryRecord(before) ? before.subject : before.preference).toLocaleLowerCase(
+        'uk-UA',
+      ) !==
+        String(isMemoryRecord(after) ? after.subject : after.preference).toLocaleLowerCase('uk-UA')
     )
       throw new MemoryOperationError(
         'Тут можна змінити ставлення до цього предмета. Нове вподобання додай у чаті, а старе за потреби прибери.',

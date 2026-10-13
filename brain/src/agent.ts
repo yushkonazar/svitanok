@@ -90,6 +90,12 @@ export interface EngineOutcome {
   } | null;
   /** False means some API attempts have no usage receipt. Never treat it as a full invoice. */
   usageComplete?: boolean;
+  modelBreakdown?: Array<{
+    model: string;
+    usage: NonNullable<EngineOutcome['usage']>;
+    usageComplete: boolean;
+    estimatedCostUsd: number | null;
+  }>;
   modelResponses?: number;
   apiAttempts?: number;
   /** Estimated only when the deployment configured its own model prices. */
@@ -119,6 +125,7 @@ export type ModelTelemetry = Pick<
   | 'modelResponses'
   | 'apiAttempts'
   | 'estimatedCostUsd'
+  | 'modelBreakdown'
 >;
 
 /** A failed model run can still have billed responses. Only allowlisted
@@ -147,6 +154,7 @@ export class EngineStopError extends Error {
   constructor(
     readonly subtype: string,
     readonly partialText: string,
+    readonly telemetry?: ModelTelemetry,
   ) {
     super(`SDK: ${subtype}`);
     this.name = 'EngineStopError';
@@ -483,24 +491,25 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
         workerApi = apiNote(out.apiMs);
         // Each delegated model call has its own latency and usage. Keep only
         // allowlisted provider metadata; never log the task or output.
-        if (out.provider === 'openai') {
-          pushStep({
-            kind: 'model',
-            name: `worker:${worker}:openai:${safeTelemetry(out.model, 96) ?? 'unknown'}`,
-            ms: out.apiMs ?? now() - t0,
-            ok: true,
-            note: openAiTelemetryNote(out),
-          });
+        if (out.provider === 'openai' || out.provider === 'claude') {
+          for (const step of modelTelemetrySteps(
+            out,
+            `worker:${worker}:`,
+            out.apiMs ?? now() - t0,
+            true,
+          ))
+            pushStep(step);
         }
       } catch (e) {
-        if (e instanceof ModelRunError) {
-          pushStep({
-            kind: 'model',
-            name: `worker:${worker}:openai:${safeTelemetry(e.telemetry.model, 96) ?? 'unknown'}`,
-            ms: e.telemetry.apiMs ?? now() - t0,
-            ok: false,
-            note: openAiTelemetryNote(e.telemetry),
-          });
+        if (e instanceof ModelRunError || (e instanceof EngineStopError && e.telemetry)) {
+          const telemetry = e.telemetry!;
+          for (const step of modelTelemetrySteps(
+            telemetry,
+            `worker:${worker}:`,
+            telemetry.apiMs ?? now() - t0,
+            false,
+          ))
+            pushStep(step);
         }
         // Стеля ходів із текстом - частковий результат (S-7-5), решта - збій.
         if (
@@ -710,14 +719,14 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
       // Provider-telemetry is deliberately a tiny allowlist, not an API dump:
       // it lets D1 show response/model/usage/latency while keeping prompts,
       // outputs and function arguments out of operational logs.
-      if (outcome.provider === 'openai') {
-        pushStep({
-          kind: 'model',
-          name: `openai:${safeTelemetry(outcome.model, 96) ?? 'unknown'}`,
-          ms: outcome.apiMs ?? now() - startedMs,
-          ok: true,
-          note: openAiTelemetryNote(outcome),
-        });
+      if (outcome.provider === 'openai' || outcome.provider === 'claude') {
+        for (const step of modelTelemetrySteps(
+          outcome,
+          '',
+          outcome.apiMs ?? now() - startedMs,
+          true,
+        ))
+          pushStep(step);
       }
       if (outcome.shadow) {
         pushStep({
@@ -877,14 +886,15 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
         });
       }
     } catch (err) {
-      if (err instanceof ModelRunError) {
-        pushStep({
-          kind: 'model',
-          name: `openai:${safeTelemetry(err.telemetry.model, 96) ?? 'unknown'}`,
-          ms: err.telemetry.apiMs ?? now() - startedMs,
-          ok: false,
-          note: openAiTelemetryNote(err.telemetry),
-        });
+      if (err instanceof ModelRunError || (err instanceof EngineStopError && err.telemetry)) {
+        const telemetry = err.telemetry!;
+        for (const step of modelTelemetrySteps(
+          telemetry,
+          '',
+          telemetry.apiMs ?? now() - startedMs,
+          false,
+        ))
+          pushStep(step);
       }
       // «стоп» власника (POST /abort, reason='stop') - НЕ збій: тишу розриває
       // ядро («Зупинив.»), а деліверити обірвану відповідь було б шумом.
@@ -914,6 +924,23 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
       await deps.client.reportRuns(req.run_id, steps, escalateOutcome);
     }
   };
+}
+
+/** Per-model SDK receipts replace their aggregate: never count both. */
+function modelTelemetrySteps(
+  outcome: ModelTelemetry,
+  prefix: string,
+  ms: number,
+  ok: boolean,
+): Array<Omit<Step, 'n' | 'at'>> {
+  const receipts = outcome.modelBreakdown?.length ? outcome.modelBreakdown : [outcome];
+  return receipts.map((receipt) => ({
+    kind: 'model',
+    name: `${prefix}${outcome.provider ?? 'openai'}:${safeTelemetry(receipt.model, 96) ?? 'unknown'}`,
+    ms: receipts.length === 1 ? ms : 0,
+    ok,
+    note: `${receipts.length > 1 ? 'latency_unknown=1 ' : ''}${openAiTelemetryNote({ ...receipt, ...(receipts.length === 1 ? { apiAttempts: outcome.apiAttempts, modelResponses: outcome.modelResponses, responseId: outcome.responseId } : {}) })}`,
+  }));
 }
 
 function openAiTelemetryNote(outcome: ModelTelemetry): string {
