@@ -162,17 +162,34 @@ export function isQuietMinute(settings, minuteOfDay) {
  * @param {{ hasGoogleCreds: unknown, scope?: unknown }} opts
  */
 export function connectorStatus({ hasGoogleCreds, scope }) {
-  if (!hasGoogleCreds) return { google: false, calendar: false, gmail: false, contacts: false };
+  if (!hasGoogleCreds)
+    return {
+      google: false,
+      calendar: false,
+      gmail: false,
+      contacts: false,
+      scopeKnown: false,
+      calendarWrite: false,
+    };
   if (typeof scope !== 'string' || !scope.trim()) {
     // contacts (PR-10, гості на подіях) — НОВИЙ скоуп, на відміну від
     // calendar/gmail тут порожній scope НЕ означає «є»: до першого
     // кешованого обміну з ре-консентом власника дефолт має бути false,
     // інакше Mini App брехав би, що резолюція гостей уже працює.
-    return { google: true, calendar: true, gmail: true, contacts: false };
+    return {
+      google: true,
+      calendar: true,
+      gmail: true,
+      contacts: false,
+      scopeKnown: false,
+      calendarWrite: false,
+    };
   }
   const scopes = parseGrantedScopes(scope);
   return {
     google: true,
+    scopeKnown: true,
+    calendarWrite: hasFeatureScope(scopes, 'calendar'),
     calendar: hasFeatureScope(scopes, 'calendar_read'),
     gmail: hasFeatureScope(scopes, 'mail'),
     contacts: hasFeatureScope(scopes, 'contacts_read'),

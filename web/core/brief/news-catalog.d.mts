@@ -15,3 +15,5 @@ export const NEWS_FEEDS: readonly {
   topic: string;
   url: string;
 }[];
+
+export function canonicalNewsTopic(topic: string): string;

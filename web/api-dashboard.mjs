@@ -288,7 +288,7 @@ async function googleConnectors(/** @type {Env} */ env) {
       /* биття кешу -> скоупи невідомі, фолбек за секретами */
     }
   }
-  return connectorStatus({ hasGoogleCreds, scope });
+  return { ...connectorStatus({ hasGoogleCreds, scope }), mono: Boolean(env.MONO_TOKEN) };
 }
 
 /**
@@ -311,7 +311,9 @@ export async function handleSettings(/** @type {Request} */ request, /** @type {
     const auth = await checkOwnerRead(request, env);
     if (!auth.ok) return json({ ok: false, error: auth.error }, auth.status);
     const [settings, connectors] = await Promise.all([loadSettings(env), googleConnectors(env)]);
-    return json({ ok: true, settings, connectors });
+    const response = json({ ok: true, settings, connectors });
+    response.headers.set('cache-control', 'private, no-store');
+    return response;
   }
 
   if (request.method !== 'POST') return json({ ok: false, error: 'method' }, 405);
@@ -332,7 +334,9 @@ export async function handleSettings(/** @type {Request} */ request, /** @type {
   const next = normalizeSettings(raw);
   await putSettings(env, next);
   const connectors = await googleConnectors(env);
-  return json({ ok: true, settings: next, connectors });
+  const response = json({ ok: true, settings: next, connectors });
+  response.headers.set('cache-control', 'private, no-store');
+  return response;
 }
 
 /**

@@ -1,18 +1,13 @@
+import { canonicalNewsTopic } from '../../../core/brief/news-catalog.mjs';
 import type { NewsGroup } from '../api/briefing-schema.ts';
 import { newsSource } from './newsSource.ts';
 import { isReleaseTopic } from './topicKind.ts';
 export function newsFeed(groups: NewsGroup[], muted: string[] = [], sources?: string[]) {
-  const aliases: Record<string, string> = {
-    CS2: 'Кіберспорт',
-    'Винаходи й технології': 'Тех/IT',
-    Головне: 'Світ',
-  };
   const seen = new Set<string>();
   return groups
     .filter(
       (g) =>
-        !muted.includes(g.topic) &&
-        !muted.includes(aliases[g.topic] ?? g.topic) &&
+        !muted.some((topic) => canonicalNewsTopic(topic) === canonicalNewsTopic(g.topic)) &&
         !isReleaseTopic(g.topic),
     )
     .flatMap((g) =>

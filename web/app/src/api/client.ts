@@ -616,10 +616,17 @@ export async function postEvent(type: string, payload: Record<string, unknown>):
 
 /* ── Налаштування (F2) ─────────────────────────────────────────────────── */
 
-/** Демо-налаштування: те, що показує екран поза Telegram (нічого не персиститься). */
+/** Демо-налаштування: поза Telegram зберігаються локально, не змінюють профіль власника. */
 const DEMO_SETTINGS: SettingsResponse = {
   settings: { quiet: { enabled: false, from: '22:00', to: '08:00' }, modules: {}, mutedTopics: [] },
-  connectors: { google: true, calendar: true, gmail: true },
+  connectors: {
+    google: true,
+    calendar: true,
+    gmail: true,
+    scopeKnown: true,
+    calendarWrite: true,
+    mono: true,
+  },
 };
 
 /**
@@ -675,6 +682,7 @@ export async function postSettings(next: Settings): Promise<SettingsResponse | n
     headers: { 'content-type': 'application/json', ...authHeaders() },
     body: JSON.stringify({ settings: next }),
   });
+  throwIfSessionExpired(res);
   if (!res.ok) throw new Error(`Налаштування не збережено (${res.status})`);
 
   const parsed = settingsResponseSchema.safeParse(await res.json());

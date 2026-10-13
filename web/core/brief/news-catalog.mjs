@@ -66,3 +66,10 @@ export const NEWS_FEEDS = [
     url: 'https://www.theguardian.com/world/rss',
   },
 ];
+
+/** Legacy labels refer to the same topic, not independent toggles. */
+const TOPIC_ALIASES = { Світ: 'Головне', Кіберспорт: 'CS2', 'Тех/IT': 'Винаходи й технології' };
+/** @param {string} topic @returns {string} */
+export function canonicalNewsTopic(topic) {
+  return /** @type {Record<string,string>} */ (TOPIC_ALIASES)[topic] ?? topic;
+}
