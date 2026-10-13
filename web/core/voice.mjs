@@ -11,6 +11,7 @@
 // 5xx, вичерпаний кредит, таймаут, мережа (S-6-3/S-6-5).
 
 import { bumpQuota, QUOTA_LIMITS } from './quota/quota.mjs';
+import { recordUsage } from './ops/usage-ledger.mjs';
 
 /** Стеля getFile Bot API - більше Telegram просто не віддасть (01 §3.3). */
 export const VOICE_MAX_FILE_BYTES = 20 * 1024 * 1024;
@@ -144,6 +145,15 @@ async function downloadVoice(env, fileId) {
 /** @param {Env} env @param {ArrayBuffer} audio
  *  @returns {Promise<{ ok: true, text: string } | { ok: false, error: 'auth' | 'down' }>} */
 async function deepgramTranscribe(env, audio) {
+  const startedMs = Date.now();
+  /** @type {Record<string,any>} */ const receipt = {
+    provider: 'deepgram',
+    feature: 'voice',
+    sku: 'nova-3',
+    apiAttempts: 1,
+    ok: false,
+    unit: 'seconds',
+  };
   try {
     const res = await fetch(DEEPGRAM_URL, {
       method: 'POST',
@@ -163,15 +173,24 @@ async function deepgramTranscribe(env, audio) {
       return { ok: false, error: res.status === 401 || res.status === 403 ? 'auth' : 'down' };
     }
     const body = /** @type {any} */ (await res.json().catch(() => null));
+    if (typeof body?.metadata?.duration === 'number' && body.metadata.duration >= 0)
+      receipt.quantity = body.metadata.duration;
     const text = body?.results?.channels?.[0]?.alternatives?.[0]?.transcript;
     if (typeof text !== 'string') {
       console.error('voice: Deepgram відповів без transcript');
       return { ok: false, error: 'down' };
     }
+    receipt.ok = true;
     return { ok: true, text: text.trim() };
   } catch (/** @type {any} */ e) {
     console.error('voice: Deepgram недоступний', e?.message);
     return { ok: false, error: 'down' };
+  } finally {
+    await recordUsage(env, {
+      ...receipt,
+      at: new Date(startedMs).toISOString(),
+      durationMs: Date.now() - startedMs,
+    });
   }
 }
 
@@ -190,6 +209,8 @@ async function whisperTranscribe(env, audio) {
     );
     return { ok: false };
   }
+  const startedMs = Date.now();
+  let ok = false;
   try {
     const out = /** @type {{ text?: string } | undefined} */ (
       await env.AI.run(/** @type {never} */ (WHISPER_MODEL), { audio: toBase64(audio) })
@@ -198,10 +219,21 @@ async function whisperTranscribe(env, audio) {
       console.error('voice: Whisper відповів без text');
       return { ok: false };
     }
+    ok = true;
     return { ok: true, text: out.text.trim() };
   } catch (/** @type {any} */ e) {
     console.error('voice: Whisper упав', e?.message);
     return { ok: false };
+  } finally {
+    await recordUsage(env, {
+      provider: 'cloudflare',
+      feature: 'voice',
+      sku: 'whisper-large-v3-turbo',
+      apiAttempts: 1,
+      ok,
+      at: new Date(startedMs).toISOString(),
+      durationMs: Date.now() - startedMs,
+    });
   }
 }
 

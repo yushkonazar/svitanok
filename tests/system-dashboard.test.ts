@@ -41,7 +41,7 @@ describe('private system dashboard', () => {
       runs: { available: boolean };
       billing: { balance: null };
     };
-    expect(data.scheduler).toEqual({ available: false, data: null });
+    expect(data.scheduler).toEqual({ available: false, data: null, reason: 'read-failed' });
     expect(data.runs.available).toBe(true);
     expect(data.billing.balance).toBeNull();
     expect(JSON.stringify(data)).not.toContain('system-test');

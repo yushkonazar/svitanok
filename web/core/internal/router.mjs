@@ -663,6 +663,9 @@ async function handleRuns(env, ctx, runId, body, nowMs) {
   let telemetryPersisted = Boolean(env.DB);
   try {
     if (!env.DB) throw new Error('db-not-configured');
+    const runProfile = (
+      await env.DB.prepare('SELECT profile FROM runs WHERE id=?').bind(runId).first()
+    )?.profile;
     for (let i = 0; i < steps.length; i += 1) {
       const s = steps[i] ?? {};
       const ms = Number(s.ms);
@@ -684,6 +687,10 @@ async function handleRuns(env, ctx, runId, body, nowMs) {
           s.note != null ? String(s.note).slice(0, 500) : null,
         )
         .run();
+      if (s.kind === 'model') {
+        const { recordModelUsage } = await import('../ops/usage-ledger.mjs');
+        await recordModelUsage(env, runId, s, runProfile, n, nowMs);
+      }
     }
     // The brain sends only an allowlisted telemetry note, never prompts or
     // generated text. Project it onto `runs` as well: runs.query and the

@@ -73,11 +73,20 @@ describe('документ і крипто', () => {
       createdMs: SUNDAY_0310,
       envName: 'on',
       tables: { facts: [{ id: 'f1' }] },
-      kv: { stats: '{"a":1}', googleToken: '{"token":"secret"}' },
+      kv: {
+        stats: '{"a":1}',
+        googleToken: '{"token":"secret"}',
+        'systemSnapshot:v2:period': '{"rebuildable":true}',
+      },
     });
     expect(doc.kv).toEqual({ stats: '{"a":1}' });
     expect(BACKUP_KV_EXCLUDE.has('googleToken')).toBe(true);
-    expect(BACKUP_TELEMETRY_TABLES).toEqual(['runs', 'run_steps']);
+    expect(BACKUP_TELEMETRY_TABLES).toEqual([
+      'runs',
+      'run_steps',
+      'usage_receipts',
+      'system_billing_snapshots',
+    ]);
     expect(BACKUP_SNAPSHOT_TABLES).not.toContain('runs');
     expect(doc.d1.facts).toEqual([{ id: 'f1' }]);
     expect(doc.d1.ideas).toEqual([]);

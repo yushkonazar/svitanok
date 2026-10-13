@@ -13,6 +13,7 @@
 // Розрізнити рівень за самою відповіддю API неможливо, тож перевіряти більше
 // нема чого: єдиний чесний контроль - той, який власник ставить сам.
 
+import { recordUsage } from '../ops/usage-ledger.mjs';
 /** Базовий URL Generative Language API. */
 const GEMINI_API = 'https://generativelanguage.googleapis.com/v1beta';
 /** Модель зображень (Flash Image, S-8-5). */
@@ -96,22 +97,43 @@ async function geminiFetch(url, init, timeoutMs = GEMINI_TIMEOUT_MS) {
  */
 export async function generateImage(env, input) {
   const key = requirePaidGemini(env);
-  const json = await geminiFetch(`${GEMINI_API}/models/${IMAGE_MODEL}:generateContent`, {
-    method: 'POST',
-    headers: { 'x-goog-api-key': key, 'content-type': 'application/json' },
-    body: JSON.stringify({ contents: [{ parts: [{ text: input.prompt }] }] }),
-  });
-  const parts = json?.candidates?.[0]?.content?.parts ?? [];
-  const inline = parts.find((/** @type {any} */ p) => p?.inlineData?.data)?.inlineData;
-  if (!inline?.data) {
-    // Модель могла відповісти текстом (відмова політики Google) - це не
-    // «порожньо», це причина, і власник має її почути.
-    const text = parts.find((/** @type {any} */ p) => typeof p?.text === 'string')?.text;
-    throw new Error(
-      `Gemini не повернув зображення${text ? `: ${String(text).slice(0, 200)}` : ''}`,
-    );
+  const startedMs = Date.now();
+  let ok = false;
+  try {
+    const json = await geminiFetch(`${GEMINI_API}/models/${IMAGE_MODEL}:generateContent`, {
+      method: 'POST',
+      headers: { 'x-goog-api-key': key, 'content-type': 'application/json' },
+      body: JSON.stringify({ contents: [{ parts: [{ text: input.prompt }] }] }),
+    });
+    const parts = json?.candidates?.[0]?.content?.parts ?? [];
+    const inline = parts.find((/** @type {any} */ p) => p?.inlineData?.data)?.inlineData;
+    if (!inline?.data) {
+      // Модель могла відповісти текстом (відмова політики Google) - це не
+      // «порожньо», це причина, і власник має її почути.
+      const text = parts.find((/** @type {any} */ p) => typeof p?.text === 'string')?.text;
+      throw new Error(
+        `Gemini не повернув зображення${text ? `: ${String(text).slice(0, 200)}` : ''}`,
+      );
+    }
+    const result = {
+      bytes: base64ToBytes(inline.data),
+      mime: String(inline.mimeType ?? 'image/png'),
+    };
+    ok = true;
+    return result;
+  } finally {
+    await recordUsage(env, {
+      feature: 'media',
+      provider: 'gemini',
+      sku: IMAGE_MODEL,
+      quantity: 1,
+      unit: 'generation',
+      apiAttempts: 1,
+      ok,
+      at: new Date(startedMs).toISOString(),
+      durationMs: Date.now() - startedMs,
+    });
   }
-  return { bytes: base64ToBytes(inline.data), mime: String(inline.mimeType ?? 'image/png') };
 }
 
 /**
@@ -124,48 +146,67 @@ export async function generateImage(env, input) {
 export async function generateVideo(env, input, opts = {}) {
   const key = requirePaidGemini(env);
   const model = VIDEO_MODELS[input.model] ?? VIDEO_MODELS.veo;
-  const started = await geminiFetch(`${GEMINI_API}/models/${model}:predictLongRunning`, {
-    method: 'POST',
-    headers: { 'x-goog-api-key': key, 'content-type': 'application/json' },
-    body: JSON.stringify({
-      instances: [{ prompt: input.prompt }],
-      parameters: { durationSeconds: input.seconds },
-    }),
-  });
-  const opName = String(started?.name ?? '');
-  if (!opName) throw new Error('Gemini не повернув операцію відео');
+  const startedMs = Date.now();
+  let ok = false;
+  try {
+    const started = await geminiFetch(`${GEMINI_API}/models/${model}:predictLongRunning`, {
+      method: 'POST',
+      headers: { 'x-goog-api-key': key, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        instances: [{ prompt: input.prompt }],
+        parameters: { durationSeconds: input.seconds },
+      }),
+    });
+    const opName = String(started?.name ?? '');
+    if (!opName) throw new Error('Gemini не повернув операцію відео');
 
-  const sleep = opts.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
-  // ⚠️ Дедлайн за РЕАЛЬНИМ годинником, не за переданим nowMs: із замороженим
-  // nowMs умова `nowMs > nowMs + 6 хв` хибна завжди, і цикл опитував би вічно
-  // (ревʼю етапу 7). Керованим лишається `sleep` - цього досить для тестів.
-  const deadline = Date.now() + VIDEO_POLL_MAX_MS;
-  const maxPolls = Math.ceil(VIDEO_POLL_MAX_MS / VIDEO_POLL_STEP_MS);
-  /** @type {any} */
-  let op = started;
-  for (let poll = 0; !op?.done; poll++) {
-    if (Date.now() > deadline || poll >= maxPolls) {
-      // Гроші вже витрачені - мовчати про це не можна.
-      throw new Error(
-        `Відео не встигло за ${Math.round(VIDEO_POLL_MAX_MS / 60_000)} хв; кошти вже списані, спробуй коротший запит`,
-      );
+    const sleep = opts.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
+    // ⚠️ Дедлайн за РЕАЛЬНИМ годинником, не за переданим nowMs: із замороженим
+    // nowMs умова `nowMs > nowMs + 6 хв` хибна завжди, і цикл опитував би вічно
+    // (ревʼю етапу 7). Керованим лишається `sleep` - цього досить для тестів.
+    const deadline = Date.now() + VIDEO_POLL_MAX_MS;
+    const maxPolls = Math.ceil(VIDEO_POLL_MAX_MS / VIDEO_POLL_STEP_MS);
+    /** @type {any} */
+    let op = started;
+    for (let poll = 0; !op?.done; poll++) {
+      if (Date.now() > deadline || poll >= maxPolls) {
+        // Гроші вже витрачені - мовчати про це не можна.
+        throw new Error(
+          `Відео не встигло за ${Math.round(VIDEO_POLL_MAX_MS / 60_000)} хв; кошти вже списані, спробуй коротший запит`,
+        );
+      }
+      await sleep(VIDEO_POLL_STEP_MS);
+      op = await geminiFetch(`${GEMINI_API}/${opName}`, { headers: { 'x-goog-api-key': key } });
     }
-    await sleep(VIDEO_POLL_STEP_MS);
-    op = await geminiFetch(`${GEMINI_API}/${opName}`, { headers: { 'x-goog-api-key': key } });
+    if (op?.error)
+      throw new Error(`Gemini: ${String(op.error?.message ?? 'відео не згенеровано')}`);
+    const sample = op?.response?.generateVideoResponse?.generatedSamples?.[0]?.video;
+    const uri = String(sample?.uri ?? '');
+    if (!uri) throw new Error('Gemini не повернув посилання на відео');
+    // Адреса приходить із відповіді API, а ми шлемо на неї КЛЮЧ. Довіряти
+    // чужому полю в такому місці не варто навіть тоді, коли джерело надійне:
+    // одна перевірка хоста знімає весь клас «секрет поїхав не туди»
+    // (security-ревʼю етапу 7).
+    if (!isGoogleHost(uri)) throw new Error('Gemini: посилання на відео не з домену Google');
+    // Ключ - ЗАГОЛОВКОМ, не параметром URL (05-ops §2: секрет ніколи в URL).
+    const res = await fetch(uri, { headers: { 'x-goog-api-key': key } });
+    if (!res.ok) throw new Error(`Gemini: відео не вивантажилось (HTTP ${res.status})`);
+    const result = { bytes: new Uint8Array(await res.arrayBuffer()), mime: 'video/mp4' };
+    ok = true;
+    return result;
+  } finally {
+    await recordUsage(env, {
+      feature: 'media',
+      provider: 'gemini',
+      sku: model,
+      quantity: input.seconds,
+      unit: 'requested-seconds',
+      apiAttempts: 1,
+      ok,
+      at: new Date(startedMs).toISOString(),
+      durationMs: Date.now() - startedMs,
+    });
   }
-  if (op?.error) throw new Error(`Gemini: ${String(op.error?.message ?? 'відео не згенеровано')}`);
-  const sample = op?.response?.generateVideoResponse?.generatedSamples?.[0]?.video;
-  const uri = String(sample?.uri ?? '');
-  if (!uri) throw new Error('Gemini не повернув посилання на відео');
-  // Адреса приходить із відповіді API, а ми шлемо на неї КЛЮЧ. Довіряти
-  // чужому полю в такому місці не варто навіть тоді, коли джерело надійне:
-  // одна перевірка хоста знімає весь клас «секрет поїхав не туди»
-  // (security-ревʼю етапу 7).
-  if (!isGoogleHost(uri)) throw new Error('Gemini: посилання на відео не з домену Google');
-  // Ключ - ЗАГОЛОВКОМ, не параметром URL (05-ops §2: секрет ніколи в URL).
-  const res = await fetch(uri, { headers: { 'x-goog-api-key': key } });
-  if (!res.ok) throw new Error(`Gemini: відео не вивантажилось (HTTP ${res.status})`);
-  return { bytes: new Uint8Array(await res.arrayBuffer()), mime: 'video/mp4' };
 }
 
 /** Чи адреса належить Google - лише туди можна слати ключ. @param {string} uri */

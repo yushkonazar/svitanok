@@ -67,6 +67,8 @@ export const RETENTION = [
   // Кроки run не мають окремого FK з cascade, тому строк runs сам по собі
   // залишав би сироти й саме вони роздували telemetry/backups.
   { table: 'run_steps', column: 'at', ms: 90 * DAY },
+  { table: 'usage_receipts', column: 'at', ms: 90 * DAY },
+  { table: 'system_billing_snapshots', column: 'attempted_at', ms: 90 * DAY },
   { table: 'proposals', column: 'created_at', ms: 30 * DAY },
   // Нагадування - 12 місяців ПІСЛЯ виконання: активні не чіпаємо, хоч би
   // скільки їх відкладали. `sent` тут теж (ревʼю повторів): доставлене

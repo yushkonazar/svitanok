@@ -6,6 +6,18 @@ export const ROTATED_KEY_PREFIX = 'secret_rotated_';
  * @type {SecretDef[]} */
 export const SECRETS = [
   {
+    name: 'OPENAI_BILLING_ADMIN_KEY',
+    where: 'CF',
+    recommendedRotationDays: null,
+    note: 'опційне ручне читання білінгу; окремий доступ',
+  },
+  {
+    name: 'DEEPGRAM_BILLING_API_KEY',
+    where: 'CF',
+    recommendedRotationDays: null,
+    note: 'опційне ручне читання білінгу; окремий доступ',
+  },
+  {
     name: 'TELEGRAM_BOT_TOKEN',
     where: 'CF',
     recommendedRotationDays: null,

@@ -15,8 +15,12 @@ function db(env) {
  * не відоме старому producer-у telemetry, і UI має показати «немає даних», а
  * не вигадати успішність чи вартість.
  * @param {Env} env
+ * @param {{since?:string,until?:string,before?:string}} [period]
  */
-export async function readRunDashboard(env) {
+export async function readRunDashboard(env, period = {}) {
+  const bounds = period.since && period.until ? ' AND started_at >= ? AND started_at < ?' : '';
+  const args = bounds ? [period.since, period.until] : [];
+  const cursor = period.before ? " AND (started_at || '|' || id) < ?" : '';
   const { results } = await db(env)
     .prepare(
       `SELECT id, trigger, profile, thread_id, model, started_at, finished_at,
@@ -25,10 +29,10 @@ export async function readRunDashboard(env) {
        -- До цього тік SchedulerDO помилково писав сюди unprofiled рядки.
        -- Зберігаємо сумісність зі старими даними, але не даємо їм витіснити
        -- реальні model/workflow runs з owner-facing dashboard.
-       WHERE NOT (trigger = 'scheduler' AND profile IS NULL)
-       ORDER BY started_at DESC LIMIT ?`,
+       WHERE NOT (trigger = 'scheduler' AND profile IS NULL)${bounds}${cursor}
+       ORDER BY started_at DESC, id DESC LIMIT ?`,
     )
-    .bind(RUN_DASHBOARD_LIMIT)
+    .bind(...args, ...(period.before ? [period.before] : []), RUN_DASHBOARD_LIMIT)
     .all();
   const rows = /** @type {Record<string, unknown>[]} */ (results ?? []);
   const ids = rows.map((row) => String(row.id ?? '')).filter(Boolean);
@@ -52,23 +56,46 @@ export async function readRunDashboard(env) {
   }
 
   const recent = rows.map((row) => shapeRun(row, stepsByRun.get(String(row.id ?? '')) ?? []));
-  const workerQuality = await readWorkerQuality(env);
+  const workerQuality = await readWorkerQuality(env, period);
+  const summary = bounds
+    ? await db(env)
+        .prepare(
+          `SELECT COUNT(*) AS total,
+    SUM(CASE WHEN finished_at IS NULL THEN 1 ELSE 0 END) AS active,
+    SUM(CASE WHEN finished_at IS NOT NULL AND error IS NOT NULL AND error<>'' THEN 1 ELSE 0 END) AS failed,
+    SUM(CASE WHEN finished_at IS NOT NULL AND (error IS NULL OR error='') THEN 1 ELSE 0 END) AS completed
+    FROM runs WHERE NOT (trigger='scheduler' AND profile IS NULL)${bounds}`,
+        )
+        .bind(...args)
+        .first()
+    : null;
+  const last = rows.at(-1);
   return {
     recent,
-    summary: {
-      total: recent.length,
-      active: recent.filter((run) => run.terminal === 'running').length,
-      failed: recent.filter((run) => run.terminal === 'failed').length,
-      completed: recent.filter((run) => run.terminal === 'completed').length,
-    },
+    nextCursor:
+      rows.length === RUN_DASHBOARD_LIMIT && last ? `${last.started_at}|${last.id}` : null,
+    summary: summary
+      ? {
+          total: integer(summary.total),
+          active: integer(summary.active),
+          failed: integer(summary.failed),
+          completed: integer(summary.completed),
+        }
+      : {
+          total: recent.length,
+          active: recent.filter((run) => run.terminal === 'running').length,
+          failed: recent.filter((run) => run.terminal === 'failed').length,
+          completed: recent.filter((run) => run.terminal === 'completed').length,
+        },
     worker_quality: workerQuality,
   };
 }
 
 /** Aggregate only allowlisted worker model-step metadata and explicit votes. */
 /** @param {Env} env */
-async function readWorkerQuality(env) {
-  const since = new Date(Date.now() - 30 * 24 * 60 * 60_000).toISOString();
+async function readWorkerQuality(env, /** @type {{since?:string,until?:string}} */ period = {}) {
+  const since = period.since ?? new Date(Date.now() - 30 * 24 * 60 * 60_000).toISOString();
+  const until = period.until ?? new Date(Date.now() + 86400000).toISOString();
   const { results } = await db(env)
     .prepare(
       `SELECT name, COUNT(*) AS calls,
@@ -77,10 +104,10 @@ async function readWorkerQuality(env) {
               AVG(CASE WHEN note LIKE '%latency_unknown=1%' THEN NULL ELSE ms END) AS avg_ms, MAX(CASE WHEN note LIKE '%latency_unknown=1%' THEN NULL ELSE ms END) AS max_ms,
               COUNT(CASE WHEN note LIKE '%latency_unknown=1%' THEN NULL ELSE ms END) AS latency_samples
        FROM run_steps
-       WHERE kind = 'model' AND (name GLOB 'worker:*:openai:*' OR name GLOB 'worker:*:claude:*') AND at >= ?
+       WHERE kind = 'model' AND (name GLOB 'worker:*:openai:*' OR name GLOB 'worker:*:claude:*') AND at >= ? AND at < ?
        GROUP BY name`,
     )
-    .bind(since)
+    .bind(since, until)
     .all();
   /** @type {Map<string, {calls:number,succeeded:number,failed:number,totalMs:number,latencySamples:number,maxMs:number|null,results:number}>} */
   const totals = new Map();
@@ -121,10 +148,10 @@ async function readWorkerQuality(env) {
       .prepare(
         `SELECT kind, COUNT(*) AS results
          FROM reports
-         WHERE kind GLOB 'worker:*' AND created_at >= ?
+         WHERE kind GLOB 'worker:*' AND created_at >= ? AND created_at < ?
          GROUP BY kind`,
       )
-      .bind(since)
+      .bind(since, until)
       .all();
     reportRows = /** @type {Record<string, unknown>[]} */ (results ?? []);
   } catch {
@@ -154,10 +181,10 @@ async function readWorkerQuality(env) {
         `SELECT r.kind, a.action_key, COUNT(*) AS votes
          FROM worker_card_actions a JOIN reports r ON r.id = a.report_id
          WHERE r.kind LIKE 'worker:%' AND a.action_key IN ('quality:good','quality:bad')
-           AND a.created_at >= ?
+           AND a.created_at >= ? AND a.created_at < ?
          GROUP BY r.kind, a.action_key`,
       )
-      .bind(since)
+      .bind(since, until)
       .all();
     votes = /** @type {Record<string, unknown>[]} */ (voteRows ?? []);
   } catch {
@@ -198,7 +225,12 @@ function shapeRun(row, steps) {
   const queue = steps.find((step) => step.kind === 'queue');
   const retries = steps.filter((step) => step.kind === 'retry').length;
   const policy = steps.find((step) => step.kind === 'policy');
-  const modelStep = steps.find((step) => step.kind === 'model');
+  const modelSteps = steps.filter((step) => step.kind === 'model');
+  const modelStep =
+    modelSteps.find(
+      (step) =>
+        !String(step.name).startsWith('worker:') && !String(step.name).startsWith('shadow:'),
+    ) ?? modelSteps[0];
   const modelTelemetry = parseModelTelemetry(modelStep?.note);
   const finished = typeof row.finished_at === 'string' && row.finished_at.length > 0;
   const error = compact(row.error, 120);
@@ -228,11 +260,48 @@ function shapeRun(row, steps) {
     model_responses: modelTelemetry.model_responses,
     api_attempts: modelTelemetry.api_attempts,
     estimated_cost_usd: modelTelemetry.estimated_cost_usd,
+    models: modelSteps.map((step) => ({
+      name: safeStepName(step.name),
+      ...parseModelTelemetry(step.note),
+      response_id: null,
+      duration_ms: /latency_unknown=1/.test(String(step.note)) ? null : finite(step.ms),
+      ok: step.ok === 1 ? true : step.ok === 0 ? false : null,
+    })),
+    steps: steps.slice(0, 200).map((step) => ({
+      kind: ['model', 'tool', 'queue', 'retry', 'policy', 'reply', 'error', 'subagent'].includes(
+        String(step.kind),
+      )
+        ? String(step.kind)
+        : 'other',
+      name: safeStepName(step.name),
+      ms:
+        step.kind === 'model' && /latency_unknown=1/.test(String(step.note))
+          ? null
+          : finite(step.ms),
+      ok: step.ok === 1 ? true : step.ok === 0 ? false : null,
+    })),
+    steps_truncated: steps.length > 200,
+    error_class: errorClass(row.error),
     // cost_note - лише заздалегідь санітизований технічний cost producer-а;
     // якщо producer не звітує вартість, `null`, не «$0».
     cost: compact(row.cost_note, 160),
     error,
   };
+}
+
+/** @param {unknown} name */
+function safeStepName(name) {
+  return typeof name === 'string' && /^[A-Za-z0-9_.:/-]{1,128}$/.test(name) ? name : 'unknown';
+}
+/** @param {unknown} error */
+export function errorClass(error) {
+  if (!error) return null;
+  const text = String(error).toLowerCase();
+  if (/timeout|timed.out|deadline/.test(text)) return 'timeout';
+  if (/401|403|auth|credential/.test(text)) return 'access';
+  if (/429|quota|limit/.test(text)) return 'quota';
+  if (/network|fetch|connection/.test(text)) return 'network';
+  return 'execution';
 }
 
 /** Малі allowlisted token-метрики з model step, без читання довільної note. */

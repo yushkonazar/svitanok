@@ -100,6 +100,7 @@ export interface EngineOutcome {
   apiAttempts?: number;
   /** Estimated only when the deployment configured its own model prices. */
   estimatedCostUsd?: number | null;
+  priceVersion?: string;
   /** Read-only OpenAI comparison. It never contains generated text, prompts,
    * arguments, or Core results and is present only when the owner enabled an
    * explicitly scoped shadow lane. */
@@ -125,6 +126,7 @@ export type ModelTelemetry = Pick<
   | 'modelResponses'
   | 'apiAttempts'
   | 'estimatedCostUsd'
+  | 'priceVersion'
   | 'modelBreakdown'
 >;
 
@@ -219,6 +221,14 @@ interface Step {
   ms: number;
   ok: boolean;
   note?: string;
+  telemetry?: {
+    usage: Record<string, number | null | undefined>;
+    estimatedCostUsd: number | null;
+    apiAttempts?: number;
+    modelResponses?: number;
+    latencyUnknown: boolean;
+    priceVersion: string;
+  };
   /** Лише крок escalate (ADR-039): статусник для «Думаю довше…» ядра. */
   status_message_id?: number;
 }
@@ -939,6 +949,24 @@ function modelTelemetrySteps(
     name: `${prefix}${outcome.provider ?? 'openai'}:${safeTelemetry(receipt.model, 96) ?? 'unknown'}`,
     ms: receipts.length === 1 ? ms : 0,
     ok,
+    telemetry: {
+      usage: {
+        input_tokens: receipt.usage?.inputTokens,
+        output_tokens: receipt.usage?.outputTokens,
+        cached_input_tokens: receipt.usage?.cachedInputTokens,
+        cache_write_tokens: receipt.usage?.cacheWriteTokens,
+        reasoning_tokens: receipt.usage?.reasoningTokens,
+      },
+      estimatedCostUsd: receipt.estimatedCostUsd ?? null,
+      ...(receipts.length === 1
+        ? { apiAttempts: outcome.apiAttempts, modelResponses: outcome.modelResponses }
+        : {}),
+      latencyUnknown: receipts.length > 1,
+      priceVersion:
+        outcome.provider === 'claude'
+          ? 'sdk-api-equivalent'
+          : (outcome.priceVersion ?? 'unversioned-deployment-config'),
+    },
     note: `${receipts.length > 1 ? 'latency_unknown=1 ' : ''}${openAiTelemetryNote({ ...receipt, ...(receipts.length === 1 ? { apiAttempts: outcome.apiAttempts, modelResponses: outcome.modelResponses, responseId: outcome.responseId } : {}) })}`,
   }));
 }

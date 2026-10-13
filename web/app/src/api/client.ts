@@ -766,13 +766,30 @@ export async function postVote(category: string, url: string): Promise<VoteResul
   return { weight: data.weight ?? 0, voted: data.voted ?? null };
 }
 
-export async function fetchSystem(): Promise<import('./system-schema.ts').SystemSnapshot> {
+export type SystemSelection = {
+  range: 'today' | '7d' | 'month' | 'custom';
+  from?: string;
+  to?: string;
+  before?: string;
+};
+function systemQuery(selection?: SystemSelection, refresh = false) {
+  const params = new URLSearchParams();
+  if (selection)
+    for (const [key, value] of Object.entries(selection)) if (value) params.set(key, value);
+  if (refresh) params.set('refresh', '1');
+  return params.size ? `?${params}` : '';
+}
+export async function fetchSystem(
+  selection?: SystemSelection,
+  refresh = false,
+): Promise<import('./system-schema.ts').SystemSnapshot> {
   if (!inTelegram()) throw new Error('Відкрий панель в особистому чаті з ботом.');
-  const response = await fetch('/api/system', { cache: 'no-store', headers: authHeaders() }).catch(
-    () => {
-      throw new Error('Не вдалося оновити стан системи.');
-    },
-  );
+  const response = await fetch(`/api/system${systemQuery(selection, refresh)}`, {
+    cache: 'no-store',
+    headers: authHeaders(),
+  }).catch(() => {
+    throw new Error('Не вдалося оновити стан системи.');
+  });
   throwIfSessionExpired(response);
   if (!response.ok)
     throw new Error(
@@ -784,4 +801,32 @@ export async function fetchSystem(): Promise<import('./system-schema.ts').System
   const parsed = systemSchema.safeParse(await response.json().catch(() => null));
   if (!parsed.success) throw new Error('Формат системного огляду змінився. Онови застосунок.');
   return parsed.data;
+}
+
+export async function postSystem(action: Record<string, unknown>, selection?: SystemSelection) {
+  if (!inTelegram()) throw new Error('Відкрий панель в особистому чаті з ботом.');
+  const response = await fetch(`/api/system${systemQuery(selection)}`, {
+    method: 'POST',
+    cache: 'no-store',
+    headers: { ...authHeaders(), 'content-type': 'application/json' },
+    body: JSON.stringify(action),
+  });
+  throwIfSessionExpired(response);
+  const body = (await response.json().catch(() => null)) as { ok?: boolean; error?: string } | null;
+  if (!response.ok || body?.ok !== true) {
+    const errors: Record<string, string> = {
+      conflict: 'Налаштування вже змінено. Онови огляд і повтори.',
+      cooldown: 'Оновлення вже триває або щойно завершилося. Спробуй за хвилину.',
+      'not-configured': 'Спершу підключи окремий доступ до білінгу.',
+      access: 'Провайдер відхилив доступ до білінгу.',
+      scope: 'Дані не відповідають обраному проєкту або валюті.',
+      incomplete: 'Провайдер повернув неповний рахунок. Попередні дані збережено.',
+      invalid: 'Перевір суми бюджету.',
+      unsupported: 'Цей конектор ще потребує окремого підключення.',
+    };
+    throw new Error(
+      errors[body?.error ?? ''] ?? 'Не вдалося виконати дію. Попередні дані збережено.',
+    );
+  }
+  return body;
 }

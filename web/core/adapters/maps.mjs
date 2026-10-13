@@ -13,6 +13,7 @@
 // SKU, тож маски тримаємо константами, не будуємо з аргументів.
 
 import { assertQuota, countQuota, quotaLimitOf, quotaUsed } from '../quota/quota.mjs';
+import { recordUsage } from '../ops/usage-ledger.mjs';
 
 export { QuotaExhaustedError } from '../quota/quota.mjs';
 
@@ -71,23 +72,41 @@ export function mapsApiKey(env) {
  * @param {string} url @param {RequestInit} init @param {string} what
  * @returns {Promise<any>}
  */
-async function callJson(url, init, what) {
-  let res;
+async function callJson(url, init, what, /** @type {Env} */ env, /** @type {string} */ sku) {
+  const startedMs = Date.now();
+  let ok = false;
   try {
-    res = await fetch(url, { ...init, signal: AbortSignal.timeout(TIMEOUT_MS) });
-  } catch (/** @type {any} */ e) {
-    throw new Error(`${what}: мережа - ${String(e?.name ?? e)}`, { cause: e });
-  }
-  const text = await res.text().catch(() => '');
-  if (!res.ok) {
-    throw new Error(
-      `${what}: HTTP ${res.status} ${text.slice(0, 300).replace(/key=[^&\s"]+/g, 'key=***')}`,
-    );
-  }
-  try {
-    return text ? JSON.parse(text) : {};
-  } catch {
-    throw new Error(`${what}: відповідь не JSON`);
+    let res;
+    try {
+      res = await fetch(url, { ...init, signal: AbortSignal.timeout(TIMEOUT_MS) });
+    } catch (/** @type {any} */ e) {
+      throw new Error(`${what}: мережа - ${String(e?.name ?? e)}`, { cause: e });
+    }
+    const text = await res.text().catch(() => '');
+    if (!res.ok) {
+      throw new Error(
+        `${what}: HTTP ${res.status} ${text.slice(0, 300).replace(/key=[^&\s"]+/g, 'key=***')}`,
+      );
+    }
+    try {
+      const result = text ? JSON.parse(text) : {};
+      ok = true;
+      return result;
+    } catch {
+      throw new Error(`${what}: відповідь не JSON`);
+    }
+  } finally {
+    await recordUsage(env, {
+      provider: 'google',
+      feature: 'maps',
+      sku,
+      quantity: 1,
+      unit: 'request',
+      apiAttempts: 1,
+      ok,
+      at: new Date(startedMs).toISOString(),
+      durationMs: Date.now() - startedMs,
+    });
   }
 }
 
@@ -202,6 +221,8 @@ export async function placesSearch(env, input, nowMs) {
       body: JSON.stringify(body),
     },
     'Places search',
+    env,
+    'places-text-pro',
   );
   await countQuota(env, 'places_text', nowMs);
   /** @type {PlaceCandidate[]} */
@@ -268,6 +289,8 @@ export async function placeDetails(env, placeId, nowMs) {
     `${PLACES_API}/places/${encodeURIComponent(placeId)}?languageCode=${LANGUAGE}&regionCode=${REGION}`,
     { headers: { 'X-Goog-Api-Key': key, 'X-Goog-FieldMask': DETAILS_FIELD_MASK } },
     'Place details',
+    env,
+    'places-details-enterprise',
   );
   await countQuota(env, 'places_details', nowMs);
   // Відповідь без назви (заклад зник/змінив id) - назва з кешу; немає й
@@ -396,6 +419,8 @@ export async function routesEta(env, input, nowMs) {
       body: JSON.stringify(body),
     },
     'Routes',
+    env,
+    'routes',
   );
   await countQuota(env, 'routes', nowMs);
   const route = Array.isArray(json.routes) ? json.routes[0] : null;
@@ -436,7 +461,7 @@ export async function geocodeAddress(env, text, nowMs) {
   // Legacy Geocoding API приймає ключ лише query-параметром; callJson не
   // кладе URL у текст помилок, а тіло відповіді ріже `key=`.
   url.searchParams.set('key', key);
-  const json = await callJson(url.toString(), {}, 'Geocoding');
+  const json = await callJson(url.toString(), {}, 'Geocoding', env, 'geocoding');
   const status = String(json.status ?? '');
   if (status !== 'OK' && status !== 'ZERO_RESULTS') {
     throw new Error(`Geocoding: ${status} ${String(json.error_message ?? '').slice(0, 200)}`);

@@ -45,6 +45,9 @@ export const BACKUP_TABLES = [
   'outbox',
   'runs',
   'run_steps',
+  'usage_receipts',
+  'system_billing_snapshots',
+  'system_preferences',
   'quota_counters',
   'places',
   'ideas',
@@ -99,7 +102,12 @@ export const BACKUP_SCHEMA_EXCLUDE = ['migrations_meta'];
  * Документ v2 називає це явно через `omitted_d1`; restore не очищує ці
  * таблиці, тож відновлення поверх живої D1 не стирає новішу діагностику.
  */
-export const BACKUP_TELEMETRY_TABLES = ['runs', 'run_steps'];
+export const BACKUP_TELEMETRY_TABLES = [
+  'runs',
+  'run_steps',
+  'usage_receipts',
+  'system_billing_snapshots',
+];
 export const BACKUP_SNAPSHOT_TABLES = BACKUP_TABLES.filter(
   (table) => !BACKUP_TELEMETRY_TABLES.includes(table),
 );
@@ -114,6 +122,10 @@ export const BACKUP_FTS = {
 /** KV-ключі, яких у бекапі НЕ буде: кеш OAuth-токена - секрет, і він
  *  короткоживучий. Решта KV - дані власника (stats, state, архіви, levers…). */
 export const BACKUP_KV_EXCLUDE = new Set(['googleToken']);
+/** Rebuildable dashboard snapshots must not duplicate the hot telemetry archive. @param {string} key */
+export function backupKvExcluded(key) {
+  return BACKUP_KV_EXCLUDE.has(key) || key.startsWith('systemSnapshot:');
+}
 
 /**
  * @typedef {{
@@ -138,7 +150,7 @@ export function buildBackupDocument(input) {
   /** @type {Record<string, string>} */
   const kv = {};
   for (const [k, v] of Object.entries(input.kv)) {
-    if (!BACKUP_KV_EXCLUDE.has(k)) kv[k] = v;
+    if (!backupKvExcluded(k)) kv[k] = v;
   }
   return {
     version: BACKUP_DOC_VERSION,

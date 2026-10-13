@@ -1,11 +1,21 @@
 import { quotaUsed, bumpQuota } from '../quota/quota.mjs';
+import { recordUsage } from '../ops/usage-ledger.mjs';
 export const NEWS_OPENAI_MODEL = 'gpt-6-luna';
 export const NEWS_OPENAI_LIMIT = 3;
 /** Public RSS only; no tools, stored responses, private profile or uncapped requests.
- * @param {Env} env @param {{prompt:string,systemPrompt:string,jsonSchema:KvBlob,maxOutputTokens?:number}} input
+ * @param {Env} env @param {{prompt:string,systemPrompt:string,jsonSchema:KvBlob,maxOutputTokens?:number,feature?:string}} input
  * @param {typeof fetch} [fetchImpl] @returns {Promise<KvBlob>} */
 export async function callOpenAiNewsEditor(env, input, fetchImpl = fetch) {
   let attempted = false;
+  const startedMs = Date.now();
+  /** @type {Record<string,any>} */ const receipt = {
+    feature: input.feature ?? 'news',
+    provider: 'openai',
+    sku: NEWS_OPENAI_MODEL,
+    ok: false,
+    apiAttempts: 1,
+    priceVersion: 'news-openai-2026-10-12',
+  };
   if (!env.OPENAI_API_KEY || !env.DB) return { ok: false, error: 'not-configured' };
   try {
     if ((await quotaUsed(env, 'news_editor_usd')) >= NEWS_OPENAI_LIMIT)
@@ -61,6 +71,14 @@ export async function callOpenAiNewsEditor(env, input, fetchImpl = fetch) {
     const estimatedUsd =
       (inputUsd * (longContext ? 2 : 1) + outputTokens * 0.5 * (longContext ? 1.5 : 1)) / 1_000_000;
     const usage = { inputTokens, outputTokens, estimatedUsd, model: NEWS_OPENAI_MODEL };
+    Object.assign(receipt, {
+      inputTokens,
+      outputTokens,
+      cachedTokens,
+      cacheWriteTokens,
+      costUsd: estimatedUsd,
+      ok: false,
+    });
     if (estimatedUsd > 0)
       await bumpQuota(env, {
         key: 'news_editor_usd',
@@ -75,12 +93,21 @@ export async function callOpenAiNewsEditor(env, input, fetchImpl = fetch) {
       .map((/** @type {KvBlob} */ p) => p.text)
       .join('');
     try {
-      return { ok: true, attempted, provider: 'openai', structured: JSON.parse(text), usage };
+      const structured = JSON.parse(text);
+      receipt.ok = true;
+      return { ok: true, attempted, provider: 'openai', structured, usage };
     } catch {
       return { ok: false, attempted, error: 'editor-invalid-output', usage };
     }
   } catch {
     return { ok: false, attempted, error: 'editor-unavailable' };
+  } finally {
+    if (attempted)
+      await recordUsage(env, {
+        ...receipt,
+        at: new Date(startedMs).toISOString(),
+        durationMs: Date.now() - startedMs,
+      });
   }
 }
 
