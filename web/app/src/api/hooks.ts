@@ -1,4 +1,11 @@
-import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import {
+  QueryClient,
+  useIsMutating,
+  useInfiniteQuery,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from '@tanstack/react-query';
 import { inTelegram } from '../telegram.ts';
 import {
   fetchStats,
@@ -27,6 +34,7 @@ import {
 import type { SavedPage, CheckinSlot } from './schema.ts';
 import type { Settlement } from './briefing-schema.ts';
 import { nextSavedOffset } from './paging.ts';
+import { mergeSettingsPatch } from './settings-patch.ts';
 import type { SettingsPatch, SettingsResponse } from './settings-schema.ts';
 import type { FunnelStage } from '../components/jobs/stages.ts';
 
@@ -568,7 +576,14 @@ export function useSavedArchive() {
 
 /** Налаштування власника + статус конекторів (третя незалежна черга). */
 export function useSettings() {
-  return useQuery({ queryKey: ['settings'], queryFn: fetchSettings });
+  const pending = useIsMutating({ mutationKey: SETTINGS_SAVE_KEY });
+  return useQuery({
+    queryKey: ['settings'],
+    queryFn: fetchSettings,
+    staleTime: 0,
+    refetchOnWindowFocus: 'always',
+    enabled: pending === 0,
+  });
 }
 
 /** Приватна вибірка якості працівників; освіжається раз на пʼять хвилин. */
@@ -581,68 +596,73 @@ export function useWorkerQuality(enabled = true) {
   });
 }
 
-const SETTINGS_SAVE_KEY = ['settings-save'];
+export const SETTINGS_SAVE_KEY = ['settings-save'];
+type SettingsEntry = { patch: SettingsPatch };
+type SettingsQueue = { base: SettingsResponse; entries: SettingsEntry[] };
+const settingsQueues = new WeakMap<QueryClient, SettingsQueue>();
+function showSettingsQueue(qc: QueryClient, queue: SettingsQueue) {
+  qc.setQueryData(['settings'], {
+    ...queue.base,
+    settings: queue.entries.reduce(
+      (settings, entry) => mergeSettingsPatch(settings, entry.patch),
+      queue.base.settings,
+    ),
+  });
+}
 
-/**
- * Зберегти налаштування. Екран шле ПАТЧ (один тумблер), а на сервер іде ПОВНИЙ
- * блоб — бо KV без CAS, і серверний read-modify-write губив би тумблери.
- *
- * Три речі тримають це вкупі, кожна закриває свою гонку:
- *
- * 1. scope — серіалізує запити. Без нього два швидкі тапи летять паралельно й
- *    останній PUT затирає попередній.
- * 2. mutationFn бере блоб із КЕШУ, а не з аргументів. onMutate завжди виконується
- *    ДО mutationFn, тож кеш уже містить і цей патч, і всі попередні. Якби payload
- *    збирався в компоненті з `settings` рендера, два тапи в одному тіку прочитали
- *    б той самий (ще не оновлений) стан — і другий загубив би перший. Це
- *    дзеркальне до пастки useVote: там читання кешу в mutationFn було багом, бо
- *    оптимістику треба було рахувати ДО патчу; тут навпаки — треба ПІСЛЯ.
- * 3. onSettled інвалідує лише коли черга спорожніла: інакше відповідь першої
- *    мутації перемалювала б тумблер, який друга щойно змінила.
- */
+/** Each queued change applies to the last acknowledged snapshot. A failed
+ * request removes only its own intent; later changes and server normalization survive. */
 export function useSaveSettings() {
   const qc = useQueryClient();
+  const finish = (entry: SettingsEntry | undefined, response?: SettingsResponse | null) => {
+    const queue = settingsQueues.get(qc);
+    if (!queue || !entry) return;
+    if (response) queue.base = response;
+    queue.entries = queue.entries.filter((item) => item !== entry);
+    showSettingsQueue(qc, queue);
+    if (!queue.entries.length) settingsQueues.delete(qc);
+  };
   return useMutation({
     mutationKey: SETTINGS_SAVE_KEY,
     scope: { id: 'settings' },
-    mutationFn: () => {
-      const cur = qc.getQueryData<SettingsResponse>(['settings']);
-      return cur ? postSettings(cur.settings) : Promise.resolve(null);
+    mutationFn: (patch: SettingsPatch) => {
+      const queue = settingsQueues.get(qc);
+      if (!queue) throw new Error('Налаштування ще не завантажені. Спробуй знову.');
+      return postSettings(mergeSettingsPatch(queue.base.settings, patch));
     },
     onMutate: async (patch: SettingsPatch) => {
       await qc.cancelQueries({ queryKey: ['settings'] });
-      const prev = qc.getQueryData<SettingsResponse>(['settings']);
-      qc.setQueryData<SettingsResponse>(['settings'], (old) =>
-        old
-          ? {
-              ...old,
-              settings: {
-                ...((patch.checkin ?? old.settings.checkin)
-                  ? { checkin: patch.checkin ?? old.settings.checkin }
-                  : {}),
-                quiet: { ...old.settings.quiet, ...(patch.quiet ?? {}) },
-                modules: { ...old.settings.modules, ...(patch.modules ?? {}) },
-                // mutedTopics — ПОВНА заміна, не мердж: патч несе весь новий
-                // список, інакше зняти приглушення було б неможливо.
-                mutedTopics: patch.mutedTopics ?? old.settings.mutedTopics,
-                ...((patch.news ?? old.settings.news)
-                  ? { news: patch.news ?? old.settings.news }
-                  : {}),
-              },
-            }
-          : old,
+      let queue = settingsQueues.get(qc);
+      if (!queue) {
+        const base = qc.getQueryData<SettingsResponse>(['settings']);
+        if (!base) throw new Error('Налаштування ще не завантажені.');
+        queue = { base, entries: [] };
+        settingsQueues.set(qc, queue);
+      }
+      const entry = { patch };
+      queue.entries.push(entry);
+      showSettingsQueue(qc, queue);
+      return { entry };
+    },
+    onSuccess: (response, patch, ctx) => {
+      const queue = settingsQueues.get(qc);
+      finish(
+        ctx?.entry,
+        response ??
+          (queue
+            ? {
+                ...queue.base,
+                settings: mergeSettingsPatch(queue.base.settings, patch),
+              }
+            : null),
       );
-      return { prev };
     },
-    onError: (_e, _v, ctx) => {
-      if (ctx?.prev) qc.setQueryData(['settings'], ctx.prev);
-    },
+    onError: (_e, _v, ctx) => finish(ctx?.entry),
     onSettled: () => {
-      // === 1: поточна мутація ще рахується. Більше -> позаду черга, і рефетч
-      // зараз показав би проміжний стан сервера замість останнього тапу.
       if (inTelegram() && qc.isMutating({ mutationKey: SETTINGS_SAVE_KEY }) === 1) {
         qc.invalidateQueries({ queryKey: ['settings'] });
         qc.invalidateQueries({ queryKey: ['stats'] });
+        qc.invalidateQueries({ queryKey: ['newsSnapshot'] });
       }
     },
   });

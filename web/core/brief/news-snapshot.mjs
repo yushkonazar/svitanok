@@ -1,3 +1,4 @@
+import { canonicalNewsTopic } from './news-catalog.mjs';
 // Six default public RSS feeds, one cached selection and one translation batch per cycle.
 // This snapshot is separate from the morning briefing and never overwrites it.
 import { localizeNewsGroups } from './news-localization.mjs';
@@ -128,10 +129,9 @@ export async function buildNewsSnapshot(env, nowMs, fetchImpl, options = {}) {
   /** @param {{source:string,topic:string}} source */
   const enabled = (source) =>
     allowed.some((name) => name === source.source) &&
-    !settings.mutedTopics.includes(source.topic) &&
-    !(source.topic === 'CS2' && settings.mutedTopics.includes('Кіберспорт')) &&
-    !(source.topic === 'Винаходи й технології' && settings.mutedTopics.includes('Тех/IT')) &&
-    !(source.topic === 'Головне' && settings.mutedTopics.includes('Світ'));
+    !settings.mutedTopics.some(
+      (topic) => canonicalNewsTopic(topic) === canonicalNewsTopic(source.topic),
+    );
   /** @type {KvBlob|null} */ let old = options.old ?? null;
   if (options.old === undefined)
     try {

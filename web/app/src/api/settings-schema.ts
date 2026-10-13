@@ -43,6 +43,10 @@ export const connectorsSchema = z.object({
   google: z.boolean().default(false),
   calendar: z.boolean().default(false),
   gmail: z.boolean().default(false),
+  scopeKnown: z.boolean().optional(),
+  calendarWrite: z.boolean().optional(),
+  contacts: z.boolean().optional(),
+  mono: z.boolean().optional(),
 });
 
 export const settingsResponseSchema = z.object({
@@ -57,7 +61,9 @@ export type SettingsResponse = z.infer<typeof settingsResponseSchema>;
 /** Частковий патч, який шле екран; у повний блоб його зводить useSaveSettings. */
 export interface SettingsPatch {
   checkin?: Settings['checkin'];
-  news?: Settings['news'];
+  news?: Partial<NonNullable<Settings['news']>>;
+  newsSource?: { id: string; enabled: boolean };
+  topic?: { name: string; enabled: boolean };
   quiet?: Partial<Settings['quiet']>;
   modules?: Record<string, boolean>;
   /** ПОВНИЙ новий список (не дельта) — тем мало, зводити дельту нема сенсу. */

@@ -307,7 +307,11 @@ export function LeisureScreen() {
     [futureShown, setFutureShown] = useState(4),
     [undoReaction, setUndoReaction] = useState<string | null>(null);
   const [dialog, setDialog] = useState<Dialog | null>(() =>
-    params.get('item') ? { type: 'detail', itemId: params.get('item')! } : null,
+    params.get('action') === 'settings'
+      ? { type: 'settings' }
+      : params.get('item')
+        ? { type: 'detail', itemId: params.get('item')! }
+        : null,
   );
   const pending = useRef<{ signature: string; commandId: string } | null>(null);
   const send = useCallback<Send>(
@@ -334,8 +338,9 @@ export function LeisureScreen() {
   );
   const close = () => {
     setDialog(null);
-    if (params.has('item')) {
+    if (params.has('item') || params.get('action') === 'settings') {
       params.delete('item');
+      params.delete('action');
       setParams(params, { replace: true });
     }
   };
@@ -1340,6 +1345,10 @@ function LeisureSettings({
           </Pill>
         ))}
       </div>
+      <p className="leisure-secondary">
+        Обрані напрямки визначають добірку. Особистий рейтинг навчається з «Цікаво», причин
+        «Нецікаво» та твоїх відгуків.
+      </p>
       <h3>Планета кіно</h3>
       <div className="leisure-pills">
         {[
@@ -1367,6 +1376,10 @@ function LeisureSettings({
         <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
         Оновлювати добірку автоматично
       </label>
+      <p className="leisure-secondary">
+        Понеділок, 08:00 за Києвом. Регулярної Telegram-розсилки немає. Пільги враховуються лише
+        там, де їх підтвердило джерело.
+      </p>
       <p className="leisure-secondary">
         Зберігаються видані добірки й твої явні збереження, плани, відвідування та відгуки до
         видалення. Час перегляду й геолокація не збираються.

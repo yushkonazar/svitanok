@@ -2,13 +2,17 @@ import { AdaptivePreferences } from '../checkin/AdaptivePreferences.tsx';
 import { OperationsPanel } from './OperationsPanel.tsx';
 import { MemoryPanel } from './MemoryPanel.tsx';
 import { version as appVersion } from '../../../package.json';
-import { NEWS_SOURCE_CATALOG, DEFAULT_NEWS_SOURCES } from '../../../../core/brief/news-catalog.mjs';
+import {
+  NEWS_SOURCE_CATALOG,
+  DEFAULT_NEWS_SOURCES,
+  NEWS_FEEDS,
+  canonicalNewsTopic,
+} from '../../../../core/brief/news-catalog.mjs';
 import { PageHeading } from '../ui/PageHeading.tsx';
 import { usePresentation, savePresentation } from '../../lib/presentation.ts';
 import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import { useSettings, useSaveSettings, useBriefing, useNewsSnapshot } from '../../api/hooks.ts';
-import { readBlock, newsDataSchema } from '../../api/briefing-schema.ts';
+import { useSettings, useSaveSettings, useNewsSnapshot } from '../../api/hooks.ts';
 import { topicEmoji } from '../../lib/topicEmoji.ts';
 import { getDemoState, setDemoState, type DemoState } from '../../api/client.ts';
 import {
@@ -24,7 +28,7 @@ import { SectionLabel } from '../ui/primitives.tsx';
 import { LoadingSkeleton, ErrorState } from '../ui/states.tsx';
 import { Switch, Chip, SettingRow } from '../ui/controls.tsx';
 import { cascade } from '../ui/Cascade.tsx';
-import { useQueryClient } from '@tanstack/react-query';
+import { useQueryClient, useIsMutating, useMutationState } from '@tanstack/react-query';
 import { DeletionReceiptsBlock } from './DeletionReceiptsBlock.tsx';
 import { WorkerQualityBlock } from './WorkerQualityBlock.tsx';
 
@@ -43,7 +47,7 @@ const MODULES: Array<{ id: string; icon: string; label: string }> = [
   { id: 'weather', icon: '⛅', label: 'Погода' },
   { id: 'currency', icon: '💱', label: 'Курс валют' },
   { id: 'fact', icon: '🧠', label: 'Факт дня' },
-  { id: 'stoic', icon: '📜', label: 'Думка дня' },
+  { id: 'stoic', icon: '📜', label: 'Цитата дня' },
   { id: 'onthisday', icon: '🏛', label: 'У цей день' },
   { id: 'news', icon: '📰', label: 'Новини' },
 ];
@@ -68,6 +72,37 @@ function Section({ title, children }: { title: string; children: React.ReactNode
       {children}
     </section>
   );
+}
+function SettingsSaveStatus() {
+  const pending = useIsMutating({ mutationKey: ['settings-save'] });
+  const history = useMutationState({
+    filters: { mutationKey: ['settings-save'] },
+    select: (mutation) => mutation.state,
+  });
+  const latest = history.at(-1);
+  if (pending)
+    return (
+      <p role="status" className="renewal-chart-note">
+        Зберігаю налаштування…
+      </p>
+    );
+  if (latest?.status === 'error')
+    return (
+      <p role="alert" className="text-neg text-sm">
+        {latest.error instanceof Error
+          ? latest.error.message
+          : 'Не вдалося зберегти налаштування. Спробуй знову.'}
+      </p>
+    );
+  if (latest?.status === 'success')
+    return (
+      <p role="status" className="renewal-chart-note">
+        {inTelegram()
+          ? 'Налаштування збережено'
+          : 'Демонстраційні налаштування збережено на цьому пристрої'}
+      </p>
+    );
+  return null;
 }
 function NewsUsage() {
   const news = useNewsSnapshot();
@@ -168,7 +203,6 @@ export function SettingsScreen() {
   // React), тож тримаємо дзеркало в стані — інакше активний чіп не перемалювався б.
   const [demo, setDemo] = useState<DemoState>(getDemoState);
   const { data, isLoading, isError, error, refetch } = useSettings();
-  const { data: briefData } = useBriefing();
   const save = useSaveSettings();
 
   if (isLoading) return <LoadingSkeleton />;
@@ -189,38 +223,30 @@ export function SettingsScreen() {
   const saveQuiet = (patch: Partial<typeof settings.quiet>) => save.mutate({ quiet: patch });
   const saveModule = (id: string, on: boolean) => save.mutate({ modules: { [id]: on } });
 
-  // Перелік тем для перемикачів — ОБʼЄДНАННЯ тем зі свіжого брифінгу й уже
-  // приглушених. Самих лише тем брифінгу мало: приглушена тема туди більше не
-  // потрапляє, і зняти приглушення стало б неможливо.
-  const news = readBlock(briefData?.brief.blocks ?? [], 'news', newsDataSchema);
   const muted = settings.mutedTopics;
-  const topics = [...new Set([...(news?.groups ?? []).map((g) => g.topic), ...muted])].sort(
-    (a, b) => a.localeCompare(b, 'uk'),
-  );
-  const toggleTopic = (topic: string, on: boolean) => {
-    // Set, а не [...muted, topic]: подвійний тап інакше слав би дубль (сервер його
-    // дедупить, але слати сміття не варто).
-    const next = on ? muted.filter((t) => t !== topic) : [...new Set([...muted, topic])];
-    save.mutate({ mutedTopics: next });
-  };
-
-  const connectorRow = (icon: string, label: string, on: boolean) => (
+  // Sources define the current topics, even if the brief is old or contains no news.
+  const topics = [
+    ...new Set([...NEWS_FEEDS.map((feed) => feed.topic), ...muted].map(canonicalNewsTopic)),
+  ].sort((a, b) => a.localeCompare(b, 'uk'));
+  const connectorRow = (icon: string, label: string, on: boolean, unknown = false) => (
     <SettingRow
       key={label}
       icon={
-        <div className="grid h-[34px] w-[34px] flex-none place-items-center rounded-[11px] border border-glassb bg-glass text-base">
+        <span className="text-xl" aria-hidden="true">
           {icon}
-        </div>
+        </span>
       }
       title={label}
       hint={
-        <span style={{ color: on ? 'var(--color-pos)' : 'var(--color-tx3)' }}>
-          {on ? 'Синхронізовано' : 'Не підключено'}
-        </span>
+        unknown
+          ? 'Дозволи ще не перевірені'
+          : on
+            ? 'Інтеграція налаштована'
+            : 'Не підключено або немає дозволу'
       }
     >
-      <span className="ml-auto flex-none rounded-full border border-glassb bg-glass px-[11px] py-1.5 text-[11px] font-semibold text-tx2">
-        {on ? 'Активний' : 'Вимкнено'}
+      <span className="renewal-pill">
+        {unknown ? 'Невідомо' : on ? 'Налаштовано' : 'Недоступно'}
       </span>
     </SettingRow>
   );
@@ -228,9 +254,45 @@ export function SettingsScreen() {
   return (
     <div className="flex flex-col gap-6">
       <PageHeading eyebrow="ТВІЙ СВІТАНОК" title="Підлаштувати" accent="під себе." />
+      {!inTelegram() && (
+        <p className="renewal-chart-note">
+          Демонстрація поза Telegram: ці зміни не змінюють твій справжній профіль Світанку.
+        </p>
+      )}
+      <SettingsSaveStatus />
       <AdaptivePreferences />
+      <div className="grid gap-3 sm:grid-cols-2">
+        <Link to="/finance?action=settings" className="renewal-card">
+          <h2 className="font-semibold">Фінанси й нагадування →</h2>
+          <p className="renewal-chart-note mt-2">
+            Період огляду, таксі, категорії, кредитні ліміти та сповіщення про платежі й чек-ін.
+          </p>
+        </Link>
+        <Link to="/leisure?action=settings" className="renewal-card">
+          <h2 className="font-semibold">Дозвілля →</h2>
+          <p className="renewal-chart-note mt-2">
+            Напрямки добірки, кінотеатри, студентські пільги й автоматичне оновлення.
+          </p>
+        </Link>
+      </div>
       <section className="renewal-card">
         <h2 className="text-lg font-semibold mb-4">Вигляд і відчуття</h2>
+        <p className="renewal-chart-note mb-4">
+          Ці параметри зберігаються на цьому пристрої. «Авто» повторює тему Telegram, а у браузері —
+          системну.
+        </p>
+        <div className="flex flex-wrap gap-2 mb-4" role="radiogroup" aria-label="Тема">
+          {THEMES.map((t) => (
+            <Chip
+              key={t.id}
+              active={pref === t.id}
+              pressed={pref === t.id}
+              onClick={() => setPref(t.id)}
+            >
+              {t.label}
+            </Chip>
+          ))}
+        </div>
         {(
           [
             { key: 'calm', title: 'Спокійні анімації', hint: 'Мінімум руху на цьому пристрої' },
@@ -242,8 +304,11 @@ export function SettingsScreen() {
             },
             {
               key: 'newsPreview',
-              title: 'Подія на головному екрані',
-              hint: 'Одна новина з твоєї стрічки',
+              title: 'Новина на «Сьогодні»',
+              hint:
+                settings.modules.news === false
+                  ? 'Зараз приховано: збір новин вимкнений'
+                  : 'Одна новина з твоєї стрічки',
             },
           ] as const
         ).map((row) => (
@@ -268,16 +333,7 @@ export function SettingsScreen() {
               <Switch
                 label={`Джерело ${source}`}
                 checked={n.sources.includes(source)}
-                onChange={(on) =>
-                  save.mutate({
-                    news: {
-                      ...n,
-                      sources: (on
-                        ? [...n.sources, source]
-                        : n.sources.filter((v) => v !== source)) as typeof n.sources,
-                    },
-                  })
-                }
+                onChange={(enabled) => save.mutate({ newsSource: { id: source, enabled } })}
               />
             </SettingRow>
           );
@@ -288,10 +344,7 @@ export function SettingsScreen() {
             value={settings.news?.intervalHours ?? 3}
             onChange={(e) =>
               save.mutate({
-                news: {
-                  sources: settings.news?.sources ?? [...DEFAULT_NEWS_SOURCES],
-                  intervalHours: Number(e.target.value) as 3 | 6 | 12,
-                },
+                news: { intervalHours: Number(e.target.value) as 3 | 6 | 12 },
               })
             }
           >
@@ -303,25 +356,32 @@ export function SettingsScreen() {
           </select>
         </label>
         <p className="renewal-muted mt-3">
-          До 18 матеріалів за збірку. Переклад нових заголовків кешується; відкриття стрічки читає
-          готову збірку. Налаштування джерел і частоти спільні з асистентом.
+          До 30 відібраних матеріалів за оновлення; фактична кількість залежить від доступних новин.
+          Переклад кешується. Відкриття стрічки читає готові дані. Джерела, теми й частота спільні з
+          асистентом; зміни застосуються під час наступного збору.
         </p>
         <NewsUsage />
-        {save.error && (
-          <p role="alert" className="text-neg text-sm mt-3">
-            {save.error.message}
+        {(settings.news?.sources ?? DEFAULT_NEWS_SOURCES).length === 0 && (
+          <p className="renewal-chart-note mt-3">
+            Жодного джерела не обрано — нові матеріали не збиратимуться.
+          </p>
+        )}
+        {settings.modules.news === false && (
+          <p className="renewal-chart-note mt-3">
+            Збір новин вимкнений у блоках нижче. Вибір джерел збережений.
           </p>
         )}
       </section>
-      <Link to="/finance?action=settings" className="renewal-card renewal-link">
-        Фінансовий профіль, категорії та нагадування →
-      </Link>
-      <Section title="РОЗКЛАД">
+      <Section title="СПОВІЩЕННЯ Й ТИХІ ГОДИНИ">
+        <p className="renewal-chart-note">
+          Час за Києвом. Увімкнути нагадування про платежі та чек-ін можна у фінансових
+          налаштуваннях вище.
+        </p>
         <SettingRow
           title="Тихі години"
           hint={
             settings.quiet.enabled
-              ? `${settings.quiet.from} – ${settings.quiet.to} · нагадування чекають ранку`
+              ? `${settings.quiet.from} – ${settings.quiet.to} · нагадування чекають кінця цього проміжку`
               : 'нагадування приходять будь-коли'
           }
         >
@@ -362,11 +422,37 @@ export function SettingsScreen() {
             </div>
           </div>
         </div>
+        {settings.quiet.enabled && settings.quiet.from === settings.quiet.to && (
+          <p role="status" className="renewal-chart-note">
+            Початок і кінець однакові — тихого проміжку немає. Зміни один із часів.
+          </p>
+        )}
       </Section>
 
-      <Section title="КОНЕКТОРИ">
-        {connectorRow('📅', 'Calendar', connectors.calendar)}
-        {connectorRow('✉️', 'Gmail', connectors.gmail)}
+      <Section title="ПІДКЛЮЧЕННЯ">
+        {connectorRow(
+          '📅',
+          'Календар · перегляд',
+          connectors.calendar,
+          connectors.google && connectors.scopeKnown !== true,
+        )}
+        {connectorRow(
+          '📆',
+          'Календар · планування',
+          connectors.calendarWrite === true,
+          connectors.google && connectors.scopeKnown !== true,
+        )}
+        {connectorRow(
+          '✉️',
+          'Пошта Gmail',
+          connectors.gmail,
+          connectors.google && connectors.scopeKnown !== true,
+        )}
+        {connectorRow('🏦', 'Monobank', connectors.mono === true)}
+        <p className="renewal-chart-note">
+          Це стан налаштування та відомих дозволів, а не перевірка доступності сервісу. Останній час
+          банківської звірки показано у фінансах. Ключі тут не вводяться.
+        </p>
         {!connectors.google && (
           <p className="text-[11.5px] leading-snug text-tx3">
             Підключення Google потребує налаштування інтеграції.
@@ -386,9 +472,9 @@ export function SettingsScreen() {
         </div>
       </details>
 
-      <Section title="МОДУЛІ БРИФІНГУ">
+      <Section title="БЛОКИ «СЬОГОДНІ» Й БРИФІНГУ">
         {MODULES.map((m, i) => {
-          // Відсутність оверрайду = дефолт config.yml; для цих восьми там
+          // Відсутність оверрайду = дефолт config.yml; для цих блоків там
           // enabled:true (інваріант закріплено тестом tests/config.test.ts).
           const on = settings.modules[m.id] ?? true;
           return (
@@ -403,7 +489,8 @@ export function SettingsScreen() {
           );
         })}
         <p className="text-[11.5px] leading-snug text-tx3">
-          Вимкнений модуль ховається на «Сьогодні» й не потрапляє в наступний брифінг.
+          Вимкнений блок ховається на «Сьогодні» й не потрапляє в наступний брифінг. «Новини» також
+          зупиняють автоматичний збір; раніше зібрані матеріали залишаються доступними.
         </p>
       </Section>
 
@@ -412,7 +499,7 @@ export function SettingsScreen() {
       {topics.length > 0 && (
         <Section title="ТЕМИ НОВИН">
           {topics.map((t) => {
-            const on = !muted.includes(t);
+            const on = !muted.some((topic) => canonicalNewsTopic(topic) === t);
             return (
               <SettingRow
                 key={t}
@@ -423,12 +510,17 @@ export function SettingsScreen() {
                 }
                 title={t}
               >
-                <Switch label={t} checked={on} onChange={(next) => toggleTopic(t, next)} />
+                <Switch
+                  label={t}
+                  checked={on}
+                  onChange={(enabled) => save.mutate({ topic: { name: t, enabled } })}
+                />
               </SettingRow>
             );
           })}
           <p className="text-[11.5px] leading-snug text-tx3">
-            Приглушену тему не збиратимемо в завтрашній брифінг.
+            Вимкнені теми не потрапляють у стрічку й наступний збір новин. Їх можна повернути тут у
+            будь-який момент.
           </p>
         </Section>
       )}
@@ -441,21 +533,6 @@ export function SettingsScreen() {
           <DeletionReceiptsBlock />
         </div>
       </details>
-
-      <Section title="ТЕМА">
-        <div className="flex gap-2" role="radiogroup" aria-label="Тема">
-          {THEMES.map((t) => (
-            <Chip
-              key={t.id}
-              active={pref === t.id}
-              pressed={pref === t.id}
-              onClick={() => setPref(t.id)}
-            >
-              {t.label}
-            </Chip>
-          ))}
-        </div>
-      </Section>
 
       <HomeScreenSection />
 

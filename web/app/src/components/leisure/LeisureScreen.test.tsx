@@ -21,7 +21,7 @@ vi.mock('../../telegram.ts', () => ({
 }));
 beforeEach(() => resetLeisureDemo());
 afterEach(() => vi.restoreAllMocks());
-async function setup() {
+async function setup(initialEntry = '/') {
   const cache = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
@@ -29,7 +29,7 @@ async function setup() {
   cache.setQueryData(['leisure'], data);
   render(
     <QueryClientProvider client={cache}>
-      <MemoryRouter>
+      <MemoryRouter initialEntries={[initialEntry]}>
         <LeisureScreen />
       </MemoryRouter>
     </QueryClientProvider>,
@@ -197,4 +197,12 @@ describe('leisure mobile interactions', () => {
   it('validates the actual demo payload against the same schema as production', async () => {
     expect(leisureWorkspaceSchema.safeParse(await fetchLeisure()).success).toBe(true);
   });
+});
+
+it('opens settings from the central settings link and removes the action when closed', async () => {
+  await setup('/leisure?action=settings');
+  expect(screen.getByRole('dialog')).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Зберегти налаштування' })).toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: 'Закрити вікно дозвілля' }));
+  await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
 });

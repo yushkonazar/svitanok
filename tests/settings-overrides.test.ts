@@ -301,3 +301,19 @@ describe('settings-overrides — applyOwnerGeo', () => {
     expect(before.locations).toEqual([LVIV, RIVNE]); // вхідний конфіг не мутовано
   });
 });
+
+it('current news labels also mute the matching legacy briefing topics', () => {
+  const config = cfg({
+    news: {
+      enabled: true,
+      topics: [
+        { topic: 'Світ', source: 'newsdata', queries: ['world'] },
+        { topic: 'Тех/IT', source: 'newsdata', queries: ['technology'] },
+      ],
+    },
+  });
+  expect(
+    applyTopicMutes(config, { mutedTopics: ['Головне', 'Винаходи й технології'] }).config.modules
+      .news.topics,
+  ).toEqual([]);
+});

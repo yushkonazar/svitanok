@@ -119,7 +119,7 @@ describe('settings-core — isQuietMinute', () => {
 
 describe('settings-core — connectorStatus', () => {
   it('без секретів — усе вимкнено', () => {
-    expect(connectorStatus({ hasGoogleCreds: false, scope: 'x' })).toEqual({
+    expect(connectorStatus({ hasGoogleCreds: false, scope: 'x' })).toMatchObject({
       google: false,
       calendar: false,
       gmail: false,
@@ -129,7 +129,7 @@ describe('settings-core — connectorStatus', () => {
 
   it('секрети є, скоупи ще не закешовані -> calendar/gmail (спільний консент), contacts=false (PR-10, НОВИЙ скоуп, потребує ре-консенту)', () => {
     for (const scope of [null, undefined, '', '   ', 42]) {
-      expect(connectorStatus({ hasGoogleCreds: true, scope })).toEqual({
+      expect(connectorStatus({ hasGoogleCreds: true, scope })).toMatchObject({
         google: true,
         calendar: true,
         gmail: true,
@@ -141,7 +141,7 @@ describe('settings-core — connectorStatus', () => {
   it('скоупи відомі -> кожен сервіс за своїм скоупом (включно з contacts, PR-10)', () => {
     const scope =
       'https://www.googleapis.com/auth/calendar.readonly https://www.googleapis.com/auth/calendar.events';
-    expect(connectorStatus({ hasGoogleCreds: true, scope })).toEqual({
+    expect(connectorStatus({ hasGoogleCreds: true, scope })).toMatchObject({
       google: true,
       calendar: true,
       gmail: false,
@@ -152,12 +152,31 @@ describe('settings-core — connectorStatus', () => {
         hasGoogleCreds: true,
         scope: 'https://www.googleapis.com/auth/gmail.readonly',
       }),
-    ).toEqual({ google: true, calendar: false, gmail: true, contacts: false });
+    ).toMatchObject({ google: true, calendar: false, gmail: true, contacts: false });
     expect(
       connectorStatus({
         hasGoogleCreds: true,
         scope: 'https://www.googleapis.com/auth/contacts.readonly',
       }),
-    ).toEqual({ google: true, calendar: false, gmail: false, contacts: true });
+    ).toMatchObject({ google: true, calendar: false, gmail: false, contacts: true });
   });
+});
+
+it('does not claim known scopes or calendar writes until the grant is observed', () => {
+  expect(connectorStatus({ hasGoogleCreds: true })).toMatchObject({
+    scopeKnown: false,
+    calendarWrite: false,
+  });
+  expect(
+    connectorStatus({
+      hasGoogleCreds: true,
+      scope: 'https://www.googleapis.com/auth/calendar.events.readonly',
+    }),
+  ).toMatchObject({ scopeKnown: true, calendar: true, calendarWrite: false });
+  expect(
+    connectorStatus({
+      hasGoogleCreds: true,
+      scope: 'https://www.googleapis.com/auth/calendar.events',
+    }),
+  ).toMatchObject({ scopeKnown: true, calendar: true, calendarWrite: true });
 });

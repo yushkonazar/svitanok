@@ -490,6 +490,88 @@ describe('useSaveSettings', () => {
   });
 });
 
+describe('settings queue regressions', () => {
+  function seed() {
+    qc.setQueryData(['settings'], {
+      settings: {
+        quiet: { enabled: false, from: '22:00', to: '08:00' },
+        modules: {},
+        mutedTopics: [],
+        news: { sources: ['BBC', 'Sky Sports', 'HLTV'], intervalHours: 3 },
+      },
+      connectors: {},
+    });
+  }
+  it('preserves independent news-source toggles and an interval change in one tick', async () => {
+    seed();
+    const { result } = renderHook(() => useSaveSettings(), { wrapper });
+    await act(async () => {
+      await Promise.all([
+        result.current.mutateAsync({ newsSource: { id: 'BBC', enabled: false } }),
+        result.current.mutateAsync({ newsSource: { id: 'Sky Sports', enabled: false } }),
+        result.current.mutateAsync({ news: { intervalHours: 6 } }),
+        result.current.mutateAsync({ topic: { name: 'Наука', enabled: false } }),
+        result.current.mutateAsync({ topic: { name: 'Футбол', enabled: false } }),
+      ]);
+    });
+    expect(client.postSettings.mock.calls.at(-1)![0]).toMatchObject({
+      news: { sources: ['HLTV'], intervalHours: 6 },
+      mutedTopics: ['Наука', 'Футбол'],
+    });
+  });
+  it('does not send an unsaved later change as part of an earlier request, or lose it after failure', async () => {
+    seed();
+    client.postSettings.mockRejectedValueOnce(new Error('offline'));
+    const { result } = renderHook(() => useSaveSettings(), { wrapper });
+    await act(async () => {
+      await Promise.allSettled([
+        result.current.mutateAsync({ modules: { news: false } }),
+        result.current.mutateAsync({ modules: { weather: false } }),
+      ]);
+    });
+    expect(client.postSettings.mock.calls[0]![0]).toMatchObject({ modules: { news: false } });
+    expect(client.postSettings.mock.calls[0]![0].modules).not.toHaveProperty('weather');
+    expect(client.postSettings.mock.calls[1]![0]).toMatchObject({ modules: { weather: false } });
+    expect(
+      qc.getQueryData<{ settings: { modules: object } }>(['settings'])!.settings.modules,
+    ).toEqual({ weather: false });
+  });
+  it('unmutes legacy topic aliases together with the current topic label', async () => {
+    seed();
+    qc.setQueryData(['settings'], {
+      settings: {
+        quiet: { enabled: false, from: '22:00', to: '08:00' },
+        modules: {},
+        mutedTopics: ['Світ', 'Головне', 'Наука'],
+      },
+      connectors: {},
+    });
+    const { result } = renderHook(() => useSaveSettings(), { wrapper });
+    await act(async () => {
+      await result.current.mutateAsync({ topic: { name: 'Головне', enabled: true } });
+    });
+    expect(client.postSettings.mock.calls.at(-1)![0]).toMatchObject({ mutedTopics: ['Наука'] });
+  });
+  it('keeps server normalization and changes made by a second settings hook', async () => {
+    seed();
+    client.postSettings.mockImplementationOnce(async (next) => ({
+      settings: { ...next, quiet: { ...next.quiet, from: '09:00' } },
+      connectors: { google: true },
+    }));
+    const { result } = renderHook(() => [useSaveSettings(), useSaveSettings()], { wrapper });
+    await act(async () => {
+      await Promise.all([
+        result.current[0]!.mutateAsync({ quiet: { from: '9:00' } }),
+        result.current[1]!.mutateAsync({ modules: { fact: false } }),
+      ]);
+    });
+    expect(client.postSettings.mock.calls.at(-1)![0]).toMatchObject({
+      quiet: { from: '09:00' },
+      modules: { fact: false },
+    });
+  });
+});
+
 describe('useSaveCheckin', () => {
   it('домерджує відповіді в потрібний блок, не затираючи сусідні', async () => {
     seedStats({ checkinToday: { morning: { sleepH: 7 } } as Stats['checkinToday'] });

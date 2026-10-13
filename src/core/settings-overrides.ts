@@ -1,3 +1,4 @@
+import { canonicalNewsTopic } from '../../web/core/brief/news-catalog.mjs';
 // Тумблери модулів брифінгу з Mini App (роадмеп v3, F2).
 //
 // Власник перемикає модуль у Mini App -> Worker пише блоб KV `settings`
@@ -80,7 +81,11 @@ export function applyTopicMutes(config: AppConfig, settings: unknown): TopicMute
   const raw = (settings as { mutedTopics?: unknown } | null | undefined)?.mutedTopics;
   if (!Array.isArray(raw) || raw.length === 0) return { config, muted: [] };
 
-  const mute = new Set(raw.filter((t): t is string => typeof t === 'string' && Boolean(t.trim())));
+  const mute = new Set(
+    raw
+      .filter((t): t is string => typeof t === 'string' && Boolean(t.trim()))
+      .map(canonicalNewsTopic),
+  );
   if (mute.size === 0) return { config, muted: [] };
 
   const news = config.modules?.news;
@@ -91,10 +96,14 @@ export function applyTopicMutes(config: AppConfig, settings: unknown): TopicMute
   // рану вона й досі "приглушена". Рахуємо ДО early-return, інакше "усе
   // приглушене виявилось rss" (kept.length===topics.length) хибно повернуло б
   // muted:[] — рядок не вирізаний, але власник таки приглушив тему.
-  const muted = news.topics.filter((t) => mute.has(t.topic)).map((t) => t.topic);
+  const muted = news.topics
+    .filter((t) => mute.has(canonicalNewsTopic(t.topic)))
+    .map((t) => t.topic);
   if (muted.length === 0) return { config, muted: [] };
 
-  const kept = news.topics.filter((t) => !mute.has(t.topic) || t.source === 'rss');
+  const kept = news.topics.filter(
+    (t) => !mute.has(canonicalNewsTopic(t.topic)) || t.source === 'rss',
+  );
   if (kept.length === news.topics.length) return { config, muted };
 
   return {
