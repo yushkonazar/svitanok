@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, expect, it, vi } from 'vitest';
@@ -10,6 +10,7 @@ vi.mock('../../api/client.ts', () => ({ fetchSystem: mocks.fetch, postSystem: mo
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  vi.useRealTimers();
 });
 function snapshot() {
   return {
@@ -122,6 +123,45 @@ it('shows budget conflicts without losing the entered amount or enabling enforce
     revision: 0,
     budgets: { overallUsd: 12.5, features: {} },
   });
+});
+it('blocks repeat billing requests until the visible cooldown expires without refreshing metadata every second', async () => {
+  mocks.private = true;
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date('2026-10-14T07:00:00Z'));
+  mocks.fetch.mockResolvedValue({
+    ...snapshot(),
+    billing: {
+      connected: false,
+      balance: null,
+      items: [
+        {
+          provider: 'openai',
+          title: 'OpenAI',
+          configured: true,
+          supported: true,
+          snapshot: null,
+          errorClass: 'timeout',
+          retryAt: '2026-10-14T07:00:05Z',
+          refreshing: false,
+          steps: [],
+          url: 'https://developers.openai.com',
+        },
+      ],
+    },
+  });
+  await act(async () => {
+    open();
+    await vi.advanceTimersByTimeAsync(1);
+  });
+  fireEvent.click(screen.getByRole('button', { name: 'Витрати API' }));
+  expect(screen.getByRole('button', { name: 'Повтор через 5 с' })).toBeDisabled();
+  const reads = mocks.fetch.mock.calls.length;
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(5000);
+  });
+  expect(screen.getByRole('button', { name: 'Оновити рахунок' })).toBeEnabled();
+  expect(mocks.fetch).toHaveBeenCalledTimes(reads);
+  expect(mocks.post).not.toHaveBeenCalled();
 });
 function open() {
   render(

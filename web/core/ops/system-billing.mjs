@@ -61,27 +61,39 @@ export const BILLING_GUIDES = [
 /** @param {Env} env @param {string} provider */
 function configured(env, provider) {
   return (
-    env.SYSTEM_BILLING_MODE === 'manual' &&
+    clean(env.SYSTEM_BILLING_MODE) === 'manual' &&
     (provider === 'openai'
-      ? Boolean(env.OPENAI_BILLING_ADMIN_KEY && env.OPENAI_BILLING_PROJECT_ID)
+      ? Boolean(clean(env.OPENAI_BILLING_ADMIN_KEY) && clean(env.OPENAI_BILLING_PROJECT_ID))
       : provider === 'deepgram'
-        ? Boolean(env.DEEPGRAM_BILLING_API_KEY && env.DEEPGRAM_BILLING_PROJECT_ID)
+        ? Boolean(clean(env.DEEPGRAM_BILLING_API_KEY) && clean(env.DEEPGRAM_BILLING_PROJECT_ID))
         : false)
   );
+}
+/** Copy/paste can add outer whitespace. Never echo credential values.
+ * @param {unknown} value */
+function clean(value) {
+  return typeof value === 'string' ? value.trim() : '';
+}
+/** Reject quotes, interior newlines and non-ASCII header values before fetch.
+ * @param {unknown} value */
+function credential(value) {
+  const result = clean(value);
+  if (!/^[A-Za-z0-9_-]+$/.test(result)) throw new Error('configuration');
+  return result;
 }
 /** @param {string} provider @param {{from:string,to:string}} period */
 function key(provider, period) {
   return `${provider}:${period.from}:${period.to}`;
 }
 /** @param {Env} env @param {{from:string,to:string}} period */
-export async function readSystemBilling(env, period) {
+export async function readSystemBilling(env, period, nowMs = Date.now()) {
   const items = await Promise.all(
     BILLING_GUIDES.map(async (guide) => {
       let row = null;
       try {
         row = env.DB
           ? await env.DB.prepare(
-              'SELECT snapshot_json,collected_at,error_class,attempted_at FROM system_billing_snapshots WHERE id=?',
+              'SELECT snapshot_json,collected_at,error_class,attempted_at,lease_until,lease_token FROM system_billing_snapshots WHERE id=?',
             )
               .bind(key(guide.provider, period))
               .first()
@@ -93,6 +105,16 @@ export async function readSystemBilling(env, period) {
       return {
         ...guide,
         configured: configured(env, guide.provider),
+        normalizationApplied: (guide.provider === 'openai'
+          ? [env.SYSTEM_BILLING_MODE, env.OPENAI_BILLING_ADMIN_KEY, env.OPENAI_BILLING_PROJECT_ID]
+          : guide.provider === 'deepgram'
+            ? [
+                env.SYSTEM_BILLING_MODE,
+                env.DEEPGRAM_BILLING_API_KEY,
+                env.DEEPGRAM_BILLING_PROJECT_ID,
+              ]
+            : []
+        ).some((value) => typeof value === 'string' && value !== clean(value)),
         snapshot,
         errorClass: [
           'access',
@@ -102,10 +124,23 @@ export async function readSystemBilling(env, period) {
           'scope',
           'incomplete',
           'network',
+          'timeout',
+          'configuration',
+          'request',
+          'redirect',
+          'internal',
         ].includes(String(row?.error_class))
           ? String(row?.error_class)
           : null,
         attemptedAt: row?.attempted_at ?? null,
+        retryAt:
+          Number(row?.lease_until) > nowMs
+            ? new Date(Number(row?.lease_until)).toISOString()
+            : null,
+        refreshing:
+          Boolean(row?.lease_token) &&
+          Number(row?.lease_until) > nowMs &&
+          Number(row?.lease_until) - Date.parse(String(row?.attempted_at)) > 90000,
       };
     }),
   );
@@ -145,21 +180,40 @@ function safeSnapshot(raw) {
   }
 }
 /** @param {string} url @param {string} authorization @param {typeof fetch} fetchImpl */
-async function requestJson(url, authorization, fetchImpl) {
-  const response = await fetchImpl(url, {
-    headers: { authorization },
-    redirect: 'error',
-    signal: AbortSignal.timeout(15000),
-  });
+async function requestJson(url, authorization, fetchImpl, timeoutMs = 30000) {
+  let response;
+  try {
+    response = await fetchImpl(url, {
+      headers: { authorization },
+      // Return redirects explicitly; never send a billing key to another host.
+      redirect: 'manual',
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch (error) {
+    throw new Error(
+      error instanceof Error && ['TimeoutError', 'AbortError'].includes(error.name)
+        ? 'timeout'
+        : 'network',
+      { cause: error },
+    );
+  }
   if (!response.ok)
     throw new Error(
-      response.status === 401 || response.status === 403
-        ? 'access'
-        : response.status === 429
-          ? 'quota'
-          : 'provider',
+      response.status >= 300 && response.status < 400
+        ? 'redirect'
+        : response.status === 401 || response.status === 403
+          ? 'access'
+          : response.status === 429
+            ? 'quota'
+            : response.status >= 400 && response.status < 500
+              ? 'request'
+              : 'provider',
     );
-  return /** @type {Record<string, any>} */ (await response.json());
+  try {
+    return /** @type {Record<string, any>} */ (await response.json());
+  } catch {
+    throw new Error('format');
+  }
 }
 /** @param {unknown} value */
 function amount(value) {
@@ -172,30 +226,31 @@ function amount(value) {
 }
 /** @param {Env} env @param {{from:string,to:string,since:string,until:string}} period @param {typeof fetch} fetchImpl */
 export async function fetchOpenAiBilling(env, period, fetchImpl) {
+  const project = credential(env.OPENAI_BILLING_PROJECT_ID);
+  const adminKey = credential(env.OPENAI_BILLING_ADMIN_KEY);
   const url = new URL('https://api.openai.com/v1/organization/costs');
   url.searchParams.set('start_time', String(Date.parse(period.since) / 1000));
   url.searchParams.set(
     'end_time',
     String(Math.floor(Math.min(Date.now(), Date.parse(period.until)) / 1000)),
   );
-  url.searchParams.set('project_ids', String(env.OPENAI_BILLING_PROJECT_ID));
+  url.searchParams.set('project_ids', project);
   url.searchParams.set('group_by', 'project_id');
   url.searchParams.set('limit', '180');
   let nano = 0,
     pages = 0;
   const seen = new Set();
+  const deadline = Date.now() + 60000;
   while (true) {
-    const body = await requestJson(
-      url.toString(),
-      `Bearer ${env.OPENAI_BILLING_ADMIN_KEY}`,
-      fetchImpl,
-    );
+    const remaining = Math.min(30000, deadline - Date.now());
+    if (remaining <= 0) throw new Error('timeout');
+    const body = await requestJson(url.toString(), `Bearer ${adminKey}`, fetchImpl, remaining);
     if (!Array.isArray(body.data)) throw new Error('format');
     for (const bucket of body.data) {
       if (!Array.isArray(bucket.results)) throw new Error('format');
       for (const result of bucket.results) {
         if (
-          result.project_id !== env.OPENAI_BILLING_PROJECT_ID ||
+          result.project_id !== project ||
           String(result.amount?.currency).toLowerCase() !== 'usd'
         )
           throw new Error('scope');
@@ -227,15 +282,15 @@ export async function fetchOpenAiBilling(env, period, fetchImpl) {
 /** Deepgram accepts dates, not exact Kyiv instants; do not assume its timezone.
  * @param {Env} env @param {{from:string,to:string}} period @param {typeof fetch} fetchImpl */
 export async function fetchDeepgramBilling(env, period, fetchImpl) {
-  const project = String(env.DEEPGRAM_BILLING_PROJECT_ID);
-  if (!/^[A-Za-z0-9-]{1,100}$/.test(project)) throw new Error('scope');
+  const project = credential(env.DEEPGRAM_BILLING_PROJECT_ID);
+  const apiKey = credential(env.DEEPGRAM_BILLING_API_KEY);
   const base = `https://api.deepgram.com/v1/projects/${project}`;
   const url = new URL(`${base}/billing/breakdown`);
   url.searchParams.set('start', period.from);
   url.searchParams.set('end', period.to);
   const [cost, balances] = await Promise.all([
-    requestJson(url.toString(), `Token ${env.DEEPGRAM_BILLING_API_KEY}`, fetchImpl),
-    requestJson(`${base}/balances`, `Token ${env.DEEPGRAM_BILLING_API_KEY}`, fetchImpl),
+    requestJson(url.toString(), `Token ${apiKey}`, fetchImpl),
+    requestJson(`${base}/balances`, `Token ${apiKey}`, fetchImpl),
   ]);
   if (!Array.isArray(cost.results) || !Array.isArray(balances.balances)) throw new Error('format');
   if (cost.start !== period.from || cost.end !== period.to) throw new Error('scope');
@@ -266,6 +321,7 @@ export async function refreshSystemBilling(
   if (!['openai', 'deepgram'].includes(provider)) return { ok: false, error: 'unsupported' };
   if (!configured(env, provider)) return { ok: false, error: 'not-configured' };
   if (!env.DB) return { ok: false, error: 'storage' };
+  const started = Date.now();
   const id = key(provider, period),
     token = crypto.randomUUID();
   const claim = await env.DB.prepare(
@@ -275,30 +331,61 @@ export async function refreshSystemBilling(
   )
     .bind(id, provider, new Date(nowMs).toISOString(), nowMs + 180000, token, nowMs)
     .all();
-  if (!claim.results?.length) return { ok: false, error: 'cooldown' };
+  if (!claim.results?.length) {
+    const row = await env.DB.prepare(
+      'SELECT lease_until,lease_token,attempted_at FROM system_billing_snapshots WHERE id=?',
+    )
+      .bind(id)
+      .first();
+    return {
+      ok: false,
+      error: 'cooldown',
+      retryAfterSeconds: Math.max(1, Math.ceil((Number(row?.lease_until) - nowMs) / 1000)),
+      refreshing:
+        Boolean(row?.lease_token) &&
+        Number(row?.lease_until) - Date.parse(String(row?.attempted_at)) > 90000,
+    };
+  }
   try {
     const value =
       provider === 'openai'
         ? await fetchOpenAiBilling(env, period, fetchImpl)
         : await fetchDeepgramBilling(env, period, fetchImpl);
-    const snapshot = { ...value, collectedAt: new Date(nowMs).toISOString() };
+    const finishedAt = nowMs + Math.max(0, Date.now() - started);
+    const snapshot = { ...value, collectedAt: new Date(finishedAt).toISOString() };
     await env.DB.prepare(
-      'UPDATE system_billing_snapshots SET snapshot_json=?,collected_at=?,error_class=NULL,lease_until=? WHERE id=? AND lease_token=?',
+      'UPDATE system_billing_snapshots SET snapshot_json=?,collected_at=?,error_class=NULL,lease_until=?,lease_token=NULL WHERE id=? AND lease_token=?',
     )
-      .bind(JSON.stringify(snapshot), snapshot.collectedAt, nowMs + 60000, id, token)
+      .bind(JSON.stringify(snapshot), snapshot.collectedAt, finishedAt + 60000, id, token)
       .run();
     return { ok: true, snapshot };
   } catch (error) {
     const classification =
       error instanceof Error &&
-      ['access', 'quota', 'provider', 'format', 'scope', 'incomplete'].includes(error.message)
+      [
+        'access',
+        'quota',
+        'provider',
+        'format',
+        'scope',
+        'incomplete',
+        'network',
+        'timeout',
+        'configuration',
+        'request',
+        'redirect',
+      ].includes(error.message)
         ? error.message
-        : 'network';
-    await env.DB.prepare(
-      'UPDATE system_billing_snapshots SET error_class=?,lease_until=? WHERE id=? AND lease_token=?',
-    )
-      .bind(classification, nowMs + 60000, id, token)
-      .run();
+        : 'internal';
+    try {
+      await env.DB.prepare(
+        'UPDATE system_billing_snapshots SET error_class=?,lease_until=?,lease_token=NULL WHERE id=? AND lease_token=?',
+      )
+        .bind(classification, nowMs + Math.max(0, Date.now() - started) + 60000, id, token)
+        .run();
+    } catch {
+      return { ok: false, error: 'storage' };
+    }
     return { ok: false, error: classification };
   }
 }

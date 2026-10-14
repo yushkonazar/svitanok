@@ -36,7 +36,10 @@ export async function handleSystem(request, env) {
     if (!body.ok) return reply({ ok: false, error: 'invalid-body' }, 400);
     if (body.body?.action === 'billing-refresh' && typeof body.body.provider === 'string') {
       const result = await refreshSystemBilling(env, body.body.provider, period, nowMs);
-      return reply(result, result.ok ? 200 : result.error === 'cooldown' ? 429 : 400);
+      const response = reply(result, result.ok ? 200 : result.error === 'cooldown' ? 429 : 400);
+      if ('retryAfterSeconds' in result)
+        response.headers.set('retry-after', String(result.retryAfterSeconds));
+      return response;
     }
     if (body.body?.action === 'budgets') {
       const result = await saveSystemPreferences(env, body.body, nowMs);
@@ -118,7 +121,7 @@ export async function handleSystem(request, env) {
       };
     }),
     section(() => readSystemServices(env, nowMs)),
-    readSystemBilling(env, period),
+    readSystemBilling(env, period, nowMs),
     section(() => readSystemPreferences(env)),
     legacy ? section(() => readModelUsage(env, nowMs)) : null,
   ]);
