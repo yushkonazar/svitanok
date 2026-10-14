@@ -202,6 +202,9 @@ export const systemSchema = z.object({
           steps: z.array(z.string()),
           errorClass: z.string().nullable(),
           attemptedAt: z.string().nullable(),
+          retryAt: z.string().nullable().optional(),
+          refreshing: z.boolean().optional(),
+          normalizationApplied: z.boolean().optional(),
           snapshot: z
             .object({
               costUsd: z.number(),

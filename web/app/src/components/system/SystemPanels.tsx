@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { postSystem, type SystemSelection } from '../../api/client.ts';
 import type { SystemSnapshot } from '../../api/system-schema.ts';
@@ -41,6 +41,11 @@ const errors: Record<string, string> = {
   access: 'Потрібно перевірити права або чинність доступу.',
   quota: 'Досягнуто обмеження провайдера або частоти запитів.',
   network: 'Не вдалося зв’язатися із сервісом.',
+  configuration:
+    'Перевір ключ білінгу й Project ID у Cloudflare: без лапок і переносів усередині значення.',
+  request: 'Провайдер відхилив параметри запиту. Перевір Project ID.',
+  redirect: 'Провайдер перенаправив запит. Ключ не передано на іншу адресу.',
+  internal: 'Помилка обробки рахунку у Світанку.',
   execution: 'Задача завершилася зі збоєм. Перевір її технічні кроки.',
   provider: 'Провайдер не повернув дані.',
   format: 'Формат даних провайдера змінився.',
@@ -173,6 +178,14 @@ export function UsagePanel({
     [error, setError] = useState('');
   const usage = data.usage?.data;
   const [groupBy, setGroupBy] = useState<'feature' | 'provider'>('feature');
+  const [clock, setClock] = useState(Date.now);
+  const timersActive =
+    data.billing?.items?.some((item) => item.retryAt && Date.parse(item.retryAt) > clock) ?? false;
+  useEffect(() => {
+    if (!timersActive) return;
+    const timer = setInterval(() => setClock(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [timersActive]);
   const groups = groupBy === 'feature' ? usage?.features : usage?.providers;
   async function update(provider: string) {
     setBusy(provider);
@@ -344,42 +357,56 @@ export function UsagePanel({
             {error}
           </p>
         )}
-        {data.billing?.items?.map((item) => (
-          <article className="renewal-inset mt-3" key={item.provider}>
-            <h3 className="font-semibold">{item.title}</h3>
-            <div className="system-row">
-              <span>Нарахування</span>
-              <b>{money(item.snapshot?.costUsd)}</b>
-            </div>
-            <div className="system-row">
-              <span>Баланс за API</span>
-              <b>{money(item.snapshot?.balanceUsd)}</b>
-            </div>
-            <p className="renewal-chart-note mt-2">
-              {item.snapshot
-                ? `${item.snapshot.from} — ${item.snapshot.to} · отримано ${time(item.snapshot.collectedAt)}${item.snapshot.timeZone === 'provider' ? '. Межі доби задає провайдер; зіставлення з київськими днями приблизне.' : ''}`
-                : item.configured
-                  ? 'Доступ налаштовано. Онови рахунок окремою дією.'
-                  : 'Окремий доступ не підключено.'}
-            </p>
-            {item.errorClass && (
-              <p className="system-warning">
-                {errors[item.errorClass] ?? 'Оновлення не вдалося.'}
-                {item.snapshot ? ' Попередній успішний рахунок збережено.' : ''}
+        {data.billing?.items?.map((item) => {
+          const remaining = item.retryAt
+            ? Math.max(0, Math.ceil((Date.parse(item.retryAt) - clock) / 1000))
+            : 0;
+          return (
+            <article className="renewal-inset mt-3" key={item.provider}>
+              <h3 className="font-semibold">{item.title}</h3>
+              <div className="system-row">
+                <span>Нарахування</span>
+                <b>{money(item.snapshot?.costUsd)}</b>
+              </div>
+              <div className="system-row">
+                <span>Баланс за API</span>
+                <b>{money(item.snapshot?.balanceUsd)}</b>
+              </div>
+              <p className="renewal-chart-note mt-2">
+                {item.snapshot
+                  ? `${item.snapshot.from} — ${item.snapshot.to} · отримано ${time(item.snapshot.collectedAt)}${item.snapshot.timeZone === 'provider' ? '. Межі доби задає провайдер; зіставлення з київськими днями приблизне.' : ''}`
+                  : item.configured
+                    ? 'Ключі додано. Онови рахунок, щоб перевірити доступ.'
+                    : 'Окремий доступ не підключено.'}
               </p>
-            )}
-            {item.configured && (
-              <button
-                type="button"
-                className="renewal-secondary mt-3"
-                disabled={busy !== null}
-                onClick={() => void update(item.provider)}
-              >
-                {busy === item.provider ? 'Отримую рахунок…' : 'Оновити рахунок'}
-              </button>
-            )}
-          </article>
-        ))}
+              {item.normalizationApplied && (
+                <p className="renewal-chart-note mt-2">
+                  Зайві пробіли або переноси навколо налаштувань прибрано автоматично.
+                </p>
+              )}
+              {item.errorClass && (
+                <p className="system-warning">
+                  {errors[item.errorClass] ?? 'Оновлення не вдалося.'}
+                  {item.snapshot ? ' Попередній успішний рахунок збережено.' : ''}
+                </p>
+              )}
+              {item.configured && (
+                <button
+                  type="button"
+                  className="renewal-secondary mt-3"
+                  disabled={busy !== null || remaining > 0}
+                  onClick={() => void update(item.provider)}
+                >
+                  {busy === item.provider
+                    ? 'Отримую рахунок…'
+                    : remaining > 0
+                      ? `${item.refreshing ? 'Оновлення триває' : 'Повтор через'} ${remaining} с`
+                      : 'Оновити рахунок'}
+                </button>
+              )}
+            </article>
+          );
+        })}
         {!data.billing?.items?.length && (
           <p className="renewal-chart-note mt-3">
             Billing-доступ не підключено. Баланс і повний рахунок невідомі.

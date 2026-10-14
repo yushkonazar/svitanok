@@ -367,6 +367,97 @@ describe('owner API, preferences and cached health', () => {
   });
 });
 describe('billing adapters are explicit, scoped and resilient', () => {
+  it('normalizes pasted whitespace and diagnoses invalid credentials without making a request or exposing them', async () => {
+    const { env } = setup();
+    configure(env);
+    env.SYSTEM_BILLING_MODE = ' manual\n';
+    env.OPENAI_BILLING_ADMIN_KEY = '  ADMIN-SECRET\r\n';
+    env.OPENAI_BILLING_PROJECT_ID = '  proj-example\n';
+    const network = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      expect(new Headers(init?.headers).get('authorization')).toBe('Bearer ADMIN-SECRET');
+      expect(init?.redirect).toBe('manual');
+      return Response.json(costs());
+    });
+    expect(await refreshSystemBilling(env, 'openai', period, now, network)).toMatchObject({
+      ok: true,
+    });
+    env.OPENAI_BILLING_ADMIN_KEY = 'ADMIN\nPRIVATE-SECRET';
+    network.mockClear();
+    expect(await refreshSystemBilling(env, 'openai', period, now + 120000, network)).toMatchObject({
+      ok: false,
+      error: 'configuration',
+    });
+    expect(network).not.toHaveBeenCalled();
+    expect(JSON.stringify(await readSystemBilling(env, period))).not.toContain('PRIVATE-SECRET');
+  });
+  it('distinguishes HTTP, JSON, timeout and connection failures and never follows a billing redirect', async () => {
+    const { env } = setup();
+    configure(env);
+    for (const [response, expected] of [
+      [new Response('PRIVATE', { status: 400 }), 'request'],
+      [
+        new Response('PRIVATE', { status: 302, headers: { location: 'https://other.test' } }),
+        'redirect',
+      ],
+      [new Response('PRIVATE-NON-JSON', { status: 200 }), 'format'],
+      [new Response('PRIVATE', { status: 429 }), 'quota'],
+    ] as const) {
+      const network = vi.fn(async () => response);
+      await expect(fetchOpenAiBilling(env, period, network)).rejects.toThrow(expected);
+      expect(network).toHaveBeenCalledTimes(1);
+    }
+    await expect(
+      fetchOpenAiBilling(
+        env,
+        period,
+        vi.fn().mockRejectedValue(new DOMException('PRIVATE', 'TimeoutError')),
+      ),
+    ).rejects.toThrow('timeout');
+    await expect(
+      fetchOpenAiBilling(env, period, vi.fn().mockRejectedValue(new TypeError('PRIVATE'))),
+    ).rejects.toThrow('network');
+  });
+  it('reports the remaining active lease then completion cooldown and releases the token after a failed read', async () => {
+    const { env } = setup();
+    configure(env);
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(now);
+    let release!: (response: Response) => void;
+    const started = refreshSystemBilling(
+      env,
+      'openai',
+      period,
+      now,
+      vi.fn(
+        () =>
+          new Promise<Response>((resolve) => {
+            release = resolve;
+          }),
+      ),
+    );
+    await vi.waitFor(() => expect(release).toBeDefined());
+    expect(await refreshSystemBilling(env, 'openai', period, now + 1000)).toMatchObject({
+      ok: false,
+      error: 'cooldown',
+      refreshing: true,
+      retryAfterSeconds: 179,
+    });
+    expect(
+      (await readSystemBilling(env, period, now + 1000)).items.find((i) => i.provider === 'openai'),
+    ).toMatchObject({ refreshing: true, retryAt: new Date(now + 180000).toISOString() });
+    clock.mockReturnValue(now + 15000);
+    release(new Response('PRIVATE', { status: 503 }));
+    expect(await started).toMatchObject({ ok: false, error: 'provider' });
+    expect(await refreshSystemBilling(env, 'openai', period, now + 20000)).toMatchObject({
+      error: 'cooldown',
+      refreshing: false,
+      retryAfterSeconds: 55,
+    });
+    expect(
+      (await readSystemBilling(env, period, now + 20000)).items.find(
+        (i) => i.provider === 'openai',
+      ),
+    ).toMatchObject({ refreshing: false, errorClass: 'provider' });
+  });
   function configure(env: ReturnType<typeof workerEnv>) {
     return Object.assign(env, {
       SYSTEM_BILLING_MODE: 'manual',
@@ -468,7 +559,7 @@ describe('billing adapters are explicit, scoped and resilient', () => {
       error: 'cooldown',
     });
     network.mockResolvedValue(new Response('PRIVATE-PROVIDER-ERROR', { status: 403 }));
-    expect(await refreshSystemBilling(env, 'openai', period, now + 60001, network)).toMatchObject({
+    expect(await refreshSystemBilling(env, 'openai', period, now + 120000, network)).toMatchObject({
       ok: false,
       error: 'access',
     });

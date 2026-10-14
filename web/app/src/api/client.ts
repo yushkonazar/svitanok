@@ -812,17 +812,32 @@ export async function postSystem(action: Record<string, unknown>, selection?: Sy
     body: JSON.stringify(action),
   });
   throwIfSessionExpired(response);
-  const body = (await response.json().catch(() => null)) as { ok?: boolean; error?: string } | null;
+  const body = (await response.json().catch(() => null)) as {
+    ok?: boolean;
+    error?: string;
+    retryAfterSeconds?: number;
+    refreshing?: boolean;
+  } | null;
   if (!response.ok || body?.ok !== true) {
     const errors: Record<string, string> = {
       conflict: 'Налаштування вже змінено. Онови огляд і повтори.',
-      cooldown: 'Оновлення вже триває або щойно завершилося. Спробуй за хвилину.',
+      cooldown: `${body?.refreshing ? 'Рахунок ще оновлюється.' : 'Пауза між спробами оновлення.'} Повтори через ${Number.isFinite(body?.retryAfterSeconds) ? Math.max(1, Math.ceil(body!.retryAfterSeconds!)) : 60} с.`,
       'not-configured': 'Спершу підключи окремий доступ до білінгу.',
       access: 'Провайдер відхилив доступ до білінгу.',
       scope: 'Дані не відповідають обраному проєкту або валюті.',
       incomplete: 'Провайдер повернув неповний рахунок. Попередні дані збережено.',
       invalid: 'Перевір суми бюджету.',
       unsupported: 'Цей конектор ще потребує окремого підключення.',
+      configuration:
+        'Перевір ключ білінгу та Project ID у Cloudflare: без лапок і переносів усередині значення.',
+      timeout: 'Провайдер не відповів вчасно. Спробуй оновити рахунок після паузи.',
+      network: 'Не вдалося встановити з’єднання з провайдером.',
+      format: 'Провайдер повернув неочікуваний формат рахунку.',
+      request: 'Провайдер відхилив параметри запиту. Перевір Project ID.',
+      redirect:
+        'Провайдер перенаправив запит. Оновлення зупинено, ключ не передано на іншу адресу.',
+      internal: 'Не вдалося обробити рахунок у Світанку. Повтори після паузи.',
+      storage: 'Не вдалося зберегти рахунок. Попередні дані залишилися доступними.',
     };
     throw new Error(
       errors[body?.error ?? ''] ?? 'Не вдалося виконати дію. Попередні дані збережено.',
