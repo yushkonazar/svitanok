@@ -16,7 +16,13 @@
 
 import { kyivDateKey, kyivHour, kyivMinuteOfDay } from '../../kyiv-time.mjs';
 import { sendSystemAlert } from '../tg/outbox.mjs';
-import { MonoTooSoonError, clientInfo, setWebhook, statement } from '../adapters/mono.mjs';
+import {
+  MonoApiError,
+  MonoTooSoonError,
+  clientInfo,
+  setWebhook,
+  statement,
+} from '../adapters/mono.mjs';
 import { isLoud } from './rules.mjs';
 import { announceTransaction } from './notify.mjs';
 import { monoWebhookUrl } from './webhook.mjs';
@@ -45,11 +51,14 @@ export const INITIAL_DAYS = 31;
 export const ANNOUNCE_MAX = 3;
 /** Скільки живе сеанс звірки: досить, щоб дійти до останнього рахунку. */
 export const SESSION_MAX_MS = 4 * 3_600_000;
+/** Brief bank outages retry at the existing scheduler cadence, without noise. */
+export const TRANSIENT_ALERT_AFTER_MS = 15 * 60_000;
 
 /**
  * @typedef {{ date: string, phase: 'client' | 'statement' | 'done', idx: number,
  *   initial: boolean, fromS: number, toS: number, imported: number, loud: number,
- *   startedMs: number, alerted: boolean }} ReconcileState
+ *   startedMs: number, alerted: boolean, transientSinceMs: number,
+ *   transientAlerted: boolean }} ReconcileState
  */
 
 /** Стан сеансу з KV; null - сеансу ще не було. @param {Env} env
@@ -80,6 +89,8 @@ function normalizeState(saved) {
     loud: Number(raw.loud) || 0,
     startedMs: Number(raw.startedMs) || 0,
     alerted: raw.alerted === true,
+    transientSinceMs: Number.isFinite(raw.transientSinceMs) ? raw.transientSinceMs : 0,
+    transientAlerted: raw.transientAlerted === true,
   };
 }
 
@@ -96,6 +107,8 @@ function freshState(today, nowMs) {
     loud: 0,
     startedMs: nowMs,
     alerted: false,
+    transientSinceMs: 0,
+    transientAlerted: false,
   };
 }
 
@@ -153,10 +166,10 @@ export async function monoReconcileTask(env, nowMs = Date.now()) {
   // без цієї стелі власник діставав би 288 однакових скарг на добу.
   if (live.startedMs && nowMs - live.startedMs > SESSION_MAX_MS) {
     await writeState({ ...live, phase: 'done' });
-    if (!live.alerted) {
+    if (!live.alerted || live.transientAlerted) {
       await sendSystemAlert(
         env,
-        '⚠️ Звірка Mono не дійшла до кінця за ніч - спробую завтра.',
+        '⚠️ Нічну звірку Monobank не вдалося завершити. Збережені операції залишилися; наступна планова спроба — ввечері.',
         nowMs,
       );
     }
@@ -173,11 +186,33 @@ export async function monoReconcileTask(env, nowMs = Date.now()) {
       return { skipped: 'too-soon' };
     }
     console.error(`mono-reconcile: фаза ${live.phase} впала`, e?.message);
+    if (e instanceof MonoApiError && e.retryable) {
+      const sinceMs = live.transientSinceMs || nowMs;
+      const alertDue = !live.alerted && nowMs - sinceMs >= TRANSIENT_ALERT_AFTER_MS;
+      const notified = alertDue
+        ? await sendSystemAlert(
+            env,
+            '⚠️ Monobank тимчасово не дає завершити звірку. Автоматично повторюю спроби; збережені операції залишилися.',
+            nowMs,
+          )
+        : false;
+      await writeState({
+        ...live,
+        transientSinceMs: sinceMs,
+        alerted: live.alerted || notified,
+        transientAlerted: live.transientAlerted || notified,
+      });
+      return { failed: live.phase, retryable: true };
+    }
     // Скаржимось РАЗ на сеанс: наступні тіки повторюють ту саму фазу, і
     // повторювати той самий алерт кожні пʼять хвилин - не інформація, а шум.
     if (!live.alerted) {
-      await sendSystemAlert(env, `⚠️ Звірка Mono впала: ${String(e?.message ?? e)}`, nowMs);
-      await writeState({ ...live, alerted: true });
+      const message =
+        e instanceof MonoApiError && (e.status === 401 || e.status === 403)
+          ? '⚠️ Monobank відхилив доступ до звірки. Перевір підключення банку; збережені операції залишилися.'
+          : '⚠️ Не вдалося завершити звірку Monobank. Збережені операції залишилися; автоматично повторю спробу.';
+      const notified = await sendSystemAlert(env, message, nowMs);
+      await writeState({ ...live, alerted: live.alerted || notified });
     }
     return { failed: live.phase };
   } finally {
@@ -231,7 +266,15 @@ async function phaseClient(env, state, nowMs, writeState) {
   const initial = !(await hasAnyTransaction(env));
   const toS = Math.floor(nowMs / 1000);
   const fromS = toS - INITIAL_DAYS * 86_400;
-  await writeState({ ...state, phase: 'statement', idx: 0, initial, fromS, toS });
+  await writeState({
+    ...state,
+    phase: 'statement',
+    idx: 0,
+    initial,
+    fromS,
+    toS,
+    transientSinceMs: 0,
+  });
   return { accounts: accounts.length, rearmed, initial };
 }
 
@@ -278,6 +321,7 @@ async function phaseStatement(env, state, accounts, nowMs, writeState) {
     idx: state.idx + 1,
     imported: state.imported + imported,
     loud,
+    transientSinceMs: 0,
   };
   if (next.idx >= accounts.length) {
     await writeState({ ...next, phase: 'done' });
@@ -292,18 +336,14 @@ async function phaseStatement(env, state, accounts, nowMs, writeState) {
  * @param {Env} env @param {ReconcileState} state @param {number} nowMs
  */
 async function finish(env, state, nowMs) {
+  const messages = state.transientAlerted ? ['✅ Звірку Monobank відновлено й завершено.'] : [];
   if (state.initial && state.imported) {
-    await sendSystemAlert(
-      env,
-      `Завантажив історію Mono за ${INITIAL_DAYS} діб: ${state.imported} транзакцій.`,
-      nowMs,
-    );
+    messages.push(`Завантажив історію Mono за ${INITIAL_DAYS} діб: ${state.imported} транзакцій.`);
   } else if (state.loud > ANNOUNCE_MAX) {
-    await sendSystemAlert(
-      env,
+    messages.push(
       `Звірка Mono: ще ${state.loud - ANNOUNCE_MAX} незвичних покупок, поки вебхук мовчав.`,
-      nowMs,
     );
   }
+  if (messages.length) await sendSystemAlert(env, messages.join('\n'), nowMs);
   return { done: true, imported: state.imported, loud: state.loud };
 }
