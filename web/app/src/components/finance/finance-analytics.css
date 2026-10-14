@@ -204,9 +204,6 @@
   text-align: left;
   color: var(--color-a2);
 }
-.analytics-entry {
-  min-height: 56px;
-}
 .analytics-calendar {
   display: grid;
   grid-template-columns: repeat(7, minmax(0, 1fr));

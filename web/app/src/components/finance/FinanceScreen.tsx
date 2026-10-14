@@ -306,13 +306,38 @@ export function FinanceScreen() {
         accent="Планувати далі."
         description="Рахунки, витрати й зобов’язання в одному місці."
         action={
-          <button
-            className="renewal-secondary"
-            onClick={() => setForm({ kind: 'settings' })}
-            aria-label="Налаштування фінансів"
-          >
-            ⚙
-          </button>
+          <div className="finance-heading-actions">
+            <button
+              className="renewal-secondary"
+              onClick={() => setForm({ kind: 'settings' })}
+              aria-label="Налаштування фінансів"
+            >
+              ⚙
+            </button>
+            <button
+              className="renewal-secondary"
+              aria-label="Аналітика та звіти"
+              title="Аналітика та звіти"
+              onClick={() => {
+                overviewScroll.current = window.scrollY;
+                setAnalyticsTab('expenses');
+              }}
+            >
+              <svg
+                width="22"
+                height="22"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.8"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M4 4v16h16M8 16v-4m5 4V8m5 8V5" />
+              </svg>
+            </button>
+          </div>
         }
       />
       {!!pendingTransactions.length && (
@@ -819,15 +844,6 @@ export function FinanceScreen() {
             ?.scrollIntoView({ block: 'start', behavior: 'smooth' });
         }}
       />
-      <button
-        className="renewal-secondary w-full analytics-entry"
-        onClick={() => {
-          overviewScroll.current = window.scrollY;
-          setAnalyticsTab('expenses');
-        }}
-      >
-        Аналітика та звіти ↗
-      </button>
       {explainOpen && <FinanceExplanation finance={f} onClose={() => setExplainOpen(false)} />}
       {calendarOpen && (
         <PaymentCalendar
