@@ -196,11 +196,15 @@
     "finance.query": {
       "args": {
         "properties": {
+          "account": { "maxLength": 120, "type": "string" },
           "category": { "maxLength": 40, "type": "string" },
           "flags": { "items": { "maxLength": 20, "type": "string" }, "type": "array" },
           "id": { "maxLength": 64, "type": "string" },
           "merchant": { "maxLength": 60, "type": "string" },
-          "period": { "maxLength": 32, "type": "string" }
+          "period": { "maxLength": 32, "type": "string" },
+          "source": { "enum": ["all", "mono", "manual"], "type": "string" },
+          "status": { "enum": ["all", "confirmed", "pending"], "type": "string" },
+          "view": { "enum": ["analytics"], "type": "string" }
         },
         "type": "object"
       },

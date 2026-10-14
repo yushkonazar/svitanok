@@ -151,6 +151,13 @@ export const BRAIN_TOOLS: readonly BrainToolDef[] = [
     description:
       'Гроші власника з Mono. Або period (день·вчора·тиждень·місяць, «4w», «2026-08», «2026-08-01..2026-08-31») з фільтрами category/merchant/flags - суми, розрізи за категоріями й мерчантами, список і порівняння з ПОПЕРЕДНІМ таким самим періодом; або id однієї транзакції - її поля, довідка по мерчанту (скільки операцій за 24 міс, остання сума й дата), запис у підписках і правило власника. Суми - у копійках гривневого еквівалента; unconverted - скільки операцій без нього.',
     args: z.object({
+      view: z
+        .enum(['analytics'])
+        .optional()
+        .describe('Спільна з Mini App аналітика особистих витрат; без id та flags.'),
+      account: z.string().max(120).optional().describe('Точний id рахунку або all.'),
+      source: z.enum(['all', 'mono', 'manual']).optional(),
+      status: z.enum(['all', 'confirmed', 'pending']).optional(),
       id: z.string().max(64).optional(),
       period: z.string().max(32).optional(),
       category: z.string().max(40).optional(),

@@ -1,4 +1,4 @@
-import { useState, useLayoutEffect, useEffect, useRef } from 'react';
+import { lazy, Suspense, useState, useLayoutEffect, useEffect, useRef } from 'react';
 import { setVerticalSwipes } from '../../telegram.ts';
 import { useTick } from '../../lib/useTick.ts';
 import { useSearchParams } from 'react-router-dom';
@@ -13,11 +13,10 @@ import { SessionExpired } from '../ui/SessionExpired.tsx';
 import { BudgetPlan } from './BudgetPlan.tsx';
 import { ForecastPlan } from './ForecastPlan.tsx';
 import { AccountsPanel } from './AccountsPanel.tsx';
-import { SpendingRhythm } from './SpendingRhythm.tsx';
 import { FinanceForm, type FinanceFormRequest } from './FinanceForm.tsx';
 import { PageHeading } from '../ui/PageHeading.tsx';
-import { TaxiHistory } from './TaxiHistory.tsx';
-import { FinanceReport } from './FinanceReport.tsx';
+import type { AnalyticsTab } from './FinanceAnalytics.tsx';
+import type { AnalyticsRequest } from '../../api/finance-analytics-schema.ts';
 import { PaymentDetail } from './PaymentDetail.tsx';
 import { TransactionDetail } from './TransactionDetail.tsx';
 import { PaymentGroups } from './PaymentGroups.tsx';
@@ -35,6 +34,9 @@ const LABELS: Record<string, string> = {
   'taxi-settlement': 'Розрахунок із парком',
   unclassified: 'Уточни тип',
 };
+const FinanceAnalytics = lazy(() =>
+  import('./FinanceAnalytics.tsx').then((module) => ({ default: module.FinanceAnalytics })),
+);
 const PERIOD: Record<string, string> = { day: 'день', week: 'тиждень', month: 'місяць' };
 function Progress({ percent }: { percent: number }) {
   return (
@@ -88,12 +90,51 @@ export function FinanceScreen() {
       /* The list still toggles when browser storage is unavailable. */
     }
   };
-  const [historyOpen, setHistoryOpen] = useState(false);
-  const [reportOpen, setReportOpen] = useState(false);
+  const [analyticsTab, setAnalyticsTab] = useState<AnalyticsTab | null>(null);
   const [explainOpen, setExplainOpen] = useState(false);
   const [calendarOpen, setCalendarOpen] = useState(false);
   const [localDetailId, setDetailId] = useState<string | null>(null);
   const [params, setParams] = useSearchParams();
+  const linkedTab = params.get('analytics');
+  const activeAnalytics =
+    analyticsTab ??
+    (linkedTab &&
+    [
+      'overview',
+      'expenses',
+      'dynamics',
+      'budgets',
+      'payments',
+      'goals',
+      'taxi',
+      'accounts',
+    ].includes(linkedTab)
+      ? (linkedTab as AnalyticsTab)
+      : null);
+  const reportOpen = activeAnalytics !== null;
+  const linkedRequest: AnalyticsRequest | undefined =
+    params.get('from') && params.get('to')
+      ? {
+          from: params.get('from')!,
+          to: params.get('to')!,
+          account: params.get('account') ?? 'all',
+          category: params.get('category') ?? '',
+          merchant: params.get('merchant') ?? '',
+          comparison: params.get('comparison') === 'month' ? 'month' : 'adjacent',
+          source:
+            params.get('source') === 'mono'
+              ? 'mono'
+              : params.get('source') === 'manual'
+                ? 'manual'
+                : 'all',
+          status:
+            params.get('status') === 'confirmed'
+              ? 'confirmed'
+              : params.get('status') === 'pending'
+                ? 'pending'
+                : 'all',
+        }
+      : undefined;
   const detailId = localDetailId ?? params.get('payment');
   const transactionId = params.get('transaction');
   const closeDetail = () => {
@@ -180,7 +221,39 @@ export function FinanceScreen() {
     />
   );
   const today = kyivParts(nowMs).date;
-  if (reportOpen) return <FinanceReport onBack={() => setReportOpen(false)} />;
+  if (activeAnalytics)
+    return (
+      <Suspense fallback={<LoadingSkeleton />}>
+        <FinanceAnalytics
+          finance={f}
+          demo={data.demo}
+          initialTab={activeAnalytics}
+          initialRequest={linkedRequest}
+          onBack={() => {
+            setAnalyticsTab(null);
+            setParams(
+              (previous) => {
+                const next = new URLSearchParams(previous);
+                for (const key of [
+                  'analytics',
+                  'from',
+                  'to',
+                  'category',
+                  'merchant',
+                  'account',
+                  'comparison',
+                  'source',
+                  'status',
+                ])
+                  next.delete(key);
+                return next;
+              },
+              { replace: true },
+            );
+          }}
+        />
+      </Suspense>
+    );
   if (transaction)
     return (
       <>
@@ -417,7 +490,13 @@ export function FinanceScreen() {
             )}
             . Уже враховано в готівці та надходженнях.
           </p>
-          <button className="renewal-secondary mt-3 w-full" onClick={() => setHistoryOpen(true)}>
+          <button
+            className="renewal-secondary mt-3 w-full"
+            onClick={() => {
+              overviewScroll.current = window.scrollY;
+              setAnalyticsTab('taxi');
+            }}
+          >
             Історія перезмінок
           </button>
           <details className="mt-3">
@@ -740,22 +819,15 @@ export function FinanceScreen() {
             ?.scrollIntoView({ block: 'start', behavior: 'smooth' });
         }}
       />
-      <SpendingRhythm finance={f} nowMs={nowMs} />
-      <section className="renewal-card">
-        <h2 className="text-lg font-bold">Історія фінансів</h2>
-        <p className="renewal-muted mt-2 mb-4">
-          Витрати, надходження й таксі за минулі періоди — в окремому звіті.
-        </p>
-        <button
-          className="renewal-secondary w-full"
-          onClick={() => {
-            overviewScroll.current = window.scrollY;
-            setReportOpen(true);
-          }}
-        >
-          Фінансові звіти
-        </button>
-      </section>
+      <button
+        className="renewal-secondary w-full analytics-entry"
+        onClick={() => {
+          overviewScroll.current = window.scrollY;
+          setAnalyticsTab('expenses');
+        }}
+      >
+        Аналітика та звіти ↗
+      </button>
       {explainOpen && <FinanceExplanation finance={f} onClose={() => setExplainOpen(false)} />}
       {calendarOpen && (
         <PaymentCalendar
@@ -765,16 +837,6 @@ export function FinanceScreen() {
             setCalendarOpen(false);
             // Let Sheet restore/unlock the overview before opening the detail at its top.
             requestAnimationFrame(() => setDetailId(id));
-          }}
-        />
-      )}
-      {historyOpen && (
-        <TaxiHistory
-          finance={f}
-          onClose={() => setHistoryOpen(false)}
-          onAction={(r) => {
-            setHistoryOpen(false);
-            setForm(r);
           }}
         />
       )}

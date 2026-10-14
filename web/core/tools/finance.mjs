@@ -25,6 +25,8 @@ import { NOT_TEST_SQL, readTransaction } from '../finance/store.mjs';
 import { findSubscriptionByMerchant, listSubscriptions } from '../finance/subscriptions.mjs';
 import { readFinanceWorkspace } from '../finance/workspace.mjs';
 import { sumMoney } from '../finance/planning.mjs';
+import { analyticsPeriod } from '../finance/analytics.mjs';
+import { readFinanceAnalytics } from '../finance/analytics-store.mjs';
 
 /** Скільки рядків історії перекатегоризовуємо за один виклик `finance.rule`. */
 export const RECATEGORIZE_MAX = 2000;
@@ -41,10 +43,50 @@ function db(env) {
  * `finance.query`: або одна транзакція за `id` (+ довідка по мерчанту), або
  * зріз за періодом із порівнянням.
  * @param {Env} env
- * @param {{ id?: string, period?: string, category?: string, merchant?: string, flags?: string[] }} args
+ * @param {{ id?: string, period?: string, category?: string, merchant?: string, flags?: string[],view?:string,account?:string,source?:string,status?:string }} args
  * @param {number} nowMs
  */
 export async function runFinanceQuery(env, args, nowMs) {
+  if (args.view === 'analytics') {
+    if (args.id || !args.period || args.flags?.length)
+      throw new Error('Аналітика потребує period без id та flags');
+    const selection = analyticsPeriod(args.period, nowMs);
+    const params = new URLSearchParams({
+      ...selection,
+      account: args.account ?? 'all',
+      category: args.category ?? '',
+      merchant: args.merchant ?? '',
+      source: args.source ?? 'all',
+      status: args.status ?? 'all',
+    });
+    const data = await readFinanceAnalytics(env, params, nowMs);
+    const linkParams = new URLSearchParams({
+      analytics: 'expenses',
+      ...selection,
+      ...(args.category ? { category: args.category } : {}),
+      ...(args.merchant ? { merchant: args.merchant } : {}),
+      ...(args.account ? { account: args.account } : {}),
+      ...(args.source ? { source: args.source } : {}),
+      ...(args.status ? { status: args.status } : {}),
+    });
+    return {
+      result: {
+        mode: 'analytics',
+        selection: data.selection,
+        summary: data.summary,
+        categories: data.categories.slice(0, 12),
+        merchants: data.merchants.slice(0, 12),
+        rankingTruncated: data.categories.length > 12 || data.merchants.length > 12,
+        quality: data.quality,
+        coverage: data.coverage,
+        reportScope: data.reportScope,
+        resultMinor: data.report.resultMinor,
+        taxiEarnedMinor: data.report.taxiEarnedMinor,
+        goalContributionsMinor: data.report.goalContributionsMinor,
+        link: `https://svitanok.yushko.dev/app/#/finance?${linkParams}`,
+      },
+    };
+  }
   if (args.id) return { result: await queryOne(env, String(args.id)) };
   if (!args.period) throw new Error('finance.query: потрібен period або id');
   const period = resolvePeriod(String(args.period), nowMs);
@@ -84,7 +126,9 @@ export async function runFinanceQuery(env, args, nowMs) {
         .filter((a) => a.currency === 'UAH' && a.balanceMinor != null)
         .map((a) => a.balanceMinor ?? 0),
     );
-    const allocated = sumMoney(f.goalMoves.map((m) => m.amountMinor));
+    const allocated = sumMoney(
+      f.goalMoves.filter((m) => m.movementKind !== 'external').map((m) => m.amountMinor),
+    );
     const complete =
       !f.accounts.some((a) => a.currency === 'UAH' && a.balanceMinor == null) &&
       !f.taxiWeeks.some((w) => !w.settled && !w.complete);

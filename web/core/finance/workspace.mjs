@@ -17,6 +17,41 @@ import {
 
 export class FinanceConflict extends Error {}
 export class FinanceValidation extends Error {}
+/** Canonical bank/manual transaction interpretation shared by reports and analytics.
+ * @param {KvBlob} row */
+export function financeTransactionOf(row) {
+  const raw = jsonObject(row.raw_json);
+  const inferred =
+    Number(row.amount) < 0
+      ? row.category === 'перекази й готівка'
+        ? 'unclassified'
+        : 'expense'
+      : 'unclassified';
+  return {
+    id: String(row.id),
+    at: String(row.at),
+    amountMinor: Number(row.amount),
+    currency: String(row.currency),
+    amountUah: row.amount_uah == null ? null : Number(row.amount_uah),
+    category: String(row.category ?? 'інше'),
+    description: String(row.description ?? ''),
+    kind:
+      raw.bankMissingFromStatement && raw.hold && !raw.financeBankVerifiedByOwner
+        ? 'unclassified'
+        : String(raw.financeKind ?? inferred),
+    accountId: raw.financeAccount ?? (raw.account ? `mono:${raw.account}` : null),
+    bank: Boolean(raw.account),
+    bankHold: Boolean(raw.hold),
+    bankMissingFromStatement: Boolean(raw.bankMissingFromStatement),
+    bankVerifiedByOwner: Boolean(raw.financeBankVerifiedByOwner),
+    bankAmountChanged: Boolean(raw.financeBankAmountChanged),
+    bankCheckedAt: typeof raw.bankCheckedAt === 'string' ? raw.bankCheckedAt : null,
+    reference: raw.financeReference ?? null,
+    personalTaxiType: raw.financePersonalTaxiType ?? null,
+    attention: parseFinanceAttention(row.raw_json),
+    duplicateSuspected: categoryArray(row.flags_json).includes('duplicate'),
+  };
+}
 /** @param {Env} env */
 function database(env) {
   if (!env.DB) throw new Error('Finance DB unavailable');
@@ -105,8 +140,9 @@ function taxiOf(row) {
 
 /** Read bounded recent detail plus ALL-time balance aggregates. Never sum a
  * paginated transaction list as the account balance.
- * @param {Env} env @param {number} [nowMs] @param {{from:string,to:string}} [range] */
-export async function readFinanceWorkspace(env, nowMs = Date.now(), range) {
+ * @param {Env} env @param {number} [nowMs] @param {{from:string,to:string}} [range]
+ * @param {{omitTransactions?:boolean}} [options] */
+export async function readFinanceWorkspace(env, nowMs = Date.now(), range, options = {}) {
   const db = database(env);
   const result = await db.batch([
     db.prepare('SELECT * FROM finance_settings WHERE id = ?').bind('owner'),
@@ -124,7 +160,7 @@ export async function readFinanceWorkspace(env, nowMs = Date.now(), range) {
     db.prepare('SELECT * FROM finance_payments ORDER BY next_date').bind(),
     db
       .prepare(
-        `SELECT id, at, amount, currency, amount_uah, category, description, raw_json, flags_json, balance FROM transactions WHERE at >= ? AND at < ? AND ${NOT_TEST_SQL} ORDER BY at DESC LIMIT 20001`,
+        `SELECT id, at, amount, currency, amount_uah, category, description, raw_json, flags_json, balance FROM transactions WHERE at >= ? AND at < ? AND ${options.omitTransactions ? '0' : '1'} AND ${NOT_TEST_SQL} ORDER BY at DESC LIMIT 20001`,
       )
       .bind(
         new Date(
@@ -264,39 +300,7 @@ export async function readFinanceWorkspace(env, nowMs = Date.now(), range) {
     if (row) Object.assign(row, account);
     else accounts.push(/** @type {any} */ (account));
   }
-  const transactions = rows(9).map((r) => {
-    const raw = jsonObject(r.raw_json);
-    const inferred =
-      Number(r.amount) < 0
-        ? r.category === 'перекази й готівка'
-          ? 'unclassified'
-          : 'expense'
-        : 'unclassified';
-    return {
-      id: String(r.id),
-      at: String(r.at),
-      amountMinor: Number(r.amount),
-      currency: String(r.currency),
-      amountUah: r.amount_uah == null ? null : Number(r.amount_uah),
-      category: String(r.category ?? 'інше'),
-      description: String(r.description ?? ''),
-      kind:
-        raw.bankMissingFromStatement && raw.hold && !raw.financeBankVerifiedByOwner
-          ? 'unclassified'
-          : String(raw.financeKind ?? inferred),
-      accountId: raw.financeAccount ?? (raw.account ? `mono:${raw.account}` : null),
-      bank: Boolean(raw.account),
-      bankHold: Boolean(raw.hold),
-      bankMissingFromStatement: Boolean(raw.bankMissingFromStatement),
-      bankVerifiedByOwner: Boolean(raw.financeBankVerifiedByOwner),
-      bankAmountChanged: Boolean(raw.financeBankAmountChanged),
-      bankCheckedAt: typeof raw.bankCheckedAt === 'string' ? raw.bankCheckedAt : null,
-      reference: raw.financeReference ?? null,
-      personalTaxiType: raw.financePersonalTaxiType ?? null,
-      attention: parseFinanceAttention(r.raw_json),
-      duplicateSuspected: categoryArray(r.flags_json).includes('duplicate'),
-    };
-  });
+  const transactions = rows(9).map(financeTransactionOf);
   /** @type {string[]} */ let custom = [];
   try {
     const parsed = JSON.parse(String(settings.categories_json));
@@ -430,7 +434,17 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
       throw new FinanceConflict('ID вже використано для іншої операції');
     return { ok: true, duplicate: true };
   }
-  const state = await readFinanceWorkspace(env, nowMs);
+  const metadataEdit = ['classify', 'transaction-edit'].includes(type);
+  const state = await readFinanceWorkspace(env, nowMs, undefined, {
+    omitTransactions: metadataEdit,
+  });
+  if (metadataEdit && typeof payload.transactionId === 'string') {
+    const row = await db
+      .prepare(`SELECT * FROM transactions WHERE id = ? AND at <= ? AND ${NOT_TEST_SQL}`)
+      .bind(payload.transactionId, new Date(nowMs).toISOString())
+      .first();
+    if (row) state.transactions.push(financeTransactionOf(row));
+  }
   if (state.version !== version)
     throw new FinanceConflict('Дані змінилися. Онови екран і повтори дію.');
   const now = new Date(nowMs).toISOString();

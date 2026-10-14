@@ -46,6 +46,23 @@ function renderFinance(path: string, finance = readFinanceDemo()) {
     </MemoryRouter>,
   );
 }
+it('keeps daily finance controls on the main screen and opens analytics lazily from its compact entry', async () => {
+  renderFinance('/finance');
+  expect(screen.getByRole('button', { name: 'Записати витрату' })).toBeInTheDocument();
+  expect(screen.getByRole('heading', { name: 'Мої цілі' })).toBeInTheDocument();
+  expect(screen.queryByText('Ритм особистих витрат')).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: 'Аналітика та звіти ↗' }));
+  expect(await screen.findByRole('heading', { name: 'Аналітика та звіти' })).toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: '← До фінансів' }));
+  expect(screen.getByRole('button', { name: 'Записати витрату' })).toBeInTheDocument();
+});
+it('opens an assistant link with the exact report period and returns to the main finance screen', async () => {
+  renderFinance('/finance?analytics=expenses&from=2026-10-01&to=2026-10-14&category=продукти');
+  expect(await screen.findByRole('heading', { name: 'Аналітика та звіти' })).toBeInTheDocument();
+  expect(screen.getByText('2026-10-01 — 2026-10-14 · Київ')).toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: '← До фінансів' }));
+  expect(screen.getByRole('button', { name: 'Записати витрату' })).toBeInTheDocument();
+});
 it('opens the exact payment ID, even when two records have the same owner name', () => {
   const finance = readFinanceDemo();
   const base = finance.payments[0]!;
