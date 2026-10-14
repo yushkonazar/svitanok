@@ -610,6 +610,45 @@ it('keeps the transfer form open and offers another refresh after a network erro
   expect(postFinance).not.toHaveBeenCalled();
 });
 
+it('saves the category of a held bank operation without confirming or duplicating the payment', async () => {
+  const f = readFinanceDemo();
+  f.categories = ['авто', 'кафе й ресторани'];
+  f.transactions = [
+    {
+      id: 'okko-hold',
+      at: new Date().toISOString(),
+      bank: true,
+      bankHold: true,
+      reference: null,
+      amountMinor: -18700,
+      amountUah: -18700,
+      currency: 'UAH',
+      description: 'OKKO',
+      category: 'авто',
+      kind: 'expense',
+      accountId: 'mono:demo',
+    },
+  ];
+  const { close } = open({ kind: 'classify', id: 'okko-hold' }, f);
+  fireEvent.change(screen.getByLabelText('Категорія'), {
+    target: { value: 'кафе й ресторани' },
+  });
+  fireEvent.click(screen.getByRole('button', { name: /зберегти/i }));
+  await waitFor(() => expect(postFinance).toHaveBeenCalledOnce());
+  expect(postFinance).toHaveBeenCalledWith(
+    expect.objectContaining({
+      type: 'classify',
+      payload: {
+        transactionId: 'okko-hold',
+        kind: 'expense',
+        category: 'кафе й ресторани',
+      },
+    }),
+  );
+  expect(close).toHaveBeenCalledOnce();
+  expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+});
+
 it('requires owner confirmation before linking an Apple payment whose bank API still returns hold', async () => {
   const f = readFinanceDemo();
   const pay = f.payments.find((p) => p.kind === 'subscription')!;
