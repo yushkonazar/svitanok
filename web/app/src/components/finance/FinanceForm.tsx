@@ -760,7 +760,8 @@ export function FinanceForm({
         });
       }
       const linked = p.transactionId ? f.transactions.find((t) => t.id === p.transactionId) : null;
-      if (linked?.bankHold) {
+      // Classification only changes metadata; confirmation is for payment linking.
+      if (request.kind !== 'classify' && linked?.bankHold) {
         if (v.bankHoldConfirmed !== 'true')
           throw new Error('Підтвердь, що ця операція вже успішна в застосунку Monobank.');
         p.bankHoldConfirmed = true;
@@ -1586,7 +1587,9 @@ export function FinanceForm({
                   : 'Перевірити розрахунок'
                 : kind === 'policy'
                   ? 'Підтвердити нові умови'
-                  : 'Підтвердити й зберегти'}
+                  : kind === 'classify'
+                    ? 'Зберегти тип і категорію'
+                    : 'Підтвердити й зберегти'}
           </button>
         </form>
       </div>
