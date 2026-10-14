@@ -983,6 +983,10 @@ export const TOOLS = {
     args: {
       type: 'object',
       properties: {
+        view: { type: 'string', enum: ['analytics'] },
+        account: { type: 'string', maxLength: 120 },
+        source: { type: 'string', enum: ['all', 'mono', 'manual'] },
+        status: { type: 'string', enum: ['all', 'confirmed', 'pending'] },
         id: { type: 'string', maxLength: 64 },
         period: { type: 'string', maxLength: 32 },
         category: { type: 'string', maxLength: 40 },

@@ -1,0 +1,272 @@
+.analytics-periods,
+.analytics-chips,
+.analytics-filter-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: end;
+}
+.analytics-periods button[aria-pressed='true'] {
+  background: var(--color-a2);
+  color: #241522;
+  border-color: transparent;
+}
+.analytics-filter-actions {
+  margin-top: 14px;
+}
+.analytics-filter-actions > label {
+  flex: 1;
+  min-width: 140px;
+}
+.analytics-chips {
+  margin-top: 10px;
+}
+.analytics-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border-bottom: 1px solid var(--color-glassb);
+}
+.analytics-tabs > button {
+  flex: 1;
+  min-height: 48px;
+  padding: 8px 4px;
+  border-bottom: 2px solid transparent;
+  color: var(--color-tx2);
+  font-size: 14px;
+}
+.analytics-tabs > button[aria-pressed='true'] {
+  color: var(--color-a2);
+  border-color: var(--color-a2);
+}
+.analytics-tabs > label {
+  min-width: 0;
+}
+.analytics-tabs select {
+  max-width: 78px;
+  background: transparent;
+  min-height: 48px;
+  font-size: 14px;
+  border: 0;
+  padding: 4px;
+}
+.analytics-hero {
+  background:
+    radial-gradient(
+      ellipse at 100% 0%,
+      color-mix(in srgb, var(--color-a2) 14%, transparent),
+      transparent 70%
+    ),
+    var(--color-bg2);
+}
+.analytics-hero .renewal-big {
+  overflow-wrap: anywhere;
+  display: block;
+}
+.analytics-donut {
+  display: block;
+  width: 210px;
+  max-width: 100%;
+  margin: 14px auto;
+}
+.analytics-donut text {
+  fill: var(--color-tx);
+}
+.analytics-donut-number {
+  font-size: 28px;
+  font-weight: 650;
+}
+.analytics-axis {
+  fill: var(--color-tx2);
+  font-size: 12px;
+  font-family: inherit;
+}
+.analytics-slice {
+  cursor: pointer;
+}
+.analytics-category {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 52px;
+  padding: 10px 0;
+  text-align: left;
+}
+.analytics-category > span:first-child {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+}
+.analytics-category i,
+.analytics-legend i {
+  display: inline-block;
+  flex-shrink: 0;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+.analytics-category > span:last-child {
+  text-align: right;
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+.analytics-category small,
+.analytics-row small {
+  display: block;
+  font-size: 12px;
+  color: var(--color-tx2);
+}
+.analytics-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 14px;
+  min-height: 48px;
+  overflow-wrap: anywhere;
+}
+.analytics-row > span:last-child,
+.analytics-row > b {
+  text-align: right;
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+.analytics-operation {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  min-height: 58px;
+  width: 100%;
+  text-align: left;
+  border-bottom: 1px solid var(--color-glassb);
+  padding: 12px 0;
+}
+.analytics-operation:last-child {
+  border-bottom: 0;
+}
+.analytics-operation > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.analytics-operation small {
+  display: block;
+  color: var(--color-tx2);
+  font-size: 12px;
+  margin-top: 3px;
+}
+.analytics-operation > strong {
+  flex-shrink: 0;
+  max-width: 45%;
+  text-align: right;
+  overflow-wrap: anywhere;
+  font-variant-numeric: tabular-nums;
+}
+.analytics-bars {
+  width: 100%;
+  min-width: 0;
+  margin-top: 12px;
+}
+.analytics-bars svg {
+  display: block;
+  overflow: visible;
+  touch-action: pan-y;
+}
+.analytics-gridline {
+  stroke: var(--color-glassb);
+  stroke-width: 1;
+}
+.analytics-chart-picker {
+  margin-top: 8px;
+}
+.analytics-chart-picker select {
+  min-width: 0;
+}
+.analytics-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  color: var(--color-tx2);
+  font-size: 12px;
+}
+.analytics-legend > span {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.analytics-budget {
+  padding-top: 14px;
+}
+.analytics-quality {
+  min-height: 44px;
+  text-align: left;
+  color: var(--color-a2);
+}
+.analytics-entry {
+  min-height: 56px;
+}
+.analytics-calendar {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 4px;
+  margin-top: 16px;
+}
+.analytics-calendar-weekday {
+  text-align: center;
+  font-size: 12px;
+  color: var(--color-tx2);
+}
+.analytics-calendar > button {
+  min-width: 0;
+  min-height: 48px;
+  border: 1px solid var(--color-glassb);
+  border-radius: 8px;
+  padding: 4px 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  color: var(--color-tx);
+  font-variant-numeric: tabular-nums;
+}
+.analytics-calendar > button small {
+  font-size: 10px;
+}
+.analytics-calendar > button:disabled {
+  opacity: 0.3;
+}
+.analytics-calendar > button.analytics-calendar-bright {
+  color: #241522;
+}
+.finance-analytics .renewal-metrics {
+  min-width: 0;
+}
+.finance-analytics .renewal-metric {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.finance-analytics .renewal-field select,
+.finance-analytics .renewal-field input {
+  min-width: 0;
+}
+.finance-analytics button:focus-visible,
+.analytics-category:focus-visible,
+.analytics-operation:focus-visible {
+  outline: 2px solid var(--color-a2);
+  outline-offset: 3px;
+}
+@media (max-width: 350px) {
+  .analytics-tabs > button {
+    font-size: 13px;
+  }
+  .analytics-tabs select {
+    max-width: 65px;
+  }
+  .analytics-category {
+    font-size: 14px;
+  }
+  .analytics-operation {
+    gap: 8px;
+  }
+}

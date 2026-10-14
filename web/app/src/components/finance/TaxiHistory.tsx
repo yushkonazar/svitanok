@@ -13,13 +13,15 @@ export function TaxiHistory({
   finance: f,
   onClose,
   onAction,
+  initialKey,
 }: {
   finance: Finance;
   onClose: () => void;
   onAction: (r: FinanceFormRequest) => void;
+  initialKey?: string;
 }) {
   const [key, setKey] = useState(
-    f.taxiWeeks.find((w) => w.closed)?.key ?? f.taxiWeeks[0]?.key ?? '',
+    initialKey ?? f.taxiWeeks.find((w) => w.closed)?.key ?? f.taxiWeeks[0]?.key ?? '',
   );
   const week = f.taxiWeeks.find((w) => w.key === key);
   const calculated = week ? calculateTaxiWeek(f.taxiEntries, f.policies, kyivInstant(key)) : null;

@@ -23,6 +23,16 @@ import { financeSchema, financeReportSchema, type FinanceCommand } from './finan
 import { readFinanceDemo, writeFinanceDemo } from './finance-demo.ts';
 import { readSavedDemo, writeSavedDemo } from './saved-demo.ts';
 import { buildFinanceReport } from '../../../core/finance/reporting.mjs';
+import {
+  analyticsSelection,
+  buildExpenseAnalytics,
+  matchesAnalytics,
+} from '../../../core/finance/analytics.mjs';
+import {
+  financeAnalyticsSchema,
+  analyticsOperationsSchema,
+  type AnalyticsRequest,
+} from './finance-analytics-schema.ts';
 import { kyivParts } from '../../../core/finance/planning.mjs';
 import {
   credentialsSchema,
@@ -210,6 +220,78 @@ export async function refreshFinanceBank(accountId: string, transactionId?: stri
     );
   }
   return { finance: financeSchema.parse(await res.json()), demo: false };
+}
+function analyticsParams(input: AnalyticsRequest) {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(input)) if (value != null) params.set(key, value);
+  return params;
+}
+export async function fetchFinanceAnalytics(input: AnalyticsRequest) {
+  const params = analyticsParams(input);
+  if (!inTelegram()) {
+    const f = readFinanceDemo(),
+      selection = analyticsSelection(params);
+    return financeAnalyticsSchema.parse({
+      ok: true,
+      generatedAt: new Date().toISOString(),
+      ...buildExpenseAnalytics(f.transactions, selection),
+      report: buildFinanceReport(f, selection.from, selection.to),
+      reportScope: 'all-accounts',
+      coverage: {
+        bankRetentionDays: 720,
+        oldestTransactionAt: f.transactions.map((t) => t.at).sort()[0] ?? null,
+        beyondBankRetention: false,
+      },
+    });
+  }
+  params.set('view', 'analytics');
+  const res = await fetch(`/api/finance?${params}`, { headers: authHeaders(), cache: 'no-store' });
+  throwIfSessionExpired(res);
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new Error(
+      typeof body?.error === 'string' ? body.error : 'Аналітика недоступна. Спробуй ще раз.',
+    );
+  }
+  return financeAnalyticsSchema.parse(await res.json());
+}
+export async function fetchAnalyticsOperations(
+  input: AnalyticsRequest,
+  options: { cursor?: string | null; day?: string; kind?: string } = {},
+) {
+  const params = analyticsParams(input);
+  for (const [key, value] of Object.entries(options)) if (value) params.set(key, value);
+  if (!inTelegram()) {
+    const selection = analyticsSelection(params),
+      cursor = options.cursor ? JSON.parse(options.cursor) : null;
+    const rows = readFinanceDemo()
+      .transactions.filter((t) => {
+        const date = kyivParts(Date.parse(t.at)).date;
+        return (
+          matchesAnalytics(t, selection) &&
+          date >= selection.from &&
+          date <= selection.to &&
+          (!options.day || date === options.day) &&
+          ((options.kind ?? 'expense') === 'all' || t.kind === (options.kind ?? 'expense')) &&
+          ((options.kind ?? 'expense') !== 'expense' || (t.amountUah != null && t.amountUah < 0)) &&
+          (!cursor || t.at < cursor.at || (t.at === cursor.at && t.id < cursor.id))
+        );
+      })
+      .sort((a, b) => (a.at === b.at ? (a.id > b.id ? -1 : 1) : a.at > b.at ? -1 : 1));
+    const items = rows.slice(0, 50),
+      last = items.at(-1);
+    return analyticsOperationsSchema.parse({
+      ok: true,
+      generatedAt: new Date().toISOString(),
+      items,
+      nextCursor: rows.length > 50 && last ? JSON.stringify({ at: last.at, id: last.id }) : null,
+    });
+  }
+  params.set('view', 'analytics-operations');
+  const res = await fetch(`/api/finance?${params}`, { headers: authHeaders(), cache: 'no-store' });
+  throwIfSessionExpired(res);
+  if (!res.ok) throw new Error('Не вдалося завантажити операції. Повтори спробу.');
+  return analyticsOperationsSchema.parse(await res.json());
 }
 export async function fetchFinanceReport(from: string, to: string) {
   if (!inTelegram())
