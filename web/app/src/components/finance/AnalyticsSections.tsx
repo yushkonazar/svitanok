@@ -1,12 +1,15 @@
+import { useState } from 'react';
 import type { Finance } from '../../api/finance-schema.ts';
+import type { FinanceFormRequest } from './FinanceForm.tsx';
 import type { FinanceAnalytics } from '../../api/finance-analytics-schema.ts';
-import { budgetRows, orderedBudgets } from '../../lib/budgetPlanning.ts';
+import { budgetRows, orderedBudgets, periodWindow } from '../../lib/budgetPlanning.ts';
 import { paymentSchedule } from '../../lib/paymentSchedule.ts';
 import { moneyLabel, financeView } from '../../lib/financeView.ts';
 import { kyivParts, kyivInstant, shiftDate, sumMoney } from '../../../../core/finance/planning.mjs';
 import { PAYMENT_KIND_LABELS, isDebtKind } from '../../../../core/finance/payments.mjs';
 import { financeCategoryLabel } from '../../../../core/finance/categories.mjs';
 import { AnalyticsBars } from './AnalyticsCharts.tsx';
+import { financeRange } from './analytics-format.ts';
 export function Metric({ label, value }: { label: string; value: number | null }) {
   return (
     <div className="renewal-metric">
@@ -15,8 +18,19 @@ export function Metric({ label, value }: { label: string; value: number | null }
     </div>
   );
 }
-export function OverviewAnalytics({ data }: { data: FinanceAnalytics }) {
+export function OverviewAnalytics({
+  data,
+  onCategory,
+}: {
+  data: FinanceAnalytics;
+  onCategory: (category: string) => void;
+}) {
   const r = data.report;
+  const changes = [...data.categories]
+    .filter((c) => c.deltaMinor !== 0)
+    .sort((a, b) => Math.abs(b.deltaMinor) - Math.abs(a.deltaMinor));
+  const shown = changes.slice(0, 6),
+    remainder = sumMoney(changes.slice(6).map((c) => c.deltaMinor));
   return (
     <>
       <section className="renewal-card analytics-hero">
@@ -34,28 +48,77 @@ export function OverviewAnalytics({ data }: { data: FinanceAnalytics }) {
         </p>
       </section>
       <section className="renewal-card">
-        <h2 className="text-lg font-bold">Що змінило витрати</h2>
-        {[...data.categories]
-          .sort((a, b) => Math.abs(b.deltaMinor) - Math.abs(a.deltaMinor))
-          .slice(0, 6)
-          .map((c) => (
-            <div className="analytics-row" key={c.category}>
-              <span>{financeCategoryLabel(c.category)}</span>
-              <b>
-                {c.deltaMinor > 0 ? '+' : ''}
-                {moneyLabel(c.deltaMinor)}
-              </b>
-            </div>
-          ))}
-        {!data.categories.length && (
-          <p className="renewal-muted mt-3">За обидва періоди записаних витрат немає.</p>
+        <h2 className="text-lg font-bold">Де витрати змінилися найбільше</h2>
+        <p className="renewal-chart-note mt-2">
+          {financeRange(data.selection.previousFrom, data.selection.previousTo)} →{' '}
+          {financeRange(data.selection.from, data.selection.to)}. Зміна записаних сум, без припущень
+          про причини.
+        </p>
+        {data.coverage.previousBeforeFirstRecord && (
+          <p className="renewal-inset mt-3">
+            Початок порівняння раніше найдавнішого запису. Повнота попереднього періоду не
+            підтверджена.
+          </p>
+        )}
+        {shown.map((c) => (
+          <button
+            className="analytics-operation"
+            key={c.category}
+            onClick={() => onCategory(c.category)}
+          >
+            <span>
+              <b>{financeCategoryLabel(c.category)}</b>
+              <small>
+                {moneyLabel(c.previousMinor)} → {moneyLabel(c.amountMinor)}
+              </small>
+              <small>
+                Оплат: {c.previousCount} → {c.count}; середня сума:{' '}
+                {c.previousCount
+                  ? moneyLabel(Math.round(c.previousMinor / c.previousCount))
+                  : 'немає'}{' '}
+                → {c.count ? moneyLabel(Math.round(c.amountMinor / c.count)) : 'немає'}
+              </small>
+            </span>
+            <b>
+              {c.deltaMinor > 0 ? '+' : ''}
+              {moneyLabel(c.deltaMinor)}
+            </b>
+          </button>
+        ))}
+        {changes.length > 6 && (
+          <div className="analytics-row">
+            <span>Решта {changes.length - 6} категорій</span>
+            <b>
+              {remainder > 0 ? '+' : ''}
+              {moneyLabel(remainder)}
+            </b>
+          </div>
+        )}
+        <div className="analytics-row">
+          <b>Загальна зміна</b>
+          <b>
+            {data.summary.changeMinor > 0 ? '+' : ''}
+            {moneyLabel(data.summary.changeMinor)}
+          </b>
+        </div>
+        {!changes.length && (
+          <p className="renewal-muted mt-3">Записані суми за категоріями не змінилися.</p>
         )}
       </section>
     </>
   );
 }
-export function BudgetAnalytics({ finance, nowMs }: { finance: Finance; nowMs: number }) {
+export function BudgetAnalytics({
+  finance,
+  nowMs,
+  onBudget,
+}: {
+  finance: Finance;
+  nowMs: number;
+  onBudget: (budget: ReturnType<typeof budgetRows>[number]) => void;
+}) {
   const rows = orderedBudgets(budgetRows(finance, nowMs));
+  const today = kyivParts(nowMs).date;
   return (
     <section className="renewal-card">
       <h2 className="text-lg font-bold">Поточні бюджети · план і факт</h2>
@@ -63,6 +126,13 @@ export function BudgetAnalytics({ finance, nowMs }: { finance: Finance; nowMs: n
         Чинний план на {kyivParts(nowMs).date}. Для кожного рядка використано його день, тиждень або
         місяць. Історичні версії планів поки не записуються.
       </p>
+      {rows.filter((b) => b.left < 0).length > 0 && (
+        <p className="renewal-inset mt-3">
+          Перевищено {rows.filter((b) => b.left < 0).length} лімітів. Найбільше:{' '}
+          {[...rows].sort((a, b) => a.left - b.left)[0]?.category}. Вкладені ліміти не додаються
+          вдруге.
+        </p>
+      )}
       {rows.map((b) => (
         <div
           className="analytics-budget"
@@ -93,6 +163,26 @@ export function BudgetAnalytics({ finance, nowMs }: { finance: Finance; nowMs: n
           <p className="renewal-chart-note mt-2">
             {b.left < 0 ? 'Перевищення' : 'Залишилось'}: {moneyLabel(Math.abs(b.left))}
           </p>
+          <p className="renewal-chart-note">
+            Залишилось{' '}
+            {Math.round(
+              (Date.parse(periodWindow(b.period, today).end) - Date.parse(today)) / 86400000,
+            ) + 1}{' '}
+            дн.; залишок ліміту на день:{' '}
+            {moneyLabel(
+              Math.round(
+                Math.max(0, b.left) /
+                  (Math.round(
+                    (Date.parse(periodWindow(b.period, today).end) - Date.parse(today)) / 86400000,
+                  ) +
+                    1),
+              ),
+            )}
+            . Це розподіл ліміту, а не новий бюджет.
+          </p>
+          <button className="renewal-link mt-2" onClick={() => onBudget(b)}>
+            {b.purpose === 'saving' ? 'Переглянути внески' : 'Переглянути витрати'} ↗
+          </button>
         </div>
       ))}
       {!rows.length && (
@@ -114,8 +204,11 @@ export function PaymentAnalytics({
   nowMs: number;
   onPayment: (id: string) => void;
 }) {
+  const [days, setDays] = useState(30),
+    [paymentGroup, setPaymentGroup] = useState('all'),
+    [paymentWeek, setPaymentWeek] = useState<string | null>(null);
   const today = kyivParts(nowMs).date,
-    until = shiftDate(today, 29),
+    until = shiftDate(today, days - 1),
     active = finance.payments.filter((p) => p.status === 'active');
   const planned = active
     .flatMap((p) =>
@@ -129,10 +222,31 @@ export function PaymentAnalytics({
   const principal = sumMoney(debts.map((p) => p.remainingMinor ?? 0)),
     extra = sumMoney(debts.map((p) => p.overpaymentRemainingMinor ?? 0));
   const overdue = active.filter((p) => p.nextDate < today);
+  const visiblePayments = planned.filter(
+    (p) =>
+      (paymentGroup === 'all' || p.kind === paymentGroup) &&
+      (!paymentWeek ||
+        shiftDate(p.date, -((new Date(p.date + 'T12:00:00Z').getUTCDay() + 6) % 7)) ===
+          paymentWeek),
+  );
   return (
     <>
       <section className="renewal-card analytics-hero">
-        <p className="renewal-muted">Майбутні платежі · 30 днів</p>
+        <p className="renewal-muted">Майбутні платежі · {days} днів</p>
+        <div className="renewal-segments mt-3">
+          {[7, 30, 90].map((n) => (
+            <button
+              key={n}
+              aria-pressed={n === days}
+              onClick={() => {
+                setDays(n);
+                setPaymentWeek(null);
+              }}
+            >
+              {n} днів
+            </button>
+          ))}
+        </div>
         <div className="renewal-big">{moneyLabel(sumMoney(planned.map((p) => p.payment)))}</div>
         <p className="renewal-chart-note">
           {today} — {until} · прогноз введених графіків
@@ -171,7 +285,44 @@ export function PaymentAnalytics({
       )}
       <section className="renewal-card">
         <h2 className="font-bold">Календар майбутніх списань</h2>
-        {planned.slice(0, 60).map((p, i) => (
+        <AnalyticsBars
+          label="Заплановані платежі за тижнями"
+          selected={paymentWeek}
+          onSelect={(key) => setPaymentWeek(key || null)}
+          points={Object.entries(
+            planned.reduce<Record<string, number>>((r, p) => {
+              const key = shiftDate(
+                p.date,
+                -((new Date(p.date + 'T12:00:00Z').getUTCDay() + 6) % 7),
+              );
+              r[key] = (r[key] ?? 0) + p.payment;
+              return r;
+            }, {}),
+          ).map(([key, amountMinor]) => ({
+            key,
+            label: key.slice(8) + '.' + key.slice(5, 7),
+            amountMinor,
+          }))}
+        />
+        <label className="renewal-field mt-3">
+          Тип платежу
+          <select value={paymentGroup} onChange={(e) => setPaymentGroup(e.target.value)}>
+            <option value="all">Усі типи</option>
+            {Object.entries(PAYMENT_KIND_LABELS).map(([kind, label]) => (
+              <option key={kind} value={kind}>
+                {label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <p className="renewal-chart-note mt-3">
+          Список: {paymentWeek ? `тиждень від ${paymentWeek}` : 'увесь проміжок'};{' '}
+          {paymentGroup === 'all'
+            ? 'усі типи'
+            : PAYMENT_KIND_LABELS[paymentGroup as keyof typeof PAYMENT_KIND_LABELS]}
+          . Загальна сума вище враховує всі типи.
+        </p>
+        {visiblePayments.slice(0, 60).map((p, i) => (
           <button
             className="analytics-operation"
             key={`${p.id}-${p.date}-${i}`}
@@ -186,40 +337,74 @@ export function PaymentAnalytics({
             <strong>{moneyLabel(p.payment)}</strong>
           </button>
         ))}
-        {planned.length > 60 && (
+        {visiblePayments.length > 60 && (
           <p className="renewal-chart-note">
-            Показано найближчі 60 із {planned.length}; підсумок враховує всі.
+            Показано найближчі 60 із {visiblePayments.length}; підсумок враховує всі.
           </p>
         )}
-        {!planned.length && (
+        {!visiblePayments.length && (
           <p className="renewal-muted mt-4">На цей проміжок платежів у графіках немає.</p>
         )}
       </section>
-      {debts.map((p) => (
-        <section className="renewal-card" key={p.id}>
-          <button className="renewal-link" onClick={() => onPayment(p.id)}>
-            {p.name} ↗
-          </button>
-          <div className="renewal-metrics">
-            <Metric label="Тіло боргу" value={p.remainingMinor} />
-            <Metric
-              label="Залишок введеної переплати"
-              value={p.overpaymentRemainingMinor ?? null}
-            />
-          </div>
-          <p className="renewal-chart-note mt-2">
-            {p.installmentsLeft == null
-              ? 'Кількість платежів не вказана'
-              : `${p.installmentsLeft} платежів залишилось`}
-            . Майбутні відсотки за ставкою є прогнозом; відсутня фактична деталізація не
-            вигадується.
-          </p>
-        </section>
-      ))}
+      <section className="renewal-card">
+        <h2 className="font-bold">Структура боргів</h2>
+        {Object.entries(PAYMENT_KIND_LABELS)
+          .filter(([kind]) => debts.some((p) => p.kind === kind))
+          .map(([kind, label]) => (
+            <div className="analytics-row" key={kind}>
+              <span>
+                {label}
+                <small>{debts.filter((p) => p.kind === kind).length} договорів · відоме тіло</small>
+              </span>
+              <b>
+                {moneyLabel(
+                  sumMoney(debts.filter((p) => p.kind === kind).map((p) => p.remainingMinor ?? 0)),
+                )}
+              </b>
+            </div>
+          ))}
+        {!debts.length && <p className="renewal-muted mt-3">Активних боргів немає.</p>}
+      </section>
+      <section className="renewal-card">
+        <h2 className="font-bold mb-3">Договори боргів</h2>
+        {debts.map((p) => (
+          <details className="renewal-inset mt-3" key={p.id}>
+            <summary className="renewal-section-head">
+              <span>{p.name}</span>
+              <b>{p.remainingMinor == null ? 'Не вказано' : moneyLabel(p.remainingMinor)}</b>
+            </summary>
+            <button className="renewal-link" onClick={() => onPayment(p.id)}>
+              {p.name} ↗
+            </button>
+            <div className="renewal-metrics">
+              <Metric label="Тіло боргу" value={p.remainingMinor} />
+              <Metric
+                label="Залишок введеної переплати"
+                value={p.overpaymentRemainingMinor ?? null}
+              />
+            </div>
+            <p className="renewal-chart-note mt-2">
+              {p.installmentsLeft == null
+                ? 'Кількість платежів не вказана'
+                : `${p.installmentsLeft} платежів залишилось`}
+              . Майбутні відсотки за ставкою є прогнозом; відсутня фактична деталізація не
+              вигадується.
+            </p>
+          </details>
+        ))}
+      </section>
     </>
   );
 }
-export function GoalsAnalytics({ finance, data }: { finance: Finance; data: FinanceAnalytics }) {
+export function GoalsAnalytics({
+  finance,
+  data,
+  onHistory,
+}: {
+  finance: Finance;
+  data: FinanceAnalytics;
+  onHistory: (goalId: string, date?: string) => void;
+}) {
   const { from, to } = data.selection,
     start = kyivInstant(from, 0),
     end = kyivInstant(shiftDate(to, 1), 0);
@@ -233,6 +418,9 @@ export function GoalsAnalytics({ finance, data }: { finance: Finance; data: Fina
         return (
           <section className="renewal-card" key={g.id}>
             <h2 className="text-lg font-bold">{g.name}</h2>
+            <button className="renewal-link mt-3" onClick={() => onHistory(g.id)}>
+              Історія внесків ↗
+            </button>
             <div className="renewal-big">{moneyLabel(total)}</div>
             <p className="renewal-chart-note">
               Поточний прогрес за записаними внесками · ціль {moneyLabel(g.targetMinor)}
@@ -264,6 +452,7 @@ export function GoalsAnalytics({ finance, data }: { finance: Finance; data: Fina
             </div>
             <AnalyticsBars
               label={`Чисті внески на ${g.name}`}
+              onSelect={(date) => onHistory(g.id, date || undefined)}
               points={data.daily
                 .map((d) => ({
                   key: d.date,
@@ -358,7 +547,19 @@ export function TaxiAnalytics({
     </>
   );
 }
-export function AccountAnalytics({ finance, nowMs }: { finance: Finance; nowMs: number }) {
+export function AccountAnalytics({
+  finance,
+  nowMs,
+  onAction,
+  onRefresh,
+  busy = false,
+}: {
+  finance: Finance;
+  nowMs: number;
+  onAction: (action: FinanceFormRequest) => void;
+  onRefresh?: (id: string) => void;
+  busy?: boolean;
+}) {
   const view = financeView(finance, 7, nowMs),
     unknown = finance.accounts.some((a) => a.currency === 'UAH' && a.balanceMinor == null);
   return (
@@ -389,6 +590,14 @@ export function AccountAnalytics({ finance, nowMs }: { finance: Finance; nowMs: 
                   {a.availableMinor == null ? 'Невідомо' : moneyLabel(a.availableMinor, a.currency)}
                 </b>
               </div>
+              {a.creditLimitSource === 'manual' &&
+                a.bankCreditLimitMinor != null &&
+                a.bankCreditLimitMinor !== a.creditLimitMinor && (
+                  <p className="renewal-inset mt-3">
+                    Ручний ліміт відрізняється від Monobank: у банку{' '}
+                    {moneyLabel(a.bankCreditLimitMinor, a.currency)}. Перевір налаштування.
+                  </p>
+                )}
               <div className="analytics-row">
                 <span>Кредитний ліміт</span>
                 <b>
@@ -412,6 +621,48 @@ export function AccountAnalytics({ finance, nowMs }: { finance: Finance; nowMs: 
               ? `Оновлено ${new Date(a.asOf).toLocaleString('uk-UA', { timeZone: 'Europe/Kyiv' })}`
               : 'Початковий або ручний залишок'}
           </p>
+          {a.currency === 'UAH' && a.balanceMinor != null && (
+            <>
+              <div className="renewal-progress mt-3">
+                <span
+                  style={{
+                    width: `${
+                      (Math.max(0, a.balanceMinor) /
+                        Math.max(
+                          1,
+                          finance.accounts
+                            .filter((x) => x.currency === 'UAH')
+                            .reduce((n, x) => n + Math.max(0, x.balanceMinor ?? 0), 0),
+                        )) *
+                      100
+                    }%`,
+                  }}
+                />
+              </div>
+              <p className="renewal-chart-note">
+                Частка позитивних гривневих залишків. Кредитні ліміти сюди не входять.
+              </p>
+            </>
+          )}
+          <div className="finance-tool-grid mt-3">
+            <button
+              className="renewal-secondary"
+              onClick={() =>
+                onAction({ kind: a.kind === 'mono' ? 'credit-limit' : 'account-balance', id: a.id })
+              }
+            >
+              {a.kind === 'mono' ? 'Налаштувати ліміт' : 'Уточнити залишок'}
+            </button>
+            {a.kind === 'mono' && onRefresh && (
+              <button
+                className="renewal-secondary"
+                disabled={busy || !!finance.bankSync?.active}
+                onClick={() => onRefresh(a.id)}
+              >
+                {busy || finance.bankSync?.active ? 'Оновлюю…' : 'Оновити Monobank'}
+              </button>
+            )}
+          </div>
         </section>
       ))}
       <p className="renewal-chart-note">

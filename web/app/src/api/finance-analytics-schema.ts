@@ -48,6 +48,7 @@ export const financeAnalyticsSchema = z.object({
       category: z.string(),
       amountMinor: money,
       count: z.number().int(),
+      previousCount: z.number().int().default(0),
       previousMinor: money,
       deltaMinor: money,
     }),
@@ -57,6 +58,7 @@ export const financeAnalyticsSchema = z.object({
       merchant: z.string(),
       amountMinor: money,
       count: z.number().int(),
+      previousCount: z.number().int().default(0),
       previousMinor: money,
       deltaMinor: money,
     }),
@@ -85,6 +87,7 @@ export const financeAnalyticsSchema = z.object({
     pendingCount: z.number().int(),
     pendingMinor: money,
     possibleDuplicateCount: z.number().int(),
+    resolvedDuplicateCount: z.number().int().default(0),
     invalidDirectionCount: z.number().int(),
     amountChangedCount: z.number().int(),
   }),
@@ -94,6 +97,7 @@ export const financeAnalyticsSchema = z.object({
     bankRetentionDays: z.number().int(),
     oldestTransactionAt: z.string().nullable(),
     beyondBankRetention: z.boolean(),
+    previousBeforeFirstRecord: z.boolean().default(false),
   }),
 });
 export const analyticsOperationsSchema = z.object({
@@ -103,3 +107,9 @@ export const analyticsOperationsSchema = z.object({
   nextCursor: z.string().nullable(),
 });
 export type FinanceAnalytics = z.infer<typeof financeAnalyticsSchema>;
+export const financeMerchantsSchema = z.object({
+  ok: z.literal(true),
+  items: financeAnalyticsSchema.shape.merchants,
+  total: z.number().int(),
+  nextCursor: z.string().nullable(),
+});

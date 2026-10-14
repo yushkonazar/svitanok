@@ -19,7 +19,7 @@ export function financeForecast(f: Finance, days: number, nowMs: number) {
     .flatMap((p) =>
       paymentSchedule(p, 1200)
         .filter((r) => r.date <= until)
-        .map((r) => ({ ...r, category: p.category, name: p.name })),
+        .map((r) => ({ ...r, id: p.id, category: p.category, name: p.name })),
     );
   const obligations = sumMoney(payments.map((r) => r.payment));
   const rows = budgetRows(f, nowMs);

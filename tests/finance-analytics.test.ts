@@ -4,11 +4,13 @@ import { workerEnv } from './helpers/env.js';
 import {
   readFinanceAnalytics,
   readAnalyticsOperations,
+  readAnalyticsMerchants,
 } from '../web/core/finance/analytics-store.mjs';
 import {
   analyticsPeriod,
   analyticsSelection,
   buildExpenseAnalytics,
+  validateMerchantAliases,
 } from '../web/core/finance/analytics.mjs';
 import { runFinanceQuery } from '../web/core/tools/finance.mjs';
 import { financeTransactionOf, executeFinanceCommand } from '../web/core/finance/workspace.mjs';
@@ -25,6 +27,7 @@ function setup() {
     '0032_finance_interest_method.sql',
     '0033_finance_history_and_links.sql',
     '0035_finance_budget_planning.sql',
+    '0041_finance_merchant_aliases.sql',
   ]);
   const env = workerEnv({ DB: d1.stub });
   const add = (
@@ -57,9 +60,138 @@ function setup() {
   };
   return { env, d1, add };
 }
-const params = (extra: Record<string, string> = {}) =>
-  new URLSearchParams({ from: '2026-10-05', to: '2026-10-11', ...extra });
+const params = (extra: Record<string, string | undefined> = {}) =>
+  new URLSearchParams({
+    from: '2026-10-05',
+    to: '2026-10-11',
+    ...Object.fromEntries(Object.entries(extra).filter((entry) => typeof entry[1] === 'string')),
+  });
 describe('private finance analytics', () => {
+  it('filters quality issues and exact records, excluding owner-resolved duplicate flags', async () => {
+    const { env, d1, add } = setup();
+    add('normal', -100);
+    add('unknown', -200, { uah: null });
+    add('changed', -300, { raw: { financeBankAmountChanged: true } });
+    add('direction', 100, { kind: 'expense' });
+    add('duplicate', -400);
+    add('resolved', -500, {
+      raw: {
+        financeAttention: { status: 'different', source: 'owner', at: '2026-10-06T12:00:00Z' },
+      },
+    });
+    d1.db
+      .prepare(
+        "UPDATE transactions SET flags_json='[\"duplicate\"]' WHERE id IN ('duplicate','resolved')",
+      )
+      .run();
+    const a = await readFinanceAnalytics(env, params(), NOW);
+    expect(a.quality).toMatchObject({
+      possibleDuplicateCount: 1,
+      resolvedDuplicateCount: 1,
+      unknownCurrencyCount: 1,
+      invalidDirectionCount: 1,
+      amountChangedCount: 1,
+    });
+    for (const [issue, id] of [
+      ['unknown-uah', 'unknown'],
+      ['duplicates', 'duplicate'],
+      ['direction', 'direction'],
+      ['changed', 'changed'],
+    ]) {
+      const rows = await readAnalyticsOperations(env, params({ kind: 'all', issue: issue! }), NOW);
+      expect(rows.items.map((t) => t.id)).toEqual([id]);
+    }
+    expect(
+      (
+        await readAnalyticsOperations(env, params({ kind: 'all', transactionId: 'normal' }), NOW)
+      ).items.map((t) => t.id),
+    ).toEqual(['normal']);
+    for (const filter of [
+      { issue: 'x' },
+      { weekday: '7' },
+      { transactionId: '' },
+      { categories: 'oops' },
+      { categories: '[3]' },
+    ])
+      await expect(readAnalyticsOperations(env, params(filter), NOW)).rejects.toThrow(/Некорект/);
+  });
+  it('keeps owner groups consistent with raw bank records, pagination and assistant queries', async () => {
+    const { env, d1, add } = setup();
+    add('first', -100, { merchant: 'Мережа 1' });
+    add('second', -200, { merchant: 'Мережа 2' });
+    add('previous', -400, { merchant: 'Мережа 1', at: '2026-10-02T12:00:00Z' });
+    await executeFinanceCommand(
+      env,
+      {
+        id: 'groups-001',
+        version: 0,
+        type: 'merchant-aliases',
+        payload: { aliases: { 'Мережа 1': 'Мережа', 'Мережа 2': 'Мережа' } },
+      },
+      NOW,
+    );
+    const a = await readFinanceAnalytics(env, params({ merchant: 'Мережа' }), NOW);
+    expect(a.summary.expenseMinor).toBe(300);
+    expect(a.merchants[0]).toMatchObject({
+      merchant: 'Мережа',
+      count: 2,
+      previousCount: 1,
+      previousMinor: 400,
+    });
+    expect(
+      (await readAnalyticsOperations(env, params({ merchant: 'Мережа' }), NOW)).items,
+    ).toHaveLength(2);
+    expect(
+      (await readAnalyticsOperations(env, params({ merchant: 'Мережа 1' }), NOW)).items,
+    ).toHaveLength(1);
+    expect(d1.db.prepare('SELECT description FROM transactions WHERE id=?').get('first')).toEqual({
+      description: 'Мережа 1',
+    });
+    expect((await readAnalyticsMerchants(env, params({ search: 'МЕРЕЖА' }), NOW)).total).toBe(1);
+    expect((await readAnalyticsMerchants(env, params({ ungrouped: '1' }), NOW)).total).toBe(2);
+    for (const input of [
+      null,
+      [],
+      { x: '' },
+      { x: 3 },
+      { x: 'y', y: 'z' },
+      JSON.parse('{"__proto__":"x"}'),
+    ])
+      expect(() => validateMerchantAliases(input)).toThrow(/Некорект/);
+    const missing = await readAnalyticsOperations(env, params({ categories: '["інші"]' }), NOW);
+    expect(missing.items).toHaveLength(0);
+  });
+  it('paginates the full merchant catalogue and preserves Kyiv weekdays across daylight saving', async () => {
+    const { env, add } = setup();
+    for (let i = 0; i < 63; i++) add('seller-' + i, -(i + 1), { merchant: 'Продавець ' + i });
+    const first = await readAnalyticsMerchants(env, params({ sort: 'count' }), NOW);
+    expect(first.items).toHaveLength(50);
+    expect(first.total).toBe(63);
+    const next = await readAnalyticsMerchants(
+      env,
+      params({ sort: 'count', after: first.nextCursor! }),
+      NOW,
+    );
+    expect(next.items).toHaveLength(13);
+    expect(new Set([...first.items, ...next.items].map((m) => m.merchant)).size).toBe(63);
+    expect(next.nextCursor).toBeNull();
+    for (const filter of [
+      { after: 'x' },
+      { after: '{}' },
+      { after: '{"merchant":"missing"}' },
+      { sort: 'x' },
+      { search: 'x'.repeat(201) },
+    ])
+      await expect(readAnalyticsMerchants(env, params(filter), NOW)).rejects.toThrow(/Некорект/);
+    add('before-change', -100, { at: '2026-10-25T00:30:00Z' });
+    add('after-change', -200, { at: '2026-10-25T21:30:00Z' });
+    add('monday', -300, { at: '2026-10-25T22:30:00Z' });
+    const p = new URLSearchParams({ from: '2026-10-25', to: '2026-10-26', weekday: '6' });
+    const rows = await readAnalyticsOperations(env, p, Date.parse('2026-10-27T12:00:00Z'));
+    expect(new Set(rows.items.map((t) => t.id))).toEqual(
+      new Set(['before-change', 'after-change']),
+    );
+  });
   it('shares calendar periods and exact filtered totals with the assistant, including DST and deep links', async () => {
     const { env, add } = setup();
     add('cafe', -18700, { category: 'кафе й ресторани', merchant: 'Кафе' });

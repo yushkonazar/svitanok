@@ -15,7 +15,11 @@ import { Sheet } from '../ui/Sheet.tsx';
 import { FinanceForm, type FinanceFormRequest } from './FinanceForm.tsx';
 import { TaxiHistory } from './TaxiHistory.tsx';
 import { PaymentDetail } from './PaymentDetail.tsx';
-import { AnalyticsOperations } from './AnalyticsOperations.tsx';
+import { AnalyticsOperations, type ExplorerOptions } from './AnalyticsExplorer.tsx';
+import { MerchantCatalog } from './MerchantCatalog.tsx';
+import { financeRange } from './analytics-format.ts';
+import { GoalHistory, type GoalHistoryRequest } from './GoalHistory.tsx';
+import { periodWindow } from '../../lib/budgetPlanning.ts';
 import { CategoryDonut, AnalyticsBars } from './AnalyticsCharts.tsx';
 import { ExpenseCalendar } from './ExpenseCalendar.tsx';
 import {
@@ -57,12 +61,18 @@ export function FinanceAnalytics({
   initialRequest,
   demo = false,
   onBack,
+  onRefreshBank,
+  bankBusy = false,
+  bankError = '',
 }: {
   finance: Finance;
   initialTab?: AnalyticsTab;
   initialRequest?: AnalyticsRequest;
   demo?: boolean;
   onBack: () => void;
+  onRefreshBank?: (id: string) => void;
+  bankBusy?: boolean;
+  bankError?: string;
 }) {
   const nowMs = useTick(60000),
     today = kyivParts(nowMs).date;
@@ -91,15 +101,18 @@ export function FinanceAnalytics({
   const [otherOpen, setOtherOpen] = useState(false),
     [explanation, setExplanation] = useState<string | null>(null),
     [comparisonOpen, setComparisonOpen] = useState(false);
-  const [explorer, setExplorer] = useState<{
-    request: AnalyticsRequest;
-    day?: string;
-    kind?: string;
-  } | null>(null);
+  const [explorer, setExplorer] = useState<
+    ({ request: AnalyticsRequest } & ExplorerOptions) | null
+  >(null);
+  const [moreOpen, setMoreOpen] = useState(false),
+    [catalogOpen, setCatalogOpen] = useState(false),
+    [lineDay, setLineDay] = useState<string | null>(null);
+  const [goalHistory, setGoalHistory] = useState<GoalHistoryRequest | null>(null);
+  const [historyReturn, setHistoryReturn] = useState<GoalHistoryRequest | null>(null);
   const [taxiKey, setTaxiKey] = useState<string | null>(null),
     [paymentId, setPaymentId] = useState<string | null>(null),
     [form, setForm] = useState<FinanceFormRequest | null>(null);
-  const [group, setGroup] = useState<'day' | 'week' | 'month'>('day'),
+  const [groupChoice, setGroup] = useState<'auto' | 'day' | 'week' | 'month'>('auto'),
     [selectedDay, setSelectedDay] = useState<string | null>(null),
     [merchantSort, setMerchantSort] = useState<'amount' | 'count'>('amount');
   const currentState = ['budgets', 'payments', 'accounts'].includes(tab),
@@ -125,26 +138,44 @@ export function FinanceAnalytics({
     placeholderData: keepPreviousData,
   });
   const data = query.data;
+  const group =
+    groupChoice === 'auto'
+      ? (data?.selection.days ?? 7) > 90
+        ? 'month'
+        : (data?.selection.days ?? 7) > 14
+          ? 'week'
+          : 'day'
+      : groupChoice;
   const selectCategory = (category: string) => {
     if (query.isPlaceholderData) return;
-    setFilters((f) => ({ ...f, category, merchant: '' }));
-    setSelectedDay(null);
+    setExplorer({
+      request: { ...request, category, merchant: '' },
+      detail: true,
+      title: financeCategoryLabel(category),
+    });
     setOtherOpen(false);
   };
-  const operations = (extra: Partial<AnalyticsRequest> = {}, day?: string, kind = 'expense') => {
-    if (!query.isPlaceholderData) setExplorer({ request: { ...request, ...extra }, day, kind });
+  const operations = (
+    extra: Partial<AnalyticsRequest> = {},
+    day?: string,
+    kind = 'expense',
+    options: ExplorerOptions = {},
+  ) => {
+    if (!query.isPlaceholderData)
+      setExplorer({ request: { ...request, ...extra }, day, kind, ...options });
   };
   const changeRange = (value: string) => {
     setPreset(value);
     setRange(analyticsPreset(value, today));
     setSelectedDay(null);
+    setLineDay(null);
   };
   const payment = finance.payments.find((p) => p.id === paymentId);
   const action = (r: FinanceFormRequest) => {
     setTaxiKey(null);
     setForm(r);
   };
-  const periods = data ? `${data.selection.from} — ${data.selection.to}` : '';
+  const periods = data ? financeRange(data.selection.from, data.selection.to) : '';
   const points = data
     ? data.daily.reduce<{ key: string; label: string; amountMinor: number }[]>((list, d) => {
         const key =
@@ -158,7 +189,10 @@ export function FinanceAnalytics({
         else
           list.push({
             key,
-            label: group === 'month' ? key.slice(5) : key.slice(8) + '.' + key.slice(5, 7),
+            label:
+              group === 'month'
+                ? key.slice(5) + '.' + key.slice(2, 4)
+                : key.slice(8) + '.' + key.slice(5, 7),
             amountMinor: d.expenseMinor,
           });
         return list;
@@ -215,9 +249,7 @@ export function FinanceAnalytics({
                 Власні дати
               </button>
             </div>
-            <p className="renewal-chart-note mt-2">
-              {range.from} — {range.to} · Київ
-            </p>
+            <p className="renewal-chart-note mt-2">{financeRange(range.from, range.to)} · Київ</p>
           </>
         )}
         {expensesScope && (
@@ -272,23 +304,52 @@ export function FinanceAnalytics({
             {ANALYTICS_TABS[t]}
           </button>
         ))}
-        <label>
-          <span className="sr-only">Інші розділи аналітики</span>
-          <select
-            value={['overview', 'expenses', 'dynamics'].includes(tab) ? '' : tab}
-            onChange={(e) => {
-              if (e.target.value) setTab(e.target.value as AnalyticsTab);
-            }}
-          >
-            <option value="">Ще</option>
-            {(['budgets', 'payments', 'goals', 'taxi', 'accounts'] as const).map((t) => (
-              <option key={t} value={t}>
-                {ANALYTICS_TABS[t]}
-              </option>
-            ))}
-          </select>
-        </label>
+        <button
+          aria-label="Інші розділи аналітики"
+          aria-expanded={moreOpen}
+          onClick={() => setMoreOpen(true)}
+        >
+          Ще ▾
+        </button>
       </nav>
+      <p className="analytics-context">
+        <b>{ANALYTICS_TABS[tab]}</b> ·{' '}
+        {currentState ? 'Поточний стан' : expensesScope ? 'Вибраний облік' : 'Усі рахунки'}
+        {expensesScope
+          ? ` · ${filters.source === 'all' ? 'банк і ручні' : filters.source === 'mono' ? 'Monobank' : 'ручні записи'} · ${filters.status === 'all' ? 'усі статуси' : filters.status === 'confirmed' ? 'підтверджені' : 'hold без підтвердження'}`
+          : ''}
+      </p>
+      {!currentState &&
+        data &&
+        !query.isPlaceholderData &&
+        (data.quality.unclassifiedCount > 0 ||
+          data.quality.pendingCount > 0 ||
+          data.quality.possibleDuplicateCount > 0) && (
+          <div className="analytics-chips">
+            <button
+              className="renewal-secondary"
+              disabled={!data.quality.unclassifiedCount}
+              onClick={() => operations({}, undefined, 'unclassified')}
+            >
+              Без типу: {data.quality.unclassifiedCount}
+            </button>
+            <button
+              className="renewal-secondary"
+              disabled={!data.quality.pendingCount}
+              onClick={() => operations({ status: 'pending' }, undefined, 'all')}
+            >
+              Hold API: {data.quality.pendingCount}
+            </button>
+            {data.quality.possibleDuplicateCount > 0 && (
+              <button
+                className="renewal-secondary"
+                onClick={() => operations({}, undefined, 'all', { issue: 'duplicates' })}
+              >
+                Перевірити схожі: {data.quality.possibleDuplicateCount}
+              </button>
+            )}
+          </div>
+        )}
       {!currentState && query.isFetching && (
         <p className="renewal-chart-note" role="status">
           Оновлюю підсумки…
@@ -304,274 +365,423 @@ export function FinanceAnalytics({
           </button>
         </div>
       )}
-      {tab === 'expenses' && data && (
-        <>
-          <section className="renewal-card analytics-hero" aria-label="Підсумок витрат">
-            <p className="renewal-muted">
-              {data.selection.category
-                ? financeCategoryLabel(data.selection.category)
-                : 'Особисті витрати'}
-              {data.selection.merchant ? ` · ${data.selection.merchant}` : ''}
-            </p>
-            <output className="renewal-big" aria-label="Сума особистих витрат">
-              {moneyLabel(data.summary.expenseMinor)}
-            </output>
-            <button className="renewal-link" onClick={() => setComparisonOpen(true)}>
-              {data.summary.changeMinor > 0 ? '+' : ''}
-              {moneyLabel(data.summary.changeMinor)}
-              {data.summary.changeBps != null
-                ? ` · ${(data.summary.changeBps / 100).toLocaleString('uk-UA', { maximumFractionDigits: 1 })}%`
-                : ''}{' '}
-              до попереднього періоду ↗
-            </button>
-            <div className="renewal-metrics">
-              <Metric label="Середнє за календарний день" value={data.summary.averageDayMinor} />
-              <div className="renewal-metric">
-                <span className="renewal-muted">Кількість оплат</span>
-                <strong>{data.summary.count}</strong>
-              </div>
-              <Metric label="Середній платіж" value={data.summary.averagePaymentMinor} />
-              <Metric label="Медіанний платіж" value={data.summary.medianMinor} />
-            </div>
-            <button className="renewal-link mt-3" onClick={() => setExplanation('expenses')}>
-              Як пораховано ці цифри?
-            </button>
-          </section>
-          <section className="renewal-card">
-            <h2 className="text-lg font-bold">Куди пішли гроші</h2>
-            <CategoryDonut
-              rows={data.categories}
-              onSelect={selectCategory}
-              onOther={() => setOtherOpen(true)}
-            />
-            {data.selection.category && (
-              <button
-                className="renewal-link mt-3"
-                onClick={() => setFilters((f) => ({ ...f, category: '', merchant: '' }))}
-              >
-                ← Усі категорії
+      <div
+        className="analytics-report flex flex-col gap-4"
+        data-loading={!currentState && query.isPlaceholderData}
+        inert={!currentState && query.isPlaceholderData}
+        aria-hidden={!currentState && query.isPlaceholderData}
+      >
+        {tab === 'expenses' && data && (
+          <>
+            <section className="renewal-card analytics-hero" aria-label="Підсумок витрат">
+              <p className="renewal-muted">
+                {data.selection.category
+                  ? financeCategoryLabel(data.selection.category)
+                  : 'Особисті витрати'}
+                {data.selection.merchant ? ` · ${data.selection.merchant}` : ''}
+              </p>
+              <output className="renewal-big" aria-label="Сума особистих витрат">
+                {moneyLabel(data.summary.expenseMinor)}
+              </output>
+              {data.coverage.previousBeforeFirstRecord && (
+                <p className="renewal-inset mt-3">
+                  Попередній проміжок починається раніше найдавніших збережених записів. Відсоток
+                  зміни не показано.
+                </p>
+              )}
+              <button className="renewal-link" onClick={() => setComparisonOpen(true)}>
+                {data.summary.changeMinor > 0 ? '+' : ''}
+                {moneyLabel(data.summary.changeMinor)}
+                {data.summary.changeBps != null
+                  ? ` · ${(data.summary.changeBps / 100).toLocaleString('uk-UA', { maximumFractionDigits: 1 })}%`
+                  : ''}{' '}
+                до попереднього періоду ↗
               </button>
-            )}
-          </section>
-          <section className="renewal-card">
-            <div className="renewal-section-head flex-wrap">
-              <h2 className="text-lg font-bold">Магазини й заклади</h2>
-              <label className="renewal-field">
-                <span className="sr-only">Сортування продавців</span>
-                <select
-                  value={merchantSort}
-                  onChange={(e) => setMerchantSort(e.target.value as 'amount' | 'count')}
-                >
-                  <option value="amount">За сумою</option>
-                  <option value="count">За частотою</option>
-                </select>
-              </label>
-            </div>
-            {[...data.merchants]
-              .sort((a, b) =>
-                merchantSort === 'count' ? b.count - a.count : b.amountMinor - a.amountMinor,
-              )
-              .slice(0, 12)
-              .map((m) => (
-                <button
-                  className="analytics-operation"
-                  key={m.merchant}
-                  onClick={() => {
-                    setFilters((f) => ({ ...f, merchant: m.merchant }));
-                  }}
-                >
-                  <span>
-                    <b>{m.merchant || 'Без назви'}</b>
-                    <small>
-                      {m.count} оплат · середнє{' '}
-                      {moneyLabel(Math.round(m.amountMinor / Math.max(1, m.count)))}
-                    </small>
-                  </span>
-                  <strong>{moneyLabel(m.amountMinor)}</strong>
-                </button>
-              ))}
-            {!data.merchants.length && (
-              <p className="renewal-muted mt-3">Операцій із відомою гривневою сумою немає.</p>
-            )}
-            <p className="renewal-chart-note mt-3">
-              Рейтинг показує до 12 із {data.merchantCount} назв. Схожі назви різних закладів
-              автоматично не зливаються.
-            </p>
-          </section>
-          {data.summary.largest && (
-            <section className="renewal-card">
-              <h2 className="font-bold">Найбільша оплата</h2>
-              <button
-                className="analytics-operation"
-                onClick={() =>
-                  operations(
-                    { merchant: data.summary.largest!.description },
-                    kyivParts(Date.parse(data.summary.largest!.at)).date,
-                  )
-                }
-              >
-                <span>
-                  <b>{data.summary.largest.description}</b>
-                  <small>{kyivParts(Date.parse(data.summary.largest.at)).date}</small>
-                </span>
-                <strong>{moneyLabel(data.summary.largest.amountMinor)}</strong>
+              <div className="renewal-metrics">
+                <Metric label="Середнє за календарний день" value={data.summary.averageDayMinor} />
+                <div className="renewal-metric">
+                  <span className="renewal-muted">Кількість оплат</span>
+                  <strong>{data.summary.count}</strong>
+                </div>
+                <Metric label="Середній платіж" value={data.summary.averagePaymentMinor} />
+                <Metric label="Медіанний платіж" value={data.summary.medianMinor} />
+              </div>
+              <button className="renewal-link mt-3" onClick={() => setExplanation('expenses')}>
+                Як пораховано ці цифри?
               </button>
             </section>
-          )}
-          <button
-            className="renewal-button"
-            disabled={query.isPlaceholderData}
-            onClick={() => operations()}
-          >
-            Переглянути операції · {data.summary.count}
-          </button>
-        </>
-      )}
-      {tab === 'overview' && data && <OverviewAnalytics data={data} />}
-      {tab === 'dynamics' && data && (
-        <>
-          <section className="renewal-card">
-            <h2 className="text-lg font-bold">Витрати за періодами</h2>
-            <div className="renewal-segments mt-3">
-              {(['day', 'week', 'month'] as const).map((g) => (
+            <section className="renewal-card">
+              <h2 className="text-lg font-bold">Куди пішли гроші</h2>
+              {!data.selection.category ? (
+                <CategoryDonut
+                  rows={data.categories}
+                  onSelect={selectCategory}
+                  onOther={() => setOtherOpen(true)}
+                />
+              ) : (
                 <button
-                  key={g}
-                  aria-pressed={group === g}
-                  onClick={() => {
-                    setGroup(g);
-                    setSelectedDay(null);
-                  }}
+                  className="renewal-secondary mt-3"
+                  onClick={() => selectCategory(data.selection.category)}
                 >
-                  {g === 'day' ? 'Дні' : g === 'week' ? 'Тижні' : 'Місяці'}
+                  Деталі категорії ↗
+                </button>
+              )}
+              {data.selection.category && (
+                <button
+                  className="renewal-link mt-3"
+                  onClick={() => setFilters((f) => ({ ...f, category: '', merchant: '' }))}
+                >
+                  ← Усі категорії
+                </button>
+              )}
+            </section>
+            <section className="renewal-card">
+              <div className="renewal-section-head flex-wrap">
+                <h2 className="text-lg font-bold">Магазини й заклади</h2>
+                <label className="renewal-field">
+                  <span className="sr-only">Сортування продавців</span>
+                  <select
+                    value={merchantSort}
+                    onChange={(e) => setMerchantSort(e.target.value as 'amount' | 'count')}
+                  >
+                    <option value="amount">За сумою</option>
+                    <option value="count">За частотою</option>
+                  </select>
+                </label>
+              </div>
+              {[...data.merchants]
+                .sort((a, b) =>
+                  merchantSort === 'count' ? b.count - a.count : b.amountMinor - a.amountMinor,
+                )
+                .slice(0, 12)
+                .map((m) => (
+                  <button
+                    className="analytics-operation"
+                    key={m.merchant}
+                    onClick={() => {
+                      operations({ merchant: m.merchant }, undefined, 'expense', {
+                        detail: true,
+                        title: m.merchant,
+                      });
+                    }}
+                  >
+                    <span>
+                      <b>{m.merchant || 'Без назви'}</b>
+                      <small>
+                        {m.count} оплат · середнє{' '}
+                        {moneyLabel(Math.round(m.amountMinor / Math.max(1, m.count)))}
+                      </small>
+                    </span>
+                    <strong>{moneyLabel(m.amountMinor)}</strong>
+                  </button>
+                ))}
+              {!data.merchants.length && (
+                <p className="renewal-muted mt-3">Операцій із відомою гривневою сумою немає.</p>
+              )}
+              <p className="renewal-chart-note mt-3">
+                Рейтинг показує до 12 із {data.merchantCount} назв. Схожі назви різних закладів
+                автоматично не зливаються.
+              </p>
+              <button
+                className="renewal-secondary w-full mt-3"
+                onClick={() => setCatalogOpen(true)}
+              >
+                Усі продавці · пошук і групи
+              </button>
+            </section>
+            {data.summary.largest && (
+              <section className="renewal-card">
+                <h2 className="font-bold">Найбільша оплата</h2>
+                <button
+                  className="analytics-operation"
+                  onClick={() =>
+                    operations({}, undefined, 'all', {
+                      transactionId: data.summary.largest!.id,
+                      title: 'Найбільша оплата',
+                    })
+                  }
+                >
+                  <span>
+                    <b>{data.summary.largest.description}</b>
+                    <small>{kyivParts(Date.parse(data.summary.largest.at)).date}</small>
+                  </span>
+                  <strong>{moneyLabel(data.summary.largest.amountMinor)}</strong>
+                </button>
+              </section>
+            )}
+            <button
+              className="renewal-button"
+              disabled={query.isPlaceholderData}
+              onClick={() => operations()}
+            >
+              Переглянути операції · {data.summary.count}
+            </button>
+          </>
+        )}
+        {tab === 'overview' && data && (
+          <OverviewAnalytics data={data} onCategory={selectCategory} />
+        )}
+        {tab === 'dynamics' && data && (
+          <>
+            <section className="renewal-card">
+              <h2 className="text-lg font-bold">Витрати за періодами</h2>
+              <div className="renewal-segments mt-3">
+                {(['auto', 'day', 'week', 'month'] as const).map((g) => (
+                  <button
+                    key={g}
+                    aria-pressed={groupChoice === g}
+                    onClick={() => {
+                      setGroup(g);
+                      setSelectedDay(null);
+                    }}
+                  >
+                    {g === 'auto'
+                      ? 'Авто'
+                      : g === 'day'
+                        ? 'Дні'
+                        : g === 'week'
+                          ? 'Тижні'
+                          : 'Місяці'}
+                  </button>
+                ))}
+              </div>
+              <AnalyticsBars
+                points={points}
+                label="Особисті витрати, гривні"
+                selected={selectedDay}
+                onSelect={(key) => setSelectedDay(key || null)}
+              />
+              <button
+                className="renewal-secondary w-full mt-3"
+                onClick={() => {
+                  if (group === 'day') operations({}, selectedDay ?? undefined);
+                  else if (selectedDay) {
+                    const end =
+                      group === 'week'
+                        ? shiftDate(selectedDay, 6)
+                        : shiftDate(
+                            selectedDay + '-01',
+                            new Date(
+                              Number(selectedDay.slice(0, 4)),
+                              Number(selectedDay.slice(5)),
+                              0,
+                            ).getDate() - 1,
+                          );
+                    const start = group === 'month' ? selectedDay + '-01' : selectedDay;
+                    operations({
+                      from: start < range.from ? range.from : start,
+                      to: end > range.to ? range.to : end,
+                    });
+                  } else operations();
+                }}
+              >
+                Операції {selectedDay ? 'обраного проміжку' : 'за період'}
+              </button>
+            </section>
+            <ExpenseCalendar daily={data.daily} onSelect={(date) => operations({}, date)} />
+            <section className="renewal-card">
+              <h2 className="font-bold">Накопичені витрати</h2>
+              <AnalyticsBars
+                label="Накопичена сума витрат за днями"
+                mode="line"
+                selected={lineDay}
+                pickerLabel="День накопиченої суми"
+                onSelect={(key) => setLineDay(key || null)}
+                points={data.daily.map((d) => ({
+                  key: d.date,
+                  label: d.date.slice(8) + '.' + d.date.slice(5, 7),
+                  amountMinor: d.cumulativeMinor,
+                }))}
+              />
+              <p className="renewal-chart-note">
+                Кожна точка — усі витрати від початку періоду до цього дня.
+              </p>
+              {lineDay && (
+                <button
+                  className="renewal-secondary w-full mt-3"
+                  onClick={() => operations({ to: lineDay })}
+                >
+                  Операції до обраного дня
+                </button>
+              )}
+            </section>
+            <section className="renewal-card">
+              <h2 className="font-bold">Ритм тижня</h2>
+              <AnalyticsBars
+                label="Середні витрати за днем тижня"
+                pickerLabel="День тижня"
+                onSelect={(key) => {
+                  if (key)
+                    operations({}, undefined, 'expense', {
+                      weekday: key,
+                      title: [
+                        'Понеділки',
+                        'Вівторки',
+                        'Середи',
+                        'Четверги',
+                        'П’ятниці',
+                        'Суботи',
+                        'Неділі',
+                      ][Number(key)],
+                    });
+                }}
+                points={data.weekdays
+                  .filter((d) => d.days > 0)
+                  .map((d) => ({
+                    key: String(d.day),
+                    label: ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Нд'][d.day]!,
+                    amountMinor: d.averageMinor,
+                  }))}
+              />
+              <p className="renewal-chart-note">
+                Середнє за всі календарні дні відповідного типу, включно з днями без записаних
+                витрат. Це спостереження за вибраним періодом, а не висновок про звичку. Кількість
+                днів у вибірці:{' '}
+                {data.weekdays
+                  .filter((d) => d.days > 0)
+                  .map((d) => `${['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Нд'][d.day]} ${d.days}`)
+                  .join(' · ')}
+                .
+              </p>
+            </section>
+          </>
+        )}
+        {tab === 'budgets' && (
+          <BudgetAnalytics
+            finance={finance}
+            nowMs={nowMs}
+            onBudget={(b) => {
+              const w = periodWindow(b.period, today);
+              if (b.purpose === 'saving')
+                setGoalHistory({ goalIds: b.goalIds, from: w.start, to: today, title: b.category });
+              else
+                setExplorer({
+                  request: {
+                    ...range,
+                    from: w.start,
+                    to: today,
+                    account: 'all',
+                    category: '',
+                    merchant: '',
+                    source: 'all',
+                    status: 'all',
+                  },
+                  categories: JSON.stringify(b.categories),
+                  title: b.category,
+                });
+            }}
+          />
+        )}
+        {tab === 'payments' && (
+          <PaymentAnalytics finance={finance} nowMs={nowMs} onPayment={setPaymentId} />
+        )}
+        {tab === 'goals' && data && (
+          <GoalsAnalytics
+            finance={finance}
+            data={data}
+            onHistory={(goalId, date) =>
+              setGoalHistory({
+                goalIds: [goalId],
+                from: date ?? range.from,
+                to: date ?? range.to,
+                title: finance.goals.find((g) => g.id === goalId)?.name,
+              })
+            }
+          />
+        )}
+        {tab === 'taxi' && data && (
+          <TaxiAnalytics data={data} onWeek={(key) => setTaxiKey(key ?? '')} />
+        )}
+        {tab === 'accounts' && (
+          <AccountAnalytics
+            finance={finance}
+            nowMs={nowMs}
+            onAction={action}
+            onRefresh={onRefreshBank}
+            busy={bankBusy}
+          />
+        )}
+        {(bankBusy || finance.bankSync?.active) && (
+          <p role="status" className="renewal-inset">
+            Monobank оновлюється · {finance.bankSync?.done ?? 0}/{finance.bankSync?.total ?? 1}{' '}
+            етапів. Підсумки оновляться після звірки.
+          </p>
+        )}
+        {bankError && (
+          <p role="alert" className="text-neg">
+            {bankError}
+          </p>
+        )}
+        {!currentState && data && (
+          <details className="renewal-card">
+            <summary className="renewal-link">Якість і джерела даних</summary>
+            <div className="flex flex-col gap-3 mt-4">
+              <p className="renewal-chart-note">
+                Зібрано{' '}
+                {new Date(data.generatedAt).toLocaleString('uk-UA', { timeZone: 'Europe/Kyiv' })}.
+                Відкриття звіту не запускає оновлення Monobank.
+              </p>
+              <button
+                className="analytics-quality"
+                disabled={!data.quality.unclassifiedCount}
+                onClick={() => operations({}, undefined, 'unclassified')}
+              >
+                Без визначеного типу: {data.quality.unclassifiedCount}
+              </button>
+              <button
+                disabled={!data.quality.unknownCurrencyCount}
+                className="analytics-quality"
+                onClick={() => operations({}, undefined, 'all', { issue: 'unknown-uah' })}
+              >
+                Без гривневої суми: {data.quality.unknownCurrencyCount}
+              </button>
+              <button
+                className="analytics-quality"
+                disabled={!data.quality.pendingCount}
+                onClick={() => operations({ status: 'pending' }, undefined, 'all')}
+              >
+                Hold без підтвердження власника: {data.quality.pendingCount} ·{' '}
+                {moneyLabel(data.quality.pendingMinor)}
+              </button>
+              <p className="renewal-chart-note">
+                Схожі покупки вже перевірено: {data.quality.resolvedDuplicateCount}.
+              </p>
+              {(
+                [
+                  ['duplicates', 'Схожі списання', data.quality.possibleDuplicateCount],
+                  ['direction', 'Напрямок суми', data.quality.invalidDirectionCount],
+                  ['changed', 'Банк змінив суму', data.quality.amountChangedCount],
+                ] as const
+              ).map(([issue, label, count]) => (
+                <button
+                  className="analytics-quality"
+                  disabled={!count}
+                  key={issue}
+                  onClick={() => operations({}, undefined, 'all', { issue })}
+                >
+                  {label}: {count}
                 </button>
               ))}
+              <p className="renewal-chart-note">
+                Банківська історія зберігається до {data.coverage.bankRetentionDays} днів.
+                {data.coverage.oldestTransactionAt
+                  ? ` Найдавніший збережений запис: ${kyivParts(Date.parse(data.coverage.oldestTransactionAt)).date}.`
+                  : ''}
+                {data.coverage.beyondBankRetention
+                  ? ' Порівняння виходить за цей строк і може бути неповним.'
+                  : ''}
+              </p>
+              <button
+                className="renewal-secondary"
+                onClick={() => void query.refetch()}
+                disabled={query.isFetching}
+              >
+                {query.isFetching ? 'Оновлюю звіт…' : 'Оновити звіт'}
+              </button>
             </div>
-            <AnalyticsBars
-              points={points}
-              label="Особисті витрати, гривні"
-              selected={selectedDay}
-              onSelect={(key) => setSelectedDay(key || null)}
-            />
-            <button
-              className="renewal-secondary w-full mt-3"
-              onClick={() => {
-                if (group === 'day') operations({}, selectedDay ?? undefined);
-                else if (selectedDay) {
-                  const end =
-                    group === 'week'
-                      ? shiftDate(selectedDay, 6)
-                      : shiftDate(
-                          selectedDay + '-01',
-                          new Date(
-                            Number(selectedDay.slice(0, 4)),
-                            Number(selectedDay.slice(5)),
-                            0,
-                          ).getDate() - 1,
-                        );
-                  const start = group === 'month' ? selectedDay + '-01' : selectedDay;
-                  operations({
-                    from: start < range.from ? range.from : start,
-                    to: end > range.to ? range.to : end,
-                  });
-                } else operations();
-              }}
-            >
-              Операції {selectedDay ? 'обраного проміжку' : 'за період'}
-            </button>
-          </section>
-          <ExpenseCalendar daily={data.daily} onSelect={(date) => operations({}, date)} />
-          <section className="renewal-card">
-            <h2 className="font-bold">Накопичені витрати</h2>
-            <AnalyticsBars
-              label="Накопичена сума витрат за днями"
-              mode="line"
-              points={data.daily.map((d) => ({
-                key: d.date,
-                label: d.date.slice(8) + '.' + d.date.slice(5, 7),
-                amountMinor: d.cumulativeMinor,
-              }))}
-            />
-            <p className="renewal-chart-note">
-              Кожна точка — усі витрати від початку періоду до цього дня.
-            </p>
-          </section>
-          <section className="renewal-card">
-            <h2 className="font-bold">Ритм тижня</h2>
-            <AnalyticsBars
-              label="Середні витрати за днем тижня"
-              points={data.weekdays
-                .filter((d) => d.days > 0)
-                .map((d) => ({
-                  key: String(d.day),
-                  label: ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Нд'][d.day]!,
-                  amountMinor: d.averageMinor,
-                }))}
-            />
-            <p className="renewal-chart-note">
-              Середнє за всі календарні дні відповідного типу, включно з днями без записаних витрат.
-              Це спостереження за вибраним періодом, а не висновок про звичку.
-            </p>
-          </section>
-        </>
-      )}
-      {tab === 'budgets' && <BudgetAnalytics finance={finance} nowMs={nowMs} />}
-      {tab === 'payments' && (
-        <PaymentAnalytics finance={finance} nowMs={nowMs} onPayment={setPaymentId} />
-      )}
-      {tab === 'goals' && data && <GoalsAnalytics finance={finance} data={data} />}
-      {tab === 'taxi' && data && (
-        <TaxiAnalytics data={data} onWeek={(key) => setTaxiKey(key ?? '')} />
-      )}
-      {tab === 'accounts' && <AccountAnalytics finance={finance} nowMs={nowMs} />}
-      {!currentState && data && (
-        <details className="renewal-card">
-          <summary className="renewal-link">Якість і джерела даних</summary>
-          <div className="flex flex-col gap-3 mt-4">
-            <p className="renewal-chart-note">
-              Зібрано{' '}
-              {new Date(data.generatedAt).toLocaleString('uk-UA', { timeZone: 'Europe/Kyiv' })}.
-              Відкриття звіту не запускає оновлення Monobank.
-            </p>
-            <button
-              className="analytics-quality"
-              onClick={() => operations({}, undefined, 'unclassified')}
-            >
-              Без визначеного типу: {data.quality.unclassifiedCount}
-            </button>
-            <button className="analytics-quality" onClick={() => operations({}, undefined, 'all')}>
-              Без гривневої суми: {data.quality.unknownCurrencyCount}
-            </button>
-            <button
-              className="analytics-quality"
-              onClick={() => operations({ status: 'pending' }, undefined, 'all')}
-            >
-              Hold без підтвердження власника: {data.quality.pendingCount} ·{' '}
-              {moneyLabel(data.quality.pendingMinor)}
-            </button>
-            <p className="renewal-chart-note">
-              Можливі повторні списання: {data.quality.possibleDuplicateCount}. Некоректний напрямок
-              суми: {data.quality.invalidDirectionCount}. Змінена банком сума:{' '}
-              {data.quality.amountChangedCount}.
-            </p>
-            <p className="renewal-chart-note">
-              Банківська історія зберігається до {data.coverage.bankRetentionDays} днів.
-              {data.coverage.oldestTransactionAt
-                ? ` Найдавніший збережений запис: ${kyivParts(Date.parse(data.coverage.oldestTransactionAt)).date}.`
-                : ''}
-              {data.coverage.beyondBankRetention
-                ? ' Порівняння виходить за цей строк і може бути неповним.'
-                : ''}
-            </p>
-            <button
-              className="renewal-secondary"
-              onClick={() => void query.refetch()}
-              disabled={query.isFetching}
-            >
-              Оновити звіт
-            </button>
-          </div>
-        </details>
-      )}
+          </details>
+        )}
+      </div>
       {customOpen && (
         <Sheet label="Дати фінансового звіту" onClose={() => setCustomOpen(false)}>
           <form
@@ -751,27 +961,46 @@ export function FinanceAnalytics({
             <AnalyticsBars
               label="Витрати за категоріями у двох періодах"
               comparison
-              points={data.categories.slice(0, 8).map((c, i) => ({
-                key: c.category,
-                label: String(i + 1),
-                amountMinor: c.amountMinor,
-                previousMinor: c.previousMinor,
-              }))}
+              onSelect={(category) => {
+                if (category) {
+                  setComparisonOpen(false);
+                  selectCategory(category);
+                }
+              }}
+              points={[...data.categories]
+                .sort((a, b) => Math.abs(b.deltaMinor) - Math.abs(a.deltaMinor))
+                .slice(0, 8)
+                .map((c, i) => ({
+                  key: c.category,
+                  label: String(i + 1),
+                  amountMinor: c.amountMinor,
+                  previousMinor: c.previousMinor,
+                }))}
             />
-            {data.categories.slice(0, 8).map((c, i) => (
-              <div className="analytics-row" key={c.category}>
-                <span>
-                  {i + 1}. {financeCategoryLabel(c.category)}
-                </span>
-                <b>
-                  {c.deltaMinor > 0 ? '+' : ''}
-                  {moneyLabel(c.deltaMinor)}
-                </b>
-              </div>
-            ))}
+            {[...data.categories]
+              .sort((a, b) => Math.abs(b.deltaMinor) - Math.abs(a.deltaMinor))
+              .slice(0, 8)
+              .map((c, i) => (
+                <button
+                  className="analytics-operation"
+                  key={c.category}
+                  onClick={() => {
+                    setComparisonOpen(false);
+                    selectCategory(c.category);
+                  }}
+                >
+                  <span>
+                    {i + 1}. {financeCategoryLabel(c.category)}
+                  </span>
+                  <b>
+                    {c.deltaMinor > 0 ? '+' : ''}
+                    {moneyLabel(c.deltaMinor)}
+                  </b>
+                </button>
+              ))}
             {data.summary.changeBps == null && (
               <p className="renewal-chart-note">
-                За попередній період витрат не записано; відсоток зміни не визначається.
+                Відсоток зміни не визначається за нульової бази або неповного порівняння.
               </p>
             )}
             <button className="renewal-secondary" onClick={() => setComparisonOpen(false)}>
@@ -782,11 +1011,70 @@ export function FinanceAnalytics({
       )}
       {explorer && (
         <AnalyticsOperations
+          {...explorer}
           finance={finance}
           request={explorer.request}
-          day={explorer.day}
-          kind={explorer.kind}
-          onClose={() => setExplorer(null)}
+          onClose={() => {
+            setExplorer(null);
+            if (historyReturn) {
+              setGoalHistory(historyReturn);
+              setHistoryReturn(null);
+            }
+          }}
+        />
+      )}
+      {moreOpen && (
+        <Sheet label="Розділи аналітики" onClose={() => setMoreOpen(false)}>
+          <div className="renewal-finance">
+            <h2 className="text-xl font-bold mb-3">Розділи аналітики</h2>
+            {Object.entries(ANALYTICS_TABS).map(([key, label]) => (
+              <button
+                className="analytics-operation"
+                aria-pressed={tab === key}
+                key={key}
+                onClick={() => {
+                  setTab(key as AnalyticsTab);
+                  setMoreOpen(false);
+                }}
+              >
+                <span>{label}</span>
+                <span>{tab === key ? '✓' : '↗'}</span>
+              </button>
+            ))}
+          </div>
+        </Sheet>
+      )}
+      {catalogOpen && (
+        <MerchantCatalog
+          request={request}
+          finance={finance}
+          onClose={() => setCatalogOpen(false)}
+          onSelect={(merchant) => {
+            setCatalogOpen(false);
+            operations({ merchant }, undefined, 'expense', { detail: true, title: merchant });
+          }}
+        />
+      )}
+      {goalHistory && (
+        <GoalHistory
+          finance={finance}
+          request={goalHistory}
+          onClose={() => setGoalHistory(null)}
+          onMove={(id) => {
+            setGoalHistory(null);
+            setForm({ kind: 'goal-move', id });
+          }}
+          onTransaction={(id, date, position) => {
+            setHistoryReturn({ ...goalHistory, ...position });
+            setGoalHistory(null);
+            setExplorer({
+              request: { from: date, to: date },
+              kind: 'all',
+              transactionId: id,
+              title: 'Операція внеску',
+              returnLabel: 'До історії внесків',
+            });
+          }}
         />
       )}
       {taxiKey !== null && !form && (

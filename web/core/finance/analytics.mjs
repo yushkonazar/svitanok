@@ -83,20 +83,22 @@ export function analyticsSelection(params, nowMs = Date.now()) {
   };
 }
 /** @param {import('./analytics.mjs').AnalyticsTransaction} tx
- * @param {import('./analytics.mjs').AnalyticsSelection} s */
-export function matchesAnalytics(tx, s) {
+ * @param {import('./analytics.mjs').AnalyticsSelection} s @param {Record<string,string>} [aliases] */
+export function matchesAnalytics(tx, s, aliases = {}) {
   const pending = Boolean(tx.bankHold && !tx.bankVerifiedByOwner);
   return (
     (s.account === 'all' || tx.accountId === s.account) &&
     (!s.category || tx.category === s.category) &&
-    (!s.merchant || tx.description === s.merchant) &&
+    (!s.merchant ||
+      tx.description === s.merchant ||
+      merchantName(tx.description, aliases) === s.merchant) &&
     (s.source === 'all' || (s.source === 'mono' ? tx.bank : !tx.bank)) &&
     (s.status === 'all' || (s.status === 'pending' ? pending : !pending))
   );
 }
 /** Streaming reducer keeps amounts for the exact median, not raw ledger rows.
- * @param {import('./analytics.mjs').AnalyticsSelection} selection */
-export function analyticsAccumulator(selection) {
+ * @param {import('./analytics.mjs').AnalyticsSelection} selection @param {Record<string,string>} [aliases] @param {boolean} [catalog] */
+export function analyticsAccumulator(selection, aliases = {}, catalog = false) {
   const s = selection;
   const daily = Array.from({ length: s.days }, (_, i) => ({
     date: shiftDate(s.from, i),
@@ -106,9 +108,9 @@ export function analyticsAccumulator(selection) {
     cumulativeMinor: 0,
   }));
   const byDay = new Map(daily.map((d) => [d.date, d]));
-  /** @type {Map<string,{category:string,amountMinor:number,count:number,previousMinor:number,deltaMinor:number}>} */
+  /** @type {Map<string,{category:string,amountMinor:number,count:number,previousCount:number,previousMinor:number,deltaMinor:number}>} */
   const categories = new Map();
-  /** @type {Map<string,{merchant:string,amountMinor:number,count:number,previousMinor:number,deltaMinor:number}>} */
+  /** @type {Map<string,{merchant:string,amountMinor:number,count:number,previousCount:number,previousMinor:number,deltaMinor:number}>} */
   const merchants = new Map();
   /** @type {number[]} */ const amounts = [];
   const quality = {
@@ -117,6 +119,7 @@ export function analyticsAccumulator(selection) {
     pendingCount: 0,
     pendingMinor: 0,
     possibleDuplicateCount: 0,
+    resolvedDuplicateCount: 0,
     invalidDirectionCount: 0,
     amountChangedCount: 0,
   };
@@ -131,13 +134,16 @@ export function analyticsAccumulator(selection) {
     const date = kyivParts(Date.parse(tx.at)).date;
     const current = date >= s.from && date <= s.to,
       previous = date >= s.previousFrom && date <= s.previousTo;
-    if ((!current && !previous) || !matchesAnalytics(tx, s)) return;
+    if ((!current && !previous) || !matchesAnalytics(tx, s, aliases)) return;
     if (current) {
       operationCount++;
       if (tx.kind === 'unclassified') quality.unclassifiedCount++;
       if (['expense', 'income'].includes(tx.kind) && tx.amountUah == null)
         quality.unknownCurrencyCount++;
-      if (tx.duplicateSuspected) quality.possibleDuplicateCount++;
+      if (tx.duplicateSuspected) {
+        if (tx.attention?.status === 'different') quality.resolvedDuplicateCount++;
+        else quality.possibleDuplicateCount++;
+      }
       if (tx.bankAmountChanged) quality.amountChangedCount++;
       if (tx.bankHold && !tx.bankVerifiedByOwner) {
         quality.pendingCount++;
@@ -175,13 +181,16 @@ export function analyticsAccumulator(selection) {
       category: tx.category,
       amountMinor: 0,
       count: 0,
+      previousCount: 0,
       previousMinor: 0,
       deltaMinor: 0,
     };
-    const merchant = merchants.get(tx.description) ?? {
-      merchant: tx.description,
+    const name = merchantName(tx.description, aliases);
+    const merchant = merchants.get(name) ?? {
+      merchant: name,
       amountMinor: 0,
       count: 0,
+      previousCount: 0,
       previousMinor: 0,
       deltaMinor: 0,
     };
@@ -189,11 +198,14 @@ export function analyticsAccumulator(selection) {
       if (current) {
         row.amountMinor = sumMoney([row.amountMinor, value]);
         row.count++;
-      } else row.previousMinor = sumMoney([row.previousMinor, value]);
+      } else {
+        row.previousMinor = sumMoney([row.previousMinor, value]);
+        row.previousCount++;
+      }
       row.deltaMinor = row.amountMinor - row.previousMinor;
     }
     categories.set(tx.category, cat);
-    merchants.set(tx.description, merchant);
+    merchants.set(name, merchant);
   };
   const finish = () => {
     amounts.sort((a, b) => a - b);
@@ -249,7 +261,7 @@ export function analyticsAccumulator(selection) {
         largest,
       },
       categories: [...categories.values()].sort((a, b) => b.amountMinor - a.amountMinor),
-      merchants: [...merchantUnion.values()],
+      merchants: catalog ? rankedMerchants : [...merchantUnion.values()],
       merchantCount: rankedMerchants.length,
       daily,
       weekdays,
@@ -259,9 +271,55 @@ export function analyticsAccumulator(selection) {
   return { consume, finish };
 }
 /** @param {import('./analytics.mjs').AnalyticsTransaction[]} transactions
- * @param {import('./analytics.mjs').AnalyticsSelection} selection */
-export function buildExpenseAnalytics(transactions, selection) {
-  const acc = analyticsAccumulator(selection);
+ * @param {import('./analytics.mjs').AnalyticsSelection} selection @param {Record<string,string>} [aliases] */
+export function buildExpenseAnalytics(transactions, selection, aliases = {}) {
+  const acc = analyticsAccumulator(selection, aliases);
   transactions.forEach(acc.consume);
   return acc.finish();
+}
+/** @param {string} name @param {Record<string,string>} [aliases] */
+export function merchantName(name, aliases = {}) {
+  return Object.hasOwn(aliases, name) && typeof aliases[name] === 'string' ? aliases[name] : name;
+}
+/** @param {unknown} input @returns {Record<string,string>} */
+export function validateMerchantAliases(input) {
+  if (
+    !input ||
+    typeof input !== 'object' ||
+    Array.isArray(input) ||
+    Object.keys(input).length > 300
+  )
+    throw new Error('Некоректні правила продавців');
+  const entries = Object.entries(input);
+  for (const [name, group] of entries) {
+    if (
+      !name.trim() ||
+      name.length > 500 ||
+      typeof group !== 'string' ||
+      !group.trim() ||
+      group.length > 120 ||
+      ['__proto__', 'constructor', 'prototype'].includes(name)
+    )
+      throw new Error('Некоректні правила продавців');
+  }
+  const result = Object.fromEntries(entries.map(([name, group]) => [name, group.trim()]));
+  if (
+    Object.values(result).some((group) => Object.hasOwn(result, group) && result[group] !== group)
+  )
+    throw new Error('Некоректні правила продавців: вкладені групи не підтримуються');
+  return result;
+}
+/** @param {import('./analytics.mjs').AnalyticsTransaction} tx @param {string} [issue] */
+export function matchesAnalyticsIssue(tx, issue = '') {
+  if (issue === 'unknown-uah')
+    return ['expense', 'income'].includes(tx.kind) && tx.amountUah == null;
+  if (issue === 'duplicates')
+    return Boolean(tx.duplicateSuspected && tx.attention?.status !== 'different');
+  if (issue === 'direction')
+    return (
+      (tx.kind === 'expense' && tx.amountUah != null && tx.amountUah >= 0) ||
+      (tx.kind === 'income' && tx.amountUah != null && tx.amountUah <= 0)
+    );
+  if (issue === 'changed') return Boolean(tx.bankAmountChanged);
+  return !issue;
 }

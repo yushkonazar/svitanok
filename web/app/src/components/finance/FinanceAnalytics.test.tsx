@@ -94,6 +94,7 @@ beforeEach(() => {
         bankRetentionDays: 720,
         oldestTransactionAt: finance.transactions.at(-1)?.at ?? null,
         beyondBankRetention: false,
+        previousBeforeFirstRecord: false,
       },
     };
   });
@@ -127,12 +128,17 @@ it('shows personal spending without own transfers, drills into a category, and d
   const hero = await screen.findByRole('region', { name: 'Підсумок витрат' });
   expect(within(hero).getByLabelText('Сума особистих витрат')).toHaveTextContent('300,00 ₴');
   fireEvent.click(screen.getByRole('button', { name: /Кафе та ресторани.*100/ }));
+  await screen.findByRole('dialog', { name: 'Операції у звіті' });
   await waitFor(() =>
-    expect(within(hero).getByLabelText('Сума особистих витрат')).toHaveTextContent('100,00 ₴'),
+    expect(fetchAnalyticsOperations).toHaveBeenCalledWith(
+      expect.objectContaining({ category: 'кафе й ресторани' }),
+      expect.anything(),
+    ),
   );
+  expect(within(hero).getByLabelText('Сума особистих витрат')).toHaveTextContent('300,00 ₴');
   expect(refreshFinanceBank).not.toHaveBeenCalled();
   expect(postFinance).not.toHaveBeenCalled();
-  fireEvent.click(screen.getByRole('button', { name: /Усі категорії/ }));
+  fireEvent.click(screen.getByRole('button', { name: 'Закрити операції' }));
   await waitFor(() =>
     expect(within(hero).getByLabelText('Сума особистих витрат')).toHaveTextContent('300,00 ₴'),
   );
@@ -193,9 +199,12 @@ it('validates custom dates before a request and distinguishes current account st
   expect(await screen.findByRole('alert')).toHaveTextContent(/Некорект/);
   expect(fetchFinanceAnalytics).toHaveBeenCalledTimes(1);
   fireEvent.click(screen.getByRole('button', { name: 'Скасувати' }));
-  fireEvent.change(screen.getByLabelText('Інші розділи аналітики'), {
-    target: { value: 'accounts' },
-  });
+  fireEvent.click(screen.getByRole('button', { name: 'Інші розділи аналітики' }));
+  fireEvent.click(
+    within(screen.getByRole('dialog', { name: 'Розділи аналітики' })).getByRole('button', {
+      name: /Рахунки/,
+    }),
+  );
   expect(screen.getByText(/Поточний стан на/)).toBeInTheDocument();
   expect(screen.queryByRole('button', { name: 'Власні дати' })).not.toBeInTheDocument();
   expect(screen.getByText('Кредитний ліміт')).toBeInTheDocument();
@@ -224,7 +233,7 @@ it('paginates operations and edits the existing bank category without requiring 
       expect.objectContaining({ cursor: 'cursor' }),
     ),
   );
-  fireEvent.click(screen.getByRole('button', { name: /Маркет.*hold/ }));
+  fireEvent.click(screen.getByRole('button', { name: /Маркет.*на обробці/ }));
   fireEvent.click(screen.getByRole('button', { name: 'Уточнити категорію та тип' }));
   fireEvent.change(screen.getByLabelText('Категорія'), { target: { value: 'кафе й ресторани' } });
   fireEvent.click(screen.getByRole('button', { name: 'Зберегти тип і категорію' }));
@@ -251,4 +260,42 @@ it('draws goal returns below zero instead of hiding negative values', () => {
   const rects = svg.querySelectorAll('rect');
   expect(Number(rects[1]?.getAttribute('height'))).toBeGreaterThan(0);
   expect(rects[1]?.getAttribute('fill')).toBe('var(--color-neg)');
+});
+it('opens the exact largest transaction and disables empty quality links', async () => {
+  open();
+  await screen.findByRole('region', { name: 'Підсумок витрат' });
+  const largest = screen.getByRole('heading', { name: 'Найбільша оплата' }).closest('section')!;
+  fireEvent.click(within(largest).getByRole('button'));
+  await waitFor(() =>
+    expect(fetchAnalyticsOperations).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ transactionId: 'food', kind: 'all' }),
+    ),
+  );
+  fireEvent.click(screen.getByRole('button', { name: 'Закрити операції' }));
+  fireEvent.click(screen.getByText('Якість і джерела даних'));
+  expect(screen.getByRole('button', { name: 'Без гривневої суми: 0' })).toBeDisabled();
+});
+it('drills cumulative and weekday graphs into the correct ranges rather than an unrelated operation', async () => {
+  open();
+  await screen.findByRole('region', { name: 'Підсумок витрат' });
+  fireEvent.click(screen.getByRole('button', { name: 'Динаміка' }));
+  fireEvent.change(screen.getByLabelText('День накопиченої суми'), {
+    target: { value: '2026-10-10' },
+  });
+  fireEvent.click(screen.getByRole('button', { name: 'Операції до обраного дня' }));
+  await waitFor(() =>
+    expect(fetchAnalyticsOperations).toHaveBeenLastCalledWith(
+      expect.objectContaining({ from: '2026-10-08', to: '2026-10-10' }),
+      expect.anything(),
+    ),
+  );
+  fireEvent.click(screen.getByRole('button', { name: 'Закрити операції' }));
+  fireEvent.change(screen.getByLabelText('День тижня'), { target: { value: '5' } });
+  await waitFor(() =>
+    expect(fetchAnalyticsOperations).toHaveBeenLastCalledWith(
+      expect.objectContaining({ from: '2026-10-08', to: '2026-10-14' }),
+      expect.objectContaining({ weekday: '5' }),
+    ),
+  );
 });

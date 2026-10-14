@@ -17,6 +17,7 @@ import { FinanceForm, type FinanceFormRequest } from './FinanceForm.tsx';
 import { PageHeading } from '../ui/PageHeading.tsx';
 import type { AnalyticsTab } from './FinanceAnalytics.tsx';
 import type { AnalyticsRequest } from '../../api/finance-analytics-schema.ts';
+import type { ExplorerOptions } from './AnalyticsExplorer.tsx';
 import { PaymentDetail } from './PaymentDetail.tsx';
 import { TransactionDetail } from './TransactionDetail.tsx';
 import { PaymentGroups } from './PaymentGroups.tsx';
@@ -36,6 +37,9 @@ const LABELS: Record<string, string> = {
 };
 const FinanceAnalytics = lazy(() =>
   import('./FinanceAnalytics.tsx').then((module) => ({ default: module.FinanceAnalytics })),
+);
+const AnalyticsOperations = lazy(() =>
+  import('./AnalyticsExplorer.tsx').then((module) => ({ default: module.AnalyticsOperations })),
 );
 const PERIOD: Record<string, string> = { day: 'день', week: 'тиждень', month: 'місяць' };
 function Progress({ percent }: { percent: number }) {
@@ -72,7 +76,6 @@ export function FinanceScreen() {
     }
   };
 
-  const [allOperations, setAllOperations] = useState(false);
   const [pendingLimit, setPendingLimit] = useState(5);
   const [paymentsExpanded, setPaymentsExpanded] = useState(() => {
     try {
@@ -91,6 +94,9 @@ export function FinanceScreen() {
     }
   };
   const [analyticsTab, setAnalyticsTab] = useState<AnalyticsTab | null>(null);
+  const [operationExplorer, setOperationExplorer] = useState<
+    ({ request: AnalyticsRequest } & ExplorerOptions) | null
+  >(null);
   const [explainOpen, setExplainOpen] = useState(false);
   const [calendarOpen, setCalendarOpen] = useState(false);
   const [localDetailId, setDetailId] = useState<string | null>(null);
@@ -229,6 +235,9 @@ export function FinanceScreen() {
           demo={data.demo}
           initialTab={activeAnalytics}
           initialRequest={linkedRequest}
+          onRefreshBank={(id) => void refreshBank(id)}
+          bankBusy={bankBusy}
+          bankError={bankError}
           onBack={() => {
             setAnalyticsTab(null);
             setParams(
@@ -395,13 +404,7 @@ export function FinanceScreen() {
       >
         <div className="renewal-section-head">
           <span className="renewal-eyebrow">ВІЛЬНІ КОШТИ</span>
-          <div className="renewal-segments">
-            {[7, 30].map((n) => (
-              <button key={n} onClick={() => setDays(n)} aria-pressed={days === n}>
-                {n} днів
-              </button>
-            ))}
-          </div>
+          <span className="renewal-muted">Зараз</span>
         </div>
         <div
           className="renewal-big"
@@ -419,13 +422,30 @@ export function FinanceScreen() {
         </button>
         <div className="renewal-metrics">
           <div className="renewal-metric">
-            <span className="renewal-muted">На рахунках · ₴</span>
+            <span className="renewal-muted">
+              {f.accounts.some((a) => a.currency === 'UAH' && a.balanceMinor == null)
+                ? 'Відомі залишки'
+                : 'На рахунках'}{' '}
+              · ₴
+            </span>
             <strong>{moneyLabel(view.owned)}</strong>
           </div>
           <div className="renewal-metric">
             <span className="renewal-muted">Залишити для парку</span>
             <strong className="text-a2">{moneyLabel(f.reserveMinor)}</strong>
           </div>
+        </div>
+        <div className="renewal-section-head mt-4">
+          <span className="renewal-muted">Рух грошей</span>
+          <div className="renewal-segments">
+            {[7, 30].map((n) => (
+              <button key={n} onClick={() => setDays(n)} aria-pressed={days === n}>
+                {n} днів
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="renewal-metrics">
           <div className="renewal-metric">
             <span className="renewal-muted">Інші надходження · {days}д</span>
             <strong className="text-pos">{moneyLabel(view.income)}</strong>
@@ -435,6 +455,13 @@ export function FinanceScreen() {
             <strong>{moneyLabel(view.expense)}</strong>
           </div>
         </div>
+        <p className="renewal-chart-note mt-3">
+          {bankBusy || f.bankSync?.active
+            ? 'Monobank оновлюється…'
+            : f.bankSync?.completedAt
+              ? `Остання звірка Monobank: ${new Date(f.bankSync.completedAt).toLocaleString('uk-UA', { timeZone: 'Europe/Kyiv', dateStyle: 'short', timeStyle: 'short' })}`
+              : 'Час звірки Monobank ще не зафіксовано.'}
+        </p>
         <div className="renewal-finance-actions mt-4">
           <button className="renewal-button" onClick={() => setForm({ kind: 'expense' })}>
             Записати витрату
@@ -532,16 +559,16 @@ export function FinanceScreen() {
             <p className="renewal-muted">Перезмінка — понеділок о 13:00, Київ.</p>
             <div className="renewal-metrics">
               <div className="renewal-metric">
-                <span className="renewal-muted">Чиста каса · після комісії</span>
-                <strong>{moneyLabel(taxi.netCashMinor)}</strong>
+                <span className="renewal-muted">Повна комісія</span>
+                <strong>{moneyLabel(sumMoney(taxi.groups.map((g) => g.commissionMinor)))}</strong>
               </div>
               <div className="renewal-metric">
-                <span className="renewal-muted">Брудна каса</span>
-                <strong>{moneyLabel(taxi.grossMinor)}</strong>
+                <span className="renewal-muted">Пальне парку</span>
+                <strong>{moneyLabel(sumMoney(taxi.groups.map((g) => g.fuelMinor)))}</strong>
               </div>
               <div className="renewal-metric">
-                <span className="renewal-muted">Твій заробіток</span>
-                <strong className="text-pos">{moneyLabel(taxi.earnedMinor)}</strong>
+                <span className="renewal-muted">Чайові до поділу</span>
+                <strong>{moneyLabel(sumMoney(taxi.entries.map((g) => g.tipsMinor)))}</strong>
               </div>
               <div className="renewal-metric">
                 <span className="renewal-muted">Отримана готівка</span>
@@ -685,7 +712,6 @@ export function FinanceScreen() {
               className={operationsSource === source ? 'renewal-button' : 'renewal-secondary'}
               onClick={() => {
                 setOperationsSource(source);
-                setAllOperations(false);
               }}
             >
               {label}
@@ -698,24 +724,31 @@ export function FinanceScreen() {
             надходження не зараховані в дохід автоматично.
           </p>
         )}
-        {(allOperations ? operations.slice(0, 40) : operations.slice(0, 5)).map((t) => (
+        {operations.slice(0, 5).map((t) => (
           <button
             type="button"
             key={t.id}
-            disabled={
-              !t.bank && (!!t.reference || !['expense', 'income', 'unclassified'].includes(t.kind))
-            }
             className="renewal-list-row w-full text-left"
             onClick={() =>
-              t.bank
-                ? openTransaction(t.id)
-                : setForm({
-                    kind:
-                      !t.bank && ['expense', 'income'].includes(t.kind)
-                        ? 'edit-transaction'
-                        : 'classify',
-                    id: t.id,
+              !t.bank && (!!t.reference || !['expense', 'income', 'unclassified'].includes(t.kind))
+                ? setOperationExplorer({
+                    request: {
+                      from: kyivParts(Date.parse(t.at)).date,
+                      to: kyivParts(Date.parse(t.at)).date,
+                    },
+                    kind: 'all',
+                    transactionId: t.id,
+                    returnLabel: 'До фінансів',
                   })
+                : t.bank
+                  ? openTransaction(t.id)
+                  : setForm({
+                      kind:
+                        !t.bank && ['expense', 'income'].includes(t.kind)
+                          ? 'edit-transaction'
+                          : 'classify',
+                      id: t.id,
+                    })
             }
           >
             <span>
@@ -742,10 +775,16 @@ export function FinanceScreen() {
           </button>
         ))}
         {operations.length > 5 && (
-          <button className="renewal-secondary mt-3" onClick={() => setAllOperations((v) => !v)}>
-            {allOperations
-              ? 'Показати останні 5'
-              : `Усі операції (${Math.min(operations.length, 40)})`}
+          <button
+            className="renewal-secondary mt-3"
+            onClick={() =>
+              setOperationExplorer({
+                request: { from: shiftDate(today, 1 - days), to: today, source: operationsSource },
+                kind: 'all',
+              })
+            }
+          >
+            Переглянути всі операції ↗
           </button>
         )}
         {!operations.length && <p className="renewal-muted">За цей період операцій немає.</p>}
@@ -754,6 +793,10 @@ export function FinanceScreen() {
       <ForecastPlan
         finance={f}
         nowMs={nowMs}
+        onPayment={(id) => {
+          overviewScroll.current = window.scrollY;
+          setDetailId(id);
+        }}
         onCalendar={() => {
           overviewScroll.current = window.scrollY;
           setCalendarOpen(true);
@@ -845,6 +888,15 @@ export function FinanceScreen() {
         }}
       />
       {explainOpen && <FinanceExplanation finance={f} onClose={() => setExplainOpen(false)} />}
+      {operationExplorer && (
+        <Suspense fallback={<p role="status">Завантажую операції…</p>}>
+          <AnalyticsOperations
+            {...operationExplorer}
+            finance={f}
+            onClose={() => setOperationExplorer(null)}
+          />
+        </Suspense>
+      )}
       {calendarOpen && (
         <PaymentCalendar
           finance={f}

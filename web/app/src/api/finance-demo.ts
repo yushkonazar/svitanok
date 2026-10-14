@@ -1,5 +1,6 @@
 import { financeSchema, type Finance, type FinanceCommand } from './finance-schema.ts';
 import { financeCategories } from '../../../core/finance/categories.mjs';
+import { validateMerchantAliases } from '../../../core/finance/analytics.mjs';
 import { bankPaymentAmount } from '../../../core/finance/payment-link.mjs';
 import { fixedDebtPayment, interestDebtPayment } from '../../../core/finance/payments.mjs';
 import {
@@ -602,6 +603,9 @@ export function writeFinanceDemo(command: FinanceCommand) {
       });
       break;
     }
+    case 'merchant-aliases':
+      f.merchantAliases = validateMerchantAliases(p.aliases);
+      break;
     case 'forecast-settings':
       f.forecast = { incomes: p.incomes as Finance['forecast']['incomes'] };
       break;

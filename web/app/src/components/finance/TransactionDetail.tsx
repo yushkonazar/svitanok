@@ -10,11 +10,13 @@ export function TransactionDetail({
   version,
   onBack,
   onClassify,
+  backLabel = 'До фінансів',
 }: {
   transaction: Finance['transactions'][number];
   version: number;
   onBack: () => void;
   onClassify: () => void;
+  backLabel?: string;
 }) {
   const query = useQueryClient();
   const [pending, setPending] = useState(false);
@@ -44,7 +46,7 @@ export function TransactionDetail({
   return (
     <section className="renewal-card flex flex-col gap-4">
       <button className="renewal-link" onClick={onBack}>
-        ← До фінансів
+        ← {backLabel}
       </button>
       <h1 className="text-xl font-bold">{tx.description || 'Операція'}</h1>
       <strong>{moneyLabel(tx.amountMinor, tx.currency)}</strong>

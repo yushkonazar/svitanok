@@ -313,6 +313,7 @@ export async function readFinanceWorkspace(env, nowMs = Date.now(), range, optio
     version: Number(settings.version),
     generatedAt: new Date(nowMs).toISOString(),
     bankSync: rows(11)[0]?.value_json ? jsonObject(rows(11)[0]?.value_json) : null,
+    merchantAliases: jsonObject(settings.merchant_aliases_json),
     settings: {
       incomePeriod: String(settings.income_period),
       taxiVisible: Boolean(settings.taxi_visible),
@@ -436,7 +437,7 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
   }
   const metadataEdit = ['classify', 'transaction-edit'].includes(type);
   const state = await readFinanceWorkspace(env, nowMs, undefined, {
-    omitTransactions: metadataEdit,
+    omitTransactions: metadataEdit || type === 'merchant-aliases',
   });
   if (metadataEdit && typeof payload.transactionId === 'string') {
     const row = await db
@@ -1071,6 +1072,12 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
     payload.ids.forEach((/** @type {string} */ budgetId, /** @type {number} */ i) =>
       update('UPDATE finance_budgets SET sort_order = ? WHERE id = ?', [i, budgetId]),
     );
+  } else if (type === 'merchant-aliases') {
+    const { validateMerchantAliases } = await import('./analytics.mjs');
+    const aliases = validateMerchantAliases(payload.aliases);
+    update("UPDATE finance_settings SET merchant_aliases_json = ? WHERE id = 'owner'", [
+      JSON.stringify(aliases),
+    ]);
   } else if (type === 'forecast-settings') {
     if (!Array.isArray(payload.incomes) || payload.incomes.length > 30)
       throw new FinanceValidation('До 30 планових надходжень');

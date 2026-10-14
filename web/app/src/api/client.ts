@@ -27,6 +27,8 @@ import {
   analyticsSelection,
   buildExpenseAnalytics,
   matchesAnalytics,
+  matchesAnalyticsIssue,
+  analyticsAccumulator,
 } from '../../../core/finance/analytics.mjs';
 import {
   financeAnalyticsSchema,
@@ -234,7 +236,7 @@ export async function fetchFinanceAnalytics(input: AnalyticsRequest) {
     return financeAnalyticsSchema.parse({
       ok: true,
       generatedAt: new Date().toISOString(),
-      ...buildExpenseAnalytics(f.transactions, selection),
+      ...buildExpenseAnalytics(f.transactions, selection, f.merchantAliases),
       report: buildFinanceReport(f, selection.from, selection.to),
       reportScope: 'all-accounts',
       coverage: {
@@ -257,18 +259,33 @@ export async function fetchFinanceAnalytics(input: AnalyticsRequest) {
 }
 export async function fetchAnalyticsOperations(
   input: AnalyticsRequest,
-  options: { cursor?: string | null; day?: string; kind?: string } = {},
+  options: {
+    cursor?: string | null;
+    day?: string;
+    kind?: string;
+    issue?: string;
+    weekday?: string;
+    transactionId?: string;
+    categories?: string;
+  } = {},
 ) {
   const params = analyticsParams(input);
   for (const [key, value] of Object.entries(options)) if (value) params.set(key, value);
   if (!inTelegram()) {
-    const selection = analyticsSelection(params),
+    const f = readFinanceDemo(),
+      selection = analyticsSelection(params),
       cursor = options.cursor ? JSON.parse(options.cursor) : null;
-    const rows = readFinanceDemo()
-      .transactions.filter((t) => {
+    const rows = f.transactions
+      .filter((t) => {
         const date = kyivParts(Date.parse(t.at)).date;
         return (
-          matchesAnalytics(t, selection) &&
+          matchesAnalytics(t, selection, f.merchantAliases) &&
+          matchesAnalyticsIssue(t, options.issue) &&
+          (!options.transactionId || t.id === options.transactionId) &&
+          (!options.categories ||
+            (JSON.parse(options.categories) as string[]).includes(t.category)) &&
+          (options.weekday == null ||
+            String((new Date(date + 'T12:00:00Z').getUTCDay() + 6) % 7) === options.weekday) &&
           date >= selection.from &&
           date <= selection.to &&
           (!options.day || date === options.day) &&
@@ -292,6 +309,55 @@ export async function fetchAnalyticsOperations(
   throwIfSessionExpired(res);
   if (!res.ok) throw new Error('Не вдалося завантажити операції. Повтори спробу.');
   return analyticsOperationsSchema.parse(await res.json());
+}
+export async function fetchFinanceMerchants(
+  input: AnalyticsRequest,
+  options: { search?: string; sort?: string; after?: string | null; ungrouped?: string } = {},
+) {
+  const { financeMerchantsSchema } = await import('./finance-analytics-schema.ts');
+  const params = analyticsParams(input);
+  for (const [key, value] of Object.entries(options)) if (value) params.set(key, value);
+  if (!inTelegram()) {
+    const f = readFinanceDemo(),
+      acc = analyticsAccumulator(
+        analyticsSelection(params),
+        options.ungrouped === '1' ? {} : f.merchantAliases,
+        true,
+      );
+    f.transactions.forEach(acc.consume);
+    const rows = acc
+      .finish()
+      .merchants.filter((m) =>
+        m.merchant
+          .toLocaleLowerCase('uk-UA')
+          .includes((options.search ?? '').toLocaleLowerCase('uk-UA')),
+      )
+      .sort((a, b) =>
+        options.sort === 'count'
+          ? b.count - a.count ||
+            b.amountMinor - a.amountMinor ||
+            a.merchant.localeCompare(b.merchant, 'uk')
+          : b.amountMinor - a.amountMinor || a.merchant.localeCompare(b.merchant, 'uk'),
+      );
+    const start = options.after
+        ? rows.findIndex((m) => m.merchant === JSON.parse(options.after!).merchant) + 1
+        : 0,
+      items = rows.slice(start, start + 50);
+    return financeMerchantsSchema.parse({
+      ok: true,
+      items,
+      total: rows.length,
+      nextCursor:
+        start + 50 < rows.length
+          ? JSON.stringify({ merchant: items.at(-1)?.merchant ?? '' })
+          : null,
+    });
+  }
+  params.set('view', 'analytics-merchants');
+  const r = await fetch(`/api/finance?${params}`, { headers: authHeaders(), cache: 'no-store' });
+  throwIfSessionExpired(r);
+  if (!r.ok) throw new Error('Не вдалося завантажити продавців.');
+  return financeMerchantsSchema.parse(await r.json());
 }
 export async function fetchFinanceReport(from: string, to: string) {
   if (!inTelegram())

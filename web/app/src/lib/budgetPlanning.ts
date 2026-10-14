@@ -42,7 +42,7 @@ export function budgetRows(f: Finance, nowMs: number) {
   return f.budgets.map((b) => {
     const w = periodWindow(b.period, date);
     const from = kyivInstant(w.start, 0);
-    const categories = b.categories.length ? b.categories : [b.category];
+    const categorySet = new Set(b.categories);
     const children = f.budgets.filter((c) => c.parentId === b.id);
     // A parent includes the categories and goal targets of its descendants once.
     const goalIds = new Set<string>();
@@ -50,9 +50,11 @@ export function budgetRows(f: Finance, nowMs: number) {
       if (seen.has(node.id)) return;
       seen.add(node.id);
       if (node.goalId) goalIds.add(node.goalId);
+      node.categories.forEach((category) => categorySet.add(category));
       f.budgets.filter((c) => c.parentId === node.id).forEach((c) => visit(c, seen));
     };
     visit(b);
+    const categories = categorySet.size ? [...categorySet] : [b.category];
     const spent =
       b.purpose === 'saving'
         ? sumMoney(
@@ -72,6 +74,7 @@ export function budgetRows(f: Finance, nowMs: number) {
                   t.kind === 'expense' &&
                   categories.includes(t.category) &&
                   t.amountUah != null &&
+                  t.amountUah < 0 &&
                   Date.parse(t.at) >= from &&
                   Date.parse(t.at) <= nowMs,
               )
@@ -86,6 +89,8 @@ export function budgetRows(f: Finance, nowMs: number) {
     };
     return {
       ...b,
+      categories,
+      goalIds: [...goalIds],
       spent,
       limit,
       left: limit - spent,
