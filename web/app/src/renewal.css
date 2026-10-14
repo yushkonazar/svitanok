@@ -609,6 +609,19 @@
   font-size: 13px;
   max-width: 38ch;
 }
+.finance-heading-actions {
+  display: grid;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.finance-heading-actions > button {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  font-size: 20px;
+}
 .renewal-title {
   font-size: clamp(30px, 8vw, 37px);
   font-weight: 650;
