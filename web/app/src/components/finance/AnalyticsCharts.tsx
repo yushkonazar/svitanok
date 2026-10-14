@@ -9,10 +9,10 @@ export const analyticsColors = [
   'var(--color-tx2)',
   'var(--color-neg)',
 ];
-function categorySlot(category: string) {
+function categoryColor(category: string) {
   let hash = 0;
   for (const char of category) hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
-  return hash % analyticsColors.length;
+  return `hsl(${hash % 360} 58% 58%)`;
 }
 export function CategoryDonut({
   rows,
@@ -39,17 +39,13 @@ export function CategoryDonut({
         ]
       : []),
   ];
-  const used = new Set<number>(others.length ? [4] : []);
   const colors = new Map<string, string>();
   for (const piece of pieces) {
     if (!piece.category) {
       colors.set('', analyticsColors[4]!);
       continue;
     }
-    let slot = categorySlot(piece.category);
-    while (used.has(slot)) slot = (slot + 1) % analyticsColors.length;
-    used.add(slot);
-    colors.set(piece.category, analyticsColors[slot]!);
+    colors.set(piece.category, categoryColor(piece.category));
   }
   const radius = 63,
     circle = 2 * Math.PI * radius;
@@ -135,6 +131,7 @@ export function AnalyticsBars({
   selected,
   comparison = false,
   mode = 'bars',
+  pickerLabel = 'Обрати точку',
 }: {
   points: AnalyticsPoint[];
   label: string;
@@ -142,6 +139,7 @@ export function AnalyticsBars({
   selected?: string | null;
   comparison?: boolean;
   mode?: 'bars' | 'line';
+  pickerLabel?: string;
 }) {
   const ref = useRef<HTMLDivElement>(null),
     [width, setWidth] = useState(320),
@@ -200,7 +198,9 @@ export function AnalyticsBars({
         onClick={(e) => {
           if (!onSelect) return;
           const box = e.currentTarget.getBoundingClientRect(),
-            x = ((e.clientX - box.left) / box.width) * width;
+            x = ((e.clientX - box.left) / box.width) * width,
+            py = ((e.clientY - box.top) / box.height) * 180;
+          if (x < left || x > width - right || py < top || py > bottom) return;
           const index = Math.max(0, Math.min(points.length - 1, Math.floor((x - left) / step)));
           onSelect(points[index]!.key);
         }}
@@ -287,7 +287,7 @@ export function AnalyticsBars({
       </svg>
       {onSelect && (
         <label className="renewal-field analytics-chart-picker" htmlFor={id}>
-          Обрати точку
+          {pickerLabel}
           <select id={id} value={selected ?? ''} onChange={(e) => onSelect(e.target.value)}>
             <option value="">Увесь період</option>
             {points.map((p) => (

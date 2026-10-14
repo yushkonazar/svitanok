@@ -8,14 +8,17 @@ import { periodWindow } from '../../lib/budgetPlanning.ts';
 import { moneyLabel } from '../../lib/financeView.ts';
 import { kyivParts, parseMoney } from '../../../../core/finance/planning.mjs';
 import { Sheet } from '../ui/Sheet.tsx';
+import { ForecastSteps } from './ForecastSteps.tsx';
 export function ForecastPlan({
   finance: f,
   nowMs,
   onCalendar,
+  onPayment,
 }: {
   finance: Finance;
   nowMs: number;
   onCalendar: () => void;
+  onPayment?: (id: string) => void;
 }) {
   const [period, setPeriod] = useState('week'),
     [editing, setEditing] = useState(false);
@@ -56,23 +59,7 @@ export function ForecastPlan({
       <p className="renewal-muted">
         Орієнтовні вільні кошти після майбутніх платежів, бюджетів і відкладань.
       </p>
-      <div className="finance-forecast-formula mt-4">
-        {[
-          ['Вільно зараз', result.available],
-          ['Очікувані надходження', result.expectedIncome],
-          ['Платежі та прострочені зобов’язання', -result.obligations],
-          ['Ще заплановано на повсякденні витрати', -result.plannedExpense],
-          ['Майбутні відкладання', -result.saving],
-        ].map(([label, amount]) => (
-          <div key={String(label)}>
-            <span>{label}</span>
-            <b>
-              {Number(amount) > 0 && label === 'Очікувані надходження' ? '+ ' : ''}
-              {moneyLabel(Number(amount))}
-            </b>
-          </div>
-        ))}
-      </div>
+      <ForecastSteps result={result} finance={f} onPayment={onPayment} />
       {!!result.overlaps.length && (
         <p className="renewal-inset text-sm mt-3">
           Плани перетинаються за категоріями або цілями: {result.overlaps.join(', ')}. Уточни їхню

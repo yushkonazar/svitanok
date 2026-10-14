@@ -30,6 +30,7 @@ export interface AnalyticsTransaction {
   bankVerifiedByOwner?: boolean;
   duplicateSuspected?: boolean;
   bankAmountChanged?: boolean;
+  attention?: { status: string } | null;
 }
 export interface ExpenseAnalytics {
   selection: AnalyticsSelection;
@@ -51,6 +52,7 @@ export interface ExpenseAnalytics {
     category: string;
     amountMinor: number;
     count: number;
+    previousCount: number;
     previousMinor: number;
     deltaMinor: number;
   }[];
@@ -58,6 +60,7 @@ export interface ExpenseAnalytics {
     merchant: string;
     amountMinor: number;
     count: number;
+    previousCount: number;
     previousMinor: number;
     deltaMinor: number;
   }[];
@@ -76,17 +79,30 @@ export interface ExpenseAnalytics {
     pendingCount: number;
     pendingMinor: number;
     possibleDuplicateCount: number;
+    resolvedDuplicateCount: number;
     invalidDirectionCount: number;
     amountChangedCount: number;
   };
 }
 export function analyticsSelection(params: URLSearchParams, nowMs?: number): AnalyticsSelection;
-export function matchesAnalytics(tx: AnalyticsTransaction, s: AnalyticsSelection): boolean;
-export function analyticsAccumulator(s: AnalyticsSelection): {
+export function merchantName(name: string, aliases?: Record<string, string>): string;
+export function validateMerchantAliases(input: unknown): Record<string, string>;
+export function matchesAnalyticsIssue(tx: AnalyticsTransaction, issue?: string): boolean;
+export function matchesAnalytics(
+  tx: AnalyticsTransaction,
+  s: AnalyticsSelection,
+  aliases?: Record<string, string>,
+): boolean;
+export function analyticsAccumulator(
+  s: AnalyticsSelection,
+  aliases?: Record<string, string>,
+  catalog?: boolean,
+): {
   consume: (tx: AnalyticsTransaction) => void;
   finish: () => ExpenseAnalytics;
 };
 export function buildExpenseAnalytics(
   tx: AnalyticsTransaction[],
   s: AnalyticsSelection,
+  aliases?: Record<string, string>,
 ): ExpenseAnalytics;

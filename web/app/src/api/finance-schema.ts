@@ -147,6 +147,7 @@ export const financeSchema = z.object({
     checkinReminders: z.boolean().default(true),
   }),
   categories: z.array(z.string()),
+  merchantAliases: z.record(z.string(), z.string()).optional(),
   accounts: z.array(financeAccountSchema),
   transactions: z.array(financeTxSchema),
   policies: z.array(taxiPolicySchema),

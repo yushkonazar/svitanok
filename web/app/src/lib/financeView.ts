@@ -14,10 +14,14 @@ export function financeView(f: Finance, days: number, nowMs = Date.now()) {
   const from = kyivInstant(shiftDate(today, -(days - 1)), 0);
   const txs = f.transactions.filter((t) => Date.parse(t.at) >= from && Date.parse(t.at) <= nowMs);
   const income = sumMoney(
-    txs.filter((t) => t.kind === 'income' && t.amountUah != null).map((t) => t.amountUah!),
+    txs
+      .filter((t) => t.kind === 'income' && t.amountUah != null && t.amountUah > 0)
+      .map((t) => t.amountUah!),
   );
   const expense = -sumMoney(
-    txs.filter((t) => t.kind === 'expense' && t.amountUah != null).map((t) => t.amountUah!),
+    txs
+      .filter((t) => t.kind === 'expense' && t.amountUah != null && t.amountUah < 0)
+      .map((t) => t.amountUah!),
   );
   const owned = sumMoney(
     f.accounts

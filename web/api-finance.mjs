@@ -2,7 +2,11 @@ import { MONO_RECONCILE_DO_NAME } from './core/mono-reconcile/contract.mjs';
 import { refreshMonoAccount } from './core/finance/bank-refresh.mjs';
 import { MonoTooSoonError } from './core/adapters/mono.mjs';
 import { buildFinanceReport, validateReportRange } from './core/finance/reporting.mjs';
-import { readFinanceAnalytics, readAnalyticsOperations } from './core/finance/analytics-store.mjs';
+import {
+  readFinanceAnalytics,
+  readAnalyticsOperations,
+  readAnalyticsMerchants,
+} from './core/finance/analytics-store.mjs';
 import { json, readJsonBody } from './http-core.mjs';
 import { checkOwnerRead, checkPrimaryOwner, mutationInitData } from './auth-core.mjs';
 import {
@@ -31,12 +35,16 @@ export async function handleFinance(request, env) {
     let result;
     if (
       !body &&
-      ['analytics', 'analytics-operations'].includes(url.searchParams.get('view') ?? '')
+      ['analytics', 'analytics-operations', 'analytics-merchants'].includes(
+        url.searchParams.get('view') ?? '',
+      )
     ) {
       result =
         url.searchParams.get('view') === 'analytics'
           ? await readFinanceAnalytics(env, url.searchParams, nowMs)
-          : await readAnalyticsOperations(env, url.searchParams, nowMs);
+          : url.searchParams.get('view') === 'analytics-merchants'
+            ? await readAnalyticsMerchants(env, url.searchParams, nowMs)
+            : await readAnalyticsOperations(env, url.searchParams, nowMs);
     } else if (body?.type === 'bank-refresh') {
       if (request.headers.get('X-Finance-Sync') === '2' && env.MONO_RECONCILE)
         await env.MONO_RECONCILE.getByName(MONO_RECONCILE_DO_NAME).requestRefresh(

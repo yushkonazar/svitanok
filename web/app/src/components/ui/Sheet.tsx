@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, type ReactNode } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 
 // Спільний bottom-sheet (витягнуто з JobSheet.tsx, редизайн новин — другий
@@ -69,6 +69,8 @@ export function Sheet({
   children,
   label = 'Панель',
   resetKey,
+  scrollKey,
+  initialScrollTop = 0,
 }: {
   onClose: () => void;
   children: ReactNode;
@@ -76,9 +78,18 @@ export function Sheet({
   label?: string;
   /** Start each wizard step at the top without unlocking the page behind it. */
   resetKey?: number;
+  scrollKey?: string;
+  initialScrollTop?: number;
 }) {
   const panelRef = useRef<HTMLDivElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
+  const positions = useRef(new Map<string, number>());
+  useLayoutEffect(() => {
+    if (scrollKey !== undefined && panelRef.current) {
+      panelRef.current.scrollTop = positions.current.get(scrollKey) ?? initialScrollTop;
+      panelRef.current.focus({ preventScroll: true });
+    }
+  }, [scrollKey, initialScrollTop]);
   // Куди повернути фокус: після закриття він мусить опинитись там, звідки
   // шторку відкрили, інакше читач починає з початку сторінки, а тапальник
   // «губить місце».
@@ -199,6 +210,10 @@ export function Sheet({
         aria-modal="true"
         aria-label={label}
         tabIndex={-1}
+        onScroll={(event) => {
+          if (scrollKey !== undefined)
+            positions.current.set(scrollKey, event.currentTarget.scrollTop);
+        }}
         onClick={(e) => e.stopPropagation()}
         className="w-full min-w-0 max-h-[90dvh] overflow-x-hidden overflow-y-auto overscroll-contain touch-pan-y px-5 pb-7 pt-2.5 outline-none"
         style={{
