@@ -129,6 +129,37 @@ Owner identity/source не приймаються з тіла. Відповід�
 
 [ADR-044](02-decisions.md), [приймання](../personalization-boundaries.md).
 
+### 1.4. Облік використання й панель системи — ADR-045
+
+Expand-міграція `0040_system_usage.sql`. Усі три таблиці мають `id TEXT PRIMARY KEY`.
+
+- `usage_receipts`: `at`, `day`, `run_id`, `feature`, `provider`, `sku`, `basis`,
+  `cost_nano_usd INTEGER NULL`, `quantity REAL NULL`, `unit`, `input_tokens`,
+  `output_tokens`, `cached_tokens`, `cache_write_tokens`, `reasoning_tokens`,
+  `api_attempts`, `model_responses`, `duration_ms REAL NULL`, `ok INTEGER NULL`,
+  `price_version`. Решта числових полів — INTEGER NULL, текстові — TEXT.
+  Індекси `(at,feature,provider)` і `(run_id)`; ретенція 90 днів.
+- `system_billing_snapshots`: `provider TEXT`, `snapshot_json TEXT NULL`,
+  `attempted_at TEXT`, `collected_at TEXT NULL`, `error_class TEXT NULL`,
+  `lease_until INTEGER DEFAULT 0`, `lease_token TEXT NULL`; ретенція 90 днів.
+- `system_preferences`: `value_json TEXT`, `revision INTEGER DEFAULT 1`,
+  `updated_at TEXT`; безстрокові дані власника, revision CAS для запису.
+- `run_steps`: додатковий індекс `(kind,at)`; колонки й ретенція не змінені.
+
+Receipt `run:id:n` замінює проєкцію відповідного legacy `run_steps`, а не
+додається до неї. `basis` розділяє estimate, api-equivalent та unknown.
+Payload-и, промпти, банківські реквізити та секрети не записуються.
+Перші дві нові таблиці й KV `systemSnapshot:*` виключені з recovery-копій;
+`system_preferences` входить у backup/export/restore і повне забуття.
+
+`GET /api/system`: primary-owner, private/no-store, період today/7d/month/custom,
+пагінація задач, часткові секції та початковий час кешованих даних.
+`POST`: тільки `budgets` із revision або `billing-refresh` з allowlisted provider.
+Ключі провайдерів із тіла не приймаються. Нових розсилок або автоматичного
+читання рахунків немає. Кеш огляду — 45 секунд, last-good — до години.
+
+[ADR-045](02-decisions.md), [межі та налаштування](../system-observability-0.8.0.md).
+
 ## 2. Колекції - схема поля
 
 ```json

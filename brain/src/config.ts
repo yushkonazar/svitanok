@@ -29,6 +29,8 @@ export interface BrainConfig {
         outputPerMillionUsd: number;
         cachedInputPerMillionUsd?: number;
         cacheWritePerMillionUsd?: number;
+        modelId?: string;
+        priceVersion?: string;
       }
     >
   > | null;
@@ -156,6 +158,10 @@ export function loadConfig(env: Record<string, string | undefined>): BrainConfig
     const cachedRaw = String(env[`${prefix}_CACHED_INPUT_USD_PER_1M`] ?? '').trim();
     const writeRaw = String(env[`${prefix}_CACHE_WRITE_USD_PER_1M`] ?? '').trim();
     if (!inputRaw && !outputRaw && !cachedRaw && !writeRaw) return undefined;
+    const modelId = String(env[`${prefix}_MODEL`] ?? '').trim();
+    const priceVersion = String(env[`${prefix}_VERSION`] ?? '').trim();
+    // A changed model must not inherit another model's configured tariff.
+    if (modelId && modelId !== openAiModels[tier]) return undefined;
     const input = Number(inputRaw);
     const output = Number(outputRaw);
     if (
@@ -184,6 +190,8 @@ export function loadConfig(env: Record<string, string | undefined>): BrainConfig
     return {
       inputPerMillionUsd: input,
       outputPerMillionUsd: output,
+      ...(modelId ? { modelId } : {}),
+      ...(priceVersion && /^[A-Za-z0-9_.:-]{1,128}$/.test(priceVersion) ? { priceVersion } : {}),
       ...(cachedRaw ? { cachedInputPerMillionUsd: cached, cacheWritePerMillionUsd: write } : {}),
     };
   };

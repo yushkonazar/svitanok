@@ -20,6 +20,12 @@
 type WorkerSecret = string | undefined;
 
 interface Env {
+  /** Dedicated billing readers, opt-in manual mode; never generation keys. */
+  SYSTEM_BILLING_MODE?: WorkerSecret;
+  OPENAI_BILLING_ADMIN_KEY?: WorkerSecret;
+  OPENAI_BILLING_PROJECT_ID?: WorkerSecret;
+  DEEPGRAM_BILLING_API_KEY?: WorkerSecret;
+  DEEPGRAM_BILLING_PROJECT_ID?: WorkerSecret;
   /* ── Прив'язки (wrangler.jsonc) ─────────────────────────────────────── */
 
   /** Ідентифікатор фактичної Cloudflare Worker-версії для приватного /ready. */

@@ -8,6 +8,7 @@ import { personalValueAllowed } from './memory/safety.mjs';
 // згортки живуть далі в sessions.summary_md (резерв).
 
 import { neutralizeExternalTags } from './tools/markup.mjs';
+import { recordUsage } from './ops/usage-ledger.mjs';
 
 const EMBED_MODEL = '@cf/baai/bge-m3';
 /** Стеля чанка: згортка ≤ 20 000 символів (SESSION_SCHEMA) → ≤ 20 чанків. */
@@ -24,14 +25,31 @@ export const MEMORY_PROJECTION_RECONCILE_LIMIT = 10;
  */
 export async function embedTexts(env, texts) {
   if (!env.AI) throw new Error('памʼять: привʼязки AI немає');
-  const out = /** @type {{ data?: number[][] } | undefined} */ (
-    await env.AI.run(/** @type {never} */ (EMBED_MODEL), { text: texts })
-  );
-  const vectors = out?.data;
-  if (!Array.isArray(vectors) || vectors.length !== texts.length) {
-    throw new Error('памʼять: несподівана відповідь ембединг-моделі');
+  const startedMs = Date.now();
+  let ok = false;
+  try {
+    const out = /** @type {{ data?: number[][] } | undefined} */ (
+      await env.AI.run(/** @type {never} */ (EMBED_MODEL), { text: texts })
+    );
+    const vectors = out?.data;
+    if (!Array.isArray(vectors) || vectors.length !== texts.length) {
+      throw new Error('памʼять: несподівана відповідь ембединг-моделі');
+    }
+    ok = true;
+    return vectors;
+  } finally {
+    await recordUsage(env, {
+      feature: 'memory',
+      provider: 'cloudflare',
+      sku: EMBED_MODEL,
+      quantity: texts.length,
+      unit: 'texts',
+      apiAttempts: 1,
+      ok,
+      at: new Date(startedMs).toISOString(),
+      durationMs: Date.now() - startedMs,
+    });
   }
-  return vectors;
 }
 
 /**

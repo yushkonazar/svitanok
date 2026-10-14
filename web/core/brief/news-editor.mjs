@@ -1,14 +1,24 @@
 import { requirePaidGemini } from '../adapters/gemini.mjs';
 import { quotaUsed, bumpQuota, QUOTA_LIMITS } from '../quota/quota.mjs';
 import { callOpenAiNewsEditor } from './news-openai.mjs';
+import { recordUsage } from '../ops/usage-ledger.mjs';
 export const NEWS_EDITOR_MODEL = 'gemini-3.1-flash-lite';
 const NEWS_GEMINI_LIMIT = QUOTA_LIMITS.gemini_usd ?? 10;
 /** One short, tool-free request; only public news text. Never sends check-in or finance data.
- * @param {Env} env @param {{prompt:string,systemPrompt:string,jsonSchema:KvBlob,maxOutputTokens?:number}} input
+ * @param {Env} env @param {{prompt:string,systemPrompt:string,jsonSchema:KvBlob,maxOutputTokens?:number,feature?:string}} input
  * @param {typeof fetch} [fetchImpl] @returns {Promise<KvBlob>} */
 export async function callNewsEditor(env, input, fetchImpl = fetch) {
   if (env.OPENAI_API_KEY) return callOpenAiNewsEditor(env, input, fetchImpl);
   let attempted = false;
+  const startedMs = Date.now();
+  /** @type {Record<string,any>} */ const receipt = {
+    feature: input.feature ?? 'news',
+    provider: 'gemini',
+    sku: NEWS_EDITOR_MODEL,
+    ok: false,
+    apiAttempts: 1,
+    priceVersion: 'news-gemini-2026-10-06',
+  };
   if (!env.GEMINI_API_KEY || env.GEMINI_TIER !== 'paid')
     return { ok: false, error: 'not-configured' };
   if (!env.DB) return { ok: false, error: 'quota-unavailable' };
@@ -45,19 +55,37 @@ export async function callNewsEditor(env, input, fetchImpl = fetch) {
     );
     // Standard Flash-Lite pricing, verified 2026-10-06. Shared paid Gemini accounting.
     const estimatedUsd = (inputTokens * 0.25 + outputTokens * 1.5) / 1_000_000;
+    const complete =
+      Number.isSafeInteger(body.usageMetadata?.promptTokenCount) &&
+      Number.isSafeInteger(body.usageMetadata?.candidatesTokenCount);
+    Object.assign(receipt, {
+      inputTokens: complete ? inputTokens : null,
+      outputTokens: complete ? outputTokens : null,
+      costUsd: complete ? estimatedUsd : null,
+      ok: false,
+    });
     if (estimatedUsd > 0)
       await bumpQuota(env, { key: 'gemini_usd', amount: estimatedUsd, limit: NEWS_GEMINI_LIMIT });
     const text = (body.candidates?.[0]?.content?.parts ?? [])
       .filter((/** @type {KvBlob} */ p) => !p.thought && typeof p.text === 'string')
       .map((/** @type {KvBlob} */ p) => p.text)
       .join('');
+    const structured = JSON.parse(text);
+    receipt.ok = true;
     return {
       ok: true,
       attempted,
-      structured: JSON.parse(text),
+      structured,
       usage: { inputTokens, outputTokens, estimatedUsd, model: NEWS_EDITOR_MODEL },
     };
   } catch {
     return { ok: false, attempted, error: 'editor-unavailable' };
+  } finally {
+    if (attempted)
+      await recordUsage(env, {
+        ...receipt,
+        at: new Date(startedMs).toISOString(),
+        durationMs: Date.now() - startedMs,
+      });
   }
 }

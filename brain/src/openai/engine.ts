@@ -28,6 +28,8 @@ export interface OpenAiRuntimeConfig {
 }
 
 export interface OpenAiModelPricing {
+  modelId?: string;
+  priceVersion?: string;
   inputPerMillionUsd: number;
   outputPerMillionUsd: number;
   cachedInputPerMillionUsd?: number;
@@ -78,6 +80,9 @@ export function createOpenAiEngine(config: OpenAiRuntimeConfig): ModelRuntime {
           modelResponses,
           apiAttempts,
           estimatedCostUsd: usageComplete ? totalCost : null,
+          priceVersion:
+            config.pricing?.[opts.openAiModelTier ?? 'standard']?.priceVersion ??
+            'unversioned-deployment-config',
         };
       };
       try {
@@ -112,7 +117,10 @@ export function createOpenAiEngine(config: OpenAiRuntimeConfig): ModelRuntime {
             response.service_tier == null ||
             ['default', 'standard'].includes(String(response.service_tier));
           const cost =
-            modelMatches && standardTier
+            modelMatches &&
+            standardTier &&
+            (!config.pricing?.[opts.openAiModelTier ?? 'standard']?.modelId ||
+              config.pricing?.[opts.openAiModelTier ?? 'standard']?.modelId === expectedModel)
               ? estimateCost(
                   responseUsage,
                   config.pricing?.[opts.openAiModelTier ?? 'standard'],

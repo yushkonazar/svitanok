@@ -1,88 +1,100 @@
 import { version as appVersion } from '../../../package.json';
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { Link } from 'react-router-dom';
-import { useSettings } from '../../api/hooks.ts';
-import { fetchSystem } from '../../api/client.ts';
+import { fetchSystem, type SystemSelection } from '../../api/client.ts';
 import { inTelegram } from '../../telegram.ts';
 import { PageHeading } from '../ui/PageHeading.tsx';
+import {
+  ControlsPanel,
+  ServiceCards,
+  TasksPanel,
+  UsagePanel,
+  WorkersPanel,
+  ReadWarning,
+  money,
+  time,
+  states,
+} from './SystemPanels.tsx';
 
-const panels = { overview: 'Огляд', workers: 'Працівники', usage: 'Витрати API', events: 'Задачі' };
-const names: Record<string, string> = {
-  analyst: 'Аналітик',
-  editor: 'Редактор',
-  finance: 'Фінанси',
-  'mail-secretary': 'Пошта',
-  planner: 'Планувальник',
-  'place-search': 'Пошук закладів',
-  'price-search': 'Ціни',
-  researcher: 'Дослідник',
-  tutor: 'Навчання',
+const panels = {
+  overview: 'Огляд',
+  usage: 'Витрати API',
+  services: 'Функції',
+  events: 'Задачі',
+  workers: 'Працівники',
+  control: 'Керування',
 };
-const quotas: Record<string, string> = {
-  news_editor_usd: 'Редактор новин · USD',
-  gemini_usd: 'Gemini · USD',
-  deepgram_min: 'Голос · хвилини',
-  places_text: 'Пошук місць · запити',
-  places_details: 'Деталі місць · запити',
-  routes: 'Маршрути · запити',
-  geocoding: 'Координати · запити',
-  actions_min: 'GitHub Actions · хвилини',
-  workflow_steps: 'Кроки workflow',
-};
-function time(value: unknown) {
-  const date = typeof value === 'number' || typeof value === 'string' ? new Date(value) : null;
-  return date && Number.isFinite(date.getTime())
-    ? date.toLocaleString('uk-UA', {
-        timeZone: 'Europe/Kyiv',
-        day: 'numeric',
-        month: 'short',
-        hour: '2-digit',
-        minute: '2-digit',
-      })
-    : 'Немає даних';
-}
+const today = () => new Date().toLocaleDateString('en-CA', { timeZone: 'Europe/Kyiv' });
 export function SystemScreen() {
-  const { data: settings } = useSettings();
   const [panel, setPanel] = useState<keyof typeof panels>('overview');
+  const [selection, setSelection] = useState<SystemSelection>({ range: 'month' });
+  const [custom, setCustom] = useState(false);
+  const [from, setFrom] = useState(`${today().slice(0, 7)}-01`),
+    [to, setTo] = useState(today());
+  const [error, setError] = useState('');
+  const [cursors, setCursors] = useState<(string | undefined)[]>([]);
+  const forced = useRef(false);
   const query = useQuery({
-    queryKey: ['system'],
-    queryFn: fetchSystem,
+    queryKey: ['system', selection],
+    queryFn: () => fetchSystem(selection, forced.current),
     enabled: inTelegram(),
-    staleTime: 60_000,
+    staleTime: 60000,
     retry: false,
   });
-  const data = query.data;
-  const healthLabels: Record<string, string> = {
-    ok: 'Доступний за останньою перевіркою',
-    down: 'Перевірка зафіксувала збій',
-    desync: 'Версії не збігаються',
-    stale: 'Перевірка застаріла',
-    unknown: 'Ще немає перевірки',
-    'not-configured': 'Не налаштований',
-    ready: 'Готовий',
-    unavailable: 'Недоступний',
-  };
+  const data = query.data,
+    usage = data?.usage?.data;
+  async function refresh() {
+    forced.current = true;
+    try {
+      await query.refetch();
+    } finally {
+      forced.current = false;
+    }
+  }
+  function choose(next: SystemSelection) {
+    setCursors([]);
+    setSelection(next);
+    setError('');
+  }
+  const attention = data
+    ? [
+        ...(data.brain?.data && ['down', 'desync', 'stale'].includes(data.brain.data.state)
+          ? [{ id: 'brain', title: 'Сервіс асистента', detail: states[data.brain.data.state] }]
+          : []),
+        ...(data.brain?.data && ['degraded', 'unready'].includes(data.brain.data.modelState)
+          ? [
+              {
+                id: 'model',
+                title: 'Готовність моделі',
+                detail: states[data.brain.data.modelState],
+              },
+            ]
+          : []),
+        ...(data.services?.data?.filter((s) =>
+          ['degraded', 'stale', 'access', 'unavailable'].includes(s.state),
+        ) ?? []),
+      ]
+    : [];
   return (
-    <div className="flex flex-col gap-5">
+    <div className="system-screen flex flex-col gap-5">
       <PageHeading eyebrow="ПАНЕЛЬ ВЛАСНИКА" title="Система" accent="Світанку." />
       <p className="renewal-chart-note">
-        Версія {appVersion}. Технічний стан і витрати за наявними записами. Час за Києвом. Відкриття
-        сторінки не викликає моделі.
+        Версія {appVersion}. Стан функцій, задачі й витрати. Час за Києвом. Перегляд не викликає
+        моделі.
       </p>
       {!inTelegram() ? (
         <section className="renewal-card">
           <h2 className="font-semibold">Приватна панель</h2>
           <p className="renewal-chart-note mt-2">
-            Відкрий Світанок в особистому чаті з ботом. Доступ має основний власник; у браузері
-            технічні дані не завантажуються.
+            Відкрий Світанок в особистому чаті з ботом. Доступ має основний власник.
           </p>
         </section>
       ) : (
         <>
-          <div className="flex flex-wrap gap-2" role="group" aria-label="Розділи системи">
+          <div className="system-nav" role="group" aria-label="Розділи системи">
             {Object.entries(panels).map(([id, label]) => (
               <button
+                type="button"
                 key={id}
                 className={panel === id ? 'renewal-primary' : 'renewal-secondary'}
                 aria-pressed={panel === id}
@@ -92,36 +104,216 @@ export function SystemScreen() {
               </button>
             ))}
           </div>
+          <section className="system-period" aria-label="Період огляду">
+            <div className="flex flex-wrap gap-2">
+              {(
+                [
+                  ['today', 'Сьогодні'],
+                  ['7d', '7 днів'],
+                  ['month', 'Місяць'],
+                ] as const
+              ).map(([range, label]) => (
+                <button
+                  type="button"
+                  key={range}
+                  className={selection.range === range ? 'renewal-primary' : 'renewal-secondary'}
+                  aria-pressed={selection.range === range}
+                  onClick={() => {
+                    setCustom(false);
+                    choose({ range });
+                  }}
+                >
+                  {label}
+                </button>
+              ))}
+              <button
+                type="button"
+                className={custom ? 'renewal-primary' : 'renewal-secondary'}
+                aria-expanded={custom}
+                onClick={() => setCustom(!custom)}
+              >
+                Свої дати
+              </button>
+            </div>
+            {custom && (
+              <form
+                className="mt-3"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  if (from <= to && to <= today()) choose({ range: 'custom', from, to });
+                  else
+                    setError('Перевір дати: початок має бути до завершення, без майбутніх днів.');
+                }}
+              >
+                <div className="system-date-grid">
+                  <label className="renewal-field">
+                    Від
+                    <input
+                      type="date"
+                      required
+                      value={from}
+                      max={to}
+                      onChange={(e) => setFrom(e.target.value)}
+                    />
+                  </label>
+                  <label className="renewal-field">
+                    До
+                    <input
+                      type="date"
+                      required
+                      value={to}
+                      min={from}
+                      max={today()}
+                      onChange={(e) => setTo(e.target.value)}
+                    />
+                  </label>
+                </div>
+                <button type="submit" className="renewal-secondary mt-3">
+                  Застосувати дати
+                </button>
+              </form>
+            )}
+            {data?.selection && (
+              <p className="renewal-chart-note mt-2">
+                {data.selection.from} — {data.selection.to}. Технічна історія зберігається{' '}
+                {data.selection.telemetryDays} днів; давніший облік може бути неповним.
+              </p>
+            )}
+          </section>
           <div className="system-row">
             <p className="renewal-chart-note">
-              {data ? `Оновлено ${time(data.generatedAt)}` : 'Завантаження стану'}
+              {data ? `Огляд отримано ${time(data.generatedAt)}` : 'Завантаження стану'}
             </p>
             <button
+              type="button"
               className="renewal-secondary"
               disabled={query.isFetching}
-              onClick={() => void query.refetch()}
+              onClick={() => void refresh()}
             >
               {query.isFetching ? 'Оновлюю…' : 'Оновити'}
             </button>
           </div>
-          {query.error && <p role="alert">{query.error.message}</p>}
+          {query.error && (
+            <p role="alert" className="system-warning">
+              {query.error.message}
+              {data ? ' Попередній огляд залишено на екрані.' : ''}
+            </p>
+          )}
+          {error && (
+            <p role="alert" className="system-warning">
+              {error}
+            </p>
+          )}
           {query.isPending && <p role="status">Завантажую наявні записи…</p>}
           {data && (
             <>
               {panel === 'overview' && (
                 <>
                   <section className="renewal-card">
+                    <h2 className="font-semibold">Потребує уваги</h2>
+                    {attention.map((item) => (
+                      <article className="system-attention" key={item.id}>
+                        <h3 className="font-semibold">{item.title}</h3>
+                        <p className="renewal-chart-note mt-1">{item.detail}</p>
+                        <button
+                          type="button"
+                          className="renewal-secondary mt-3"
+                          onClick={() => setPanel('services')}
+                        >
+                          Переглянути деталі
+                        </button>
+                      </article>
+                    ))}
+                    {data.delivery.data &&
+                      (data.delivery.data.outbox.failed ||
+                        data.delivery.data.outbox.stuck ||
+                        data.delivery.data.reminders.breached) > 0 && (
+                        <article className="system-attention">
+                          <h3 className="font-semibold">Затримки доставки</h3>
+                          <button
+                            type="button"
+                            className="renewal-secondary mt-3"
+                            onClick={() => setPanel('events')}
+                          >
+                            Перевірити доставку
+                          </button>
+                        </article>
+                      )}
+                    {!attention.length && (
+                      <p className="renewal-chart-note mt-3">
+                        У наявних перевірках немає зафіксованих проблем. Неперевірені функції мають
+                        окремий стан.
+                      </p>
+                    )}
+                    {(!data.billing?.connected ||
+                      data.billing.items?.some((item) => !item.snapshot)) && (
+                      <article className="system-attention">
+                        <h3 className="font-semibold">Рахунки провайдерів ще неповні</h3>
+                        <p className="renewal-chart-note mt-1">
+                          Оцінки Світанку охоплюють частину використання. Рахунки та баланс
+                          перевіряй окремо для кожного провайдера.
+                        </p>
+                        <button
+                          type="button"
+                          className="renewal-secondary mt-3"
+                          onClick={() => setPanel('control')}
+                        >
+                          Як підключити
+                        </button>
+                      </article>
+                    )}
+                  </section>
+                  <section className="renewal-card">
+                    <h2 className="font-semibold">Витрати за період</h2>
+                    <ReadWarning section={data.usage} />
+                    <div className="system-row">
+                      <span>Відома оцінка API</span>
+                      <b>{money(usage?.estimatedUsd)}</b>
+                    </div>
+                    {usage?.equivalents ? (
+                      <div className="system-row">
+                        <span>API-еквівалент SDK · окремо</span>
+                        <b>{money(usage.equivalentUsd)}</b>
+                      </div>
+                    ) : null}
+                    <p className="renewal-chart-note mt-2">
+                      {usage
+                        ? `Ціна відома для ${usage.knownCosts} із ${usage.records} записів.`
+                        : 'Облік ще недоступний.'}{' '}
+                      Невідомі суми не вважаються нулем.
+                    </p>
+                    {selection.range === 'month' &&
+                      data.preferences?.data?.budgets.overallUsd != null && (
+                        <p className="renewal-chart-note mt-3">
+                          Твій місячний орієнтир: {money(data.preferences.data.budgets.overallUsd)}.{' '}
+                          {usage?.estimatedUsd != null &&
+                          usage.estimatedUsd > data.preferences.data.budgets.overallUsd
+                            ? 'Записана оцінка API вже перевищила його.'
+                            : 'Оцінка охоплює лише зафіксовані витрати; решта може бути невідомою.'}
+                        </p>
+                      )}
+                    <button
+                      type="button"
+                      className="renewal-secondary mt-3"
+                      onClick={() => setPanel('usage')}
+                    >
+                      Що сформувало витрати
+                    </button>
+                  </section>
+                  <section className="renewal-card">
                     <h2 className="font-semibold">Зараз</h2>
                     <div className="system-metrics mt-4">
                       <div className="renewal-inset">
                         <strong>{data.registry.data?.active ?? '—'}</strong>
-                        <span className="renewal-chart-note">активних прогонів</span>
+                        <span className="renewal-chart-note">активних задач</span>
                       </div>
                       <div className="renewal-inset">
                         <strong>{data.scheduler.data?.scheduled ?? '—'}</strong>
                         <span className="renewal-chart-note">запланованих задач</span>
                       </div>
                     </div>
+                    <ReadWarning section={data.registry} />
+                    <ReadWarning section={data.scheduler} />
                     <p className="renewal-chart-note mt-3">
                       Асистент:{' '}
                       {data.mode === 'on'
@@ -129,254 +321,77 @@ export function SystemScreen() {
                         : data.mode === 'shadow'
                           ? 'тестовий режим'
                           : 'вимкнений'}
-                      . Останній тік планувальника: {time(data.scheduler.data?.lastTick)}.
+                      . Останній тік: {time(data.scheduler.data?.lastTick)}.
                     </p>
                     {!data.scheduler.available && (
-                      <p role="status" className="renewal-chart-note mt-2">
+                      <p className="renewal-chart-note mt-2">
                         Стан планувальника зараз недоступний.
                       </p>
                     )}
                   </section>
                   <section className="renewal-card">
-                    <h2 className="font-semibold">Доставка</h2>
-                    {data.delivery.data ? (
-                      <>
-                        <div className="system-row">
-                          <span>Нагадування із запізненням</span>
-                          <b>{data.delivery.data.reminders.breached}</b>
-                        </div>
-                        <div className="system-row">
-                          <span>Повідомлення в черзі</span>
-                          <b>{data.delivery.data.outbox.pending}</b>
-                        </div>
-                        <div className="system-row">
-                          <span>Збої / завислі повідомлення</span>
-                          <b>
-                            {data.delivery.data.outbox.failed} / {data.delivery.data.outbox.stuck}
-                          </b>
-                        </div>
-                        <p className="renewal-chart-note mt-3">
-                          Останній доставлений брифінг:{' '}
-                          {data.delivery.data.briefing.last_sent_date ?? 'Немає даних'}.{' '}
-                          {data.delivery.data.briefing.status === 'breached'
-                            ? 'Дедлайн доставки минув — потрібна перевірка.'
-                            : ''}
-                        </p>
-                      </>
-                    ) : (
-                      <p className="renewal-chart-note mt-3">Дані доставки зараз недоступні.</p>
-                    )}
-                  </section>
-                  <section className="renewal-card">
-                    <h2 className="font-semibold">Асистент та інтеграції</h2>
-                    <p className="renewal-chart-note mt-3">
-                      Сервіс асистента:{' '}
-                      {healthLabels[data.brain?.data?.state ?? 'unknown'] ?? 'Стан невідомий'}.
-                      Перевірено: {time(data.brain?.data?.checkedAtMs)}.
-                    </p>
-                    <p className="renewal-chart-note mt-2">
-                      Готовність моделі:{' '}
-                      {healthLabels[data.brain?.data?.modelState ?? 'unknown'] ?? 'Стан невідомий'}.
-                    </p>
-                    <div className="system-row">
-                      <span>Google</span>
-                      <b>
-                        {settings
-                          ? settings.connectors.google
-                            ? 'Налаштовано'
-                            : 'Не підключено'
-                          : 'Невідомо'}
-                      </b>
-                    </div>
-                    <div className="system-row">
-                      <span>Monobank</span>
-                      <b>
-                        {settings
-                          ? settings.connectors.mono
-                            ? 'Налаштовано'
-                            : 'Не підключено'
-                          : 'Невідомо'}
-                      </b>
-                    </div>
-                    <p className="renewal-chart-note mt-3">
-                      Налаштована інтеграція не гарантує доступності зовнішнього API. Дозволи й
-                      перемикачі є в налаштуваннях.
-                    </p>
-                    {data.deployment && (
-                      <details className="mt-3">
-                        <summary className="renewal-chart-note">Версія сервера</summary>
-                        <p className="renewal-chart-note break-words mt-2">
-                          Deployment: {data.deployment}
-                        </p>
-                      </details>
-                    )}
-                    <h2 className="font-semibold mt-5">Керування</h2>
-                    <div className="flex flex-wrap gap-3 mt-3">
-                      <Link className="renewal-secondary" to="/settings">
-                        Модулі й інтеграції
-                      </Link>
-                      <Link className="renewal-secondary" to="/memory">
-                        Пам’ять асистента
-                      </Link>
-                      <Link className="renewal-secondary" to="/finance?action=settings">
-                        Нагадування
-                      </Link>
-                    </div>
-                    <p className="renewal-chart-note mt-3">
-                      Усі перемикачі використовують спільні налаштування асистента й Mini App.
-                    </p>
+                    <h2 className="font-semibold">Твої функції</h2>
+                    <ServiceCards data={data} />
                   </section>
                 </>
               )}
-              {panel === 'workers' && (
-                <section className="renewal-card">
-                  <h2 className="font-semibold">Працівники · 30 днів</h2>
-                  <p className="renewal-chart-note mt-2">
-                    Модельний запис, завершена відповідь і твоя оцінка — різні показники.
-                    Відсутність викликів не означає збій.
-                  </p>
-                  {!data.runs.available ? (
-                    <p className="mt-4">Огляд недоступний.</p>
-                  ) : (
-                    <>
-                      {data.runs.data?.worker_quality.map((item) => (
-                        <article className="renewal-inset mt-4" key={item.worker}>
-                          <div className="system-row">
-                            <h3 className="font-semibold">{names[item.worker] ?? item.worker}</h3>
-                            <span>{item.results} відповідей</span>
-                          </div>
-                          <p className="renewal-chart-note mt-2">
-                            Модельних записів: {item.sample_size}. Успішних: {item.succeeded}; зі
-                            збоєм: {item.failed}; результат невідомий:{' '}
-                            {Math.max(0, item.sample_size - item.succeeded - item.failed)}.
-                          </p>
-                          <p className="renewal-chart-note mt-2">
-                            Технічна успішність:{' '}
-                            {item.succeeded + item.failed >= 5 && item.success_rate_pct != null
-                              ? `${item.success_rate_pct}% серед відомих результатів`
-                              : 'мало даних'}
-                            . Час у середньому:{' '}
-                            {item.avg_latency_ms == null
-                              ? 'невідомо'
-                              : `${(item.avg_latency_ms / 1000).toFixed(1)} с`}
-                            .
-                          </p>
-                          <p className="renewal-chart-note mt-2">
-                            Твої оцінки: 👍 {item.feedback.good} · 👎 {item.feedback.bad}. Без
-                            оцінки — якість невідома.
-                          </p>
-                        </article>
-                      ))}
-                      {!data.runs.data?.worker_quality.length && (
-                        <p className="mt-4">За цей період викликів ще немає.</p>
-                      )}
-                    </>
-                  )}
-                </section>
-              )}
-              {panel === 'usage' && (
+              {panel === 'services' && (
                 <>
                   <section className="renewal-card">
-                    <h2 className="font-semibold">Моделі · 30 днів</h2>
-                    <p className="renewal-chart-note mt-2">
-                      Це оцінка за телеметрією, а не рахунок провайдера. Claude SDK показує
-                      API-еквівалент; підписка може оплачуватися інакше. Вартість зовнішніх
-                      інструментів сюди не включена.
+                    <h2 className="font-semibold">Асистент</h2>
+                    <ReadWarning section={data.brain} />
+                    <div className="system-row">
+                      <span>Сервіс</span>
+                      <b>{states[data.brain?.data?.state ?? 'unknown'] ?? 'Стан невідомий'}</b>
+                    </div>
+                    <div className="system-row">
+                      <span>Модель</span>
+                      <b>{states[data.brain?.data?.modelState ?? 'unknown'] ?? 'Стан невідомий'}</b>
+                    </div>
+                    <p className="renewal-chart-note mt-3">
+                      Перевірено: {time(data.brain?.data?.checkedAtMs)}. Готовність сервісу не
+                      доводить якість відповіді.
                     </p>
-                    {data.models.data?.items.map((item) => (
-                      <article key={item.model} className="renewal-inset mt-4">
-                        <h3 className="font-semibold break-words">{item.model}</h3>
-                        <div className="system-row">
-                          <span>
-                            {item.calls} записів моделі{item.shadow ? ' · порівняльні виклики' : ''}
-                          </span>
-                          <b>{item.costUsd == null ? 'Невідомо' : `$${item.costUsd.toFixed(4)}`}</b>
-                        </div>
-                        <p className="renewal-chart-note mt-2">
-                          Вартість відома для {item.knownCostCalls} із {item.calls}. Токени відомі
-                          для {item.knownUsageCalls}: вхід{' '}
-                          {item.inputTokens?.toLocaleString('uk-UA') ?? '—'}, вихід{' '}
-                          {item.outputTokens?.toLocaleString('uk-UA') ?? '—'}.
-                        </p>
-                      </article>
-                    ))}
-                    {!data.models.data?.items.length && (
-                      <p className="renewal-chart-note mt-3">Немає доступної телеметрії моделей.</p>
-                    )}
-                    {data.models.data?.truncated && (
-                      <p className="renewal-chart-note mt-3">
-                        Огляд обмежений останніми 5000 записів.
-                      </p>
-                    )}
                   </section>
                   <section className="renewal-card">
-                    <h2 className="font-semibold">Внутрішні квоти · {data.period}</h2>
-                    <p className="renewal-chart-note mt-2">
-                      Лічильники лише використання Світанку. Вони не показують залишок кредитів чи
-                      всю оплату акаунта.
-                    </p>
-                    {data.quotas.data?.map((item) => (
-                      <div key={item.key} className="renewal-inset mt-3">
-                        <div className="system-row">
-                          <span>{quotas[item.key] ?? item.key}</span>
-                          <b>{Number(item.value.toFixed(4)).toLocaleString('uk-UA')}</b>
-                        </div>
-                        <p className="renewal-chart-note mt-2">
-                          {item.key === 'deepgram_min'
-                            ? 'Історичний орієнтир кредиту; залишок у провайдера невідомий.'
-                            : `Внутрішня межа: ${item.limit_value.toLocaleString('uk-UA')}.`}{' '}
-                          Оновлено {time(item.updated_at)}.
-                        </p>
-                      </div>
-                    ))}
-                    {!data.quotas.data?.length && (
-                      <p className="renewal-chart-note mt-3">
-                        Лічильників за цей місяць ще немає або вони недоступні.
-                      </p>
-                    )}
-                  </section>
-                  <section className="renewal-card">
-                    <h2 className="font-semibold">Баланс провайдерів</h2>
-                    <p className="renewal-chart-note mt-2">
-                      Billing-доступ не підключено. Баланс і повний рахунок невідомі; нові
-                      адміністративні доступи потребують окремого налаштування.
-                    </p>
+                    <h2 className="font-semibold">Стан функцій</h2>
+                    <ServiceCards data={data} />
                   </section>
                 </>
               )}
+              {panel === 'usage' && (
+                <UsagePanel data={data} selection={selection} refresh={refresh} />
+              )}
               {panel === 'events' && (
-                <section className="renewal-card">
-                  <h2 className="font-semibold">Останні 50 прогонів</h2>
-                  <p className="renewal-chart-note mt-2">
-                    Технічні метадані без повідомлень, промптів, результатів інструментів і даних
-                    доступу. Старий збій не означає, що сервіс недоступний зараз.
-                  </p>
-                  {data.runs.data?.recent.map((run) => (
-                    <details key={run.id} className="renewal-inset mt-3">
-                      <summary className="cursor-pointer">
-                        <b>{run.profile ?? run.trigger ?? 'Задача'}</b> ·{' '}
-                        {run.terminal === 'completed'
-                          ? 'Завершено'
-                          : run.terminal === 'failed'
-                            ? 'Збій'
-                            : 'Триває'}
-                        <p className="renewal-chart-note mt-1">{time(run.started_at)}</p>
-                      </summary>
-                      <p className="renewal-chart-note mt-3">
-                        Модель: {run.model ?? 'не записана'}. Інструментів: {run.tools.calls}.
-                        Повторних спроб: {run.retries}. Тривалість:{' '}
-                        {run.duration_ms == null
-                          ? 'невідомо'
-                          : `${(run.duration_ms / 1000).toFixed(1)} с`}
-                        .
-                      </p>
-                      {run.error && <p className="renewal-chart-note mt-2">{run.error}</p>}
-                    </details>
-                  ))}
-                  {!data.runs.data?.recent.length && (
-                    <p className="renewal-chart-note mt-3">Немає доступних прогонів.</p>
-                  )}
-                </section>
+                <TasksPanel
+                  data={data}
+                  newer={
+                    cursors.length
+                      ? () => {
+                          const stack = [...cursors],
+                            before = stack.pop();
+                          setCursors(stack);
+                          setSelection({ ...selection, before });
+                        }
+                      : undefined
+                  }
+                  older={
+                    data.runs.data?.nextCursor
+                      ? () => {
+                          setCursors([...cursors, selection.before]);
+                          setSelection({
+                            ...selection,
+                            before: data.runs.data?.nextCursor ?? undefined,
+                          });
+                        }
+                      : undefined
+                  }
+                  busy={query.isFetching}
+                />
+              )}
+              {panel === 'workers' && <WorkersPanel data={data} />}
+              {panel === 'control' && (
+                <ControlsPanel data={data} refresh={refresh} appVersion={appVersion} />
               )}
             </>
           )}

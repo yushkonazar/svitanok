@@ -27,6 +27,40 @@ it('кожна D1-міграція явно оголошує expand або contr
 
 /** Очікувані колонки звичайних таблиць — дослівно з 07-schema §1. */
 const EXPECTED_COLUMNS: Record<string, string[]> = {
+  usage_receipts: [
+    'id',
+    'at',
+    'day',
+    'run_id',
+    'feature',
+    'provider',
+    'sku',
+    'basis',
+    'cost_nano_usd',
+    'quantity',
+    'unit',
+    'input_tokens',
+    'output_tokens',
+    'cached_tokens',
+    'cache_write_tokens',
+    'reasoning_tokens',
+    'api_attempts',
+    'model_responses',
+    'duration_ms',
+    'ok',
+    'price_version',
+  ],
+  system_billing_snapshots: [
+    'id',
+    'provider',
+    'snapshot_json',
+    'attempted_at',
+    'collected_at',
+    'error_class',
+    'lease_until',
+    'lease_token',
+  ],
+  system_preferences: ['id', 'value_json', 'revision', 'updated_at'],
   leisure_items: [
     'id',
     'venue_id',
@@ -558,6 +592,7 @@ type IndexSpec = { cols: string[]; unique?: boolean };
  * жодного індексу поза PK — звірка точна, зайвий індекс теж провалює тест.
  */
 const EXPECTED_INDEXES: Record<string, IndexSpec[]> = {
+  usage_receipts: [{ cols: ['at', 'feature', 'provider'] }, { cols: ['run_id'] }],
   leisure_items: [{ cols: ['start_date', 'end_date'] }, { cols: ['venue_id'] }],
   leisure_records: [{ cols: ['kind', 'at'] }, { cols: ['item_id', 'kind'] }],
   work_contexts: [
@@ -604,7 +639,11 @@ const EXPECTED_INDEXES: Record<string, IndexSpec[]> = {
   chains: [{ cols: ['status'] }],
   outbox: [{ cols: ['status', 'next_at'] }],
   runs: [{ cols: ['started_at'] }, { cols: ['profile'] }],
-  run_steps: [{ cols: ['run_id', 'n'] }, { cols: ['run_id', 'n'], unique: true }],
+  run_steps: [
+    { cols: ['run_id', 'n'] },
+    { cols: ['run_id', 'n'], unique: true },
+    { cols: ['kind', 'at'] },
+  ],
   places: [{ cols: ['name'] }],
   ideas: [{ cols: ['status'] }, { cols: ['domain'] }, { cols: ['number'], unique: true }],
   idea_events: [{ cols: ['idea_id', 'at'] }],
@@ -672,7 +711,7 @@ const columnsOf = (table: string): { name: string; pk: number }[] =>
   }[];
 
 describe('міграції D1 — файли', () => {
-  it('тридцять девʼять файлів 0001–0039, нумерація без дірок', () => {
+  it('сорок файлів 0001–0040, нумерація без дірок', () => {
     expect(files.map((f) => f.slice(0, 4))).toEqual([
       '0001',
       '0002',
@@ -713,6 +752,7 @@ describe('міграції D1 — файли', () => {
       '0037',
       '0038',
       '0039',
+      '0040',
     ]);
   });
 });

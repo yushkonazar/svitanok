@@ -49,6 +49,7 @@ const MIGRATIONS = [
   '0028_mini_app_finance.sql',
   '0029_finance_credit_limits.sql',
   '0034_context_reminders.sql',
+  '0040_system_usage.sql',
 ];
 
 const CONN = 'conn-abc';
@@ -584,7 +585,9 @@ describe('ретенція (07 §1)', () => {
       'reminders',
       'run_steps',
       'runs',
+      'system_billing_snapshots',
       'transactions',
+      'usage_receipts',
       'voice_pending',
       'work_contexts',
     ]);

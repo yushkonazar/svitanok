@@ -29,6 +29,7 @@ import {
 } from '../../kv-store.mjs';
 import {
   buildBackupDocument,
+  backupKvExcluded,
   encryptBackup,
   sha256Hex,
   summarizeBackup,
@@ -280,6 +281,7 @@ export async function dumpKv(env) {
     const page = /** @type {any} */ (await env.BRIEFING.list(cursor ? { cursor } : {}));
     for (const k of page.keys ?? []) {
       const name = String(k.name);
+      if (backupKvExcluded(name)) continue;
       const value = await env.BRIEFING.get(name);
       if (value != null) out[name] = value;
     }

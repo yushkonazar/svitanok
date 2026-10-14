@@ -43,6 +43,26 @@ describe('loadConfig: обовʼязкові змінні', () => {
 });
 
 describe('loadConfig: OpenAI Responses provider', () => {
+  it('binds optional tariff versions to a model and leaves a changed model price unknown', () => {
+    const env = {
+      ...FULL,
+      AI_PROVIDER: 'openai',
+      OPENAI_API_KEY: 'test',
+      OPENAI_ROLLOUT: 'full',
+      OPENAI_MODEL_STANDARD: 'example-model',
+      OPENAI_PRICE_STANDARD_MODEL: 'example-model',
+      OPENAI_PRICE_STANDARD_VERSION: '2026-10-13',
+      OPENAI_PRICE_STANDARD_INPUT_USD_PER_1M: '2',
+      OPENAI_PRICE_STANDARD_OUTPUT_USD_PER_1M: '4',
+    };
+    expect(loadConfig(env).openAiPricing?.standard).toMatchObject({
+      modelId: 'example-model',
+      priceVersion: '2026-10-13',
+    });
+    expect(
+      loadConfig({ ...env, OPENAI_MODEL_STANDARD: 'new-model' }).openAiPricing?.standard,
+    ).toBeUndefined();
+  });
   it('вимагає окремий API key лише в режимі openai та не вимагає Claude token', () => {
     expect(() =>
       loadConfig({
