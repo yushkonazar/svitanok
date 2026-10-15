@@ -120,6 +120,28 @@ function scriptedEngine(
 }
 
 describe('makeRunner: щасливий шлях', () => {
+  it('infinitive reminder exposes the write tool and executes it via Core', async () => {
+    const client = makeClient();
+    const { engine } = scriptedEngine(async (opts) => {
+      expect(opts.toolNames).toContain('reminders_create');
+      expect(opts.toolNames).not.toContain('mail_read');
+      const result = await opts.onToolCall('reminders_create', {
+        text: 'попросити Сонік змінити рингтон',
+        when: 'сьогодні о 21:00',
+      });
+      expect(result.isError).toBe(false);
+      return { finalText: 'Нагадаю сьогодні о 21:00.', provider: 'openai' };
+    });
+    await makeRunner({ client, engine })(
+      req({ input: { text: 'Нагадати о 21:00 аби Сонік змінила рингтон' } }),
+    );
+    expect(client.callTool).toHaveBeenCalledWith('run-1', 'reminders.create', {
+      text: 'попросити Сонік змінити рингтон',
+      when: 'сьогодні о 21:00',
+    });
+    expect(client.deliver).toHaveBeenCalledWith('run-1', 'Нагадаю сьогодні о 21:00.');
+  });
+
   it('питання брифу поїздки стає однією карткою з кнопками й тим самим текстом у памʼяті розмови', async () => {
     const id = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
     const client = makeClient({

@@ -51,6 +51,18 @@ export class MonoTooSoonError extends Error {
   }
 }
 
+/** Safe provider failure metadata. Never include the response body, URL,
+ * token or the original network error in logs or owner-facing messages. */
+export class MonoApiError extends Error {
+  /** @param {string} what @param {number|null} [status] */
+  constructor(what, status = null) {
+    super(status == null ? `${what}: запит тимчасово недоступний` : `${what}: HTTP ${status}`);
+    this.name = 'MonoApiError';
+    this.status = status;
+    this.retryable = status == null || status === 408 || (status >= 500 && status <= 599);
+  }
+}
+
 /** Ключ - явна відмова без нього (00-README п.6: без тихої деградації).
  *  @param {Env} env */
 export function monoToken(env) {
@@ -85,15 +97,17 @@ async function call(env, path, init, what) {
       headers: { ...(init.headers ?? {}), 'X-Token': token },
       signal: AbortSignal.timeout(TIMEOUT_MS),
     });
-  } catch (/** @type {any} */ e) {
-    throw new Error(`${what}: запит не пройшов (${String(e?.name ?? 'error')})`, { cause: e });
+  } catch {
+    throw new MonoApiError(what);
   }
   if (res.status === 429) throw new MonoTooSoonError(what);
-  const text = await res.text().catch(() => '');
-  if (!res.ok) {
-    // Тіло помилки Mono - {errorDescription}; беремо коротко і без токена
-    // (він у заголовку, у тіло не потрапляє, але ріжемо все одно).
-    throw new Error(`${what}: HTTP ${res.status} ${text.slice(0, 200)}`);
+  if (!res.ok) throw new MonoApiError(what, res.status);
+  let text;
+  try {
+    text = await res.text();
+  } catch {
+    // A failed body read is not a successful empty account list.
+    throw new MonoApiError(what);
   }
   if (text.length > BODY_MAX) throw new Error(`${what}: відповідь понад ${BODY_MAX} байтів`);
   try {

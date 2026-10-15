@@ -53,6 +53,25 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks());
 
 describe('reminders.create', () => {
+  it('«Нагадати о 21:00…» після опівночі означає сьогодні за Києвом', async () => {
+    const { d1, env } = makeEnv();
+    const { result } = await runRemindersCreate(
+      env,
+      { when: 'Нагадати о 21:00 аби Сонік змінила рингтон' },
+      Date.parse('2026-10-14T21:15:00.000Z'),
+      { chatId: 4242 },
+    );
+    expect(result.when).toBe('2026-10-15T18:00:00.000Z');
+    expect(active(d1)).toEqual([
+      expect.objectContaining({
+        id: result.id,
+        text: 'аби Сонік змінила рингтон',
+        due_at: '2026-10-15T18:00:00.000Z',
+        chat_id: '4242',
+      }),
+    ]);
+  });
+
   it('природний час рахує парсер ядра, не модель', async () => {
     const { d1, env } = makeEnv();
     const { result } = await runRemindersCreate(

@@ -56,7 +56,10 @@ const ROUTES: readonly Route[] = [
     ],
   },
   {
-    words: ['нагадай', 'нагадуван', 'remind'],
+    // The infinitive is a normal owner command too: «Нагадати о 21:00…».
+    // Match the shared stem so «нагадуй» and noun forms cannot silently lose
+    // their write tools. This still only narrows the reviewed profile allowlist.
+    words: ['нагад', 'remind'],
     tools: ['reminders_create', 'reminders_update', 'reminders_cancel', 'data_read'],
   },
   {

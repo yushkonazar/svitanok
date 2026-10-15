@@ -5,6 +5,24 @@ import { routeChatTools } from '../brain/src/tool-routing.js';
 describe('interactive tool routing', () => {
   const all = PROFILES.chat.toolNames;
 
+  it.each([
+    'Нагадати о 21:00 аби Сонік змінила рингтон',
+    'Нагадуй щодня о 21:00 змінити рингтон',
+    'Постав нагадування о 21:00',
+    'Перенеси нагадування на 21:00',
+    'Скасуй нагадування про рингтон',
+  ])('keeps reminder tools for natural owner wording: %s', (text) => {
+    const tools = routeChatTools(text, all);
+    expect(tools).toEqual(
+      expect.arrayContaining(['reminders_create', 'reminders_update', 'reminders_cancel']),
+    );
+    if (/^нагад/iu.test(text)) {
+      expect(tools).not.toContain('mail_read');
+      expect(tools.length).toBeLessThan(all.length);
+    }
+    expect(routeChatTools(text, ['facts_get', 'memory_search'])).not.toContain('reminders_create');
+  });
+
   it('does not send a tool catalogue for a greeting', () => {
     expect(routeChatTools('Привіт!', all)).toEqual([]);
   });

@@ -15,6 +15,7 @@ import {
   statement,
   monoToken,
   MonoTooSoonError,
+  MonoApiError,
   STATEMENT_MAX_S,
 } from '../web/core/adapters/mono.mjs';
 import { categoryByMcc, MCC_CATEGORIES, FALLBACK_CATEGORY } from '../web/core/finance/mcc.mjs';
@@ -42,7 +43,11 @@ import {
   MONO_WEBHOOK_PREFIX,
   UNKNOWN_ALERT_KEY,
 } from '../web/core/finance/webhook.mjs';
-import { monoReconcileTask, RECONCILE_STATE_KEY } from '../web/core/finance/reconcile.mjs';
+import {
+  monoReconcileTask,
+  RECONCILE_STATE_KEY,
+  TRANSIENT_ALERT_AFTER_MS,
+} from '../web/core/finance/reconcile.mjs';
 import { workerEnv } from './helpers/env.js';
 import { memoryKv } from './helpers/kv.js';
 import { d1FromSqlite } from './helpers/d1.js';
@@ -253,6 +258,47 @@ describe('прапорці «незвичного»', () => {
 });
 
 describe('адаптер Mono', () => {
+  it.each([408, 500, 502, 503, 504])(
+    'HTTP %s is retryable and hides provider body',
+    async (status) => {
+      const { env } = setup();
+      routeFetch([
+        {
+          match: 'client-info',
+          body: { errorDescription: `ibus.DealsDepo timeout ${env.MONO_TOKEN} ${SECRET}` },
+          status,
+        },
+      ]);
+      await expect(clientInfo(env)).rejects.toMatchObject({
+        name: 'MonoApiError',
+        status,
+        retryable: true,
+      });
+      await expect(clientInfo(env)).rejects.toThrow(`Mono client-info: HTTP ${status}`);
+      for (const privateText of ['ibus', String(env.MONO_TOKEN), SECRET])
+        await expect(clientInfo(env)).rejects.not.toThrow(privateText);
+    },
+  );
+
+  it('network and response-body timeouts are retryable, not empty successful responses', async () => {
+    const { env } = setup();
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error(`private ${SECRET}`)));
+    await expect(clientInfo(env)).rejects.toMatchObject({
+      name: 'MonoApiError',
+      status: null,
+      retryable: true,
+    });
+    await expect(clientInfo(env)).rejects.not.toThrow(SECRET);
+    vi.stubGlobal('fetch', async () => ({
+      ok: true,
+      status: 200,
+      text: async () => {
+        throw new Error('body timeout');
+      },
+    }));
+    await expect(clientInfo(env)).rejects.toBeInstanceOf(MonoApiError);
+  });
+
   it('без токена - явна відмова, не тиха деградація', () => {
     expect(() => monoToken(workerEnv({}))).toThrow(/MONO_TOKEN не заданий/);
   });
@@ -786,17 +832,26 @@ describe('звірка mono-reconcile', () => {
     expect(outboxTexts(db).filter((m) => m.text.includes('жодного рахунку'))).toHaveLength(1);
   });
 
-  it('сеанс, що падає, скаржиться раз і завершується за стелею часу', async () => {
+  it('тривалий 500: тихі повтори, одне зрозуміле попередження й стеля часу', async () => {
     const { env, db } = setup();
     vi.spyOn(console, 'error').mockImplementation(() => {});
     routeFetch([{ match: 'client-info', body: {}, status: 500 }]);
     expect(await monoReconcileTask(env, NIGHT)).toMatchObject({ failed: 'client' });
-    // Наступні тіки - та сама фаза, але вже мовчки.
-    for (let i = 1; i <= 5; i += 1) await monoReconcileTask(env, NIGHT + i * 300_000);
-    expect(outboxTexts(db).filter((m) => m.text.includes('Звірка Mono впала'))).toHaveLength(1);
+    expect(outboxTexts(db)).toHaveLength(0);
+    for (let i = 1; i <= 2; i += 1) await monoReconcileTask(env, NIGHT + i * 300_000);
+    expect(outboxTexts(db)).toHaveLength(0);
+    await monoReconcileTask(env, NIGHT + TRANSIENT_ALERT_AFTER_MS);
+    for (let i = 4; i <= 8; i += 1) await monoReconcileTask(env, NIGHT + i * 300_000);
+    expect(outboxTexts(db)).toHaveLength(1);
+    expect(outboxTexts(db)[0]!.text).toContain('Автоматично повторюю');
+    expect(outboxTexts(db)[0]!.text).not.toMatch(/HTTP|client-info|ibus/);
     // За стелею сеансу - завершення, і наступної доби все почнеться заново.
     const late = NIGHT + 5 * 3_600_000;
     expect(await monoReconcileTask(env, late)).toEqual({ skipped: 'session-expired' });
+    expect(outboxTexts(db)).toHaveLength(2);
+    expect(outboxTexts(db)[1]!.text).toContain('Нічну звірку');
+    await monoReconcileTask(env, late + 300_000);
+    expect(outboxTexts(db)).toHaveLength(2);
   });
 
   it('429 від Mono - не збій: крок не зсувається, алерту немає', async () => {
@@ -808,15 +863,58 @@ describe('звірка mono-reconcile', () => {
     expect(state).toBeNull();
   });
 
-  it('збій Mono - алерт і повтор тієї самої фази наступним тіком', async () => {
+  it('одиничний збій Mono — тихий повтор тієї самої фази без втрати сеансу', async () => {
     const { env, db } = setup();
     vi.spyOn(console, 'error').mockImplementation(() => {});
     routeFetch([{ match: 'client-info', body: {}, status: 500 }]);
     expect(await monoReconcileTask(env, NIGHT)).toMatchObject({ failed: 'client' });
-    expect(outboxTexts(db)[0]!.text).toContain('Звірка Mono впала');
+    expect(outboxTexts(db)).toHaveLength(0);
     const expected = monoWebhookUrl(env, 'https://svitanok.yushko.dev');
     routeFetch([{ match: 'client-info', body: clientBody(expected) }]);
     expect(await monoReconcileTask(env, NIGHT + 60000)).toMatchObject({ accounts: 1 });
+    routeFetch([{ match: 'statement', body: [] }]);
+    expect(await monoReconcileTask(env, NIGHT + 300_000)).toMatchObject({ done: true });
+    expect(outboxTexts(db)).toHaveLength(0);
+  });
+
+  it('confirms recovery only after all statement work has completed', async () => {
+    const { env, db } = setup();
+    routeFetch([
+      { match: 'client-info', body: { errorDescription: 'ibus.DealsDepo timeout' }, status: 500 },
+    ]);
+    await monoReconcileTask(env, NIGHT);
+    await monoReconcileTask(env, NIGHT + TRANSIENT_ALERT_AFTER_MS);
+    const expected = monoWebhookUrl(env, 'https://svitanok.yushko.dev');
+    routeFetch([{ match: 'client-info', body: clientBody(expected) }]);
+    await monoReconcileTask(env, NIGHT + TRANSIENT_ALERT_AFTER_MS + 300_000);
+    expect(outboxTexts(db)).toHaveLength(1);
+    routeFetch([{ match: 'statement', body: [] }]);
+    expect(await monoReconcileTask(env, NIGHT + TRANSIENT_ALERT_AFTER_MS + 600_000)).toMatchObject({
+      done: true,
+    });
+    expect(outboxTexts(db)).toHaveLength(2);
+    expect(outboxTexts(db)[1]!.text).toContain('відновлено й завершено');
+  });
+
+  it('access failure alerts immediately, once, without a raw provider response', async () => {
+    const { env, db } = setup();
+    routeFetch([
+      { match: 'client-info', body: { errorDescription: `private ${SECRET}` }, status: 403 },
+    ]);
+    await monoReconcileTask(env, NIGHT);
+    await monoReconcileTask(env, NIGHT + 300_000);
+    expect(outboxTexts(db)).toHaveLength(1);
+    expect(outboxTexts(db)[0]!.text).toContain('відхилив доступ');
+    expect(outboxTexts(db)[0]!.text).not.toContain(SECRET);
+  });
+
+  it('shared client-info cooldown does not turn into an outage alert', async () => {
+    const { env, db } = setup();
+    routeFetch([{ match: 'client-info', body: {}, status: 500 }]);
+    await monoReconcileTask(env, NIGHT);
+    routeFetch([]);
+    expect(await monoReconcileTask(env, NIGHT + 1)).toEqual({ skipped: 'too-soon' });
+    expect(outboxTexts(db)).toHaveLength(0);
   });
 });
 
