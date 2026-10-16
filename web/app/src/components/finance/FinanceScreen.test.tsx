@@ -112,6 +112,21 @@ function taxiHistoryFixture() {
     }));
   return f;
 }
+it('opens taxi terms from the taxi shortcut and keeps general finance settings separate', () => {
+  renderFinance('/finance');
+  fireEvent.click(screen.getByRole('button', { name: 'Налаштувати таксі ↗' }));
+  const taxi = screen.getByRole('dialog', { name: 'Умови роботи таксі' });
+  expect(within(taxi).getByLabelText('Профіль')).toBeInTheDocument();
+  expect(within(taxi).getByLabelText('Початок дії')).toBeInTheDocument();
+  expect(
+    within(taxi).queryByLabelText('Типовий період фінансового огляду'),
+  ).not.toBeInTheDocument();
+  fireEvent.click(within(taxi).getByRole('button', { name: 'Закрити' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Налаштування фінансів' }));
+  const settings = screen.getByRole('dialog', { name: 'Налаштування фінансів' });
+  expect(within(settings).getByLabelText('Типовий період фінансового огляду')).toBeInTheDocument();
+  expect(within(settings).queryByLabelText('Профіль')).not.toBeInTheDocument();
+});
 it('keeps an open expense and cached balances mounted when a background refresh fails', () => {
   const finance = readFinanceDemo();
   const { rerender } = renderFinance('/finance', finance);
