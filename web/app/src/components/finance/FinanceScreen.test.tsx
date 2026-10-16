@@ -112,6 +112,28 @@ function taxiHistoryFixture() {
     }));
   return f;
 }
+it('keeps an open expense and cached balances mounted when a background refresh fails', () => {
+  const finance = readFinanceDemo();
+  const { rerender } = renderFinance('/finance', finance);
+  fireEvent.click(screen.getByRole('button', { name: 'Записати витрату' }));
+  fireEvent.change(screen.getByLabelText('Сума, ₴'), { target: { value: '257' } });
+  vi.mocked(useFinance).mockReturnValue({
+    data: { finance, demo: false },
+    isLoading: false,
+    error: new TypeError('Load failed'),
+    refetch: vi.fn(),
+  } as unknown as ReturnType<typeof useFinance>);
+  rerender(
+    <MemoryRouter initialEntries={['/finance']}>
+      <QueryClientProvider client={new QueryClient()}>
+        <FinanceScreen />
+      </QueryClientProvider>
+    </MemoryRouter>,
+  );
+  expect(screen.getByRole('dialog', { name: 'Записати витрату' })).toBeInTheDocument();
+  expect(screen.getByLabelText('Сума, ₴')).toHaveValue('257');
+  expect(screen.getByRole('status')).toHaveTextContent('Показано останні отримані дані');
+});
 it('opens all taxi periods directly, selects the unpaid period and preserves it after opening settlement', () => {
   const f = taxiHistoryFixture();
   renderFinance('/finance', f);

@@ -3,6 +3,10 @@ import { useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import type { Finance, FinanceCommand } from '../../api/finance-schema.ts';
 import { refreshFinanceBank, postFinance } from '../../api/client.ts';
+import {
+  FinanceCommandRejectedError,
+  FinanceSaveUncertainError,
+} from '../../api/finance-errors.ts';
 import { FINANCE_QUERY } from '../../api/finance-hooks.ts';
 import {
   parseMoney,
@@ -255,6 +259,8 @@ function FinanceFormBody({
   const [debtStep, setDebtStep] = useState(0);
   const [error, setError] = useState('');
   const [pending, setPending] = useState(false);
+  const [uncertain, setUncertain] = useState(false);
+  const submitting = useRef(false);
   const [refreshingBank, setRefreshingBank] = useState(false);
   const [bankRefreshMessage, setBankRefreshMessage] = useState('');
   const [bankRefreshError, setBankRefreshError] = useState('');
@@ -519,8 +525,42 @@ function FinanceFormBody({
       </div>
     ) : null;
   };
-  const submit = async () => {
+  const saveAttempt = async () => {
+    if (submitting.current || !attempt.current) return;
+    submitting.current = true;
+    setPending(true);
     setError('');
+    try {
+      const result = await postFinance(attempt.current.command);
+      if (result?.finance) query.setQueryData(FINANCE_QUERY, result);
+      else void query.invalidateQueries({ queryKey: FINANCE_QUERY });
+      setUncertain(false);
+      haptic('success');
+      onClose();
+    } catch (e) {
+      const unknown = e instanceof FinanceSaveUncertainError;
+      setUncertain(unknown);
+      setError(e instanceof Error ? e.message : 'Не вдалося зберегти. Повтори дію.');
+      if (
+        !unknown &&
+        (e instanceof FinanceCommandRejectedError ||
+          (e instanceof Error &&
+            /Дані змінилися|Некорект|Обери|Вкажи|вже|Сума|Частка/.test(e.message)))
+      )
+        attempt.current = null;
+      void query.invalidateQueries({ queryKey: FINANCE_QUERY });
+    } finally {
+      submitting.current = false;
+      setPending(false);
+    }
+  };
+  const submit = async () => {
+    if (submitting.current) return;
+    setError('');
+    if (uncertain && attempt.current) {
+      await saveAttempt();
+      return;
+    }
     if (guidedDebt && debtStep < 2) {
       try {
         if (debtStep === 0) {
@@ -786,24 +826,9 @@ function FinanceFormBody({
           fingerprint,
           command: { id: crypto.randomUUID(), version: f.version, type, payload: p },
         };
-      setPending(true);
-      const result = await postFinance(attempt.current.command);
-      if (result?.finance) query.setQueryData(FINANCE_QUERY, result);
-      else void query.invalidateQueries({ queryKey: FINANCE_QUERY });
-      haptic('success');
-      onClose();
+      await saveAttempt();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Не вдалося зберегти. Повтори дію.');
-      // A known validation/conflict permits editing; an uncertain network
-      // attempt keeps its id for an identical retry.
-      if (
-        e instanceof Error &&
-        /Дані змінилися|Некорект|Обери|Вкажи|вже|Сума|Частка/.test(e.message)
-      )
-        attempt.current = null;
-      await query.invalidateQueries({ queryKey: FINANCE_QUERY });
-    } finally {
-      setPending(false);
     }
   };
   const kind = request.kind;
@@ -839,765 +864,775 @@ function FinanceFormBody({
             void submit();
           }}
         >
-          {kind === 'transfer' &&
-            select('transferMode', 'Як обліковуємо переказ?', [
-              ['manual', 'Між двома ручними рахунками'],
-              ['bank', 'Пов’язати вже імпортовану операцію Monobank'],
-            ])}
-          {kind === 'transfer' && v.transferMode === 'bank' && (
-            <>
-              {bankRefreshPanel()}
-              {select('bankTransactionId', 'Операція Monobank', [
-                ['', 'Обери поповнення або зняття'],
-                ...bankTransfers.map((t): [string, string] => [
-                  t.id,
-                  `${t.description} · ${moneyLabel(t.amountMinor)} · ${kyivParts(Date.parse(t.at)).date}${t.bankHold ? ' · hold у API' : ''}`,
-                ]),
+          <fieldset
+            disabled={pending || uncertain}
+            className="flex flex-col gap-4 border-0 p-0 m-0 min-w-0"
+          >
+            {kind === 'transfer' &&
+              select('transferMode', 'Як обліковуємо переказ?', [
+                ['manual', 'Між двома ручними рахунками'],
+                ['bank', 'Пов’язати вже імпортовану операцію Monobank'],
               ])}
-              {bankOwnerConfirmation()}
-              <p className="renewal-inset renewal-muted">
-                Обери поповнення картки або зняття готівки, ще не пов’язане з іншим записом. Якщо
-                API досі показує hold, звір успішність у Monobank і підтвердь це тут.
-              </p>
-              {select('accountId', 'Другий рахунок · готівка або ручний', accountOptions)}
-              <p className="renewal-inset renewal-muted">
-                Банківська сума вже врахована в залишку картки. Змінимо тільки другий рахунок: при
-                поповненні картки готівка зменшиться, при знятті — збільшиться. Повторного запису на
-                картці не буде.
-              </p>
-            </>
-          )}
-          {(['expense', 'income', 'adjustment'].includes(kind) ||
-            (kind === 'transfer' && v.transferMode === 'manual')) && (
-            <>
-              {field(
-                'amount',
-                kind === 'adjustment' ? 'Зміна залишку, ₴ (можна зі знаком −)' : 'Сума, ₴',
-              )}
-              {account()}
-              {kind === 'transfer'
-                ? select('toAccountId', 'На рахунок', accountOptions)
-                : kind !== 'adjustment'
-                  ? category()
-                  : null}
-              {field('description', 'Опис або причина')}
-              <details>
-                <summary className="renewal-link cursor-pointer">Дата й час</summary>
-                <div className="renewal-form-grid mt-3">
-                  {field('date', 'Дата', 'date')}
-                  {field('time', 'Час · Київ', 'time')}
-                </div>
-              </details>
-              <p className="renewal-muted">
-                {kind === 'adjustment'
-                  ? 'Корекція змінює баланс, але не вважається заробітком.'
-                  : kind === 'transfer'
-                    ? 'Для Monobank обери прив’язку до імпортованої операції вище. Ручний переказ доступний лише між рахунками ручного обліку.'
-                    : 'Операції Monobank надходять автоматично. Тут записуються готівка та рахунки ручного обліку.'}
-              </p>
-            </>
-          )}
-          {kind === 'account-balance' && (
-            <>
-              {account()}
-              {field(
-                'balance',
-                'Скільки зараз є на цьому рахунку, ₴',
-                'text',
-                'Повна сума, також зі знаком −',
-              )}
-              <p className="renewal-muted">
-                Вкажи весь фактичний залишок, а не суму поповнення. Це не дохід. Спочатку додай
-                минулі зміни та витрати, потім звір готівку — гроші за ці зміни вже можуть бути в
-                тебе на руках.
-              </p>
-            </>
-          )}
-          {kind === 'credit-limit' && (
-            <>
-              <p className="font-bold">{selectedAccount?.name}</p>
-              {select('creditMode', 'Як визначати ліміт', [
-                ['bank', 'Автоматично з Monobank'],
-                ['manual', 'Вкажу поточний ліміт сам'],
-              ])}
-              {v.creditMode === 'manual' &&
-                field('credit', 'Повний кредитний ліміт, ₴', 'text', 'Наприклад, 7000')}
-              <p className="renewal-muted">
-                Власний баланс = доступний баланс банку мінус повний кредитний ліміт. Наприклад: 5
-                100 − 7 000 = −1 900 ₴. Ліміт не є доходом і не входить у вільні кошти. Ручне
-                значення діє, доки ти його не зміниш або не повернеш автоматичне визначення.
-              </p>
-            </>
-          )}
-          {kind === 'taxi-personal' && (
-            <>
-              {select('personalType', 'Що сталося', [
-                ['change', 'Клієнт не забрав решту'],
-                ['cash-tip', 'Чайові готівкою'],
-                ['direct', 'Замовлення поза застосунком'],
-                ['other', 'Інший особистий дохід'],
-              ])}
-              {field('amount', 'Скільки отримав особисто, ₴')}
-              {select(
-                'accountId',
-                'Куди поклав гроші',
-                f.accounts
-                  .filter((a) => a.kind === 'cash' && a.currency === 'UAH')
-                  .map((a) => [a.id, a.name]),
-              )}
-              <details>
-                <summary className="renewal-link cursor-pointer">Дата й час</summary>
-                <div className="renewal-form-grid mt-3">
-                  {field('date', 'Дата', 'date')}
-                  {field('time', 'Час · Київ', 'time')}
-                </div>
-              </details>
-              <p className="renewal-muted">
-                Це повністю твої гроші: вони додаються до готівки й особистих доходів. Не включай їх
-                повторно в касу, готівку зміни чи чайові в застосунку — розрахунок із парком не
-                змінюється.
-              </p>
-            </>
-          )}
-          {kind === 'edit-transaction' && (
-            <>
-              <p className="renewal-muted">
-                {transaction?.at.slice(0, 10)} ·{' '}
-                {f.accounts.find((a) => a.id === transaction?.accountId)?.name}. Уточнення оновить
-                баланс і бюджети. Попередні дані зберігаються в історії обліку.
-              </p>
-              {select('transactionKind', 'Тип', [
-                ['expense', 'Витрата'],
-                ['income', 'Надходження'],
-              ])}
-              {field('amount', 'Правильна сума, ₴')}
-              {category()}
-              {field('description', 'Опис')}
-            </>
-          )}
-          {kind === 'account' && (
-            <>
-              {field('name', 'Назва рахунку')}
-              {select('accountKind', 'Тип', [
-                ['bank', 'Банківський · ручний облік'],
-                ['cash', 'Готівка'],
-              ])}
-              {field('opening', 'Початковий залишок, ₴ (також від’ємний)')}
-              <p className="renewal-muted">
-                Початковий залишок не є доходом. Підключена картка Monobank відображається окремо з
-                банківським балансом.
-              </p>
-            </>
-          )}
-          {kind === 'taxi' && (
-            <>
-              <div className="renewal-form-grid">
-                {field('date', 'Дата запису', 'date')}
-                {field('time', 'Час · Київ', 'time')}
-              </div>
-              {f.policies.some((p) => p.periodStart) && (
-                <>
-                  {select('taxiPeriodKey', 'Авто й робочий період', [
-                    ['', 'Автоматично за датою й часом'],
-                    ...f.taxiWeeks
-                      .filter((w) => !w.settled)
-                      .map((w) => [w.key, taxiPeriodLabel(w.key, f.policies)] as [string, string]),
-                  ])}
-                  <p className="renewal-chart-note">
-                    Якщо дописуєш дані попереднього авто після переходу, обери його період. Для
-                    нової роботи залиш «Автоматично».
-                  </p>
-                </>
-              )}
-              {field('cash', 'Каса після комісії, ₴', 'text', 'Наприклад, 4000')}
-              <div className="renewal-form-grid">
-                {field('commission', 'Комісія, ₴', 'text', '700')}
-                {field('fuel', 'Пальне з картки парку, ₴', 'text', '0 або 1000')}
-              </div>
-              {field('received', 'Отримана готівка, ₴', 'text', 'Фактично від клієнтів')}
-              {account()}
-              <p className="renewal-muted">
-                Каса й готівка — різні цифри. Комісія та пальне зменшують заробіток за формулою, без
-                окремого списання з особистого рахунку. У готівці вкажи лише гроші за поїздки через
-                застосунок. Особисті надходження, записані швидкою кнопкою, сюди повторно не
-                додавай.
-              </p>
-              <details>
-                <summary className="renewal-link cursor-pointer">
-                  Чайові в застосунку та додаткові дані
-                </summary>
-                <div className="flex flex-col gap-3 pt-3">
-                  {field('tips', 'Чайові через застосунок, ₴')}
-                  <p className="renewal-muted">
-                    Лише окремо показані чайові через застосунок. Частка визначається умовами,
-                    чинними на дату зміни. Готівкові чайові записуй швидкою кнопкою «Особистий
-                    дохід».
-                  </p>
-                  {entry &&
-                    entry.directMinor > 0 &&
-                    field('direct', 'Прямі замовлення в старому записі, ₴')}
-                  {field('paidWork', 'Робочі витрати, сплачені особисто з обраного рахунку, ₴')}
-                  <p className="renewal-muted">
-                    Для паливної картки парку залиш порожнім. Це поле списує кошти з ручного рахунку
-                    й враховує їх у розрахунку з парком; не дублюй ту саму витрату окремою
-                    операцією.
-                  </p>
-                  {field('note', 'Нотатка')}
-                </div>
-              </details>
-              <p className="renewal-muted">
-                Можна записати лише пальне або частину даних. Якщо для каси ще не вказано комісію чи
-                отриману готівку, підсумок буде попереднім. Доповни цей запис пізніше через
-                «Уточнити».
-              </p>
-            </>
-          )}
-          {kind === 'policy' && (
-            <>
-              {select('policyPreset', 'Профіль', [
-                ['custom', 'Власні умови'],
-                ['hybrid', 'Гібрид · завжди 50/50'],
-              ])}
-              {v.policyPreset === 'custom' && (
-                <>
-                  <div className="renewal-form-grid">
-                    {field('fare', 'Моя частка каси, %')}
-                    {field('feeShare', 'Моя частка комісії, %')}
-                    {field('fuelShare', 'Моя частка пального, %')}
-                    {field('tipsShare', 'Моя частка чайових через застосунок, %')}
-                    {field('bonus', 'Частка каси понад поріг, %')}
+            {kind === 'transfer' && v.transferMode === 'bank' && (
+              <>
+                {bankRefreshPanel()}
+                {select('bankTransactionId', 'Операція Monobank', [
+                  ['', 'Обери поповнення або зняття'],
+                  ...bankTransfers.map((t): [string, string] => [
+                    t.id,
+                    `${t.description} · ${moneyLabel(t.amountMinor)} · ${kyivParts(Date.parse(t.at)).date}${t.bankHold ? ' · hold у API' : ''}`,
+                  ]),
+                ])}
+                {bankOwnerConfirmation()}
+                <p className="renewal-inset renewal-muted">
+                  Обери поповнення картки або зняття готівки, ще не пов’язане з іншим записом. Якщо
+                  API досі показує hold, звір успішність у Monobank і підтвердь це тут.
+                </p>
+                {select('accountId', 'Другий рахунок · готівка або ручний', accountOptions)}
+                <p className="renewal-inset renewal-muted">
+                  Банківська сума вже врахована в залишку картки. Змінимо тільки другий рахунок: при
+                  поповненні картки готівка зменшиться, при знятті — збільшиться. Повторного запису
+                  на картці не буде.
+                </p>
+              </>
+            )}
+            {(['expense', 'income', 'adjustment'].includes(kind) ||
+              (kind === 'transfer' && v.transferMode === 'manual')) && (
+              <>
+                {field(
+                  'amount',
+                  kind === 'adjustment' ? 'Зміна залишку, ₴ (можна зі знаком −)' : 'Сума, ₴',
+                )}
+                {account()}
+                {kind === 'transfer'
+                  ? select('toAccountId', 'На рахунок', accountOptions)
+                  : kind !== 'adjustment'
+                    ? category()
+                    : null}
+                {field('description', 'Опис або причина')}
+                <details>
+                  <summary className="renewal-link cursor-pointer">Дата й час</summary>
+                  <div className="renewal-form-grid mt-3">
+                    {field('date', 'Дата', 'date')}
+                    {field('time', 'Час · Київ', 'time')}
                   </div>
-                  {field('threshold', 'Поріг брудної каси, ₴ (порожньо — вимкнено)')}
-                </>
-              )}
-              {select('effective', 'Початок дії', [
-                ['now', 'Від моменту підтвердження'],
-                [
-                  'nextWeek',
-                  `Наступна перезмінка · ${new Date(taxiWeek(Date.now(), f.policies).to).toLocaleString('uk-UA', { timeZone: 'Europe/Kyiv', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}`,
-                ],
-              ])}
-              <p className="renewal-muted">
-                Підтвердження створить нову версію умов. Старі записи збережуть свої умови. За
-                власного авто можна вказати частку каси 100%, а власних витрат — 100%.
-              </p>
-            </>
-          )}
-          {kind === 'goal' && (
-            <>
-              {field('name', 'На що збираєш?')}
-              {field('amount', 'Цільова сума, ₴')}
-              {field('nextDate', 'Бажана дата', 'date')}
-              {goal && (
-                <>
-                  {select('goalStatus', 'Стан цілі', [
-                    ['active', 'Активна'],
-                    ['paused', 'Призупинити'],
-                    ['done', 'Досягнута'],
-                  ])}
-                  <p className="renewal-muted">
-                    Виділені кошти залишаться зарезервованими. Щоб повернути їх, обери «Внесок /
-                    повернення».
-                  </p>
-                </>
-              )}
-            </>
-          )}
-          {kind === 'goal' && (
-            <>
-              {select('goalPlan', 'Регулярний внесок', [
-                ['false', 'Без планової суми'],
-                ['true', 'Запланувати внески'],
-              ])}
-              {v.goalPlan === 'true' && (
+                </details>
+                <p className="renewal-muted">
+                  {kind === 'adjustment'
+                    ? 'Корекція змінює баланс, але не вважається заробітком.'
+                    : kind === 'transfer'
+                      ? 'Для Monobank обери прив’язку до імпортованої операції вище. Ручний переказ доступний лише між рахунками ручного обліку.'
+                      : 'Операції Monobank надходять автоматично. Тут записуються готівка та рахунки ручного обліку.'}
+                </p>
+              </>
+            )}
+            {kind === 'account-balance' && (
+              <>
+                {account()}
+                {field(
+                  'balance',
+                  'Скільки зараз є на цьому рахунку, ₴',
+                  'text',
+                  'Повна сума, також зі знаком −',
+                )}
+                <p className="renewal-muted">
+                  Вкажи весь фактичний залишок, а не суму поповнення. Це не дохід. Спочатку додай
+                  минулі зміни та витрати, потім звір готівку — гроші за ці зміни вже можуть бути в
+                  тебе на руках.
+                </p>
+              </>
+            )}
+            {kind === 'credit-limit' && (
+              <>
+                <p className="font-bold">{selectedAccount?.name}</p>
+                {select('creditMode', 'Як визначати ліміт', [
+                  ['bank', 'Автоматично з Monobank'],
+                  ['manual', 'Вкажу поточний ліміт сам'],
+                ])}
+                {v.creditMode === 'manual' &&
+                  field('credit', 'Повний кредитний ліміт, ₴', 'text', 'Наприклад, 7000')}
+                <p className="renewal-muted">
+                  Власний баланс = доступний баланс банку мінус повний кредитний ліміт. Наприклад: 5
+                  100 − 7 000 = −1 900 ₴. Ліміт не є доходом і не входить у вільні кошти. Ручне
+                  значення діє, доки ти його не зміниш або не повернеш автоматичне визначення.
+                </p>
+              </>
+            )}
+            {kind === 'taxi-personal' && (
+              <>
+                {select('personalType', 'Що сталося', [
+                  ['change', 'Клієнт не забрав решту'],
+                  ['cash-tip', 'Чайові готівкою'],
+                  ['direct', 'Замовлення поза застосунком'],
+                  ['other', 'Інший особистий дохід'],
+                ])}
+                {field('amount', 'Скільки отримав особисто, ₴')}
+                {select(
+                  'accountId',
+                  'Куди поклав гроші',
+                  f.accounts
+                    .filter((a) => a.kind === 'cash' && a.currency === 'UAH')
+                    .map((a) => [a.id, a.name]),
+                )}
+                <details>
+                  <summary className="renewal-link cursor-pointer">Дата й час</summary>
+                  <div className="renewal-form-grid mt-3">
+                    {field('date', 'Дата', 'date')}
+                    {field('time', 'Час · Київ', 'time')}
+                  </div>
+                </details>
+                <p className="renewal-muted">
+                  Це повністю твої гроші: вони додаються до готівки й особистих доходів. Не включай
+                  їх повторно в касу, готівку зміни чи чайові в застосунку — розрахунок із парком не
+                  змінюється.
+                </p>
+              </>
+            )}
+            {kind === 'edit-transaction' && (
+              <>
+                <p className="renewal-muted">
+                  {transaction?.at.slice(0, 10)} ·{' '}
+                  {f.accounts.find((a) => a.id === transaction?.accountId)?.name}. Уточнення оновить
+                  баланс і бюджети. Попередні дані зберігаються в історії обліку.
+                </p>
+                {select('transactionKind', 'Тип', [
+                  ['expense', 'Витрата'],
+                  ['income', 'Надходження'],
+                ])}
+                {field('amount', 'Правильна сума, ₴')}
+                {category()}
+                {field('description', 'Опис')}
+              </>
+            )}
+            {kind === 'account' && (
+              <>
+                {field('name', 'Назва рахунку')}
+                {select('accountKind', 'Тип', [
+                  ['bank', 'Банківський · ручний облік'],
+                  ['cash', 'Готівка'],
+                ])}
+                {field('opening', 'Початковий залишок, ₴ (також від’ємний)')}
+                <p className="renewal-muted">
+                  Початковий залишок не є доходом. Підключена картка Monobank відображається окремо
+                  з банківським балансом.
+                </p>
+              </>
+            )}
+            {kind === 'taxi' && (
+              <>
                 <div className="renewal-form-grid">
-                  {field('planAmount', 'Плановий внесок, ₴')}
-                  {select('planPeriod', 'Як часто?', [
-                    ['day', 'Щодня'],
-                    ['week', 'Щотижня'],
-                    ['month', 'Щомісяця'],
-                  ])}
+                  {field('date', 'Дата запису', 'date')}
+                  {field('time', 'Час · Київ', 'time')}
                 </div>
-              )}
-              <p className="renewal-chart-note">
-                План не списує гроші. Внесок підтверджується окремо; тижневий план рахується від
-                понеділка, 00:00 за Києвом.
-              </p>
-            </>
-          )}
-          {kind === 'goal-move' && (
-            <>
-              {select(
-                'goalId',
-                'Ціль',
-                f.goals.map((g) => [g.id, g.name]),
-              )}
-              {select('direction', 'Дія', [
-                ['add', 'Виділити на ціль'],
-                ['return', 'Повернути у вільні кошти'],
-              ])}
-              {select('goalMoveMode', 'Спосіб внеску', [
-                ['reserve', 'Зарезервувати на моєму рахунку'],
-                ['cash', 'Фактично відкласти готівку / переказати з ручного рахунку'],
-                ['bank', 'Поповнення банки · операція Monobank'],
-              ])}
-              {v.goalMoveMode === 'bank' ? (
-                <>
-                  {bankRefreshPanel()}
-                  {select('bankTransactionId', 'Операція поповнення / повернення', [
-                    ['', 'Обери операцію'],
-                    ...f.transactions
-                      .filter(
-                        (t) =>
-                          t.bank &&
-                          (v.bankRefreshAccountId === 'all' ||
-                            t.accountId === v.bankRefreshAccountId) &&
-                          !t.bankMissingFromStatement &&
-                          !t.reference &&
-                          t.currency === 'UAH' &&
-                          (v.direction === 'return' ? t.amountMinor > 0 : t.amountMinor < 0) &&
-                          ['income', 'expense', 'unclassified', 'transfer'].includes(t.kind),
-                      )
-                      .map((t): [string, string] => [
-                        t.id,
-                        `${t.description} · ${moneyLabel(t.amountMinor)} · ${kyivParts(Date.parse(t.at)).date}`,
-                      ]),
-                  ])}
-                  {bankOwnerConfirmation()}
-                  <p className="renewal-muted">
-                    Суму й дату беремо з банку. Пов’язуємо наявну операцію з ціллю без повторного
-                    списання. Обери саме операцію своєї банки.
-                  </p>
-                </>
-              ) : (
-                <>
-                  {field('amount', 'Сума, ₴')}
-                  {v.goalMoveMode === 'reserve'
-                    ? account()
-                    : select(
-                        'accountId',
-                        'З якого ручного рахунку',
-                        accountOptions.filter(
-                          ([id]) => f.accounts.find((a) => a.id === id)?.kind !== 'mono',
+                {f.policies.some((p) => p.periodStart) && (
+                  <>
+                    {select('taxiPeriodKey', 'Авто й робочий період', [
+                      ['', 'Автоматично за датою й часом'],
+                      ...f.taxiWeeks
+                        .filter((w) => !w.settled)
+                        .map(
+                          (w) => [w.key, taxiPeriodLabel(w.key, f.policies)] as [string, string],
                         ),
-                      )}
-                  <p className="renewal-muted">
-                    {v.goalMoveMode === 'reserve'
-                      ? 'Гроші залишаються на рахунку, але вилучаються з вільної суми. Це резерв, без фактичного переказу.'
-                      : 'Вкажи вже здійснений внесок. Залишок цього рахунку зменшиться, прогрес цілі зросте. Повернення діє навпаки; внесок не є особистою витратою.'}
-                  </p>
-                </>
-              )}
-            </>
-          )}
-          {kind === 'budget' && (
-            <>
-              {field('name', 'Назва бюджету')}
-              {select('purpose', 'Що відстежуємо', [
-                ['expense', 'Витрати за категоріями'],
-                ['saving', 'Внески на фінансові цілі'],
-              ])}
-              {v.purpose === 'expense' && (
-                <fieldset>
-                  <legend className="renewal-muted mb-2">Пов’язані категорії</legend>
-                  <div className="flex flex-wrap gap-2">
-                    {f.categories
-                      .filter((c) => !['дохід', 'зарплата', 'таксі', 'чайові'].includes(c))
-                      .map((c) => {
-                        const selected = v.categories.split('|').includes(c);
-                        return (
-                          <button
-                            key={c}
-                            type="button"
-                            className="renewal-secondary"
-                            aria-pressed={selected}
-                            style={
-                              selected
-                                ? { color: 'var(--color-a2)', borderColor: 'var(--color-a2)' }
-                                : undefined
-                            }
-                            onClick={() =>
-                              set(
-                                'categories',
-                                selected
-                                  ? v.categories
-                                      .split('|')
-                                      .filter((k) => k !== c)
-                                      .join('|')
-                                  : [...v.categories.split('|').filter(Boolean), c].join('|'),
-                              )
-                            }
-                          >
-                            {selected ? '✓ ' : ''}
-                            {financeCategoryLabel(c)}
-                          </button>
-                        );
-                      })}
+                    ])}
+                    <p className="renewal-chart-note">
+                      Якщо дописуєш дані попереднього авто після переходу, обери його період. Для
+                      нової роботи залиш «Автоматично».
+                    </p>
+                  </>
+                )}
+                {field('cash', 'Каса після комісії, ₴', 'text', 'Наприклад, 4000')}
+                <div className="renewal-form-grid">
+                  {field('commission', 'Комісія, ₴', 'text', '700')}
+                  {field('fuel', 'Пальне з картки парку, ₴', 'text', '0 або 1000')}
+                </div>
+                {field('received', 'Отримана готівка, ₴', 'text', 'Фактично від клієнтів')}
+                {account()}
+                <p className="renewal-muted">
+                  Каса й готівка — різні цифри. Комісія та пальне зменшують заробіток за формулою,
+                  без окремого списання з особистого рахунку. У готівці вкажи лише гроші за поїздки
+                  через застосунок. Особисті надходження, записані швидкою кнопкою, сюди повторно не
+                  додавай.
+                </p>
+                <details>
+                  <summary className="renewal-link cursor-pointer">
+                    Чайові в застосунку та додаткові дані
+                  </summary>
+                  <div className="flex flex-col gap-3 pt-3">
+                    {field('tips', 'Чайові через застосунок, ₴')}
+                    <p className="renewal-muted">
+                      Лише окремо показані чайові через застосунок. Частка визначається умовами,
+                      чинними на дату зміни. Готівкові чайові записуй швидкою кнопкою «Особистий
+                      дохід».
+                    </p>
+                    {entry &&
+                      entry.directMinor > 0 &&
+                      field('direct', 'Прямі замовлення в старому записі, ₴')}
+                    {field('paidWork', 'Робочі витрати, сплачені особисто з обраного рахунку, ₴')}
+                    <p className="renewal-muted">
+                      Для паливної картки парку залиш порожнім. Це поле списує кошти з ручного
+                      рахунку й враховує їх у розрахунку з парком; не дублюй ту саму витрату окремою
+                      операцією.
+                    </p>
+                    {field('note', 'Нотатка')}
                   </div>
-                </fieldset>
-              )}
-              <div className="renewal-form-grid">
-                {select('period', 'Період', [
-                  ['day', 'День'],
-                  ['week', 'Календарний тиждень'],
-                  ['month', 'Місяць'],
+                </details>
+                <p className="renewal-muted">
+                  Можна записати лише пальне або частину даних. Якщо для каси ще не вказано комісію
+                  чи отриману готівку, підсумок буде попереднім. Доповни цей запис пізніше через
+                  «Уточнити».
+                </p>
+              </>
+            )}
+            {kind === 'policy' && (
+              <>
+                {select('policyPreset', 'Профіль', [
+                  ['custom', 'Власні умови'],
+                  ['hybrid', 'Гібрид · завжди 50/50'],
                 ])}
-                {select('budgetMode', 'Ліміт', [
-                  ['fixed', 'Фіксована сума'],
-                  ['percent', 'Відсоток доходу'],
+                {v.policyPreset === 'custom' && (
+                  <>
+                    <div className="renewal-form-grid">
+                      {field('fare', 'Моя частка каси, %')}
+                      {field('feeShare', 'Моя частка комісії, %')}
+                      {field('fuelShare', 'Моя частка пального, %')}
+                      {field('tipsShare', 'Моя частка чайових через застосунок, %')}
+                      {field('bonus', 'Частка каси понад поріг, %')}
+                    </div>
+                    {field('threshold', 'Поріг брудної каси, ₴ (порожньо — вимкнено)')}
+                  </>
+                )}
+                {select('effective', 'Початок дії', [
+                  ['now', 'Від моменту підтвердження'],
+                  [
+                    'nextWeek',
+                    `Наступна перезмінка · ${new Date(taxiWeek(Date.now(), f.policies).to).toLocaleString('uk-UA', { timeZone: 'Europe/Kyiv', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}`,
+                  ],
                 ])}
-              </div>
-              {v.budgetMode === 'fixed' ? (
-                field('limit', 'Ліміт за обраний період, ₴')
-              ) : (
-                <>
-                  {field('percent', 'Частка, %')}
-                  {field('base', 'Плановий дохід за цей період, ₴')}
-                </>
-              )}
-              <p className="renewal-muted">
-                Перевищення показується як факт. Запис витрат залишається доступним. Денний і
-                місячний бюджети можуть одночасно відстежувати одну категорію.
-              </p>
-            </>
-          )}
-          {kind === 'template' && (
-            <>
-              <p className="renewal-muted">
-                50% — основні витрати, 30% — бажання, 20% — заощадження. Категорії й відсотки можна
-                змінити після додавання. Це початковий план.
-              </p>
-              {field('base', 'Плановий місячний дохід, ₴')}
-            </>
-          )}
-          {kind === 'payment' && (
-            <>
-              {guidedDebt && (
-                <ol
-                  className="flex gap-2 text-xs"
-                  aria-label="Кроки додавання боргу"
-                  aria-live="polite"
-                >
-                  {['Умови', 'Уже сплачено', 'Перевірка'].map((label, index) => (
-                    <li
-                      key={label}
-                      className="renewal-inset flex-1 text-center"
-                      aria-current={index === debtStep ? 'step' : undefined}
-                      style={{ color: index === debtStep ? 'var(--color-a2)' : undefined }}
-                    >
-                      {index + 1}. {label}
-                    </li>
-                  ))}
-                </ol>
-              )}
-              {(!guidedDebt || debtStep === 0) && (
-                <>
-                  {field('name', 'Назва платежу')}
-                  {select('paymentKind', 'Тип', Object.entries(PAYMENT_KIND_LABELS))}
-                </>
-              )}
-              {guidedDebt ? (
-                <DebtSetup
-                  v={v}
-                  step={debtStep}
-                  field={field}
-                  select={select}
-                  plan={plan}
-                  error={planError}
-                />
-              ) : (
-                field('amount', 'Сума одного платежу, ₴')
-              )}
-              {(!guidedDebt || debtStep === 1) && (
-                <>
-                  {field('nextDate', 'Наступна дата списання', 'date')}
-                  <p className="renewal-chart-note">
-                    Найближчий ще не сплачений платіж із графіка банку, а не дата початку договору.
-                  </p>
-                  {!calculatedMode &&
-                    select('recurrence', 'Повторення', [
+                <p className="renewal-muted">
+                  Підтвердження створить нову версію умов. Старі записи збережуть свої умови. За
+                  власного авто можна вказати частку каси 100%, а власних витрат — 100%.
+                </p>
+              </>
+            )}
+            {kind === 'goal' && (
+              <>
+                {field('name', 'На що збираєш?')}
+                {field('amount', 'Цільова сума, ₴')}
+                {field('nextDate', 'Бажана дата', 'date')}
+                {goal && (
+                  <>
+                    {select('goalStatus', 'Стан цілі', [
+                      ['active', 'Активна'],
+                      ['paused', 'Призупинити'],
+                      ['done', 'Досягнута'],
+                    ])}
+                    <p className="renewal-muted">
+                      Виділені кошти залишаться зарезервованими. Щоб повернути їх, обери «Внесок /
+                      повернення».
+                    </p>
+                  </>
+                )}
+              </>
+            )}
+            {kind === 'goal' && (
+              <>
+                {select('goalPlan', 'Регулярний внесок', [
+                  ['false', 'Без планової суми'],
+                  ['true', 'Запланувати внески'],
+                ])}
+                {v.goalPlan === 'true' && (
+                  <div className="renewal-form-grid">
+                    {field('planAmount', 'Плановий внесок, ₴')}
+                    {select('planPeriod', 'Як часто?', [
                       ['day', 'Щодня'],
                       ['week', 'Щотижня'],
                       ['month', 'Щомісяця'],
-                      ['year', 'Щороку'],
-                      ['once', 'Одноразово'],
                     ])}
-                  <div className="renewal-form-grid">
-                    {!['day', 'week'].includes(v.recurrence) &&
-                      field('anchorDay', 'Фіксований день списання (1–31)')}
-                    <p className="renewal-muted">
-                      Графік лишається в календарі платежів. Якщо оплату не підтверджено, повідомлю
-                      наступного дня.
-                    </p>
                   </div>
-                  <p className="renewal-chart-note">
-                    Для щотижневого платежу наступна дата — через 7 днів, для щоденного — через
-                    день. Фіксований день — число місяця: 9 означає дев’яте число. Для 29–31 у
-                    короткому місяці беремо останній день; потім повертаємось до вибраного числа.
-                  </p>
-                  <details className="renewal-inset">
-                    <summary className="renewal-link cursor-pointer">
-                      Категорія та інші деталі
-                    </summary>
-                    <div className="flex flex-col gap-3 mt-3">
-                      {category()}
-                      {field('lender', 'Банк / кредитор')}
-                      {field('paymentNote', 'Примітка до договору')}
-                      {request.id &&
-                        select('paymentStatus', 'Стан', [
-                          ['active', 'Активний'],
-                          ['paused', 'Призупинити'],
-                        ])}
-                    </div>
-                  </details>
-                </>
-              )}
-            </>
-          )}
-          {kind === 'payment-cancel' && (
-            <p className="renewal-inset renewal-muted">
-              {payment?.name}: приберемо підписку зі списку та зупинимо нагадування. Нової витрати
-              не буде. Скасування в Світанку не відключає підписку в самого сервісу — зроби це також
-              у ньому.
-            </p>
-          )}
-          {(kind === 'payment-paid' || kind === 'payment-close') && (
-            <>
-              <p className="renewal-muted">
-                {payment?.name} · оновимо залишок боргу та графік платежів після фактичної оплати.
-              </p>
-              {payment?.overpaymentRemainingMinor != null && (
-                <p className="renewal-inset renewal-muted">
-                  Залишок тіла: {moneyLabel(payment.remainingMinor ?? 0)}. Переплати ще:{' '}
-                  {moneyLabel(payment.overpaymentRemainingMinor)}. Звичайний платіж розподілимо за
-                  рівним планом; якщо банк показує інше погашення тіла, введи його нижче. При
-                  достроковому закритті вкажи фактичну повну суму з банку — майбутню переплату він
-                  може перерахувати.
+                )}
+                <p className="renewal-chart-note">
+                  План не списує гроші. Внесок підтверджується окремо; тижневий план рахується від
+                  понеділка, 00:00 за Києвом.
                 </p>
-              )}
-              {kind === 'payment-close' && (
-                <p className="renewal-inset renewal-muted">
-                  Підтверджуй після фактичного погашення. Вкажи повну суму з банку, включно з
-                  остаточними відсотками й комісіями. Тіло боргу має бути погашене повністю; після
-                  збереження цей борг зникне зі списку.
-                </p>
-              )}
-              {payment?.remainingMinor != null && (
-                <>
-                  <label className="renewal-field">
-                    Погашення тіла боргу, ₴
-                    <input
-                      inputMode="decimal"
-                      required={(payment?.rateBps ?? 0) > 0 && !payment.interestMethod}
-                      value={v.principal}
-                      onChange={(e) => set('principal', e.target.value)}
-                      placeholder={
-                        payment.overpaymentTotalMinor != null || payment.interestMethod
-                          ? 'Автоматично за планом; можна уточнити за банком'
-                          : (payment.rateBps ?? 0) > 0
-                            ? 'Обов’язково за договором'
-                            : 'Без відсотків: повний платіж мінус комісія'
-                      }
-                    />
-                  </label>
-                  <p className="renewal-chart-note">
-                    Відсотки та комісія є витратою, але не зменшують тіло боргу.
-                  </p>
-                  {suggestedPayment && (
-                    <p className="renewal-inset renewal-muted" aria-live="polite">
-                      За обраною схемою: тіло {moneyLabel(suggestedPayment.principalMinor)},
-                      відсотки й комісія {moneyLabel(suggestedPayment.overpaymentMinor)}. Якщо поле
-                      тіла порожнє, використаємо цей розрахунок; його можна уточнити за банком.
+              </>
+            )}
+            {kind === 'goal-move' && (
+              <>
+                {select(
+                  'goalId',
+                  'Ціль',
+                  f.goals.map((g) => [g.id, g.name]),
+                )}
+                {select('direction', 'Дія', [
+                  ['add', 'Виділити на ціль'],
+                  ['return', 'Повернути у вільні кошти'],
+                ])}
+                {select('goalMoveMode', 'Спосіб внеску', [
+                  ['reserve', 'Зарезервувати на моєму рахунку'],
+                  ['cash', 'Фактично відкласти готівку / переказати з ручного рахунку'],
+                  ['bank', 'Поповнення банки · операція Monobank'],
+                ])}
+                {v.goalMoveMode === 'bank' ? (
+                  <>
+                    {bankRefreshPanel()}
+                    {select('bankTransactionId', 'Операція поповнення / повернення', [
+                      ['', 'Обери операцію'],
+                      ...f.transactions
+                        .filter(
+                          (t) =>
+                            t.bank &&
+                            (v.bankRefreshAccountId === 'all' ||
+                              t.accountId === v.bankRefreshAccountId) &&
+                            !t.bankMissingFromStatement &&
+                            !t.reference &&
+                            t.currency === 'UAH' &&
+                            (v.direction === 'return' ? t.amountMinor > 0 : t.amountMinor < 0) &&
+                            ['income', 'expense', 'unclassified', 'transfer'].includes(t.kind),
+                        )
+                        .map((t): [string, string] => [
+                          t.id,
+                          `${t.description} · ${moneyLabel(t.amountMinor)} · ${kyivParts(Date.parse(t.at)).date}`,
+                        ]),
+                    ])}
+                    {bankOwnerConfirmation()}
+                    <p className="renewal-muted">
+                      Суму й дату беремо з банку. Пов’язуємо наявну операцію з ціллю без повторного
+                      списання. Обери саме операцію своєї банки.
                     </p>
-                  )}
-                </>
-              )}
-              {select('paymentMode', 'Як сплачено?', [
-                ['manual', 'Готівка / ручний рахунок'],
-                ['bank', 'Уже імпортована операція Monobank'],
-              ])}
-              {v.paymentMode === 'bank' ? (
-                <>
-                  <label className="renewal-field">
-                    Знайти оплату
-                    <input
-                      type="search"
-                      value={paymentSearch}
-                      onChange={(e) => setPaymentSearch(e.target.value)}
-                      placeholder="Назва продавця, сума або дата"
-                    />
-                  </label>
-                  {select('bankTransactionId', 'Банківська операція', [
-                    ['', 'Обери операцію оплати'],
-                    ...f.transactions
-                      .filter(
-                        (t) =>
-                          t.bank &&
-                          (v.bankRefreshAccountId === 'all' ||
-                            t.accountId === v.bankRefreshAccountId) &&
-                          !t.bankMissingFromStatement &&
-                          !t.reference &&
-                          (bankPaymentAmount(t) ?? 0) < 0 &&
-                          ['expense', 'unclassified', 'transfer'].includes(t.kind) &&
-                          (t.id === v.bankTransactionId ||
-                            `${t.description} ${-(bankPaymentAmount(t) ?? 0) / 100} ${kyivParts(Date.parse(t.at)).date}`
-                              .toLocaleLowerCase('uk-UA')
-                              .includes(paymentSearch.toLocaleLowerCase('uk-UA'))),
-                      )
-                      .map((t): [string, string] => [
-                        t.id,
-                        `${t.description} · ${moneyLabel(-(bankPaymentAmount(t) ?? 0))} · ${kyivParts(Date.parse(t.at)).date}${t.bankHold ? ' · hold у API' : ''}${t.currency !== 'UAH' ? ` (${moneyLabel(-t.amountMinor, t.currency)})` : ''}`,
-                      ]),
+                  </>
+                ) : (
+                  <>
+                    {field('amount', 'Сума, ₴')}
+                    {v.goalMoveMode === 'reserve'
+                      ? account()
+                      : select(
+                          'accountId',
+                          'З якого ручного рахунку',
+                          accountOptions.filter(
+                            ([id]) => f.accounts.find((a) => a.id === id)?.kind !== 'mono',
+                          ),
+                        )}
+                    <p className="renewal-muted">
+                      {v.goalMoveMode === 'reserve'
+                        ? 'Гроші залишаються на рахунку, але вилучаються з вільної суми. Це резерв, без фактичного переказу.'
+                        : 'Вкажи вже здійснений внесок. Залишок цього рахунку зменшиться, прогрес цілі зросте. Повернення діє навпаки; внесок не є особистою витратою.'}
+                    </p>
+                  </>
+                )}
+              </>
+            )}
+            {kind === 'budget' && (
+              <>
+                {field('name', 'Назва бюджету')}
+                {select('purpose', 'Що відстежуємо', [
+                  ['expense', 'Витрати за категоріями'],
+                  ['saving', 'Внески на фінансові цілі'],
+                ])}
+                {v.purpose === 'expense' && (
+                  <fieldset>
+                    <legend className="renewal-muted mb-2">Пов’язані категорії</legend>
+                    <div className="flex flex-wrap gap-2">
+                      {f.categories
+                        .filter((c) => !['дохід', 'зарплата', 'таксі', 'чайові'].includes(c))
+                        .map((c) => {
+                          const selected = v.categories.split('|').includes(c);
+                          return (
+                            <button
+                              key={c}
+                              type="button"
+                              className="renewal-secondary"
+                              aria-pressed={selected}
+                              style={
+                                selected
+                                  ? { color: 'var(--color-a2)', borderColor: 'var(--color-a2)' }
+                                  : undefined
+                              }
+                              onClick={() =>
+                                set(
+                                  'categories',
+                                  selected
+                                    ? v.categories
+                                        .split('|')
+                                        .filter((k) => k !== c)
+                                        .join('|')
+                                    : [...v.categories.split('|').filter(Boolean), c].join('|'),
+                                )
+                              }
+                            >
+                              {selected ? '✓ ' : ''}
+                              {financeCategoryLabel(c)}
+                            </button>
+                          );
+                        })}
+                    </div>
+                  </fieldset>
+                )}
+                <div className="renewal-form-grid">
+                  {select('period', 'Період', [
+                    ['day', 'День'],
+                    ['week', 'Календарний тиждень'],
+                    ['month', 'Місяць'],
                   ])}
-                  {bankOwnerConfirmation()}
-                  {bankRefreshPanel()}
-                  <p className="renewal-muted">
-                    Пов’яжемо наявну операцію. Друге списання не створюється. Для іноземної оплати
-                    використовується фактичне списання з гривневої картки. Уже пов’язані операції
-                    недоступні для повторної оплати.
-                  </p>
-                </>
-              ) : (
-                <>
-                  {field('amount', 'Фактично сплачено, ₴')}
-                  {account()}
-                  <p className="renewal-muted">
-                    Створиться одна витрата на вибраному ручному рахунку.
-                  </p>
-                </>
-              )}
-            </>
-          )}
-          {kind === 'settings' && (
-            <>
-              {select('incomePeriod', 'Типовий період фінансового огляду', [
-                ['week', '7 днів'],
-                ['month', '30 днів'],
-              ])}
-              {select('taxiVisible', 'Модуль таксі', [
-                ['true', 'Показувати'],
-                ['false', 'Приховати й зберегти історію'],
-              ])}
-              {select('paymentReminders', 'Непідтверджені оплати в Telegram', [
-                ['true', 'Увімкнено'],
-                ['false', 'Вимкнено'],
-              ])}
-              {select('checkinReminders', 'Нагадування про непідтверджений чек-ін', [
-                ['true', 'Увімкнено · раз на актуальний слот'],
-                ['false', 'Вимкнено'],
-              ])}
-              {field('newCategory', 'Додаткова власна категорія')}
-              {f.accounts
-                .filter((a) => a.kind === 'mono')
-                .map((a) => (
-                  <button
-                    type="button"
-                    key={a.id}
-                    className="renewal-secondary"
-                    disabled={pending}
-                    onClick={() => onOpenForm?.({ kind: 'credit-limit', id: a.id })}
+                  {select('budgetMode', 'Ліміт', [
+                    ['fixed', 'Фіксована сума'],
+                    ['percent', 'Відсоток доходу'],
+                  ])}
+                </div>
+                {v.budgetMode === 'fixed' ? (
+                  field('limit', 'Ліміт за обраний період, ₴')
+                ) : (
+                  <>
+                    {field('percent', 'Частка, %')}
+                    {field('base', 'Плановий дохід за цей період, ₴')}
+                  </>
+                )}
+                <p className="renewal-muted">
+                  Перевищення показується як факт. Запис витрат залишається доступним. Денний і
+                  місячний бюджети можуть одночасно відстежувати одну категорію.
+                </p>
+              </>
+            )}
+            {kind === 'template' && (
+              <>
+                <p className="renewal-muted">
+                  50% — основні витрати, 30% — бажання, 20% — заощадження. Категорії й відсотки
+                  можна змінити після додавання. Це початковий план.
+                </p>
+                {field('base', 'Плановий місячний дохід, ₴')}
+              </>
+            )}
+            {kind === 'payment' && (
+              <>
+                {guidedDebt && (
+                  <ol
+                    className="flex gap-2 text-xs"
+                    aria-label="Кроки додавання боргу"
+                    aria-live="polite"
                   >
-                    Кредитний ліміт · {a.name}
-                  </button>
-                ))}
-              <p className="renewal-muted">
-                Період огляду визначає початковий вибір 7 або 30 днів, а не графік надходження
-                зарплати. Приховане таксі можна повернути тут. Борг перед парком залишається в
-                обліку. Нагадування враховують тихі години; у демонстрації повідомлення не
-                надсилаються.
+                    {['Умови', 'Уже сплачено', 'Перевірка'].map((label, index) => (
+                      <li
+                        key={label}
+                        className="renewal-inset flex-1 text-center"
+                        aria-current={index === debtStep ? 'step' : undefined}
+                        style={{ color: index === debtStep ? 'var(--color-a2)' : undefined }}
+                      >
+                        {index + 1}. {label}
+                      </li>
+                    ))}
+                  </ol>
+                )}
+                {(!guidedDebt || debtStep === 0) && (
+                  <>
+                    {field('name', 'Назва платежу')}
+                    {select('paymentKind', 'Тип', Object.entries(PAYMENT_KIND_LABELS))}
+                  </>
+                )}
+                {guidedDebt ? (
+                  <DebtSetup
+                    v={v}
+                    step={debtStep}
+                    field={field}
+                    select={select}
+                    plan={plan}
+                    error={planError}
+                  />
+                ) : (
+                  field('amount', 'Сума одного платежу, ₴')
+                )}
+                {(!guidedDebt || debtStep === 1) && (
+                  <>
+                    {field('nextDate', 'Наступна дата списання', 'date')}
+                    <p className="renewal-chart-note">
+                      Найближчий ще не сплачений платіж із графіка банку, а не дата початку
+                      договору.
+                    </p>
+                    {!calculatedMode &&
+                      select('recurrence', 'Повторення', [
+                        ['day', 'Щодня'],
+                        ['week', 'Щотижня'],
+                        ['month', 'Щомісяця'],
+                        ['year', 'Щороку'],
+                        ['once', 'Одноразово'],
+                      ])}
+                    <div className="renewal-form-grid">
+                      {!['day', 'week'].includes(v.recurrence) &&
+                        field('anchorDay', 'Фіксований день списання (1–31)')}
+                      <p className="renewal-muted">
+                        Графік лишається в календарі платежів. Якщо оплату не підтверджено,
+                        повідомлю наступного дня.
+                      </p>
+                    </div>
+                    <p className="renewal-chart-note">
+                      Для щотижневого платежу наступна дата — через 7 днів, для щоденного — через
+                      день. Фіксований день — число місяця: 9 означає дев’яте число. Для 29–31 у
+                      короткому місяці беремо останній день; потім повертаємось до вибраного числа.
+                    </p>
+                    <details className="renewal-inset">
+                      <summary className="renewal-link cursor-pointer">
+                        Категорія та інші деталі
+                      </summary>
+                      <div className="flex flex-col gap-3 mt-3">
+                        {category()}
+                        {field('lender', 'Банк / кредитор')}
+                        {field('paymentNote', 'Примітка до договору')}
+                        {request.id &&
+                          select('paymentStatus', 'Стан', [
+                            ['active', 'Активний'],
+                            ['paused', 'Призупинити'],
+                          ])}
+                      </div>
+                    </details>
+                  </>
+                )}
+              </>
+            )}
+            {kind === 'payment-cancel' && (
+              <p className="renewal-inset renewal-muted">
+                {payment?.name}: приберемо підписку зі списку та зупинимо нагадування. Нової витрати
+                не буде. Скасування в Світанку не відключає підписку в самого сервісу — зроби це
+                також у ньому.
               </p>
-            </>
-          )}
-          {kind === 'classify' && (
-            <>
-              <p className="renewal-muted">
-                {transaction?.description} · {moneyLabel(transaction?.amountUah ?? 0)}
-              </p>
-              {select('transactionKind', 'Тип', [
-                ['expense', 'Витрата'],
-                ['income', 'Надходження'],
-                ['transfer', 'Власний переказ'],
-                ['taxi-settlement', 'Розрахунок таксі'],
-              ])}
-              {category()}
-            </>
-          )}
-          {['taxi-settle', 'taxi-settlement-edit'].includes(kind) && (
-            <>
-              <p className="renewal-muted">
-                {request.id} ·{' '}
-                {moneyLabel(f.taxiWeeks.find((w) => w.key === request.id)?.settlementMinor ?? 0)}.
-                Позитивна сума — парк доплачує, від’ємна — ти повертаєш парку. Підтверджуй після
-                фактичного розрахунку.
-              </p>
-              {kind === 'taxi-settle' &&
-                select('paymentMode', 'Як розрахувались?', [
+            )}
+            {(kind === 'payment-paid' || kind === 'payment-close') && (
+              <>
+                <p className="renewal-muted">
+                  {payment?.name} · оновимо залишок боргу та графік платежів після фактичної оплати.
+                </p>
+                {payment?.overpaymentRemainingMinor != null && (
+                  <p className="renewal-inset renewal-muted">
+                    Залишок тіла: {moneyLabel(payment.remainingMinor ?? 0)}. Переплати ще:{' '}
+                    {moneyLabel(payment.overpaymentRemainingMinor)}. Звичайний платіж розподілимо за
+                    рівним планом; якщо банк показує інше погашення тіла, введи його нижче. При
+                    достроковому закритті вкажи фактичну повну суму з банку — майбутню переплату він
+                    може перерахувати.
+                  </p>
+                )}
+                {kind === 'payment-close' && (
+                  <p className="renewal-inset renewal-muted">
+                    Підтверджуй після фактичного погашення. Вкажи повну суму з банку, включно з
+                    остаточними відсотками й комісіями. Тіло боргу має бути погашене повністю; після
+                    збереження цей борг зникне зі списку.
+                  </p>
+                )}
+                {payment?.remainingMinor != null && (
+                  <>
+                    <label className="renewal-field">
+                      Погашення тіла боргу, ₴
+                      <input
+                        inputMode="decimal"
+                        required={(payment?.rateBps ?? 0) > 0 && !payment.interestMethod}
+                        value={v.principal}
+                        onChange={(e) => set('principal', e.target.value)}
+                        placeholder={
+                          payment.overpaymentTotalMinor != null || payment.interestMethod
+                            ? 'Автоматично за планом; можна уточнити за банком'
+                            : (payment.rateBps ?? 0) > 0
+                              ? 'Обов’язково за договором'
+                              : 'Без відсотків: повний платіж мінус комісія'
+                        }
+                      />
+                    </label>
+                    <p className="renewal-chart-note">
+                      Відсотки та комісія є витратою, але не зменшують тіло боргу.
+                    </p>
+                    {suggestedPayment && (
+                      <p className="renewal-inset renewal-muted" aria-live="polite">
+                        За обраною схемою: тіло {moneyLabel(suggestedPayment.principalMinor)},
+                        відсотки й комісія {moneyLabel(suggestedPayment.overpaymentMinor)}. Якщо
+                        поле тіла порожнє, використаємо цей розрахунок; його можна уточнити за
+                        банком.
+                      </p>
+                    )}
+                  </>
+                )}
+                {select('paymentMode', 'Як сплачено?', [
                   ['manual', 'Готівка / ручний рахунок'],
                   ['bank', 'Уже імпортована операція Monobank'],
                 ])}
-              {v.paymentMode === 'bank' ? (
-                <>
-                  {bankRefreshPanel()}
-                  {select('bankTransactionId', 'Фактичний банківський розрахунок', [
-                    ['', 'Обери операцію розрахунку'],
-                    ...f.transactions
-                      .filter(
-                        (t) =>
-                          t.bank &&
-                          (v.bankRefreshAccountId === 'all' ||
-                            t.accountId === v.bankRefreshAccountId) &&
-                          !t.bankMissingFromStatement &&
-                          !t.reference &&
-                          t.currency === 'UAH' &&
-                          t.amountMinor !== 0 &&
-                          ['income', 'expense', 'unclassified', 'taxi-settlement'].includes(
-                            t.kind,
-                          ) &&
-                          Date.parse(t.at) >=
-                            taxiWeek(taxiPeriodStart(request.id ?? '', f.policies), f.policies).to,
-                      )
-                      .map((t): [string, string] => [
-                        t.id,
-                        `${t.description} · ${moneyLabel(t.amountMinor)} · ${t.at.slice(0, 10)}`,
-                      ]),
-                  ])}
-                  {bankOwnerConfirmation()}
-                  <p className="renewal-muted">
-                    Прив’яжемо наявну операцію й закриємо розрахунок. Другий дохід або витрата не
-                    створюються.
-                  </p>
-                </>
-              ) : (
-                <>
-                  {select('settlementDirection', 'Напрямок фактичного розрахунку', [
-                    ['pay', 'Я віддав парку'],
-                    ['receive', 'Парк доплатив мені'],
-                  ])}
-                  {field('amount', 'Фактична сума розрахунку, ₴')}
-                  {kind === 'taxi-settle' ? (
-                    account()
-                  ) : (
+                {v.paymentMode === 'bank' ? (
+                  <>
+                    <label className="renewal-field">
+                      Знайти оплату
+                      <input
+                        type="search"
+                        value={paymentSearch}
+                        onChange={(e) => setPaymentSearch(e.target.value)}
+                        placeholder="Назва продавця, сума або дата"
+                      />
+                    </label>
+                    {select('bankTransactionId', 'Банківська операція', [
+                      ['', 'Обери операцію оплати'],
+                      ...f.transactions
+                        .filter(
+                          (t) =>
+                            t.bank &&
+                            (v.bankRefreshAccountId === 'all' ||
+                              t.accountId === v.bankRefreshAccountId) &&
+                            !t.bankMissingFromStatement &&
+                            !t.reference &&
+                            (bankPaymentAmount(t) ?? 0) < 0 &&
+                            ['expense', 'unclassified', 'transfer'].includes(t.kind) &&
+                            (t.id === v.bankTransactionId ||
+                              `${t.description} ${-(bankPaymentAmount(t) ?? 0) / 100} ${kyivParts(Date.parse(t.at)).date}`
+                                .toLocaleLowerCase('uk-UA')
+                                .includes(paymentSearch.toLocaleLowerCase('uk-UA'))),
+                        )
+                        .map((t): [string, string] => [
+                          t.id,
+                          `${t.description} · ${moneyLabel(-(bankPaymentAmount(t) ?? 0))} · ${kyivParts(Date.parse(t.at)).date}${t.bankHold ? ' · hold у API' : ''}${t.currency !== 'UAH' ? ` (${moneyLabel(-t.amountMinor, t.currency)})` : ''}`,
+                        ]),
+                    ])}
+                    {bankOwnerConfirmation()}
+                    {bankRefreshPanel()}
                     <p className="renewal-muted">
-                      Уточнення змінює залишок лише на різницю з попереднім записом; повторного
-                      повного списання немає.
+                      Пов’яжемо наявну операцію. Друге списання не створюється. Для іноземної оплати
+                      використовується фактичне списання з гривневої картки. Уже пов’язані операції
+                      недоступні для повторної оплати.
                     </p>
-                  )}
-                </>
-              )}
-              <p className="renewal-inset renewal-muted" aria-live="polite">
-                За формулою: {moneyLabel(settleWeek?.settlementMinor ?? 0)}. Фактична сума може
-                відрізнятися; збережемо обидві цифри й покажемо різницю в історії. Від’ємна сума —
-                віддав парку, додатна — отримав.
-              </p>
-              {field('settlementNote', 'Пояснення різниці · необов’язково')}
-            </>
-          )}
+                  </>
+                ) : (
+                  <>
+                    {field('amount', 'Фактично сплачено, ₴')}
+                    {account()}
+                    <p className="renewal-muted">
+                      Створиться одна витрата на вибраному ручному рахунку.
+                    </p>
+                  </>
+                )}
+              </>
+            )}
+            {kind === 'settings' && (
+              <>
+                {select('incomePeriod', 'Типовий період фінансового огляду', [
+                  ['week', '7 днів'],
+                  ['month', '30 днів'],
+                ])}
+                {select('taxiVisible', 'Модуль таксі', [
+                  ['true', 'Показувати'],
+                  ['false', 'Приховати й зберегти історію'],
+                ])}
+                {select('paymentReminders', 'Непідтверджені оплати в Telegram', [
+                  ['true', 'Увімкнено'],
+                  ['false', 'Вимкнено'],
+                ])}
+                {select('checkinReminders', 'Нагадування про непідтверджений чек-ін', [
+                  ['true', 'Увімкнено · раз на актуальний слот'],
+                  ['false', 'Вимкнено'],
+                ])}
+                {field('newCategory', 'Додаткова власна категорія')}
+                {f.accounts
+                  .filter((a) => a.kind === 'mono')
+                  .map((a) => (
+                    <button
+                      type="button"
+                      key={a.id}
+                      className="renewal-secondary"
+                      disabled={pending}
+                      onClick={() => onOpenForm?.({ kind: 'credit-limit', id: a.id })}
+                    >
+                      Кредитний ліміт · {a.name}
+                    </button>
+                  ))}
+                <p className="renewal-muted">
+                  Період огляду визначає початковий вибір 7 або 30 днів, а не графік надходження
+                  зарплати. Приховане таксі можна повернути тут. Борг перед парком залишається в
+                  обліку. Нагадування враховують тихі години; у демонстрації повідомлення не
+                  надсилаються.
+                </p>
+              </>
+            )}
+            {kind === 'classify' && (
+              <>
+                <p className="renewal-muted">
+                  {transaction?.description} · {moneyLabel(transaction?.amountUah ?? 0)}
+                </p>
+                {select('transactionKind', 'Тип', [
+                  ['expense', 'Витрата'],
+                  ['income', 'Надходження'],
+                  ['transfer', 'Власний переказ'],
+                  ['taxi-settlement', 'Розрахунок таксі'],
+                ])}
+                {category()}
+              </>
+            )}
+            {['taxi-settle', 'taxi-settlement-edit'].includes(kind) && (
+              <>
+                <p className="renewal-muted">
+                  {request.id} ·{' '}
+                  {moneyLabel(f.taxiWeeks.find((w) => w.key === request.id)?.settlementMinor ?? 0)}.
+                  Позитивна сума — парк доплачує, від’ємна — ти повертаєш парку. Підтверджуй після
+                  фактичного розрахунку.
+                </p>
+                {kind === 'taxi-settle' &&
+                  select('paymentMode', 'Як розрахувались?', [
+                    ['manual', 'Готівка / ручний рахунок'],
+                    ['bank', 'Уже імпортована операція Monobank'],
+                  ])}
+                {v.paymentMode === 'bank' ? (
+                  <>
+                    {bankRefreshPanel()}
+                    {select('bankTransactionId', 'Фактичний банківський розрахунок', [
+                      ['', 'Обери операцію розрахунку'],
+                      ...f.transactions
+                        .filter(
+                          (t) =>
+                            t.bank &&
+                            (v.bankRefreshAccountId === 'all' ||
+                              t.accountId === v.bankRefreshAccountId) &&
+                            !t.bankMissingFromStatement &&
+                            !t.reference &&
+                            t.currency === 'UAH' &&
+                            t.amountMinor !== 0 &&
+                            ['income', 'expense', 'unclassified', 'taxi-settlement'].includes(
+                              t.kind,
+                            ) &&
+                            Date.parse(t.at) >=
+                              taxiWeek(taxiPeriodStart(request.id ?? '', f.policies), f.policies)
+                                .to,
+                        )
+                        .map((t): [string, string] => [
+                          t.id,
+                          `${t.description} · ${moneyLabel(t.amountMinor)} · ${t.at.slice(0, 10)}`,
+                        ]),
+                    ])}
+                    {bankOwnerConfirmation()}
+                    <p className="renewal-muted">
+                      Прив’яжемо наявну операцію й закриємо розрахунок. Другий дохід або витрата не
+                      створюються.
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    {select('settlementDirection', 'Напрямок фактичного розрахунку', [
+                      ['pay', 'Я віддав парку'],
+                      ['receive', 'Парк доплатив мені'],
+                    ])}
+                    {field('amount', 'Фактична сума розрахунку, ₴')}
+                    {kind === 'taxi-settle' ? (
+                      account()
+                    ) : (
+                      <p className="renewal-muted">
+                        Уточнення змінює залишок лише на різницю з попереднім записом; повторного
+                        повного списання немає.
+                      </p>
+                    )}
+                  </>
+                )}
+                <p className="renewal-inset renewal-muted" aria-live="polite">
+                  За формулою: {moneyLabel(settleWeek?.settlementMinor ?? 0)}. Фактична сума може
+                  відрізнятися; збережемо обидві цифри й покажемо різницю в історії. Від’ємна сума —
+                  віддав парку, додатна — отримав.
+                </p>
+                {field('settlementNote', 'Пояснення різниці · необов’язково')}
+              </>
+            )}
+          </fieldset>
           {error && (
             <p role="alert" className="text-sm text-neg">
               {error}
             </p>
           )}
-          {guidedDebt && debtStep > 0 && (
+          {guidedDebt && debtStep > 0 && !uncertain && (
             <button
               type="button"
               className="renewal-secondary"
@@ -1613,15 +1648,17 @@ function FinanceFormBody({
           <button type="submit" className="renewal-button mt-2" disabled={pending}>
             {pending
               ? 'Зберігаю…'
-              : guidedDebt && debtStep < 2
-                ? debtStep === 0
-                  ? 'Далі: уже сплачені платежі'
-                  : 'Перевірити розрахунок'
-                : kind === 'policy'
-                  ? 'Підтвердити нові умови'
-                  : kind === 'classify'
-                    ? 'Зберегти тип і категорію'
-                    : 'Підтвердити й зберегти'}
+              : uncertain
+                ? 'Перевірити збереження'
+                : guidedDebt && debtStep < 2
+                  ? debtStep === 0
+                    ? 'Далі: уже сплачені платежі'
+                    : 'Перевірити розрахунок'
+                  : kind === 'policy'
+                    ? 'Підтвердити нові умови'
+                    : kind === 'classify'
+                      ? 'Зберегти тип і категорію'
+                      : 'Підтвердити й зберегти'}
           </button>
         </form>
       </div>

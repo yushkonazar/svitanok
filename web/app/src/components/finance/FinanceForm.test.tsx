@@ -5,6 +5,7 @@ import { FinanceForm, type FinanceFormRequest } from './FinanceForm.tsx';
 import { fetchFinance, refreshFinanceBank, postFinance } from '../../api/client.ts';
 import { readFinanceDemo, resetFinanceDemo } from '../../api/finance-demo.ts';
 import { FINANCE_QUERY } from '../../api/finance-hooks.ts';
+import { FinanceSaveUncertainError } from '../../api/finance-errors.ts';
 
 vi.mock('../../api/client.ts', () => ({
   postFinance: vi.fn(async () => ({ ok: true })),
@@ -33,6 +34,43 @@ function open(request: FinanceFormRequest, finance = readFinanceDemo()) {
   );
   return { invalidate, close };
 }
+it('keeps an uncertain expense frozen and verifies the original command after a workspace refresh', async () => {
+  const f = readFinanceDemo();
+  vi.mocked(postFinance)
+    .mockRejectedValueOnce(new FinanceSaveUncertainError())
+    .mockResolvedValueOnce({ ok: true } as never);
+  const { close } = open({ kind: 'expense' }, f);
+  fireEvent.change(screen.getByLabelText('Сума, ₴'), { target: { value: '257' } });
+  fireEvent.change(screen.getByLabelText('Опис або причина'), { target: { value: 'Обід' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Підтвердити й зберегти' }));
+  await screen.findByRole('button', { name: 'Перевірити збереження' });
+  expect(screen.getByRole('alert')).toHaveTextContent('З’єднання із сервером перервалося');
+  expect(screen.getByLabelText('Сума, ₴')).toBeDisabled();
+  const original = structuredClone(vi.mocked(postFinance).mock.calls[0]![0]);
+  f.version += 1;
+  fireEvent.click(screen.getByRole('button', { name: 'Перевірити збереження' }));
+  await waitFor(() => expect(close).toHaveBeenCalledOnce());
+  expect(vi.mocked(postFinance).mock.calls[1]![0]).toEqual(original);
+  expect(original.payload).toMatchObject({ amountMinor: 25700, description: 'Обід' });
+});
+it('submits one financial command when the same form is confirmed twice before the response', async () => {
+  let finish!: (value: { ok: boolean }) => void;
+  vi.mocked(postFinance).mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      }) as never,
+  );
+  const { close } = open({ kind: 'expense' });
+  const amount = screen.getByLabelText('Сума, ₴');
+  fireEvent.change(amount, { target: { value: '257' } });
+  const form = amount.closest('form')!;
+  fireEvent.submit(form);
+  fireEvent.submit(form);
+  expect(postFinance).toHaveBeenCalledOnce();
+  finish({ ok: true });
+  await waitFor(() => expect(close).toHaveBeenCalledOnce());
+});
 it('shows international subscriptions and unlinked transfer debits, submitting actual UAH and offering a statement refresh', async () => {
   const f = readFinanceDemo(),
     pay = f.payments[0]!;

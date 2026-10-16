@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { FinanceCommandRejectedError, FinanceSaveUncertainError } from './finance-errors.ts';
 
 /* M3 — клієнтський бік: initData мутацій їде ЗАГОЛОВКОМ.
  *
@@ -86,6 +87,90 @@ afterEach(() => {
 
 describe('finance mutation acknowledgement', () => {
   const command = { id: 'payment-test-command', version: 1, type: 'payment-paid', payload: {} };
+  it('recovers a lost response with the identical command and accepts its existing receipt', async () => {
+    const finance = readFinanceDemo();
+    fetchMock
+      .mockRejectedValueOnce(new TypeError('Load failed'))
+      .mockResolvedValueOnce(Response.json({ ok: true, duplicate: true }))
+      .mockResolvedValueOnce(Response.json(finance));
+    await expect(postFinance(command)).resolves.toEqual({ finance, demo: false });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock.mock.calls[0][1].body).toBe(fetchMock.mock.calls[1][1].body);
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual(command);
+    expect(fetchMock.mock.calls[2][1].method).toBeUndefined();
+  });
+  it('retries a truncated receipt but never changes the mutation body', async () => {
+    const finance = readFinanceDemo();
+    fetchMock
+      .mockResolvedValueOnce(new Response('{"ok":'))
+      .mockResolvedValueOnce(Response.json({ ok: true, duplicate: true }))
+      .mockResolvedValueOnce(Response.json(finance));
+    await expect(postFinance(command)).resolves.toEqual({ finance, demo: false });
+    expect(fetchMock.mock.calls[0][1].body).toBe(fetchMock.mock.calls[1][1].body);
+  });
+  it('retries a temporary server failure, while a subsequent conflict is returned without a new command', async () => {
+    fetchMock
+      .mockResolvedValueOnce(Response.json({ ok: false }, { status: 503 }))
+      .mockResolvedValueOnce(
+        Response.json({ ok: false, error: 'Дані змінилися' }, { status: 409 }),
+      );
+    await expect(postFinance(command)).rejects.toBeInstanceOf(FinanceCommandRejectedError);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[0][1].body).toBe(fetchMock.mock.calls[1][1].body);
+  });
+  it('limits failed network attempts and returns a Ukrainian uncertain-save error', async () => {
+    fetchMock.mockRejectedValue(new TypeError('Load failed'));
+    await expect(postFinance(command)).rejects.toBeInstanceOf(FinanceSaveUncertainError);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[0][1].body).toBe(fetchMock.mock.calls[1][1].body);
+  });
+  it('aborts stalled writes and bounds the entire retry sequence', async () => {
+    vi.useFakeTimers();
+    try {
+      fetchMock.mockImplementation(
+        (_url: string, init: RequestInit) =>
+          new Promise((_resolve, reject) => {
+            init.signal?.addEventListener(
+              'abort',
+              () => reject(new DOMException('Aborted', 'AbortError')),
+              { once: true },
+            );
+          }),
+      );
+      let error: unknown;
+      const finished = postFinance(command).catch((e) => {
+        error = e;
+      });
+      await vi.advanceTimersByTimeAsync(30_500);
+      await finished;
+      expect(error).toBeInstanceOf(FinanceSaveUncertainError);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it('does not wait indefinitely for a refresh after the server accepted the write', async () => {
+    vi.useFakeTimers();
+    try {
+      fetchMock.mockResolvedValueOnce(Response.json({ ok: true })).mockImplementation(
+        (_url: string, init: RequestInit) =>
+          new Promise((_resolve, reject) => {
+            init.signal?.addEventListener(
+              'abort',
+              () => reject(new DOMException('Aborted', 'AbortError')),
+              { once: true },
+            );
+          }),
+      );
+      const result = postFinance(command);
+      await vi.advanceTimersByTimeAsync(8_000);
+      await expect(result).resolves.toEqual({ finance: null, demo: false });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(fetchMock.mock.calls[1][1].method).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
   it.each([false, true])(
     'accepts the real server acknowledgement (duplicate=%s) and refreshes without reposting',
     async (duplicate) => {
