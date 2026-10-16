@@ -499,7 +499,7 @@ export function FinanceScreen() {
               <p className="renewal-eyebrow mb-2">РОБОТА · ТАКСІ</p>
               <h2 className="text-lg font-bold">{taxiVehicleName(taxi.from, f.policies)}</h2>
             </div>
-            <button className="renewal-link" onClick={() => setForm({ kind: 'settings' })}>
+            <button className="renewal-link" onClick={() => setForm({ kind: 'policy' })}>
               Налаштувати таксі ↗
             </button>
           </div>
