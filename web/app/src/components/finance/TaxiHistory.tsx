@@ -2,11 +2,13 @@ import { useState } from 'react';
 import type { Finance } from '../../api/finance-schema.ts';
 import {
   calculateTaxiWeek,
-  kyivInstant,
+  taxiPeriodStart,
   kyivParts,
   sumMoney,
+  share,
 } from '../../../../core/finance/planning.mjs';
 import { moneyLabel } from '../../lib/financeView.ts';
+import { taxiPeriodLabel, taxiVehicleName } from '../../lib/taxiPeriods.ts';
 import { Sheet } from '../ui/Sheet.tsx';
 import type { FinanceFormRequest } from './FinanceForm.tsx';
 export function TaxiHistory({
@@ -24,7 +26,9 @@ export function TaxiHistory({
     initialKey ?? f.taxiWeeks.find((w) => w.closed)?.key ?? f.taxiWeeks[0]?.key ?? '',
   );
   const week = f.taxiWeeks.find((w) => w.key === key);
-  const calculated = week ? calculateTaxiWeek(f.taxiEntries, f.policies, kyivInstant(key)) : null;
+  const calculated = week
+    ? calculateTaxiWeek(f.taxiEntries, f.policies, taxiPeriodStart(key, f.policies))
+    : null;
   const settlement = f.settlements.find((s) => s.weekKey === key);
   const expected = settlement?.expectedMinor ?? week?.settlementMinor ?? 0;
   const total = (field: 'commissionMinor' | 'fuelMinor' | 'tipsMinor') =>
@@ -59,19 +63,20 @@ export function TaxiHistory({
         ) : (
           <>
             <label className="renewal-field">
-              Робочий тиждень
+              Робочий період
               <select value={key} onChange={(e) => setKey(e.target.value)}>
                 {f.taxiWeeks.map((w) => (
                   <option key={w.key} value={w.key}>
-                    {w.key} ·{' '}
+                    {taxiPeriodLabel(w.key, f.policies)} ·{' '}
                     {w.settled ? 'розраховано' : w.closed ? 'очікує розрахунку' : 'триває'}
                   </option>
                 ))}
               </select>
             </label>
             <p className="renewal-chart-note">
-              Від понеділка о 13:00 до наступного понеділка о 13:00, Київ. Історія зберігається
-              після початку нового тижня.
+              {taxiVehicleName(calculated?.from ?? Date.parse(f.generatedAt), f.policies)} ·{' '}
+              {taxiPeriodLabel(key, f.policies)}, Київ. Історія зберігається після переходу на інше
+              авто й нової перезмінки.
             </p>
             {!week.complete && (
               <p className="renewal-inset text-neg">
@@ -135,14 +140,23 @@ export function TaxiHistory({
                 {calculated?.groups.map((g) => (
                   <p key={g.policyId} className="renewal-muted">
                     {g.fareBps / 100}% × {moneyLabel(g.grossMinor)} каси −{' '}
-                    {moneyLabel(g.commissionMinor)} частки комісії − {moneyLabel(g.fuelMinor)}{' '}
+                    {moneyLabel(
+                      share(
+                        g.commissionMinor,
+                        f.policies.find((p) => p.id === g.policyId)!.commissionBps,
+                      ),
+                    )}{' '}
+                    частки комісії −{' '}
+                    {moneyLabel(
+                      share(g.fuelMinor, f.policies.find((p) => p.id === g.policyId)!.fuelBps),
+                    )}{' '}
                     частки пального + {moneyLabel(g.extrasMinor)} частки чайових та інших надходжень
                     = {moneyLabel(g.earnedMinor)}.
                   </p>
                 ))}
               </div>
             </details>
-            <h3 className="font-bold">Записи цього тижня · {calculated?.entries.length}</h3>
+            <h3 className="font-bold">Записи цього періоду · {calculated?.entries.length}</h3>
             {calculated?.entries.map((e) => (
               <div className="renewal-inset flex flex-col gap-2" key={e.id}>
                 <b>

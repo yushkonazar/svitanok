@@ -10,6 +10,9 @@ import {
   nextPaymentDate,
   shiftDate,
   taxiWeek,
+  taxiEntryWeek,
+  taxiPeriodStart,
+  prepareTaxiTransition,
   sumMoney,
 } from '../../../core/finance/planning.mjs';
 
@@ -24,17 +27,24 @@ function rebuild(f: Finance) {
     ...f.budgets.flatMap((b) => b.categories),
     ...f.payments.map((p) => p.category),
   ]);
-  const keys = [...new Set(f.taxiEntries.map((e) => taxiWeek(Date.parse(e.at)).key))]
-    .sort()
-    .reverse();
+  const keys = [
+    ...new Set([
+      ...f.taxiEntries.map((e) => taxiEntryWeek(e, f.policies).key),
+      ...(f.policies.some((p) => p.periodStart && Date.parse(p.effectiveAt) <= Date.now())
+        ? [taxiWeek(Date.now(), f.policies).key]
+        : []),
+    ]),
+  ].sort((a, b) => taxiPeriodStart(b, f.policies) - taxiPeriodStart(a, f.policies));
   f.taxiWeeks = keys.map((key) => {
-    const w = calculateTaxiWeek(f.taxiEntries, f.policies, kyivInstant(key));
+    const w = calculateTaxiWeek(f.taxiEntries, f.policies, taxiPeriodStart(key, f.policies));
     const held = sumMoney(
       w.entries.map((e) => (e.receivedCashMinor ?? 0) - (e.paidWorkMinor ?? 0)),
     );
     const settlement = f.settlements.find((s) => s.weekKey === key);
     return {
       key,
+      from: w.from,
+      to: w.to,
       grossMinor: w.grossMinor,
       netCashMinor: w.netCashMinor,
       commissionMinor: sumMoney(w.entries.map((e) => e.commissionMinor)),
@@ -417,8 +427,21 @@ export function writeFinanceDemo(command: FinanceCommand) {
       const previous =
         command.type === 'taxi-edit' ? f.taxiEntries.find((e) => e.id === p.entryId) : undefined;
       if (command.type === 'taxi-edit' && !previous) throw new Error('Запис не знайдено');
+      const periodKey = Object.hasOwn(p, 'periodKey')
+        ? (p.periodKey as string | null)
+        : (previous?.periodKey ?? null);
+      const period = periodKey
+        ? taxiWeek(taxiPeriodStart(periodKey, f.policies), f.policies)
+        : taxiWeek(Date.parse(str('at')), f.policies);
+      if (f.settlements.some((s) => s.weekKey === period.key))
+        throw new Error('Цей період уже розраховано');
+      if (periodKey && Date.parse(str('at')) < period.from)
+        throw new Error('Дата запису не може бути раніше початку обраного періоду');
+      const policy = f.policies
+        .filter((s) => Date.parse(s.effectiveAt) <= Math.min(Date.parse(str('at')), period.to - 1))
+        .at(-1)!;
       if (previous) {
-        if (f.settlements.some((s) => s.weekKey === taxiWeek(Date.parse(previous.at)).key))
+        if (f.settlements.some((s) => s.weekKey === taxiEntryWeek(previous, f.policies).key))
           throw new Error('Розраховану зміну вже не можна змінити');
         tx(
           -(previous.receivedCashMinor - previous.paidWorkMinor),
@@ -429,11 +452,11 @@ export function writeFinanceDemo(command: FinanceCommand) {
         );
         f.taxiEntries = f.taxiEntries.filter((e) => e.id !== previous.id);
       }
-      const policy = f.policies.filter((s) => s.effectiveAt <= str('at')).at(-1)!;
       f.taxiEntries.unshift({
         id: previous?.id ?? id,
         at: str('at'),
         policyId: policy.id,
+        periodKey,
         netCashMinor: num('netCashMinor'),
         commissionMinor: num('commissionMinor'),
         fuelMinor: num('fuelMinor'),
@@ -457,6 +480,36 @@ export function writeFinanceDemo(command: FinanceCommand) {
           ':cash',
           id,
         );
+      break;
+    }
+    case 'taxi-transition': {
+      const policy = {
+        id,
+        effectiveAt: str('effectiveAt'),
+        fareBps: num('fareBps'),
+        commissionBps: num('commissionBps'),
+        fuelBps: num('fuelBps'),
+        tipsBps: num('tipsBps'),
+        thresholdMinor: p.thresholdMinor == null ? null : num('thresholdMinor'),
+        bonusFareBps: num('bonusFareBps'),
+        periodStart: true,
+        weekDay: num('weekDay'),
+        weekHour: num('weekHour'),
+        weekMinute: num('weekMinute'),
+        vehicleName: str('vehicleName'),
+      };
+      const change = prepareTaxiTransition(
+        f.taxiEntries,
+        f.policies,
+        f.settlements,
+        policy,
+        p.keepPreviousEntryIds,
+      );
+      f.policies.push(policy);
+      f.taxiEntries = f.taxiEntries.map((e) => {
+        const update = change.updates.find((u) => u.id === e.id);
+        return update ? { ...e, ...update, revision: e.revision + 1 } : e;
+      });
       break;
     }
     case 'taxi-policy':

@@ -5,6 +5,7 @@ import { FINANCE_QUERY } from '../../api/finance-hooks.ts';
 import { kyivParts, shiftDate } from '../../../../core/finance/planning.mjs';
 import { validateReportRange } from '../../../../core/finance/reporting.mjs';
 import { moneyLabel } from '../../lib/financeView.ts';
+import { taxiRangeLabel } from '../../lib/taxiPeriods.ts';
 import { financeCategoryLabel } from '../../../../core/finance/categories.mjs';
 import { SessionExpired } from '../ui/SessionExpired.tsx';
 import { ObservationChart } from '../charts/ObservationChart.tsx';
@@ -172,16 +173,19 @@ export function FinanceReport({ onBack }: { onBack: () => void }) {
             )}
           </section>
           <section className="renewal-card">
-            <h2 className="text-lg font-bold">Таксі · повні робочі тижні</h2>
+            <h2 className="text-lg font-bold">Таксі · повні робочі періоди</h2>
             <p className="renewal-chart-note mt-2">
-              Тижні, які перетинаються з вибраними датами. Нижче показано весь робочий тиждень від
-              понеділка 13:00; сума «Зароблено в таксі» вище враховує тільки записи в межах дат
-              звіту, зі ставкою всього тижня.
+              Періоди, які перетинаються з вибраними датами. Нижче показано весь період за його
+              історичними умовами; сума «Зароблено в таксі» вище враховує тільки записи в межах дат
+              звіту.
             </p>
             {report.taxiWeeks.map((w) => (
               <details key={w.key} className="renewal-inset mt-4">
                 <summary className="renewal-link cursor-pointer">
-                  Від {w.key} · {moneyLabel(w.earnedMinor)}
+                  {w.from != null && w.to != null
+                    ? taxiRangeLabel(w.from, w.to)
+                    : `Від ${w.key.slice(0, 10)}`}{' '}
+                  · {moneyLabel(w.earnedMinor)}
                 </summary>
                 <div className="renewal-metrics mt-3">
                   {(

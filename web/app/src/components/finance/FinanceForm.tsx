@@ -9,10 +9,13 @@ import {
   kyivInstant,
   kyivParts,
   taxiWeek,
+  taxiPeriodStart,
 } from '../../../../core/finance/planning.mjs';
 import { haptic } from '../../telegram.ts';
 import { Sheet } from '../ui/Sheet.tsx';
 import { moneyLabel } from '../../lib/financeView.ts';
+import { taxiPeriodLabel } from '../../lib/taxiPeriods.ts';
+import { TaxiTransition } from './TaxiTransition.tsx';
 import { DebtSetup } from './DebtSetup.tsx';
 import { debtSetup } from '../../lib/debtSetup.ts';
 import { financeCategoryLabel } from '../../../../core/finance/categories.mjs';
@@ -38,6 +41,7 @@ export type FinanceFormKind =
   | 'account'
   | 'taxi'
   | 'policy'
+  | 'taxi-transition'
   | 'goal'
   | 'goal-move'
   | 'budget'
@@ -66,6 +70,7 @@ const TITLES: Record<FinanceFormKind, string> = {
   account: 'Додати рахунок',
   taxi: 'Записати зміну таксі',
   policy: 'Умови роботи таксі',
+  'taxi-transition': 'Зміна авто й перезмінки',
   goal: 'Нова фінансова ціль',
   'goal-move': 'Кошти на ціль',
   budget: 'Налаштувати бюджет',
@@ -81,7 +86,14 @@ const TITLES: Record<FinanceFormKind, string> = {
   'edit-transaction': 'Уточнити операцію',
 };
 
-export function FinanceForm({
+export function FinanceForm(props: Parameters<typeof FinanceFormBody>[0]) {
+  return props.request.kind === 'taxi-transition' ? (
+    <TaxiTransition finance={props.finance} onClose={props.onClose} />
+  ) : (
+    <FinanceFormBody {...props} />
+  );
+}
+function FinanceFormBody({
   request,
   finance: f,
   onClose,
@@ -236,6 +248,7 @@ export function FinanceForm({
     bonus: String(policy.bonusFareBps / 100),
     effective: 'now',
     policyPreset: 'custom',
+    taxiPeriodKey: entry?.periodKey ?? '',
     transactionKind:
       transaction?.amountMinor != null && transaction.amountMinor < 0 ? 'expense' : 'income',
   });
@@ -622,6 +635,7 @@ export function FinanceForm({
         type = entry ? 'taxi-edit' : 'taxi-entry';
         Object.assign(p, {
           entryId: entry?.id,
+          periodKey: v.taxiPeriodKey || null,
           at: at(),
           accountId: v.accountId,
           netCashMinor: inputMoney('cash', true),
@@ -638,7 +652,7 @@ export function FinanceForm({
         const fixed = v.policyPreset === 'hybrid';
         Object.assign(p, {
           effectiveAt: new Date(
-            v.effective === 'nextWeek' ? taxiWeek(Date.now()).to : Date.now(),
+            v.effective === 'nextWeek' ? taxiWeek(Date.now(), f.policies).to : Date.now(),
           ).toISOString(),
           fareBps: fixed ? 5000 : bps('fare'),
           commissionBps: fixed ? 5000 : bps('feeShare'),
@@ -981,6 +995,20 @@ export function FinanceForm({
                 {field('date', 'Дата запису', 'date')}
                 {field('time', 'Час · Київ', 'time')}
               </div>
+              {f.policies.some((p) => p.periodStart) && (
+                <>
+                  {select('taxiPeriodKey', 'Авто й робочий період', [
+                    ['', 'Автоматично за датою й часом'],
+                    ...f.taxiWeeks
+                      .filter((w) => !w.settled)
+                      .map((w) => [w.key, taxiPeriodLabel(w.key, f.policies)] as [string, string]),
+                  ])}
+                  <p className="renewal-chart-note">
+                    Якщо дописуєш дані попереднього авто після переходу, обери його період. Для
+                    нової роботи залиш «Автоматично».
+                  </p>
+                </>
+              )}
               {field('cash', 'Каса після комісії, ₴', 'text', 'Наприклад, 4000')}
               <div className="renewal-form-grid">
                 {field('commission', 'Комісія, ₴', 'text', '700')}
@@ -1044,7 +1072,10 @@ export function FinanceForm({
               )}
               {select('effective', 'Початок дії', [
                 ['now', 'Від моменту підтвердження'],
-                ['nextWeek', 'Наступна перезмінка · понеділок 13:00'],
+                [
+                  'nextWeek',
+                  `Наступна перезмінка · ${new Date(taxiWeek(Date.now(), f.policies).to).toLocaleString('uk-UA', { timeZone: 'Europe/Kyiv', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}`,
+                ],
               ])}
               <p className="renewal-muted">
                 Підтвердження створить нову версію умов. Старі записи збережуть свої умови. За
@@ -1522,7 +1553,8 @@ export function FinanceForm({
                           ['income', 'expense', 'unclassified', 'taxi-settlement'].includes(
                             t.kind,
                           ) &&
-                          Date.parse(t.at) >= taxiWeek(kyivInstant(request.id ?? '')).to,
+                          Date.parse(t.at) >=
+                            taxiWeek(taxiPeriodStart(request.id ?? '', f.policies), f.policies).to,
                       )
                       .map((t): [string, string] => [
                         t.id,

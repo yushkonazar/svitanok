@@ -141,6 +141,7 @@ export async function runFinanceQuery(env, args, nowMs) {
       available_minor: complete ? sumMoney([owned, -allocated, -f.reserveMinor]) : null,
       complete,
       taxi_weeks: f.taxiWeeks.slice(0, 12),
+      taxi_policies: f.policies,
       goals: f.goals,
       payments: f.payments.filter((p) => p.status === 'active'),
       budgets: f.budgets,
