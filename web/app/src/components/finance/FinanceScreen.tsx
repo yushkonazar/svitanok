@@ -169,11 +169,13 @@ export function FinanceScreen() {
     form ??
     (params.get('action') === 'expense'
       ? { kind: 'expense' as const }
-      : params.get('action') === 'personal'
-        ? { kind: 'taxi-personal' as const }
-        : params.get('action') === 'settings'
-          ? { kind: 'settings' as const }
-          : null);
+      : params.get('action') === 'taxi'
+        ? { kind: 'taxi' as const }
+        : params.get('action') === 'personal'
+          ? { kind: 'taxi-personal' as const }
+          : params.get('action') === 'settings'
+            ? { kind: 'settings' as const }
+            : null);
   const nowMs = useTick(30_000);
   if (isSessionExpired(error)) return <SessionExpired />;
   if (isLoading) return <LoadingSkeleton />;

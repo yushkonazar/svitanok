@@ -9,6 +9,7 @@ import {
 } from './core/finance/analytics-store.mjs';
 import { json, readJsonBody } from './http-core.mjs';
 import { checkOwnerRead, checkPrimaryOwner, mutationInitData } from './auth-core.mjs';
+import { synchronizePlanFinance } from './core/motivation/finance-link.mjs';
 import {
   readFinanceWorkspace,
   executeFinanceCommand,
@@ -78,6 +79,13 @@ export async function handleFinance(request, env) {
           console.error('mono credit limit: refresh could not be started');
         }
         result = await readFinanceWorkspace(env, nowMs);
+      }
+    }
+    if (body && ['taxi-entry', 'taxi-edit', 'taxi-delete'].includes(body.type)) {
+      try {
+        await synchronizePlanFinance(env, Date.now());
+      } catch {
+        console.error('plan finance reconciliation deferred');
       }
     }
     const response = json(result);

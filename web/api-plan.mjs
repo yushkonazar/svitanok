@@ -2,6 +2,9 @@ import { checkPrimaryOwner, mutationInitData } from './auth-core.mjs';
 import { json, readJsonBody } from './http-core.mjs';
 import { executePlanCommand, readPlanWorkspace } from './core/motivation/store.mjs';
 import { PlanError } from './core/motivation/model.mjs';
+import { suggestPlanDraft } from './core/motivation/draft.mjs';
+import { planDate } from './core/motivation/model.mjs';
+import { readCalendarRange } from './google.mjs';
 
 /** @param {Request} request @param {Env} env */
 export async function handlePlan(request, env) {
@@ -19,8 +22,27 @@ export async function handlePlan(request, env) {
   if (!auth.ok) return reply({ ok: false, error: auth.error }, auth.status);
   let receipt;
   try {
+    const url = new URL(request.url);
+    if (body?.op === 'suggest')
+      return reply({ ok: true, draft: await suggestPlanDraft(env, body.payload) });
+    if (!body && url.searchParams.get('view') === 'calendar') {
+      const date = planDate(url.searchParams.get('date'));
+      const events = await readCalendarRange(env, date, date);
+      if (events == null)
+        return reply(
+          { ok: false, error: 'Календар зараз недоступний. Перевір підключення Google.' },
+          503,
+        );
+      return reply({ ok: true, events });
+    }
     if (body) receipt = await executePlanCommand(env, body);
-    return reply({ ok: true, receipt, workspace: await readPlanWorkspace(env) });
+    return reply({
+      ok: true,
+      receipt,
+      workspace: await readPlanWorkspace(env, Date.now(), {
+        cursor: url.searchParams.get('cursor') ?? undefined,
+      }),
+    });
   } catch (error) {
     if (receipt) return reply({ ok: true, receipt, refreshRequired: true });
     return reply(

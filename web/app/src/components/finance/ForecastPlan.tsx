@@ -9,6 +9,7 @@ import { moneyLabel } from '../../lib/financeView.ts';
 import { kyivParts, parseMoney } from '../../../../core/finance/planning.mjs';
 import { Sheet } from '../ui/Sheet.tsx';
 import { ForecastSteps } from './ForecastSteps.tsx';
+import { taxiWeek } from '../../../../core/finance/planning.mjs';
 export function ForecastPlan({
   finance: f,
   nowMs,
@@ -20,16 +21,24 @@ export function ForecastPlan({
   onCalendar: () => void;
   onPayment?: (id: string) => void;
 }) {
-  const [period, setPeriod] = useState('week'),
+  const [period, setPeriod] = useState(f.policies.length ? 'handover' : 'week'),
     [editing, setEditing] = useState(false);
   const today = kyivParts(nowMs).date;
   const days =
-    period === '7'
-      ? 7
-      : Math.round(
-          (Date.parse(periodWindow(period as 'week' | 'month', today).end) - Date.parse(today)) /
-            86400000,
-        ) + 1;
+    period === 'handover'
+      ? Math.max(
+          1,
+          Math.round(
+            (Date.parse(kyivParts(taxiWeek(nowMs, f.policies).to).date) - Date.parse(today)) /
+              86400000,
+          ) + 1,
+        )
+      : period === '7'
+        ? 7
+        : Math.round(
+            (Date.parse(periodWindow(period as 'week' | 'month', today).end) - Date.parse(today)) /
+              86400000,
+          ) + 1;
   const result = financeForecast(f, days, nowMs);
   const fmt = (date: string) =>
     new Date(date + 'T12:00:00Z').toLocaleDateString('uk-UA', { day: 'numeric', month: 'long' });
@@ -39,6 +48,7 @@ export function ForecastPlan({
       <h2 className="text-xl font-bold">Що залишиться після планів?</h2>
       <div className="renewal-segments mt-4">
         {[
+          ...(f.policies.length ? [['handover', 'До перезмінки']] : []),
           ['week', 'До неділі'],
           ['7', '7 днів'],
           ['month', 'До кінця місяця'],
@@ -60,6 +70,29 @@ export function ForecastPlan({
         Орієнтовні вільні кошти після майбутніх платежів, бюджетів і відкладань.
       </p>
       <ForecastSteps result={result} finance={f} onPayment={onPayment} />
+      {f.policies.length > 0 && (
+        <div className="renewal-inset mt-3 text-sm">
+          <strong>Таксі · на {fmt(result.taxi.date ?? result.until)}</strong>
+          <p className="renewal-muted mt-2">{result.taxi.reason}</p>
+          {result.taxi.status === 'estimated' && (
+            <p className="renewal-muted mt-2">
+              Сценарії: {moneyLabel(result.taxi.lowerMinor ?? 0)} —{' '}
+              {moneyLabel(result.taxi.upperMinor ?? 0)}. Повних попередніх періодів:{' '}
+              {result.taxi.historyPeriods}. Це діапазон минулих сценаріїв, а не гарантований дохід.
+            </p>
+          )}
+          {result.taxiCovered && (
+            <p className="renewal-muted mt-2">
+              На цю дату вже є ручне надходження «Таксі» або без джерела. Воно замінює автоматичну
+              оцінку; інше надходження можна позначити окремо.
+            </p>
+          )}
+          <p className="renewal-muted mt-2">
+            Готівка, яка вже в тебе, повторно не додається. Очікувані гроші не змінюють сьогоднішній
+            залишок.
+          </p>
+        </div>
+      )}
       {!!result.overlaps.length && (
         <p className="renewal-inset text-sm mt-3">
           Плани перетинаються за категоріями або цілями: {result.overlaps.join(', ')}. Уточни їхню
@@ -110,7 +143,8 @@ export function ForecastPlan({
             віднімаються. Внески, уже переказані в банку, та резерви цілей теж не віднімаємо
             повторно. Прогноз не виконує платежів; незаплановані витрати й майбутні зміни таксі
             невідомі. Дохід, указаний як база бюджету, не є авансовим надходженням. Майбутні гроші
-            додаються лише через «Планові надходження» з конкретною датою.
+            додаються через «Планові надходження» та окремо показану оцінку таксі на дату
+            перезмінки.
           </p>
         </div>
       </details>
@@ -209,6 +243,26 @@ function IncomePlan({
                   setRows(rows.map((x, j) => (j === i ? { ...x, name: e.target.value } : x)))
                 }
               />
+            </label>
+            <label className="renewal-field">
+              Джерело
+              <select
+                disabled={pending}
+                value={r.source ?? 'unspecified'}
+                onChange={(e) =>
+                  setRows(
+                    rows.map((x, j) =>
+                      j === i
+                        ? { ...x, source: e.target.value as 'taxi' | 'other' | 'unspecified' }
+                        : x,
+                    ),
+                  )
+                }
+              >
+                <option value="unspecified">Не визначено · замінює оцінку таксі в цю дату</option>
+                <option value="taxi">Таксі · власна оцінка</option>
+                <option value="other">Інший дохід · додати окремо</option>
+              </select>
             </label>
             <label className="renewal-field">
               Сума, ₴

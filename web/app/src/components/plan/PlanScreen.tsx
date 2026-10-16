@@ -20,8 +20,23 @@ import {
 import { isSessionExpired } from '../../api/client.ts';
 import { SessionExpired } from '../ui/SessionExpired.tsx';
 import { Sheet } from '../ui/Sheet.tsx';
-import { planDate, planLocalTime, taskScore } from '../../../../core/motivation/model.mjs';
+import { planDate, planLocalTime } from '../../../../core/motivation/model.mjs';
+import {
+  XP_CATEGORIES,
+  PLAN_AREAS,
+  suggestTaskScore,
+} from '../../../../core/motivation/scoring.mjs';
+import {
+  TaskAssist,
+  RepeatDays,
+  TemplatePanel,
+  DayExtensionPanel,
+  CalendarPanel,
+  AreaInsights,
+  EarlierHistory,
+} from './PlanExtras.tsx';
 import { inTelegram, haptic } from '../../telegram.ts';
+import { parseMoney } from '../../../../core/finance/planning.mjs';
 import './plan.css';
 
 type Payload = Record<string, unknown>;
@@ -41,7 +56,10 @@ type Panel =
   | { type: 'accept' }
   | { type: 'goal' }
   | { type: 'shift' }
-  | { type: 'wallet' };
+  | { type: 'wallet' }
+  | { type: 'templates' }
+  | { type: 'extend' }
+  | { type: 'calendar' };
 function dayPlus(date: string, days: number) {
   const d = new Date(`${date}T12:00:00Z`);
   d.setUTCDate(d.getUTCDate() + days);
@@ -145,6 +163,7 @@ export function PlanScreen() {
     mutation = usePlanChange();
   const [params, setParams] = useSearchParams();
   const [tab, setTab] = useState<'day' | 'progress' | 'rewards'>('day');
+  const [showDone, setShowDone] = useState(false);
   const [panel, setPanel] = useState<Panel | null>(null),
     [error, setError] = useState(''),
     [notice, setNotice] = useState('');
@@ -175,11 +194,22 @@ export function PlanScreen() {
     /* ignore malformed deep links */
   }
   const activePanel = panel ?? (deepTask ? { type: 'detail' as const, task: deepTask } : null);
-  const tasks = data.tasks.filter((t) => t.date === date),
+  const tasks = data.tasks
+      .filter((t) => t.date === date)
+      .sort(
+        (a, b) =>
+          Number(a.facts.done) - Number(b.facts.done) ||
+          (a.startAt ?? a.dueAt).localeCompare(b.startAt ?? b.dueAt),
+      ),
     drafts = tasks.filter((t) => t.status === 'draft'),
     accepted = tasks.filter((t) => t.acceptedAt),
     done = accepted.filter((t) => t.facts.done);
-  const reward = data.rewards.find((r) => r.id === data.primaryRewardId && !r.archived),
+  const reward = data.rewards.find(
+      (r) =>
+        r.id === data.primaryRewardId &&
+        !r.archived &&
+        (r.repeatable || !data.coupons.some((c) => c.rewardId === r.id && c.status !== 'refunded')),
+    ),
     shift = data.shifts.find((s) => !s.endedAt);
   const close = () => {
     setPanel(null);
@@ -381,32 +411,11 @@ export function PlanScreen() {
               ›
             </button>
           </div>
-          {reward ? (
-            <button className="plan-path-card" onClick={() => open({ type: 'path', reward })}>
-              <span className="plan-eyebrow">
-                РУХАЮСЯ ДО{reward.gate && !reward.gate.confirmed ? ' · Є УМОВА ГОТОВНОСТІ' : ''}
-              </span>
-              <div>
-                <h2>{reward.title}</h2>
-                <span>
-                  {data.wallet.available} / {reward.price} XP <b>↗</b>
-                </span>
-              </div>
-              <Meter
-                value={data.wallet.available}
-                max={reward.price}
-                label={`Шлях до ${reward.title}`}
-              />
-            </button>
-          ) : (
-            <button className="plan-path-card" onClick={() => setTab('rewards')}>
-              <span className="plan-eyebrow">ДЛЯ ЧОГО СТАРАТИСЯ</span>
-              <h2>
-                Обери свою першу винагороду <b>↗</b>
-              </h2>
-              <p>Конкретне бажання, до якого хочеться рухатися.</p>
-            </button>
-          )}
+          <div className="plan-quick-tools">
+            <button onClick={() => open({ type: 'templates' })}>▤ Шаблони</button>
+            <button onClick={() => open({ type: 'calendar' })}>▦ Календар</button>
+            <button onClick={() => open({ type: 'extend' })}>◷ Подовжений день</button>
+          </div>
           {!data.settings.reviewedAt && !data.settings.enabled && (
             <div className="plan-onboard">
               <h2>Твої рішення. Відомі наслідки.</h2>
@@ -461,74 +470,97 @@ export function PlanScreen() {
             </div>
           ) : (
             <div className="plan-task-list">
-              {tasks.map((task) => (
-                <article
-                  key={task.id}
-                  className={`plan-task ${task.facts.done ? 'is-done' : ''} ${task.status === 'draft' ? 'is-draft' : ''}`}
-                >
-                  <button
-                    className="plan-check"
-                    aria-label={
-                      task.status === 'draft'
-                        ? `Редагувати ${task.title}`
-                        : task.facts.done
-                          ? `Переглянути ${task.title}`
-                          : `Виконати ${task.title}`
-                    }
-                    disabled={mutation.isPending}
-                    onClick={() => {
-                      if (task.status === 'draft') open({ type: 'task', task });
-                      else if (task.facts.done || task.status === 'excepted')
-                        open({ type: 'detail', task });
-                      else if (task.target === 1 && task.dueAt >= data.now)
-                        void run('report', { units: 1 }, task.id);
-                      else open({ type: 'report', task });
-                    }}
+              {tasks
+                .filter((task) => showDone || !task.facts.done)
+                .map((task) => (
+                  <article
+                    key={task.id}
+                    className={`plan-task ${task.facts.done ? 'is-done' : ''} ${task.status === 'draft' ? 'is-draft' : ''}`}
                   >
-                    {task.facts.done
-                      ? '✓'
-                      : task.status === 'draft'
-                        ? '＋'
-                        : task.status === 'excepted'
-                          ? '—'
-                          : ''}
-                  </button>
-                  <button
-                    className="plan-task-body"
-                    onClick={() =>
-                      open({ type: task.status === 'draft' ? 'task' : 'detail', task })
-                    }
-                  >
-                    <TaskStatus task={task} now={data.now} />
-                    <h3>{task.title}</h3>
-                    <p>{task.criterion}</p>
-                    {task.target > 1 && (
-                      <>
-                        <Meter value={task.facts.units} max={task.target} label={task.title} />
-                        <small>
-                          {task.facts.units} / {task.target} {task.unit}
+                    <button
+                      className="plan-check"
+                      aria-label={
+                        task.status === 'draft'
+                          ? `Редагувати ${task.title}`
+                          : task.facts.done
+                            ? `Переглянути ${task.title}`
+                            : `Виконати ${task.title}`
+                      }
+                      disabled={mutation.isPending}
+                      onClick={() => {
+                        if (task.status === 'draft') open({ type: 'task', task });
+                        else if (task.source) open({ type: 'detail', task });
+                        else if (task.facts.done || task.status === 'excepted')
+                          open({ type: 'detail', task });
+                        else if (task.target === 1 && task.dueAt >= data.now)
+                          void run('report', { units: 1 }, task.id);
+                        else open({ type: 'report', task });
+                      }}
+                    >
+                      {task.facts.done
+                        ? '✓'
+                        : task.status === 'draft'
+                          ? '＋'
+                          : task.status === 'excepted'
+                            ? '—'
+                            : ''}
+                    </button>
+                    <button
+                      className="plan-task-body"
+                      onClick={() =>
+                        open({ type: task.status === 'draft' ? 'task' : 'detail', task })
+                      }
+                    >
+                      <TaskStatus task={task} now={data.now} />
+                      {task.area && (
+                        <span className="plan-area-label">{PLAN_AREAS[task.area]}</span>
+                      )}
+                      <h3>{task.title}</h3>
+                      <p>{task.criterion}</p>
+                      {task.target > 1 && (
+                        <>
+                          <Meter value={task.facts.units} max={task.target} label={task.title} />
+                          <small>
+                            {task.source?.actualMinor != null
+                              ? (task.source.actualMinor / 100).toLocaleString('uk-UA', {
+                                  maximumFractionDigits: 2,
+                                })
+                              : task.facts.units}{' '}
+                            / {task.target} {task.source ? 'грн' : task.unit}
+                          </small>
+                        </>
+                      )}
+                      {task.source && (
+                        <small className="plan-source-label">
+                          ↔ Таксі ·{' '}
+                          {task.source.metric === 'net' ? 'каса після комісії' : 'каса до комісії'}{' '}
+                          · автоматично
                         </small>
-                      </>
-                    )}
-                    {task.firstStep && !task.startedAt && !task.facts.done && (
-                      <small className="plan-first-step">Почати: {task.firstStep}</small>
-                    )}
-                  </button>
-                  <div className="plan-task-xp">
-                    <strong>
-                      +{Math.max(0, task.xp - (task.fromTaskId ? task.facts.credited : 0))}
-                    </strong>
-                    <small>
-                      {task.status === 'draft'
-                        ? `−${Math.ceil((task.xp * data.settings.penaltyPercent) / 100)}`
-                        : task.settledAt
-                          ? `−${task.penaltyApplied ?? 0}`
-                          : `ризик −${task.facts.risk}`}
-                    </small>
-                  </div>
-                </article>
-              ))}
+                      )}
+                      {task.firstStep && !task.startedAt && !task.facts.done && (
+                        <small className="plan-first-step">Почати: {task.firstStep}</small>
+                      )}
+                    </button>
+                    <div className="plan-task-xp">
+                      <strong>
+                        +{Math.max(0, task.xp - (task.fromTaskId ? task.facts.credited : 0))}
+                      </strong>
+                      <small>
+                        {task.status === 'draft'
+                          ? `−${Math.ceil((task.xp * data.settings.penaltyPercent) / 100)}`
+                          : task.settledAt
+                            ? `−${task.penaltyApplied ?? 0}`
+                            : `ризик −${task.facts.risk}`}
+                      </small>
+                    </div>
+                  </article>
+                ))}
             </div>
+          )}
+          {tasks.some((task) => task.facts.done) && (
+            <button className="plan-done-toggle" onClick={() => setShowDone(!showDone)}>
+              {showDone ? 'Згорнути виконані' : 'Показати виконані'} · {done.length}
+            </button>
           )}
           {drafts.length > 0 && (
             <div className="plan-accept-bar">
@@ -543,6 +575,26 @@ export function PlanScreen() {
                 Прийняти {accepted.length ? 'нові задачі' : 'план'}
               </button>
             </div>
+          )}
+          {reward ? (
+            <button className="plan-next-reward" onClick={() => open({ type: 'path', reward })}>
+              <span>
+                Наступна можливість <b>{reward.title}</b>
+              </span>
+              <strong>
+                {reward.mode === 'unlock' ? data.wallet.experience : data.wallet.available} /{' '}
+                {reward.price} XP ↗
+              </strong>
+              <Meter
+                value={reward.mode === 'unlock' ? data.wallet.experience : data.wallet.available}
+                max={reward.price}
+                label={`Шлях до ${reward.title}`}
+              />
+            </button>
+          ) : (
+            <button className="plan-next-reward" onClick={() => setTab('rewards')}>
+              Обрати, заради чого стараюся ↗
+            </button>
           )}
           <div className="plan-day-actions">
             <button onClick={() => selectDate(dayPlus(data.today, 1))}>Підготувати завтра ↗</button>
@@ -605,13 +657,25 @@ export function PlanScreen() {
                           : 'ВЕЛИКА МОЖЛИВІСТЬ'}
                   </span>
                   <h3>{r.title}</h3>
-                  <Meter value={data.wallet.available} max={r.price} label={r.title} />
+                  <Meter
+                    value={r.mode === 'unlock' ? data.wallet.experience : data.wallet.available}
+                    max={r.price}
+                    label={r.title}
+                  />
                   <small>
-                    {r.gate && !r.gate.confirmed
-                      ? 'Потрібен реальний етап готовності'
-                      : data.wallet.available >= r.price
-                        ? 'XP достатньо'
-                        : `Ще ${r.price - data.wallet.available} XP`}
+                    {data.coupons.some((c) => c.rewardId === r.id && c.status !== 'refunded') &&
+                    !r.repeatable
+                      ? 'Уже відкрито'
+                      : r.gate && !r.gate.confirmed
+                        ? 'Потрібен реальний етап готовності'
+                        : r.purchase && !r.affordability?.ready
+                          ? 'Потрібен фінансовий запас'
+                          : (r.mode === 'unlock'
+                                ? data.wallet.experience
+                                : data.wallet.available) >= r.price &&
+                              (!r.purchase || r.affordability?.ready)
+                            ? 'XP достатньо'
+                            : `Ще ${Math.max(0, r.price - (r.mode === 'unlock' ? data.wallet.experience : data.wallet.available))} XP`}
                   </small>
                 </div>
                 <strong>
@@ -631,12 +695,14 @@ export function PlanScreen() {
                     <div>
                       <strong>{c.title}</strong>
                       <p>
-                        {c.price} XP ·{' '}
+                        {c.status === 'unlocked' ? (c.unlockXp ?? 0) : c.price} XP ·{' '}
                         {c.status === 'ready'
                           ? 'Готовий до використання'
-                          : c.status === 'used'
-                            ? 'Використано'
-                            : 'XP повернено'}
+                          : c.status === 'unlocked'
+                            ? 'Відкрито назавжди'
+                            : c.status === 'used'
+                              ? 'Використано'
+                              : 'XP повернено'}
                       </p>
                     </div>
                     {c.status === 'ready' && (
@@ -719,6 +785,23 @@ export function PlanScreen() {
                 />
               )}
               {activePanel.type === 'settings' && <Settings data={data} save={save} />}
+              {activePanel.type === 'templates' && (
+                <TemplatePanel
+                  data={data}
+                  date={date}
+                  run={async (...args) => {
+                    const ok = await run(...args);
+                    if (ok && args[0] === 'template-use') close();
+                    return ok;
+                  }}
+                />
+              )}
+              {activePanel.type === 'extend' && (
+                <DayExtensionPanel date={date} boundary={data.settings.dayBoundary} run={save} />
+              )}
+              {activePanel.type === 'calendar' && (
+                <CalendarPanel date={date} data={data} run={save} />
+              )}
               {activePanel.type === 'report' && (
                 <Report
                   task={data.tasks.find((t) => t.id === activePanel.task.id) ?? activePanel.task}
@@ -823,26 +906,42 @@ export function PlanScreen() {
               )}
               {activePanel.type === 'redeem' && (
                 <>
-                  <FormTitle sub="XP обмінюються на один особистий дозвіл. Реальна покупка чи оплата виконується тобою.">
+                  <FormTitle
+                    sub={
+                      activePanel.reward.mode === 'unlock'
+                        ? 'Постійний етап за досвідом. Баланс XP залишається.'
+                        : 'XP обмінюються на один особистий дозвіл. Реальна покупка чи оплата виконується тобою.'
+                    }
+                  >
                     Отримати «{activePanel.reward.title}»
                   </FormTitle>
                   <dl className="plan-facts">
                     <dt>Вартість</dt>
                     <dd>{activePanel.reward.price} XP</dd>
                     <dt>Баланс після</dt>
-                    <dd>{data.wallet.balance - activePanel.reward.price} XP</dd>
+                    <dd>
+                      {data.wallet.balance -
+                        (activePanel.reward.mode === 'unlock' ? 0 : activePanel.reward.price)}{' '}
+                      XP
+                    </dd>
                     <dt>Доступно після</dt>
-                    <dd>{data.wallet.available - activePanel.reward.price} XP</dd>
+                    <dd>
+                      {data.wallet.available -
+                        (activePanel.reward.mode === 'unlock' ? 0 : activePanel.reward.price)}{' '}
+                      XP
+                    </dd>
                   </dl>
                   <p className="plan-muted">
-                    Невикористаний дозвіл можна повернути з відновленням XP. Якщо це інша покупка
-                    перед великою ціллю, її шлях віддалиться на витрачені XP.
+                    {activePanel.reward.mode === 'unlock'
+                      ? 'Цей доступ залишиться відкритим. XP не витрачаються.'
+                      : 'Невикористаний дозвіл можна повернути з відновленням XP. Витрачені XP віддаляють наступну покупку.'}
                   </p>
                   <button
                     className="plan-primary"
                     onClick={() => void save('redeem', {}, activePanel.reward.id)}
                   >
-                    Обміняти {activePanel.reward.price} XP
+                    {activePanel.reward.mode === 'unlock' ? 'Відкрити за досвідом' : 'Обміняти'}{' '}
+                    {activePanel.reward.price} XP
                   </button>
                 </>
               )}
@@ -891,12 +990,27 @@ function TaskEditor({
     [end, setEnd] = useState(initial?.endAt ? localValue(initial.endAt) : ''),
     [calendar, setCalendar] = useState(initial?.calendar ?? false),
     [remind, setRemind] = useState(
-      initial?.remindMinutes == null ? '' : String(initial.remindMinutes),
+      initial?.remindMinutes == null ? (initial ? '' : '10') : String(initial.remindMinutes),
     ),
     [estimate, setEstimate] = useState(initial?.estimateMinutes ?? 0),
     [goal, setGoal] = useState(initial?.goalId ?? goalId ?? ''),
     [reward, setReward] = useState(initial?.rewardId ?? rewardId ?? '');
   const shift = data.shifts.find((s) => !s.endedAt && s.date === date);
+  const [area, setArea] = useState(initial?.area ?? 'life'),
+    [challenge, setChallenge] = useState(initial?.challenge ?? 0),
+    [routine, setRoutine] = useState(initial?.routine ?? false),
+    [source, setSource] = useState(initial?.source?.metric ?? ''),
+    [template, setTemplate] = useState(false),
+    [templateDays, setTemplateDays] = useState([1, 2, 3, 4, 5]);
+  const suggested = (overrides: Record<string, unknown> = {}) =>
+    suggestTaskScore({
+      effort,
+      contribution,
+      challenge,
+      routine,
+      estimateMinutes: estimate,
+      ...overrides,
+    });
   const submit = (e: FormEvent) => {
     e.preventDefault();
     try {
@@ -910,6 +1024,14 @@ function TaskEditor({
           unit,
           effort,
           contribution,
+          area,
+          challenge,
+          routine,
+          scoringVersion: 2,
+          source: source ? { kind: 'taxi', metric: source } : null,
+          template,
+          templateDays,
+          calendarOriginId: initial?.calendarOriginId ?? null,
           xp,
           deadlineKind: deadline,
           dueAt:
@@ -939,6 +1061,49 @@ function TaskEditor({
       <FormTitle sub="Спочатку результат. Час, підказки й зв’язки — за потреби.">
         {initial ? 'Уточнити чернетку' : 'Новий крок'}
       </FormTitle>
+      {!initial?.fromTaskId && (
+        <TaskAssist
+          date={date}
+          onApply={(draft) => {
+            setTitle(draft.title);
+            setCriterion(draft.criterion);
+            setTarget(draft.target);
+            setUnit(draft.unit);
+            setArea(draft.area);
+            setEffort(draft.effort);
+            setContribution(draft.contribution);
+            setChallenge(draft.challenge);
+            setRoutine(draft.routine);
+            setEstimate(draft.estimateMinutes);
+            setFirst(draft.firstStep);
+            setXp(draft.xp);
+            setSource(
+              draft.source === 'taxi-net' ? 'net' : draft.source === 'taxi-gross' ? 'gross' : '',
+            );
+            setSensitive(draft.timeSensitive);
+            if (draft.dueTime) {
+              setDeadline('time');
+              setDue(
+                `${draft.dueTime < data.settings.dayBoundary ? dayPlus(date, 1) : date}T${draft.dueTime}`,
+              );
+            } else setDeadline('day');
+            setStart(
+              draft.startTime
+                ? `${draft.startTime < data.settings.dayBoundary ? dayPlus(date, 1) : date}T${draft.startTime}`
+                : '',
+            );
+          }}
+        />
+      )}
+      <Field label="Напрям">
+        <select value={area} onChange={(e) => setArea(e.target.value)}>
+          {Object.entries(PLAN_AREAS).map(([key, label]) => (
+            <option key={key} value={key}>
+              {label}
+            </option>
+          ))}
+        </select>
+      </Field>
       <Field label="Що хочу зробити">
         <input
           required
@@ -982,6 +1147,31 @@ function TaskEditor({
           />
         </Field>
       </div>
+      <Field label="Як фіксується результат">
+        <select
+          value={source}
+          onChange={(e) => {
+            setSource(e.target.value as typeof source);
+            if (e.target.value) {
+              setUnit('грн');
+              setSensitive(false);
+              if (target === 1) setTarget(3500);
+              setArea('work');
+            }
+          }}
+        >
+          <option value="">Вручну: позначка або число</option>
+          <option value="net">З таксі · каса після комісії</option>
+          <option value="gross">З таксі · каса до комісії</option>
+        </select>
+      </Field>
+      {source && (
+        <p className="plan-muted">
+          Ціль — у цілих гривнях. Після прийняття прогрес надходитиме із записів таксі цього дня; XP
+          і завершення рахуються автоматично. Уточнення фінансового запису уточнить результат. Для
+          одного проміжку — одна пов’язана обіцянка.
+        </p>
+      )}
       <Field label="Строк">
         <select value={deadline} onChange={(e) => setDeadline(e.target.value as typeof deadline)}>
           <option value="day">До кінця мого дня · {data.settings.dayBoundary}</option>
@@ -1011,6 +1201,7 @@ function TaskEditor({
         <input
           type="checkbox"
           checked={sensitive}
+          disabled={Boolean(source)}
           onChange={(e) => {
             setSensitive(e.target.checked);
             if (e.target.checked) setTarget(1);
@@ -1025,7 +1216,7 @@ function TaskEditor({
               value={effort}
               onChange={(e) => {
                 setEffort(Number(e.target.value));
-                setXp(taskScore(Number(e.target.value), contribution));
+                setXp(suggested({ effort: Number(e.target.value) }).xp);
               }}
             >
               <option value={0}>Малі</option>
@@ -1038,7 +1229,7 @@ function TaskEditor({
               value={contribution}
               onChange={(e) => {
                 setContribution(Number(e.target.value));
-                setXp(taskScore(effort, Number(e.target.value)));
+                setXp(suggested({ contribution: Number(e.target.value) }).xp);
               }}
             >
               <option value={0}>Необхідна дія</option>
@@ -1046,6 +1237,34 @@ function TaskEditor({
             </select>
           </Field>
         </div>
+        <Field label="Особистий виклик">
+          <select
+            value={challenge}
+            onChange={(e) => {
+              setChallenge(Number(e.target.value));
+              setXp(suggested({ challenge: Number(e.target.value) }).xp);
+            }}
+          >
+            <option value={0}>Звична складність</option>
+            <option value={1}>Потрібно подолати відкладання або опанувати нове</option>
+            <option value={2}>Складний самостійний результат</option>
+          </select>
+        </Field>
+        <label className="plan-toggle">
+          <input
+            type="checkbox"
+            checked={routine}
+            onChange={(e) => {
+              setRoutine(e.target.checked);
+              setXp(suggested({ routine: e.target.checked }).xp);
+            }}
+          />
+          Звична повторювана дія
+        </label>
+        <p className="plan-muted">
+          Пропозиція: {suggested().title} · {suggested().xp} XP.{' '}
+          {XP_CATEGORIES.find((category) => category.xp === xp)?.detail}
+        </p>
         <div className="plan-score-result">
           <span>
             За результат <strong>+{xp} XP</strong>
@@ -1058,9 +1277,9 @@ function TaskEditor({
           <summary>Уточнити оцінку</summary>
           <Field label="Погоджена смуга XP">
             <select value={xp} onChange={(e) => setXp(Number(e.target.value))}>
-              {[10, 20, 35, 50].map((n) => (
-                <option key={n} value={n}>
-                  {n} XP
+              {XP_CATEGORIES.map((category) => (
+                <option key={category.xp} value={category.xp}>
+                  {category.xp} XP · {category.title}
                 </option>
               ))}
             </select>
@@ -1116,7 +1335,10 @@ function TaskEditor({
             min={0}
             max={1440}
             value={estimate}
-            onChange={(e) => setEstimate(Number(e.target.value))}
+            onChange={(e) => {
+              setEstimate(Number(e.target.value));
+              setXp(suggested({ estimateMinutes: Number(e.target.value) }).xp);
+            }}
           />
         </Field>
         <Field label="Ціль тижня або місяця">
@@ -1142,6 +1364,27 @@ function TaskEditor({
           </select>
         </Field>
       </details>
+      {!initial?.fromTaskId && (
+        <>
+          <label className="plan-toggle">
+            <input
+              type="checkbox"
+              checked={template}
+              onChange={(e) => setTemplate(e.target.checked)}
+            />
+            Зберегти як шаблон
+          </label>
+          {template && (
+            <>
+              <RepeatDays days={templateDays} onChange={setTemplateDays} />
+              <p className="plan-muted">
+                Вибрані дні: автоматичні чернетки. Без вибраних днів — шаблон лише для ручного
+                використання.
+              </p>
+            </>
+          )}
+        </>
+      )}
       <button className="plan-primary" type="submit">
         Зберегти в чернетку
       </button>
@@ -1368,18 +1611,37 @@ function TaskDetail({
         task.acceptedAt &&
         (task.status === 'accepted' || task.status === 'excepted') && (
           <>
-            <button className="plan-primary" onClick={() => open({ type: 'report', task })}>
-              {task.facts.done ? 'Уточнити факт' : 'Внести результат'}
-            </button>
+            {task.source ? (
+              <div className="plan-source-info">
+                <strong>↔ Результат із фінансів таксі</strong>
+                <p>
+                  Уточнюй суму в записі зміни. Враховуються записи після прийняття, у проміжку цього
+                  планового дня.
+                </p>
+                {task.source.warning && <p className="plan-error">{task.source.warning}</p>}
+                {task.source.checkedAt && <small>Перевірено: {when(task.source.checkedAt)}</small>}
+                <a className="plan-secondary" href="#/finance?action=taxi">
+                  Відкрити таксі ↗
+                </a>
+              </div>
+            ) : (
+              <button className="plan-primary" onClick={() => open({ type: 'report', task })}>
+                {task.facts.done ? 'Уточнити факт' : 'Внести результат'}
+              </button>
+            )}
             {!task.facts.done && !task.forfeitedAt && task.status === 'accepted' && (
               <>
                 <button onClick={() => void run('start', {}, task.id)}>Почав виконання</button>
+                <button onClick={() => void run('focus-start', {}, task.id)}>
+                  Почну з п’яти хвилин
+                </button>
                 <button onClick={() => void run('snooze', { minutes: 15 }, task.id)}>
                   Відкласти лише сигнал на 15 хв
                 </button>
               </>
             )}
-            {task.lastReport &&
+            {!task.source &&
+              task.lastReport &&
               Date.parse(data.now) - Date.parse(task.lastReport.recordedAt) < 600000 && (
                 <button
                   onClick={() =>
@@ -1488,11 +1750,29 @@ function RewardEditor({
     [gate, setGate] = useState(Boolean(initial?.gate)),
     [gateNote, setGateNote] = useState(initial?.gate?.note ?? ''),
     [confirmed, setConfirmed] = useState(initial?.gate?.confirmed ?? false);
+  const [mode, setMode] = useState(initial?.mode ?? 'spend'),
+    [moneyGate, setMoneyGate] = useState(Boolean(initial?.purchase)),
+    [moneyAmount, setMoneyAmount] = useState(String((initial?.purchase?.amountMinor ?? 0) / 100)),
+    [moneyBuffer, setMoneyBuffer] = useState(String((initial?.purchase?.bufferMinor ?? 0) / 100)),
+    [moneyDays, setMoneyDays] = useState(initial?.purchase?.horizonDays ?? 30),
+    [moneyError, setMoneyError] = useState('');
   return (
     <form
       className="plan-form"
       onSubmit={(e) => {
         e.preventDefault();
+        let purchase = null;
+        try {
+          if (moneyGate)
+            purchase = {
+              amountMinor: parseMoney(moneyAmount),
+              bufferMinor: parseMoney(moneyBuffer),
+              horizonDays: moneyDays,
+            };
+        } catch (cause) {
+          setMoneyError((cause as Error).message);
+          return;
+        }
         void save(
           'reward-save',
           {
@@ -1501,6 +1781,8 @@ function RewardEditor({
             scale,
             why,
             repeatable: repeat,
+            mode,
+            purchase,
             primary: main,
             gate:
               gate || scale === 'large'
@@ -1514,6 +1796,23 @@ function RewardEditor({
       <FormTitle sub="Твоє бажання й твоя ціна в XP. Звичайний відпочинок та базові потреби не потрібно заробляти.">
         {initial ? 'Умови винагороди' : 'Нова можливість'}
       </FormTitle>
+      <Field label="Як відкривається можливість">
+        <select
+          value={mode}
+          onChange={(e) => {
+            setMode(e.target.value as typeof mode);
+            if (e.target.value === 'unlock') setRepeat(false);
+          }}
+        >
+          <option value="spend">Один дозвіл за доступний баланс XP</option>
+          <option value="unlock">Постійний етап за накопиченим досвідом</option>
+        </select>
+      </Field>
+      <p className="plan-muted">
+        {mode === 'unlock'
+          ? 'Досвід відкриває цей етап один раз, без списання балансу. Подальші витрати XP його не закривають.'
+          : 'Баланс витрачається на один дозвіл; накопичений досвід зберігається.'}
+      </p>
       <Field label="Що хочу собі дозволити">
         <input required maxLength={180} value={title} onChange={(e) => setTitle(e.target.value)} />
       </Field>
@@ -1546,9 +1845,57 @@ function RewardEditor({
         <textarea maxLength={500} value={why} onChange={(e) => setWhy(e.target.value)} />
       </Field>
       <label className="plan-toggle">
-        <input type="checkbox" checked={repeat} onChange={(e) => setRepeat(e.target.checked)} />
+        <input
+          type="checkbox"
+          checked={repeat}
+          disabled={mode === 'unlock'}
+          onChange={(e) => setRepeat(e.target.checked)}
+        />
         Можна отримувати повторно
       </label>
+      <label className="plan-toggle">
+        <input
+          type="checkbox"
+          checked={moneyGate}
+          onChange={(e) => setMoneyGate(e.target.checked)}
+        />
+        Перевіряти реальні кошти й майбутні витрати
+      </label>
+      {moneyGate && (
+        <div className="plan-score">
+          <Field label="Потрібно мати для цього дозволу, грн">
+            <input
+              type="text"
+              inputMode="decimal"
+              required
+              value={moneyAmount}
+              onChange={(e) => setMoneyAmount(e.target.value)}
+            />
+          </Field>
+          <Field label="Залишити резерв понад цю суму, грн">
+            <input
+              type="text"
+              inputMode="decimal"
+              required
+              value={moneyBuffer}
+              onChange={(e) => setMoneyBuffer(e.target.value)}
+            />
+          </Field>
+          <Field label="Перевіряти майбутні витрати за">
+            <select value={moneyDays} onChange={(e) => setMoneyDays(Number(e.target.value))}>
+              <option value={7}>7 днів</option>
+              <option value={30}>30 днів</option>
+              <option value={90}>90 днів</option>
+            </select>
+          </Field>
+          <p className="plan-muted">
+            Потрібні фактичні власні кошти після планів і резервів. Прогноз доходу показує сценарій
+            і не стає грошима зараз. Для розстрочки ця сума може бути платежем; перевірка одного
+            платежу не підтверджує доступність усієї розстрочки.
+          </p>
+          {moneyError && <p role="alert">{moneyError}</p>}
+        </div>
+      )}
       <label className="plan-toggle">
         <input type="checkbox" checked={main} onChange={(e) => setMain(e.target.checked)} />
         Показувати як обрану ціль у «Дні»
@@ -1612,9 +1959,11 @@ function RewardPath({
   run: Run;
 }) {
   const linked = data.tasks.filter((t) => t.rewardId === reward.id),
+    amount = reward.mode === 'unlock' ? data.wallet.experience : data.wallet.available,
     received = data.coupons.some((c) => c.rewardId === reward.id && c.status !== 'refunded'),
     ready =
-      data.wallet.available >= reward.price &&
+      amount >= reward.price &&
+      (!reward.purchase || reward.affordability?.ready === true) &&
       (!reward.gate || reward.gate.confirmed) &&
       (!received || reward.repeatable);
   return (
@@ -1623,14 +1972,39 @@ function RewardPath({
         {reward.title}
       </FormTitle>
       <div className="plan-path-number">
-        {data.wallet.available}
+        {amount}
         <span> / {reward.price} XP</span>
       </div>
-      <Meter value={data.wallet.available} max={reward.price} label={reward.title} />
+      <Meter value={amount} max={reward.price} label={reward.title} />
       <p className="plan-muted">
-        {Math.max(0, reward.price - data.wallet.available)} XP до доступності ·{' '}
-        {data.wallet.reserved} XP покривають відкриті обіцянки.
+        {Math.max(0, reward.price - amount)} XP до доступності · {data.wallet.reserved} XP
+        покривають відкриті обіцянки.
       </p>
+      {reward.mode === 'unlock' && (
+        <p className="plan-muted">
+          Це постійний етап за досвідом: його відкриття не витрачає баланс.
+        </p>
+      )}
+      {reward.purchase && (
+        <div className="plan-agreement">
+          <strong>
+            {reward.affordability?.ready
+              ? '✓ Фінансовий запас підтверджено'
+              : '◇ Потрібен фінансовий запас'}
+          </strong>
+          <p>{reward.affordability?.reason ?? 'Фінансові дані ще не перевірено.'}</p>
+          <p>
+            Потрібно: {(reward.purchase.amountMinor / 100).toLocaleString('uk-UA')} грн + резерв{' '}
+            {(reward.purchase.bufferMinor / 100).toLocaleString('uk-UA')} грн.
+          </p>
+          {reward.affordability?.currentSafeMinor != null && (
+            <p>
+              Зараз після планів:{' '}
+              {(reward.affordability.currentSafeMinor / 100).toLocaleString('uk-UA')} грн.
+            </p>
+          )}
+        </div>
+      )}
       {reward.gate && (
         <div className="plan-agreement">
           <strong>
@@ -1793,6 +2167,14 @@ const eventNames: Record<string, string> = {
   started: 'Виконання почато',
   forfeited: 'Відмову від виконання зафіксовано',
   'recommit-draft': 'Залишок у новій чернетці',
+  'template-saved': 'Шаблон збережено',
+  'template-archived': 'Шаблон прибрано',
+  'template-error': 'Шаблон потребує уточнення',
+  'day-extended': 'День подовжено',
+  'source-synced': 'Результат оновлено з фінансів',
+  'source-needs-review': 'Уточни фінансовий запис',
+  'focus-started': 'Перші п’ять хвилин',
+  unlocked: 'Постійний доступ відкрито',
 };
 function eventLabel(kind: string) {
   return (
@@ -1866,6 +2248,7 @@ function Progress({
           ? `Оцінений обсяг прийнятого плану — ${Math.round((minutes / 60) * 10) / 10} год за період. Це оцінка, не фактично відпрацьований час.`
           : 'Прогрес почнеться з першого прийнятого плану. Дні без плану не вважаються провалом.'}
       </p>
+      <AreaInsights data={data} from={from} />
       <div className="plan-days" aria-label="Історія днів">
         {dates.map((date) => {
           const day = data.tasks.filter((t) => t.date === date && t.acceptedAt),
@@ -1917,7 +2300,7 @@ function Progress({
       )}
       <h2 className="plan-section-title">Історія змін</h2>
       <p className="plan-muted">
-        Останні {data.events.length} записів. Деталі всіх днів доступні вище.
+        Останні {data.events.length} записів. Давніші події можна завантажити нижче.
       </p>
       {data.events.map((e) => (
         <div className="plan-history-row" key={e.id}>
@@ -1932,6 +2315,7 @@ function Progress({
           </span>
         </div>
       ))}
+      <EarlierHistory key={data.historyCursor} data={data} />
     </div>
   );
 }

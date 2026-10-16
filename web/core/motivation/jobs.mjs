@@ -1,5 +1,5 @@
 import { readPlanState, executePlanCommand, updatePlanCalendar } from './store.mjs';
-import { planRecords, taskFacts } from './model.mjs';
+import { planRecords, taskFacts, currentPlanDate } from './model.mjs';
 import { assistantHomeTarget } from '../tg/home.mjs';
 import { loadSettings } from '../../kv-store.mjs';
 import { isQuietMinute, parseHhmm } from '../../settings-core.mjs';
@@ -7,6 +7,7 @@ import { kyivDateKey, kyivMinuteOfDay } from '../../kyiv-time.mjs';
 import { addDaysToDateKey } from '../../reminders-core.mjs';
 import { createCalendarEvent, inspectCalendarEvent } from '../../google.mjs';
 import { planButton } from './links.mjs';
+import { synchronizePlanFinance } from './finance-link.mjs';
 
 /** During expand rollout the old planner still works until the owner chooses the new one.
  * @param {Env} env */
@@ -36,6 +37,25 @@ export async function renderPlanNotice(env, notice, nowMs) {
         (((parseHhmm(settings.quiet.to) ?? 480) - minute + 1440) % 1440 || 1440) * 60 + 60,
     };
   if (!notice.taskId) {
+    if (notice.kind === 'daily' || notice.kind === 'report-day') {
+      if (notice.kind === 'daily' && notice.date !== currentPlanDate(state, nowMs)) return null;
+      const pending = planRecords(state, 'task').filter(
+        (task) =>
+          task.date === notice.date &&
+          task.status === 'accepted' &&
+          !task.forfeitedAt &&
+          !taskFacts(state, task).done &&
+          (notice.kind !== 'report-day' ||
+            (task.dueAt <= new Date(nowMs).toISOString() && !task.settledAt)),
+      );
+      if (!pending.length) return null;
+      return {
+        text:
+          notice.kind === 'daily'
+            ? `У плані ще ${pending.length} важливих кроків. Обери один і почни з найменшої дії.`
+            : `Строк минув для ${pending.length} задач. Внеси фактичний результат і його справжній час. Вікно звіту не подовжує виконання.`,
+      };
+    }
     if (notice.date !== addDaysToDateKey(kyivDateKey(new Date(nowMs)), 1)) return null;
     if (planRecords(state, 'task').some((t) => t.date === notice.date && t.acceptedAt)) return null;
     return {
@@ -54,17 +74,31 @@ export async function renderPlanNotice(env, notice, nowMs) {
   if (notice.kind === 'start' && (task.startedAt || task.dueAt <= new Date(nowMs).toISOString()))
     return null;
   if (notice.kind === 'report' && task.settledAt) return null;
+  if (notice.kind === 'deadline' && task.dueAt <= new Date(nowMs).toISOString()) return null;
+  if (
+    notice.kind === 'focus' &&
+    (!task.focusUntil ||
+      task.focusUntil > new Date(nowMs).toISOString() ||
+      task.dueAt <= new Date(nowMs).toISOString() ||
+      nowMs - Date.parse(task.focusUntil) > 900000)
+  )
+    return null;
   return {
     text:
-      notice.kind === 'report'
-        ? `Час для факту: ${task.title}. Строк минув; можна внести результат і його справжній час. Вікно звіту не подовжує виконання.`
-        : `${task.title}\n${task.firstStep || task.criterion}\nСтрок: ${new Date(task.dueAt).toLocaleString('uk-UA', { timeZone: 'Europe/Kyiv', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}.`,
+      notice.kind === 'focus'
+        ? `П’ять хвилин для «${task.title}» минули. Продовжиш наступний маленький крок чи внесеш фактичний результат?`
+        : notice.kind === 'deadline'
+          ? `Наближається строк: ${task.title}. Перевір, що залишилося для результату.`
+          : notice.kind === 'report'
+            ? `Час для факту: ${task.title}. Строк минув; можна внести результат і його справжній час. Вікно звіту не подовжує виконання.`
+            : `${task.title}\n${task.firstStep || task.criterion}\nСтрок: ${new Date(task.dueAt).toLocaleString('uk-UA', { timeZone: 'Europe/Kyiv', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}.`,
   };
 }
 
 /** @param {Env} env @param {number} [nowMs] */
 export async function motivationTask(env, nowMs = Date.now()) {
   if (!env.DB) return;
+  await synchronizePlanFinance(env, nowMs);
   let state = await readPlanState(env),
     now = new Date(nowMs).toISOString();
   if (
@@ -81,6 +115,27 @@ export async function motivationTask(env, nowMs = Date.now()) {
     state = await readPlanState(env);
   }
   if (!state.settings.enabled) return;
+  for (const date of [
+    currentPlanDate(state, nowMs),
+    addDaysToDateKey(currentPlanDate(state, nowMs), 1),
+  ]) {
+    if (
+      planRecords(state, 'template').some(
+        (t) =>
+          !t.archived &&
+          t.lastErrorDate !== date &&
+          t.days?.includes(new Date(`${date}T12:00:00Z`).getUTCDay()) &&
+          !state.records[`template-day-${t.id}-${date}`],
+      )
+    )
+      await executePlanCommand(
+        env,
+        { op: '_templates', commandId: `tpl-auto-${date}-${state.revision}`, payload: { date } },
+        nowMs,
+        { internal: true },
+      );
+  }
+  state = await readPlanState(env);
   const home = assistantHomeTarget(env);
   if (!home || isQuietMinute(await loadSettings(env), kyivMinuteOfDay(new Date(nowMs)))) return;
   const tomorrow = addDaysToDateKey(kyivDateKey(new Date(nowMs)), 1),
@@ -92,6 +147,33 @@ export async function motivationTask(env, nowMs = Date.now()) {
     !planRecords(state, 'task').some((t) => t.date === tomorrow && t.acceptedAt)
   )
     await notice(null, 'evening', tomorrow);
+  const today = currentPlanDate(state, nowMs);
+  if (
+    kyivMinuteOfDay(new Date(nowMs)) >= 1200 &&
+    !state.records[`notice-daily-${today}`] &&
+    planRecords(state, 'task').some(
+      (task) => task.date === today && task.status === 'accepted' && !taskFacts(state, task).done,
+    )
+  )
+    await notice(null, 'daily', `daily-${today}`, today);
+  const overdueDates = [
+    ...new Set(
+      planRecords(state, 'task')
+        .filter(
+          (task) =>
+            task.status === 'accepted' &&
+            !task.settledAt &&
+            !task.forfeitedAt &&
+            task.dueAt <= now &&
+            !taskFacts(state, task).done,
+        )
+        .map((task) => task.date),
+    ),
+  ];
+  for (const date of overdueDates.slice(-3)) {
+    const key = `report-${date}-${Math.floor(nowMs / 14400000)}`;
+    if (!state.records[`notice-${key}`]) await notice(null, 'report-day', key, date);
+  }
   let count = 0;
   for (const t of planRecords(state, 'task')) {
     if (count >= 20) break;
@@ -111,14 +193,29 @@ export async function motivationTask(env, nowMs = Date.now()) {
     ) {
       await notice(t, 'start', `start-${version}`);
       count++;
+      continue;
     }
-    if (t.dueAt <= now && !t.settledAt && !t.notices?.['report']) {
-      await notice(t, 'report', 'report');
+    if (t.focusUntil && t.focusUntil <= now && now < t.dueAt && !t.notices?.[`focus-${version}`]) {
+      await notice(t, 'focus', `focus-${version}`);
       count++;
+      continue;
+    }
+    if (
+      t.deadlineKind !== 'day' &&
+      t.remindMinutes != null &&
+      (!t.notices?.[`start-${version}`] ||
+        nowMs - Date.parse(t.notices[`start-${version}`]) >= 900000) &&
+      now < t.dueAt &&
+      Date.parse(t.dueAt) - nowMs <= 1800000 &&
+      !t.notices?.[`deadline-${version}`]
+    ) {
+      await notice(t, 'deadline', `deadline-${version}`);
+      count++;
+      continue;
     }
   }
   /** @param {any} task @param {string} kind @param {string} key */
-  async function notice(task, kind, key) {
+  async function notice(task, kind, key, noticeDate = key) {
     if (!home) return;
     const noticeHash = [
       ...new Uint8Array(
@@ -131,11 +228,11 @@ export async function motivationTask(env, nowMs = Date.now()) {
       .map((b) => b.toString(16).padStart(2, '0'))
       .join('');
     const commandId = `notice-${noticeHash}`;
-    const param = task ? `plan_task_${task.id}` : `plan_date_${key}`;
+    const param = task ? `plan_task_${task.id}` : `plan_date_${noticeDate}`;
     const button = planButton(env, param, home.chatId);
     await executePlanCommand(
       env,
-      { op: '_notice', id: task?.id, commandId, payload: { key, date: key } },
+      { op: '_notice', id: task?.id, commandId, payload: { key, date: noticeDate, kind } },
       nowMs,
       {
         internal: true,
@@ -148,7 +245,7 @@ export async function motivationTask(env, nowMs = Date.now()) {
               plan_notice: {
                 taskId: task?.id ?? null,
                 kind,
-                date: key,
+                date: noticeDate,
                 version: task?.reminderVersion ?? 0,
               },
               ...(button ? { reply_markup: { inline_keyboard: [[button]] } } : {}),

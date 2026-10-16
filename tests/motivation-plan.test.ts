@@ -155,8 +155,11 @@ describe('strict personal plan rules', () => {
     expect(() => planLocalTime('2026-02-30', '04:00')).toThrow();
     expect(() => planLocalTime('2026-03-29', '03:30')).toThrow();
     expect(() => planLocalTime('2026-10-25', '03:30')).toThrow();
-    expect(personalPlanDate(emptyPlan().settings, Date.parse('2026-10-16T00:30:00Z'))).toBe(
+    expect(personalPlanDate(emptyPlan().settings, Date.parse('2026-10-15T23:30:00Z'))).toBe(
       '2026-10-15',
+    );
+    expect(personalPlanDate(emptyPlan().settings, Date.parse('2026-10-16T00:30:00Z'))).toBe(
+      '2026-10-16',
     );
   });
   it('leaves drafts without XP, risk or automatic failure', () => {

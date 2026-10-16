@@ -1,5 +1,6 @@
 import { kyivDateKey, kyivMinuteOfDay } from '../../kyiv-time.mjs';
 import { addDaysToDateKey } from '../../reminders-core.mjs';
+import { XP_CATEGORIES, PLAN_AREAS, suggestTaskScore } from './scoring.mjs';
 
 export const PLAN_OPERATIONS = [
   'settings',
@@ -22,13 +23,19 @@ export const PLAN_OPERATIONS = [
   'coupon-refund',
   'shift-open',
   'shift-close',
+  'template-save',
+  'template-use',
+  'template-archive',
+  'day-extend',
+  'focus-start',
 ];
-export const XP_BANDS = [10, 20, 35, 50];
+export const XP_BANDS = XP_CATEGORIES.map((category) => category.xp);
 export const DEFAULT_PLAN_SETTINGS = {
   enabled: false,
   reviewedAt: /** @type {string | null} */ (null),
   penaltyPercent: 30,
-  dayBoundary: '04:00',
+  dayBoundary: '03:00',
+  rulesVersion: 2,
   reportGraceHours: 12,
   eveningAt: '20:30',
 };
@@ -63,6 +70,19 @@ export function emptyPlan() {
     settings: { ...DEFAULT_PLAN_SETTINGS },
     primaryRewardId: null,
     records: {},
+  };
+}
+/** The owner chose 03:00 for future plans. Accepted deadlines are separate snapshots.
+ * @param {any} settings */
+export function normalizePlanSettings(settings) {
+  return {
+    ...DEFAULT_PLAN_SETTINGS,
+    ...settings,
+    dayBoundary:
+      settings?.rulesVersion !== 2 && settings?.dayBoundary === '04:00'
+        ? '03:00'
+        : (settings?.dayBoundary ?? '03:00'),
+    rulesVersion: 2,
   };
 }
 /** @param {unknown} raw @param {number} max @param {boolean} [required] */
@@ -126,10 +146,45 @@ export function planLocalTime(date, hhmm) {
 }
 /** @param {typeof DEFAULT_PLAN_SETTINGS} settings @param {number} nowMs */
 export function personalPlanDate(settings, nowMs) {
+  settings = normalizePlanSettings(settings);
   const today = kyivDateKey(new Date(nowMs));
-  const boundary =
-    Number(settings.dayBoundary.slice(0, 2)) * 60 + Number(settings.dayBoundary.slice(3));
-  return kyivMinuteOfDay(new Date(nowMs)) < boundary ? addDaysToDateKey(today, -1) : today;
+  return nowMs < Date.parse(dayBoundaryAt(today, settings)) ? addDaysToDateKey(today, -1) : today;
+}
+/** Keep an explicitly extended day visible until its new boundary.
+ * @param {PlanState} state @param {number} nowMs */
+export function currentPlanDate(state, nowMs) {
+  const date = personalPlanDate(state.settings, nowMs),
+    previous = addDaysToDateKey(date, -1);
+  return state.records[`day-${previous}`]?.until > new Date(nowMs).toISOString() ? previous : date;
+}
+/** Overtime belongs to the previous workday, never to both taxi promises.
+ * @param {PlanState} state @param {string} date */
+function sourceDayFrom(state, date) {
+  const normal = dayBoundaryAt(date, state.settings),
+    previous = state.records[`day-${addDaysToDateKey(date, -1)}`]?.until;
+  return previous && previous > normal ? previous : normal;
+}
+/** A day boundary survives DST: later repeated clock, or first existing minute after a gap.
+ * Exact user-specified deadlines still use planLocalTime and reject ambiguous clocks.
+ * @param {string} date @param {{dayBoundary:string}} settings */
+export function dayBoundaryAt(date, settings) {
+  planDate(date);
+  clock(settings.dayBoundary);
+  const wall = Date.parse(`${date}T${settings.dayBoundary}:00Z`);
+  for (let step = 0; step <= 120; step++) {
+    const wanted = new Date(wall + step * 60000).toISOString(),
+      targetDate = wanted.slice(0, 10),
+      hhmm = wanted.slice(11, 16);
+    const matches = [2, 3]
+      .map((offset) => wall + step * 60000 - offset * 3600000)
+      .filter(
+        (ms) =>
+          kyivDateKey(new Date(ms)) === targetDate &&
+          kyivMinuteOfDay(new Date(ms)) === Number(hhmm.slice(0, 2)) * 60 + Number(hhmm.slice(3)),
+      );
+    if (matches.length) return new Date(Math.max(...matches)).toISOString();
+  }
+  throw new PlanError('Не вдалося визначити межу дня. Перевір часові налаштування.');
 }
 /** @param {number} effort @param {number} contribution */
 export function taskScore(effort, contribution) {
@@ -207,8 +262,15 @@ export function planView(state, nowMs, events = []) {
   return {
     revision: state.revision,
     now: new Date(nowMs).toISOString(),
-    today: personalPlanDate(state.settings, nowMs),
-    settings: state.settings,
+    today: currentPlanDate(state, nowMs),
+    settings: normalizePlanSettings(state.settings),
+    templates: planRecords(state, 'template').map((template) => ({
+      ...template,
+      usedDates: planRecords(state, 'template-day')
+        .filter((day) => day.templateId === template.id)
+        .map((day) => day.date),
+    })),
+    days: planRecords(state, 'day'),
     primaryRewardId: state.primaryRewardId,
     wallet: planWallet(state),
     tasks: planRecords(state, 'task').map((t) => ({
@@ -235,9 +297,10 @@ export function applyPlanCommand(original, command, nowMs) {
   const state = structuredClone(original),
     now = new Date(nowMs).toISOString(),
     p = command.payload ?? {};
+  state.settings = normalizePlanSettings(state.settings);
   if (!p || typeof p !== 'object' || Array.isArray(p))
     throw new PlanError('Перевір параметри дії.');
-  for (const key of ['calendar', 'timeSensitive', 'repeatable', 'primary'])
+  for (const key of ['calendar', 'timeSensitive', 'repeatable', 'primary', 'routine', 'template'])
     if (p[key] !== undefined && typeof p[key] !== 'boolean')
       throw new PlanError('Прапорці задачі й винагороди мають бути явними «так» або «ні».');
   const id = text(command.id, 100),
@@ -290,6 +353,173 @@ export function applyPlanCommand(original, command, nowMs) {
     settle(t, true);
   if (op === '_settle') {
     /* scheduler only */
+  } else if (op === 'day-extend') {
+    const date = planDate(p.date),
+      until = iso(p.until),
+      reason = text(p.reason, 500, true);
+    const originalBoundary = dayBoundaryAt(addDaysToDateKey(date, 1), state.settings);
+    const limit = planLocalTime(addDaysToDateKey(date, 1), '12:00');
+    if (
+      now >= originalBoundary ||
+      until <= originalBoundary ||
+      until > limit ||
+      state.records[`day-${date}`]?.extendedAt
+    )
+      throw new PlanError('Подовжи день один раз до його межі; максимум до 12:00 наступного дня.');
+    if (
+      planRecords(state, 'task').some(
+        (t) =>
+          t.date === date &&
+          t.source &&
+          t.status === 'accepted' &&
+          planRecords(state, 'task').some(
+            (other) =>
+              other.date !== date &&
+              other.source &&
+              other.acceptedAt &&
+              other.source.from < until &&
+              other.source.until > t.source.from,
+          ),
+      )
+    )
+      throw new PlanError(
+        'Подовження перетнеться з уже прийнятою задачею таксі наступного дня. Уточни план без подвійного результату.',
+      );
+    state.records[`day-${date}`] = {
+      id: `day-${date}`,
+      kind: 'day',
+      date,
+      until,
+      reason,
+      extendedAt: now,
+    };
+    for (const t of planRecords(state, 'task').filter(
+      (t) => t.date === date && t.deadlineKind === 'day' && !t.settledAt && t.status !== 'excepted',
+    )) {
+      t.originalDueAt ??= t.dueAt;
+      t.dueAt = until;
+      if (t.acceptedAt)
+        t.settleAfter = new Date(Date.parse(until) + t.reportGraceHours * 3600000).toISOString();
+      if (t.source) t.source.until = until;
+    }
+    for (const t of planRecords(state, 'task').filter(
+      (t) => t.date === addDaysToDateKey(date, 1) && t.status === 'draft' && t.source,
+    ))
+      t.source.from = sourceDayFrom(state, t.date);
+    event('day-extended', 'Подовжений робочий день', 0, 0, { date, until, reason });
+  } else if (op === 'template-save' || op === 'template-archive') {
+    if (op === 'template-archive') {
+      get(state, id, 'template').archived = true;
+      event('template-archived', 'Шаблон прибрано');
+    } else {
+      const task = get(state, text(p.taskId, 100, true), 'task');
+      if (
+        !Array.isArray(p.days) ||
+        p.days.length > 7 ||
+        p.days.some((/** @type {number} */ d) => !Number.isInteger(d) || d < 0 || d > 6)
+      )
+        throw new PlanError('Обери дні тижня для чернеток.');
+      const templateId = id || `template-${command.commandId}`;
+      if (id) get(state, id, 'template');
+      state.records[templateId] = {
+        id: templateId,
+        kind: 'template',
+        title: task.title,
+        task: structuredClone(task),
+        days: [...new Set(p.days)],
+        archived: false,
+        createdAt: now,
+      };
+      const marker = `template-day-${templateId}-${task.date}`;
+      state.records[marker] = {
+        id: marker,
+        kind: 'template-day',
+        date: task.date,
+        templateId,
+        taskId: task.id,
+      };
+      receipt.id = templateId;
+      event('template-saved', task.title);
+    }
+  } else if (op === 'template-use' || op === '_templates') {
+    const date = planDate(p.date);
+    const weekday = new Date(`${date}T12:00:00Z`).getUTCDay();
+    const templates =
+      op === 'template-use'
+        ? [get(state, id, 'template')]
+        : planRecords(state, 'template').filter((t) => t.days.includes(weekday));
+    for (const template of templates
+      .filter(
+        (t) =>
+          !t.archived &&
+          !state.records[`template-day-${t.id}-${date}`] &&
+          (op === 'template-use' || t.lastErrorDate !== date),
+      )
+      .slice(0, 20)) {
+      const marker = `template-day-${template.id}-${date}`;
+      if (state.records[marker]) continue;
+      const task = template.task;
+      /** @param {string} value */ const clockFor = (value) =>
+        new Intl.DateTimeFormat('en-GB', {
+          timeZone: 'Europe/Kyiv',
+          hour: '2-digit',
+          minute: '2-digit',
+          hourCycle: 'h23',
+        }).format(new Date(value));
+      /** @param {string|null} value */ const localShift = (value) =>
+        value
+          ? planLocalTime(
+              addDaysToDateKey(
+                date,
+                Math.round(
+                  (Date.parse(kyivDateKey(new Date(value))) - Date.parse(task.date)) / 86400000,
+                ),
+              ),
+              clockFor(value),
+            )
+          : null;
+      try {
+        const child = applyPlanCommand(
+          state,
+          {
+            op: 'task-save',
+            commandId: `tpl-${date}-${state.revision}`,
+            payload: {
+              ...task,
+              calendarOriginId: null,
+              date,
+              deadlineKind: task.deadlineKind === 'shift' ? 'day' : task.deadlineKind,
+              dueAt: task.deadlineKind === 'time' ? localShift(task.dueAt) : undefined,
+              startAt: localShift(task.startAt),
+              endAt: localShift(task.endAt),
+              source: task.source ? { kind: 'taxi', metric: task.source.metric } : null,
+            },
+          },
+          nowMs,
+        );
+        Object.assign(state, child.state);
+        events.push(...child.events);
+        state.records[marker] = {
+          id: marker,
+          kind: 'template-day',
+          date,
+          templateId: template.id,
+          taskId: child.receipt.id,
+        };
+        receipt.id = child.receipt.id;
+      } catch (error) {
+        if (op === 'template-use') throw error;
+        state.records[template.id].lastErrorDate = date;
+        state.records[template.id].lastError =
+          error instanceof Error ? error.message : 'Не вдалося підготувати чернетку.';
+        event('template-error', template.title, 0, 0, {
+          templateId: template.id,
+          date,
+          reason: state.records[template.id].lastError,
+        });
+      }
+    }
+    receipt.message = 'Чернетки підготовлено. Перевір і прийми їх самостійно.';
   } else if (op === '_calendar') {
     const task = get(state, id, 'task');
     task.calendarState = p.calendarState;
@@ -303,7 +533,9 @@ export function applyPlanCommand(original, command, nowMs) {
       task.notices ??= {};
       task.notices[p.key] = now;
     } else {
-      state.records['notice-evening'] = { id: 'notice-evening', kind: 'notice', date: p.date };
+      const marker =
+        p.kind === 'evening' || !p.kind ? 'notice-evening' : `notice-${text(p.key, 150, true)}`;
+      state.records[marker] = { id: marker, kind: 'notice', date: p.date };
     }
   } else if (op === 'settings') {
     const settings = { ...state.settings };
@@ -335,14 +567,22 @@ export function applyPlanCommand(original, command, nowMs) {
     const target = integer(p.target ?? 1, 1, 100000000),
       effort = integer(p.effort ?? 1, 0, 2),
       contribution = integer(p.contribution ?? 0, 0, 1);
-    const xp = p.xp ?? taskScore(effort, contribution);
-    if (!XP_BANDS.includes(xp)) throw new PlanError('Обери 10, 20, 35 або 50 XP.');
+    const challenge = integer(p.challenge ?? 0, 0, 2),
+      area = p.area ?? 'life';
+    if (!Object.hasOwn(PLAN_AREAS, area)) throw new PlanError('Обери напрям задачі.');
+    const xp =
+      p.xp ??
+      (p.scoringVersion === 2
+        ? suggestTaskScore({ ...p, effort, contribution, challenge }).xp
+        : taskScore(effort, contribution));
+    if (!XP_BANDS.includes(xp)) throw new PlanError('Обери одну з дев’яти категорій XP.');
     const deadlineKind = p.deadlineKind ?? 'day';
     if (!['day', 'time', 'shift'].includes(deadlineKind))
       throw new PlanError('Обери межу дня, точний час або зміну.');
     const dueAt =
       deadlineKind === 'day'
-        ? planLocalTime(addDaysToDateKey(date, 1), state.settings.dayBoundary)
+        ? (state.records[`day-${date}`]?.until ??
+          dayBoundaryAt(addDaysToDateKey(date, 1), state.settings))
         : iso(p.dueAt);
     const startAt = p.startAt ? iso(p.startAt) : null,
       endAt = p.endAt ? iso(p.endAt) : null;
@@ -355,8 +595,25 @@ export function applyPlanCommand(original, command, nowMs) {
     if (p.rewardId) get(state, p.rewardId, 'reward');
     if (p.timeSensitive && target !== 1)
       throw new PlanError('Умова «встигнути до» має один результат.');
+    const source = p.source ?? null;
+    if (
+      source &&
+      (source.kind !== 'taxi' ||
+        !['net', 'gross'].includes(source.metric) ||
+        p.timeSensitive ||
+        target === 1)
+    )
+      throw new PlanError('Зв’язок таксі потребує числової цілі у гривнях і метрики каси.');
     const taskId = id || `task-${command.commandId}`,
       resultId = previous?.resultId ?? `result-${command.commandId}`;
+    const calendarOriginId = p.calendarOriginId ? text(p.calendarOriginId, 320) : null;
+    if (
+      calendarOriginId &&
+      planRecords(state, 'task').some(
+        (t) => t.id !== taskId && t.calendarOriginId === calendarOriginId && t.date === date,
+      )
+    )
+      throw new PlanError('Ця подія вже є у плані на цей день.', 409);
     if (
       planRecords(state, 'task').filter((t) => t.date === date && t.status === 'draft').length >=
         50 &&
@@ -393,6 +650,22 @@ export function applyPlanCommand(original, command, nowMs) {
       unit: text(p.unit, 24) || 'крок',
       effort,
       contribution,
+      calendarOriginId,
+      challenge,
+      area,
+      routine: Boolean(p.routine),
+      scoringVersion: p.scoringVersion === 2 ? 2 : 1,
+      source: source
+        ? {
+            kind: 'taxi',
+            metric: source.metric,
+            from: sourceDayFrom(state, date),
+            until:
+              state.records[`day-${date}`]?.until ??
+              dayBoundaryAt(addDaysToDateKey(date, 1), state.settings),
+            proof: null,
+          }
+        : null,
       deadlineKind,
       dueAt,
       startAt,
@@ -416,6 +689,27 @@ export function applyPlanCommand(original, command, nowMs) {
     }
     receipt.id = taskId;
     event('draft', title);
+    if (p.template) {
+      if (
+        !Array.isArray(p.templateDays) ||
+        p.templateDays.length > 7 ||
+        p.templateDays.some((/** @type {number} */ d) => !Number.isInteger(d) || d < 0 || d > 6)
+      )
+        throw new PlanError('Обери дні для шаблону.');
+      const templateId = `template-${command.commandId}`;
+      state.records[templateId] = {
+        id: templateId,
+        kind: 'template',
+        title,
+        task: structuredClone(state.records[taskId]),
+        days: [...new Set(p.templateDays)],
+        archived: false,
+        createdAt: now,
+      };
+      const marker = `template-day-${templateId}-${date}`;
+      state.records[marker] = { id: marker, kind: 'template-day', date, templateId, taskId };
+      event('template-saved', title);
+    }
   } else if (op === 'task-delete') {
     const task = get(state, id, 'task');
     if (task.status !== 'draft')
@@ -438,6 +732,21 @@ export function applyPlanCommand(original, command, nowMs) {
         );
       if (Date.parse(t.dueAt) <= nowMs)
         throw new PlanError(`Строк «${t.title}» уже минув. Уточни чернетку.`);
+      if (
+        t.source &&
+        planRecords(state, 'task').some(
+          (other) =>
+            other.id !== t.id &&
+            other.source &&
+            other.acceptedAt &&
+            other.resultId !== t.resultId &&
+            other.source.from < t.source.until &&
+            other.source.until > t.source.from,
+        )
+      )
+        throw new PlanError(
+          'Для цього проміжку таксі вже є пов’язана обіцянка. Використай один результат без подвійного XP.',
+        );
       if (
         planRecords(state, 'task').some(
           (other) =>
@@ -466,12 +775,54 @@ export function applyPlanCommand(original, command, nowMs) {
       });
     }
     receipt.message = `Прийнято задач: ${tasks.length}.`;
-  } else if (op === 'report' || op === 'undo-report') {
+  } else if (op === 'report' || op === 'undo-report' || op === '_source-sync') {
     const task = get(state, id, 'task'),
       result = resultOf(state, task);
+    const sourceSync = op === '_source-sync';
+    if (task.source && !sourceSync)
+      throw new PlanError('Цей результат надходить із фінансів. Уточни запис зміни в «Таксі».');
+    if (sourceSync && !task.source) throw new PlanError('Задача не має джерела даних.');
     if (!task.acceptedAt || !['accepted', 'excepted'].includes(task.status))
       throw new PlanError('Факт виконання доступний для прийнятої задачі.', 409);
-    if (op === 'report') {
+    if (sourceSync) {
+      if (task.source.proof === p.proof) return { state: original, events: [], receipt };
+      if (typeof p.proof !== 'string' || p.proof.length > 100) throw new PlanError();
+      if (p.unknown) {
+        task.source = {
+          ...task.source,
+          proof: p.proof,
+          checkedAt: now,
+          warning: 'Уточни комісію в записі таксі. Показано останній підтверджений результат.',
+        };
+        event('source-needs-review', task.title, 0, 0, { taskId: id });
+        state.revision++;
+        return { state, events, receipt: { ...receipt, message: 'Потрібне уточнення джерела.' } };
+      }
+      result.reports = result.reports.filter((/** @type {any} */ r) => r.sourceTaskId !== id);
+      for (const fact of p.facts ?? []) {
+        const units = integer(fact.units, 0, result.target),
+          actualAt = iso(fact.actualAt);
+        if (actualAt < task.acceptedAt || actualAt > now)
+          throw new PlanError('Некоректний час джерела.');
+        result.reports.push({
+          id: `source-${command.commandId}-${result.reports.length}`,
+          sourceTaskId: id,
+          units,
+          observedUnits: units,
+          actualAt,
+          recordedAt: now,
+          retracted: false,
+        });
+      }
+      task.source = {
+        ...task.source,
+        warning: null,
+        proof: p.proof,
+        actualMinor: integer(p.actualMinor, 0, 9000000000000),
+        checkedAt: now,
+        entryIds: p.entryIds ?? [],
+      };
+    } else if (op === 'report') {
       const units = integer(p.units, 0, result.target),
         actualAt = iso(p.actualAt ?? now);
       const firstAcceptance = planRecords(state, 'task')
@@ -504,18 +855,40 @@ export function applyPlanCommand(original, command, nowMs) {
     const units = Math.max(0, ...validReports(result).map((/** @type {any} */ r) => r.units)),
       credited = Math.floor((result.xp * units) / result.target),
       delta = credited - result.credited;
-    event(op === 'report' ? 'earned' : 'report-reversed', task.title, delta, delta, {
-      taskId: id,
-      actualAt: p.actualAt ?? now,
-      units,
-      reportId: receipt.reportId || p.reportId,
-    });
+    let walletDelta = delta;
+    if (sourceSync) {
+      const high = result.sourceHighWater ?? result.credited;
+      if (delta < 0) {
+        walletDelta = -Math.min(state.balance, -delta);
+        result.sourceRefundable = (result.sourceRefundable ?? 0) - walletDelta;
+      } else {
+        const refund = Math.min(
+          result.sourceRefundable ?? 0,
+          Math.max(0, Math.min(credited, high) - result.credited),
+        );
+        walletDelta = Math.max(0, credited - high) + refund;
+        result.sourceRefundable = (result.sourceRefundable ?? 0) - refund;
+      }
+      result.sourceHighWater = Math.max(high, credited);
+    }
+    event(
+      sourceSync ? 'source-synced' : op === 'report' ? 'earned' : 'report-reversed',
+      task.title,
+      walletDelta,
+      delta,
+      {
+        taskId: id,
+        actualAt: p.actualAt ?? now,
+        units,
+        reportId: receipt.reportId || p.reportId,
+      },
+    );
     result.units = units;
     result.credited = credited;
     for (const t of planRecords(state, 'task').filter(
       (t) => t.resultId === result.id && t.status === 'accepted' && t.settledAt,
     )) {
-      if (op === 'undo-report') {
+      if (op === 'undo-report' || (sourceSync && delta < 0)) {
         const next = taskFacts(state, t).risk,
           extra = Math.max(0, next - t.penaltyRequested),
           applied = Math.min(state.balance, extra);
@@ -537,12 +910,18 @@ export function applyPlanCommand(original, command, nowMs) {
         : op === 'undo-report'
           ? 'Позначку скасовано.'
           : 'Факт збережено.';
-  } else if (['start', 'move-start', 'snooze', 'exception', 'forfeit'].includes(op)) {
+  } else if (
+    ['start', 'focus-start', 'move-start', 'snooze', 'exception', 'forfeit'].includes(op)
+  ) {
     const task = get(state, id, 'task');
     if (task.status !== 'accepted') throw new PlanError('Задача має бути в прийнятому плані.', 409);
-    if (op === 'start') {
+    if (op === 'start' || op === 'focus-start') {
       task.startedAt ??= now;
-      event('started', task.title);
+      if (op === 'focus-start') {
+        task.focusUntil = new Date(nowMs + 300000).toISOString();
+        task.reminderVersion = (task.reminderVersion ?? 0) + 1;
+      }
+      event(op === 'focus-start' ? 'focus-started' : 'started', task.title);
     }
     if (op === 'move-start') {
       const startAt = iso(p.startAt);
@@ -598,11 +977,21 @@ export function applyPlanCommand(original, command, nowMs) {
       penaltyRequested: 0,
       penaltyApplied: 0,
       forfeitedAt: null,
-      dueAt: planLocalTime(addDaysToDateKey(date, 1), state.settings.dayBoundary),
+      dueAt: dayBoundaryAt(addDaysToDateKey(date, 1), state.settings),
       deadlineKind: 'day',
       calendar: false,
       calendarState: 'none',
       calendarEventId: null,
+      calendarOriginId: null,
+      source: task.source
+        ? {
+            kind: 'taxi',
+            metric: task.source.metric,
+            from: sourceDayFrom(state, date),
+            until: dayBoundaryAt(addDaysToDateKey(date, 1), state.settings),
+            proof: null,
+          }
+        : null,
       startAt: null,
       endAt: null,
       startedAt: null,
@@ -636,6 +1025,8 @@ export function applyPlanCommand(original, command, nowMs) {
     )
       throw new PlanError('Отриману винагороду збережено в історії. Створи новий варіант.', 409);
     const scale = p.scale ?? 'near';
+    if (p.mode != null && !['spend', 'unlock'].includes(p.mode))
+      throw new PlanError('Обери спосіб відкриття винагороди.');
     if (!['near', 'middle', 'large'].includes(scale))
       throw new PlanError('Обери масштаб винагороди.');
     const gate = p.gate ?? null;
@@ -654,7 +1045,15 @@ export function applyPlanCommand(original, command, nowMs) {
       why: text(p.why, 500),
       price: integer(p.price, 1, 1000000),
       scale,
-      repeatable: Boolean(p.repeatable),
+      repeatable: p.mode === 'unlock' ? false : Boolean(p.repeatable),
+      mode: p.mode === 'unlock' ? 'unlock' : 'spend',
+      purchase: p.purchase
+        ? {
+            amountMinor: integer(p.purchase.amountMinor, 1, 9000000000000),
+            bufferMinor: integer(p.purchase.bufferMinor ?? 0, 0, 9000000000000),
+            horizonDays: integer(p.purchase.horizonDays ?? 30, 7, 90),
+          }
+        : null,
       gate: gate
         ? { kind: gate.kind, confirmed: gate.confirmed, note: gateReason, checkedAt: now }
         : scale === 'large'
@@ -688,7 +1087,8 @@ export function applyPlanCommand(original, command, nowMs) {
       throw new PlanError('Цю винагороду вже отримано.', 409);
     if (reward.gate && !reward.gate.confirmed)
       throw new PlanError('Спочатку підтвердь реальну умову винагороди.');
-    if (reward.price > planWallet(state).available)
+    const unlock = reward.mode === 'unlock';
+    if (reward.price > (unlock ? state.experience : planWallet(state).available))
       throw new PlanError(
         'Зараз недостатньо доступних XP. Частина балансу покриває відкриті обіцянки.',
         409,
@@ -699,12 +1099,15 @@ export function applyPlanCommand(original, command, nowMs) {
       kind: 'coupon',
       rewardId: id,
       title: reward.title,
-      price: reward.price,
-      status: 'ready',
+      price: unlock ? 0 : reward.price,
+      status: unlock ? 'unlocked' : 'ready',
+      unlockXp: unlock ? reward.price : null,
       createdAt: now,
     };
     receipt.id = couponId;
-    event('redeemed', reward.title, -reward.price, 0, { couponId });
+    event(unlock ? 'unlocked' : 'redeemed', reward.title, unlock ? 0 : -reward.price, 0, {
+      couponId,
+    });
   } else if (op === 'coupon-use' || op === 'coupon-refund') {
     const coupon = get(state, id, 'coupon');
     if (coupon.status !== 'ready') throw new PlanError('Купон уже використано або повернено.', 409);
@@ -725,7 +1128,7 @@ export function applyPlanCommand(original, command, nowMs) {
     state.records[shiftId] = {
       id: shiftId,
       kind: 'shift',
-      date: personalPlanDate(state.settings, nowMs),
+      date: currentPlanDate(state, nowMs),
       startedAt: now,
       reviewAt,
       endedAt: null,
@@ -736,7 +1139,7 @@ export function applyPlanCommand(original, command, nowMs) {
         t.deadlineKind === 'shift' &&
         !t.shiftId &&
         !t.settledAt &&
-        t.date === personalPlanDate(state.settings, nowMs),
+        t.date === currentPlanDate(state, nowMs),
     )) {
       t.shiftId = shiftId;
       t.dueAt = reviewAt < t.dueAt ? reviewAt : t.dueAt;
