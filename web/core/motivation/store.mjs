@@ -50,6 +50,7 @@ function validateCommand(raw, internal) {
   if (
     !raw ||
     typeof raw !== 'object' ||
+    typeof raw.commandId !== 'string' ||
     !/^[a-zA-Z0-9_-]{8,80}$/.test(raw.commandId ?? '') ||
     (!PLAN_OPERATIONS.includes(raw.op) &&
       !(internal && ['_settle', '_calendar', '_notice'].includes(raw.op)))

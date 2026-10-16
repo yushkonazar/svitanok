@@ -785,6 +785,11 @@ export function PlanScreen() {
                         До {when(t.dueAt)} · +{t.xp} / −
                         {Math.ceil((t.xp * data.settings.penaltyPercent) / 100)} XP
                       </small>
+                      {t.calendar && (
+                        <small>
+                          Google Calendar: {when(t.startAt!)} — {when(t.endAt!)}
+                        </small>
+                      )}
                     </div>
                   ))}
                   <p className="plan-muted">
@@ -1634,7 +1639,12 @@ function RewardPath({
               : '◇ Потрібен реальний етап готовності'}
           </strong>
           <p>{reward.gate.note}</p>
-          {reward.gate.checkedAt && <small>Власна перевірка: {when(reward.gate.checkedAt)}</small>}
+          {reward.gate.checkedAt && (
+            <small>
+              {reward.gate.confirmed ? 'Перевірку підтверджено' : 'Умови збережено'}:{' '}
+              {when(reward.gate.checkedAt)}
+            </small>
+          )}
         </div>
       )}
       <button

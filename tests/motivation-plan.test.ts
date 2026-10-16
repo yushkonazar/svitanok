@@ -84,6 +84,22 @@ beforeEach(() => {
 });
 
 describe('strict personal plan rules', () => {
+  it('never interprets a string false as permission to create a Calendar block', () => {
+    expect(() =>
+      reduce(
+        emptyPlan(),
+        'task-save',
+        payload({
+          calendar: 'false',
+          startAt: '2026-10-16T08:00:00Z',
+          endAt: '2026-10-16T09:00:00Z',
+        }),
+      ),
+    ).toThrow('Прапорці');
+    expect(() =>
+      reduce(emptyPlan(), 'reward-save', { title: 'Винагорода', price: 100, repeatable: 'false' }),
+    ).toThrow('Прапорці');
+  });
   it('scores six transparent combinations and validates real Kyiv dates, DST and night boundaries', () => {
     expect([0, 1, 2].flatMap((e) => [0, 1].map((c) => taskScore(e, c)))).toEqual([
       10, 20, 20, 35, 35, 50,

@@ -136,10 +136,10 @@ Google Calendar отримує тільки явно вибраний реаль
 Локальні перевірки кандидата та їхні обмеження фіксуються в PR. Окремі
 відтворювані сценарії:
 
-Повний локальний регрес: 5717 root tests із coverage
-87.97/80.27/88.58/90.68% (statements/branches/functions/lines) та 375 Mini App
-tests. Наступна корекція пізнього факту для переприйнятого залишку окремо
-перевірена у 22 domain tests. Typecheck, lint, format, tool contract,
+Повний локальний регрес: 5719 root tests із coverage
+87.97/80.27/88.58/90.67% (statements/branches/functions/lines) та 375 Mini App
+tests. Після фінальних уточнень інтерфейсу повторено 4 owner journeys;
+правила охоплено 23 domain tests. Typecheck, lint, format, tool contract,
 Mini App/Brain builds і production-dependency audits пройшли.
 Остаточний SHA та CI фіксуються в PR; цей запис не підміняє його перевірку.
 

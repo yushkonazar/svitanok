@@ -236,6 +236,9 @@ export function applyPlanCommand(original, command, nowMs) {
     p = command.payload ?? {};
   if (!p || typeof p !== 'object' || Array.isArray(p))
     throw new PlanError('Перевір параметри дії.');
+  for (const key of ['calendar', 'timeSensitive', 'repeatable', 'primary'])
+    if (p[key] !== undefined && typeof p[key] !== 'boolean')
+      throw new PlanError('Прапорці задачі й винагороди мають бути явними «так» або «ні».');
   const id = text(command.id, 100),
     op = command.op;
   /** @type {any[]} */ const events = [];

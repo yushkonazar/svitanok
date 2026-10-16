@@ -175,7 +175,11 @@ assert.equal(
   await page.getByRole('button', { name: 'Ще рухаюся до відкриття' }).isDisabled(),
   true,
 );
-await page.screenshot({ path: resolve(out, 'reward-path.png'), fullPage: true });
+await page.screenshot({
+  path: resolve(out, 'reward-path.png'),
+  fullPage: true,
+  animations: 'disabled',
+});
 await page.getByRole('button', { name: 'Закрити панель' }).click();
 await page.getByRole('button', { name: 'День', exact: true }).click();
 await page.getByRole('button', { name: 'Додати задачу', exact: true }).click();
