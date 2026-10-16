@@ -84,6 +84,53 @@ beforeEach(() => {
 });
 
 describe('strict personal plan rules', () => {
+  it.each(['settings', 'task-save'])(
+    'recognizes legacy %s without relying on the recent journal',
+    async (op) => {
+      const { env, db } = setup();
+      await executePlanCommand(
+        env,
+        {
+          op,
+          payload: op === 'settings' ? { enabled: false, penaltyPercent: 35 } : payload(),
+          revision: 0,
+          commandId: 'legacy-onboarding',
+        },
+        NOW,
+      );
+      const stored = JSON.parse(
+        String(db.prepare('SELECT data_json FROM motivation_account').get()?.data_json),
+      );
+      expect(stored.settings.reviewedAt).toBe(
+        op === 'settings' ? new Date(NOW).toISOString() : null,
+      );
+      // The released 0.11.0 account did not have a setup-completion marker.
+      db.exec(
+        "UPDATE motivation_account SET data_json=json_remove(data_json,'$.settings.reviewedAt')",
+      );
+      const later = new Date(AFTER).toISOString();
+      db.prepare(
+        `WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<101)
+      INSERT INTO motivation_ledger(id,command_id,at,kind,delta,experience_delta,data_json)
+      SELECT 'history-'||i,'history-command-'||i,?,'history',0,0,
+        json_object('id','history-'||i,'at',?,'kind','history') FROM n`,
+      ).run(later, later);
+      const workspace = await readPlanWorkspace(env, AFTER + 1);
+      expect(workspace.events).toHaveLength(100);
+      expect(workspace.events.some((event) => event.kind === 'settings')).toBe(false);
+      expect(workspace.settings.reviewedAt).toBe(
+        op === 'settings' ? new Date(NOW).toISOString() : null,
+      );
+      expect(workspace.settings.enabled).toBe(false);
+      expect(
+        db
+          .prepare(
+            "SELECT json_extract(data_json,'$.settings.reviewedAt') AS reviewed FROM motivation_account",
+          )
+          .get()?.reviewed,
+      ).toBeNull();
+    },
+  );
   it('never interprets a string false as permission to create a Calendar block', () => {
     expect(() =>
       reduce(

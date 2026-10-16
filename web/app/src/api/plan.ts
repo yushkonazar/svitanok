@@ -83,6 +83,7 @@ export const planWorkspaceSchema = z.object({
   today: z.string(),
   settings: z.object({
     enabled: z.boolean(),
+    reviewedAt: nullableTime,
     penaltyPercent: z.number(),
     dayBoundary: z.string(),
     reportGraceHours: z.number(),

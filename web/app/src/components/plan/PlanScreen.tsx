@@ -407,7 +407,7 @@ export function PlanScreen() {
               <p>Конкретне бажання, до якого хочеться рухатися.</p>
             </button>
           )}
-          {!data.settings.enabled && (
+          {!data.settings.reviewedAt && !data.settings.enabled && (
             <div className="plan-onboard">
               <h2>Твої рішення. Відомі наслідки.</h2>
               <p>

@@ -38,6 +38,56 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 describe('manual plan owner journey', () => {
+  it('dismisses initial setup after saving rules while disabled and keeps it dismissed after reopening', async () => {
+    const first = setup();
+    await first.user.click(
+      await screen.findByRole('button', { name: 'Переглянути й увімкнути правила' }),
+    );
+    expect(screen.getByLabelText('Увімкнути ручний план і його нагадування')).not.toBeChecked();
+    const penalty = screen.getByLabelText('Штраф за невиконаний обсяг, %');
+    await first.user.clear(penalty);
+    await first.user.type(penalty, '35');
+    await first.user.click(screen.getByRole('button', { name: 'Зберегти правила' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(screen.queryByText('Твої рішення. Відомі наслідки.')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Правила плану' })).toBeInTheDocument();
+    expect((await fetchPlan()).settings.enabled).toBe(false);
+    first.unmount();
+    first.client.clear();
+
+    const reopened = setup();
+    await screen.findByRole('heading', { name: 'Мій план' });
+    expect(screen.queryByText('Твої рішення. Відомі наслідки.')).not.toBeInTheDocument();
+    await reopened.user.click(screen.getByRole('button', { name: 'Правила плану' }));
+    expect(screen.getByLabelText('Штраф за невиконаний обсяг, %')).toHaveValue(35);
+    expect(screen.getByLabelText('Увімкнути ручний план і його нагадування')).not.toBeChecked();
+  });
+  it('keeps initial setup available when saving rules is not acknowledged', async () => {
+    const workspace = await fetchPlan();
+    telegram.live = true;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((_url: string, init?: RequestInit) =>
+        Promise.resolve(
+          init?.method === 'POST'
+            ? new Response(JSON.stringify({ ok: false, error: 'Не вдалося зберегти правила.' }), {
+                status: 500,
+              })
+            : new Response(JSON.stringify({ ok: true, workspace }), { status: 200 }),
+        ),
+      ),
+    );
+    const { user } = setup();
+    await user.click(
+      await screen.findByRole('button', { name: 'Переглянути й увімкнути правила' }),
+    );
+    await user.click(screen.getByRole('button', { name: 'Зберегти правила' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Не вдалося зберегти правила.');
+    await user.click(screen.getByRole('button', { name: 'Закрити панель' }));
+    expect(
+      screen.getByRole('button', { name: 'Переглянути й увімкнути правила' }),
+    ).toBeInTheDocument();
+  });
   it('accepts an explicit plan, awards partial work without a loss and undoes an accidental report', async () => {
     const { user } = setup();
     await user.click(

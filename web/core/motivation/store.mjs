@@ -11,10 +11,23 @@ async function load(db) {
     db.prepare('SELECT revision,data_json FROM motivation_account WHERE id=1').bind(),
     db.prepare('SELECT data_json FROM motivation_records').bind(),
   ]);
-  const row = snapshot[0].results[0];
+  const row = snapshot[0].results[0],
+    defaults = emptyPlan(),
+    saved = row ? JSON.parse(row.data_json) : {},
+    settings = { ...defaults.settings, ...saved.settings };
+  // 0.11.0 already recorded settings saves, including saves while disabled.
+  // Use the full ledger, not the last 100 visible events; reads stay read-only.
+  if (row && saved.settings?.reviewedAt === undefined) {
+    const reviewed = await db
+      .prepare("SELECT at FROM motivation_ledger WHERE kind='settings' ORDER BY at,id LIMIT 1")
+      .bind()
+      .first();
+    settings.reviewedAt = reviewed?.at ?? null;
+  }
   return {
-    ...emptyPlan(),
-    ...(row ? JSON.parse(row.data_json) : {}),
+    ...defaults,
+    ...saved,
+    settings,
     revision: Number(row?.revision ?? 0),
     records: Object.fromEntries(
       snapshot[1].results.map((/** @type {any} */ r) => {
