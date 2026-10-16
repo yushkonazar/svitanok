@@ -1081,6 +1081,7 @@ export function FinanceAnalytics({
         <TaxiHistory
           finance={finance}
           initialKey={taxiKey || undefined}
+          onSelect={setTaxiKey}
           onClose={() => setTaxiKey(null)}
           onAction={action}
         />

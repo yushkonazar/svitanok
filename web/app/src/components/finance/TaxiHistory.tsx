@@ -16,16 +16,25 @@ export function TaxiHistory({
   onClose,
   onAction,
   initialKey,
+  onSelect,
 }: {
   finance: Finance;
   onClose: () => void;
   onAction: (r: FinanceFormRequest) => void;
   initialKey?: string;
+  onSelect?: (key: string) => void;
 }) {
-  const [key, setKey] = useState(
-    initialKey ?? f.taxiWeeks.find((w) => w.closed)?.key ?? f.taxiWeeks[0]?.key ?? '',
-  );
-  const week = f.taxiWeeks.find((w) => w.key === key);
+  const preferred =
+    f.taxiWeeks.find((w) => w.closed && !w.settled) ??
+    f.taxiWeeks.find((w) => w.closed) ??
+    f.taxiWeeks[0];
+  const [selectedKey, setKey] = useState(initialKey ?? preferred?.key ?? '');
+  const week = f.taxiWeeks.find((w) => w.key === selectedKey) ?? preferred;
+  const key = week?.key ?? '';
+  const act = (request: FinanceFormRequest) => {
+    onSelect?.(key);
+    onAction(request);
+  };
   const calculated = week
     ? calculateTaxiWeek(f.taxiEntries, f.policies, taxiPeriodStart(key, f.policies))
     : null;
@@ -62,11 +71,21 @@ export function TaxiHistory({
           <p className="renewal-muted">Історія з’явиться після першої записаної зміни.</p>
         ) : (
           <>
+            <p className="renewal-chart-note">
+              Усі періоди: {f.taxiWeeks.length}. Історія не обмежена датами аналітики.
+            </p>
             <label className="renewal-field">
               Робочий період
-              <select value={key} onChange={(e) => setKey(e.target.value)}>
+              <select
+                value={key}
+                onChange={(e) => {
+                  setKey(e.target.value);
+                  onSelect?.(e.target.value);
+                }}
+              >
                 {f.taxiWeeks.map((w) => (
                   <option key={w.key} value={w.key}>
+                    {taxiVehicleName(taxiPeriodStart(w.key, f.policies), f.policies)} ·{' '}
                     {taxiPeriodLabel(w.key, f.policies)} ·{' '}
                     {w.settled ? 'розраховано' : w.closed ? 'очікує розрахунку' : 'триває'}
                   </option>
@@ -83,14 +102,6 @@ export function TaxiHistory({
                 Розрахунок попередній: у змінах бракує комісії або отриманої готівки.
               </p>
             )}
-            <div className="renewal-metrics">
-              {metrics.map(([label, value]) => (
-                <div className="renewal-metric" key={label}>
-                  <span className="renewal-muted">{label}</span>
-                  <strong>{moneyLabel(value)}</strong>
-                </div>
-              ))}
-            </div>
             <div className="renewal-inset flex flex-col gap-3">
               <b>
                 {expected < 0 ? 'За формулою повернути парку' : 'За формулою отримати від парку'}:{' '}
@@ -113,7 +124,7 @@ export function TaxiHistory({
                   {!settlement.transactionId && (
                     <button
                       className="renewal-secondary"
-                      onClick={() => onAction({ kind: 'taxi-settlement-edit', id: key })}
+                      onClick={() => act({ kind: 'taxi-settlement-edit', id: key })}
                     >
                       Уточнити фактичну сплату
                     </button>
@@ -122,7 +133,7 @@ export function TaxiHistory({
               ) : week.closed && week.complete ? (
                 <button
                   className="renewal-button"
-                  onClick={() => onAction({ kind: 'taxi-settle', id: key })}
+                  onClick={() => act({ kind: 'taxi-settle', id: key })}
                 >
                   Розрахуватись
                 </button>
@@ -130,9 +141,17 @@ export function TaxiHistory({
                 <p className="renewal-muted">
                   {week.closed
                     ? 'Доповни зміни перед розрахунком.'
-                    : 'Розрахунок відкриється після закінчення робочого тижня.'}
+                    : 'Розрахунок відкриється після закінчення робочого періоду.'}
                 </p>
               )}
+            </div>
+            <div className="renewal-metrics">
+              {metrics.map(([label, value]) => (
+                <div className="renewal-metric" key={label}>
+                  <span className="renewal-muted">{label}</span>
+                  <strong>{moneyLabel(value)}</strong>
+                </div>
+              ))}
             </div>
             <details className="renewal-inset">
               <summary className="renewal-link cursor-pointer">Як пораховано заробіток</summary>
@@ -175,10 +194,15 @@ export function TaxiHistory({
                   {e.cashReported ? moneyLabel(e.receivedCashMinor ?? 0) : 'не вказана'}.
                 </p>
                 {e.note && <p className="renewal-chart-note">{e.note}</p>}
+                {e.periodKey && calculated && Date.parse(e.at) >= calculated.to && (
+                  <p className="renewal-chart-note">
+                    Внесено після переходу; явно враховано в цьому періоді.
+                  </p>
+                )}
                 {!week.settled && (
                   <button
                     className="renewal-link text-left"
-                    onClick={() => onAction({ kind: 'taxi', id: e.id })}
+                    onClick={() => act({ kind: 'taxi', id: e.id })}
                   >
                     Уточнити запис
                   </button>

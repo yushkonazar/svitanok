@@ -23,6 +23,7 @@ import { PaymentDetail } from './PaymentDetail.tsx';
 import { TransactionDetail } from './TransactionDetail.tsx';
 import { PaymentGroups } from './PaymentGroups.tsx';
 import { FinanceExplanation } from './FinanceExplanation.tsx';
+import { TaxiHistory } from './TaxiHistory.tsx';
 import { PaymentCalendar } from './PaymentCalendar.tsx';
 import { kyivParts, shiftDate } from '../../../../core/finance/planning.mjs';
 import { resetFinanceDemo } from '../../api/finance-demo.ts';
@@ -95,6 +96,7 @@ export function FinanceScreen() {
     }
   };
   const [analyticsTab, setAnalyticsTab] = useState<AnalyticsTab | null>(null);
+  const [taxiHistoryKey, setTaxiHistoryKey] = useState<string | null>(null);
   const [operationExplorer, setOperationExplorer] = useState<
     ({ request: AnalyticsRequest } & ExplorerOptions) | null
   >(null);
@@ -187,6 +189,7 @@ export function FinanceScreen() {
   const taxi = calculateTaxiWeek(f.taxiEntries, f.policies, nowMs);
   const activePolicy = f.policies.filter((p) => Date.parse(p.effectiveAt) <= nowMs).at(-1)!;
   const latestWeek = f.taxiWeeks.find((w) => w.key === taxi.key);
+  const awaitingTaxi = f.taxiWeeks.find((w) => w.closed && !w.settled);
   const detail = f.payments.find((p) => p.id === detailId);
   const transaction = f.transactions.find((t) => t.id === transactionId);
   const operations = view.txs.filter(
@@ -525,6 +528,36 @@ export function FinanceScreen() {
           >
             Особистий дохід · решта, чайові, поїздка
           </button>
+          {awaitingTaxi && (
+            <div
+              className="renewal-inset flex flex-col gap-3 mt-3"
+              role="region"
+              aria-label="Нерозрахована перезмінка"
+            >
+              <b>Попередній період очікує розрахунку</b>
+              <p className="renewal-chart-note">
+                {taxiPeriodLabel(awaitingTaxi.key, f.policies)}, Київ
+              </p>
+              <p>
+                {awaitingTaxi.settlementMinor < 0
+                  ? 'За формулою повернути парку'
+                  : 'За формулою отримати від парку'}
+                : <b>{moneyLabel(Math.abs(awaitingTaxi.settlementMinor))}</b>
+              </p>
+              <button
+                className="renewal-button w-full"
+                onClick={() =>
+                  awaitingTaxi.complete
+                    ? setForm({ kind: 'taxi-settle', id: awaitingTaxi.key })
+                    : setTaxiHistoryKey(awaitingTaxi.key)
+                }
+              >
+                {awaitingTaxi.complete
+                  ? 'Підтвердити оплату перезмінки'
+                  : 'Доповнити записи періоду'}
+              </button>
+            </div>
+          )}
           <p className="renewal-muted mt-2">
             Додатково особисто за тиждень:{' '}
             {moneyLabel(
@@ -545,8 +578,7 @@ export function FinanceScreen() {
           <button
             className="renewal-secondary mt-3 w-full"
             onClick={() => {
-              overviewScroll.current = window.scrollY;
-              setAnalyticsTab('taxi');
+              setTaxiHistoryKey('');
             }}
           >
             Історія перезмінок
@@ -935,6 +967,15 @@ export function FinanceScreen() {
             setParams({}, { replace: true });
           }}
           onOpenForm={setForm}
+        />
+      )}
+      {taxiHistoryKey !== null && !activeForm && (
+        <TaxiHistory
+          finance={f}
+          initialKey={taxiHistoryKey || undefined}
+          onSelect={setTaxiHistoryKey}
+          onClose={() => setTaxiHistoryKey(null)}
+          onAction={setForm}
         />
       )}
     </div>
