@@ -21,6 +21,7 @@ import { savedPageSchema, type SavedPage } from './schema.ts';
 import { workerQualityResponseSchema, type WorkerQuality } from './worker-quality-schema.ts';
 import { financeSchema, financeReportSchema, type FinanceCommand } from './finance-schema.ts';
 import { readFinanceDemo, writeFinanceDemo } from './finance-demo.ts';
+import { FinanceCommandRejectedError, FinanceSaveUncertainError } from './finance-errors.ts';
 import { readSavedDemo, writeSavedDemo } from './saved-demo.ts';
 import { buildFinanceReport } from '../../../core/finance/reporting.mjs';
 import {
@@ -199,8 +200,17 @@ export async function postNewsAction(
 }
 
 export async function fetchFinance() {
+  return readFinanceSnapshot();
+}
+async function readFinanceSnapshot(signal?: AbortSignal) {
   if (!inTelegram()) return { finance: readFinanceDemo(), demo: true };
-  const res = await fetch('/api/finance', { headers: authHeaders(), cache: 'no-store' });
+  const res = await fetch('/api/finance', {
+    headers: authHeaders(),
+    cache: 'no-store',
+    ...(signal ? { signal } : {}),
+  }).catch(() => {
+    throw new Error('Не вдалося зв’язатися із сервером. Перевір інтернет і спробуй знову.');
+  });
   throwIfSessionExpired(res);
   if (!res.ok) throw new Error('Не вдалося завантажити фінанси. Спробуй знову.');
   return { finance: financeSchema.parse(await res.json()), demo: false };
@@ -373,31 +383,56 @@ export async function postFinance(command: FinanceCommand) {
     writeFinanceDemo(command);
     return { finance: readFinanceDemo(), demo: true };
   }
-  const res = await fetch('/api/finance', {
-    method: 'POST',
-    headers: { ...authHeaders(), 'Content-Type': 'application/json' },
-    body: JSON.stringify(command),
-  });
-  throwIfSessionExpired(res);
-  if (!res.ok) {
-    const body: unknown = await res.json().catch(() => null);
-    throw new Error(
-      body && typeof body === 'object' && 'error' in body && typeof body.error === 'string'
-        ? body.error
-        : 'Не вдалося зберегти операцію',
-    );
+  // Freeze ID, version, timestamp and body for both attempts. The server checks
+  // the command receipt before its version, so an accepted retry is a no-op.
+  const body = JSON.stringify(command);
+  let acknowledged = false;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 15_000);
+    try {
+      const res = await fetch('/api/finance', {
+        method: 'POST',
+        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+        body,
+        signal: controller.signal,
+      });
+      throwIfSessionExpired(res);
+      if (!res.ok) {
+        if (res.status >= 500) throw new FinanceSaveUncertainError();
+        const error: unknown = await res.json().catch(() => null);
+        throw new FinanceCommandRejectedError(
+          res.status,
+          error && typeof error === 'object' && 'error' in error && typeof error.error === 'string'
+            ? error.error
+            : 'Не вдалося зберегти операцію',
+        );
+      }
+      const receipt: unknown = await res.json();
+      if (!receipt || typeof receipt !== 'object' || !('ok' in receipt) || receipt.ok !== true)
+        throw new FinanceSaveUncertainError();
+      acknowledged = true;
+      break;
+    } catch (error) {
+      if (error instanceof SessionExpiredError || error instanceof FinanceCommandRejectedError)
+        throw error;
+    } finally {
+      clearTimeout(timer);
+    }
+    if (attempt === 0) await new Promise((resolve) => setTimeout(resolve, 500));
   }
-  // Mutations return an acknowledgement, not the GET workspace contract.
-  // Once accepted, a failed refresh must never suggest retrying the payment.
-  const acknowledgement: unknown = await res.json();
-  if (
-    !acknowledgement ||
-    typeof acknowledgement !== 'object' ||
-    !('ok' in acknowledgement) ||
-    acknowledgement.ok !== true
-  )
-    throw new Error('Не вдалося перевірити збереження. Онови фінанси перед повторною дією.');
-  return await fetchFinance().catch(() => ({ finance: null, demo: false }));
+  if (!acknowledged) throw new FinanceSaveUncertainError();
+  // A lost GET after the receipt cannot turn an accepted write into a failure.
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 8_000);
+  try {
+    return await readFinanceSnapshot(controller.signal).catch(() => ({
+      finance: null,
+      demo: false,
+    }));
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /**

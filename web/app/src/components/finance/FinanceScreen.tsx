@@ -177,7 +177,7 @@ export function FinanceScreen() {
   const nowMs = useTick(30_000);
   if (isSessionExpired(error)) return <SessionExpired />;
   if (isLoading) return <LoadingSkeleton />;
-  if (error || !data)
+  if (!data)
     return (
       <ErrorState
         message={error instanceof Error ? error.message : 'Фінанси недоступні'}
@@ -301,6 +301,17 @@ export function FinanceScreen() {
     );
   return (
     <div className="renewal-finance flex flex-col gap-5">
+      {error && (
+        <div className="renewal-inset" role="status">
+          <p>
+            Не вдалося оновити фінанси. Показано останні отримані дані; введені значення у відкритій
+            формі збережено.
+          </p>
+          <button className="renewal-link" onClick={() => void refetch()}>
+            Оновити фінанси
+          </button>
+        </div>
+      )}
       {(detailId || transactionId) && (
         <div className="renewal-inset" role="status">
           Цей запис недоступний у поточному обліку. Можливо, його видалено або він поза періодом
