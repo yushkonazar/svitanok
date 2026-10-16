@@ -8,6 +8,7 @@ import { readFinanceDemo } from '../../api/finance-demo.ts';
 import { setVerticalSwipes } from '../../telegram.ts';
 import { useFinance } from '../../api/finance-hooks.ts';
 import type { Finance } from '../../api/finance-schema.ts';
+import { calculateTaxiWeek, taxiPeriodStart } from '../../../../core/finance/planning.mjs';
 vi.mock('../../api/client.ts', async (original) => ({
   ...(await original<typeof import('../../api/client.ts')>()),
   refreshFinanceBank: vi.fn(),
@@ -46,6 +47,101 @@ function renderFinance(path: string, finance = readFinanceDemo()) {
     </MemoryRouter>,
   );
 }
+function taxiHistoryFixture() {
+  vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-10-16T11:00:00Z'));
+  const f = readFinanceDemo(),
+    original = f.policies[0]!;
+  const cut = '2026-10-16T09:00:00.000Z';
+  f.policies = [
+    original,
+    {
+      ...original,
+      id: 'hybrid',
+      effectiveAt: cut,
+      periodStart: true,
+      weekDay: 2,
+      weekHour: 12,
+      weekMinute: 0,
+      vehicleName: 'Гібрид',
+      thresholdMinor: null,
+      bonusFareBps: 5000,
+    },
+  ];
+  f.taxiEntries = ['2026-10-14', '2026-10-07', '2026-09-30'].map((date, i) => ({
+    id: `history-shift-${i}`,
+    at: `${date}T15:00:00.000Z`,
+    policyId: original.id,
+    netCashMinor: 400000,
+    commissionMinor: 70000,
+    fuelMinor: 100000,
+    tipsMinor: 0,
+    directMinor: 0,
+    receivedCashMinor: 260000,
+    paidWorkMinor: 0,
+    commissionReported: true,
+    cashReported: true,
+    accountId: 'cash',
+    note: '',
+    revision: 0,
+  }));
+  f.taxiWeeks = [cut, '2026-10-12', '2026-10-05', '2026-09-28'].map((key, i) => {
+    const w = calculateTaxiWeek(f.taxiEntries, f.policies, taxiPeriodStart(key, f.policies));
+    const held = w.entries.reduce((n, e) => n + (e.receivedCashMinor ?? 0), 0);
+    return {
+      key,
+      from: w.from,
+      to: w.to,
+      grossMinor: w.grossMinor,
+      earnedMinor: w.earnedMinor,
+      heldMinor: held,
+      settlementMinor: w.earnedMinor - held,
+      complete: true,
+      closed: i > 0,
+      settled: i > 1,
+    };
+  });
+  f.settlements = f.taxiWeeks
+    .filter((w) => w.settled)
+    .map((w) => ({
+      id: `settled-${w.key}`,
+      weekKey: w.key,
+      amountMinor: w.settlementMinor,
+      expectedMinor: w.settlementMinor,
+      accountId: 'cash',
+      at: new Date(w.to!).toISOString(),
+    }));
+  return f;
+}
+it('opens all taxi periods directly, selects the unpaid period and preserves it after opening settlement', () => {
+  const f = taxiHistoryFixture();
+  renderFinance('/finance', f);
+  fireEvent.click(screen.getByRole('button', { name: 'Історія перезмінок' }));
+  const history = screen.getByRole('dialog', { name: 'Історія перезмінок' });
+  expect(within(history).getByText(/Усі періоди: 4/)).toBeInTheDocument();
+  expect(within(history).getByLabelText('Робочий період')).toHaveValue('2026-10-12');
+  expect(within(history).getByRole('option', { name: /28 вер/ })).toBeInTheDocument();
+  expect(screen.queryByRole('heading', { name: 'Аналітика та звіти' })).not.toBeInTheDocument();
+  fireEvent.click(within(history).getByRole('button', { name: 'Розрахуватись' }));
+  const form = screen.getByRole('dialog', { name: 'Розрахунок із парком' });
+  expect(screen.getAllByRole('dialog')).toHaveLength(1);
+  expect(within(form).getByLabelText('Фактична сума розрахунку, ₴')).toHaveValue('1100');
+  fireEvent.click(within(form).getByRole('button', { name: 'Закрити' }));
+  expect(screen.getByLabelText('Робочий період')).toHaveValue('2026-10-12');
+});
+it('offers the last closed taxi settlement on the main screen and routes incomplete periods to their records', () => {
+  const f = taxiHistoryFixture();
+  renderFinance('/finance', f);
+  fireEvent.click(screen.getByRole('button', { name: 'Підтвердити оплату перезмінки' }));
+  expect(screen.getByLabelText('Фактична сума розрахунку, ₴')).toHaveValue('1100');
+  expect(screen.getAllByRole('dialog')).toHaveLength(1);
+  cleanup();
+  f.taxiWeeks.find((w) => w.key === '2026-10-12')!.complete = false;
+  renderFinance('/finance', f);
+  fireEvent.click(screen.getByRole('button', { name: 'Доповнити записи періоду' }));
+  expect(screen.getByLabelText('Робочий період')).toHaveValue('2026-10-12');
+  expect(screen.getByText('Доповни зміни перед розрахунком.')).toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Розрахуватись' })).not.toBeInTheDocument();
+});
 it('keeps daily finance controls on the main screen and opens analytics lazily from its compact entry', async () => {
   renderFinance('/finance');
   expect(screen.getByRole('button', { name: 'Записати витрату' })).toBeInTheDocument();
