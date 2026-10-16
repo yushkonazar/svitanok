@@ -23,7 +23,11 @@ export async function runMotivationChange(env, args, nowMs) {
     throw new PlanError('Некоректний JSON параметрів плану.');
   }
   // Budget/finance gates and enabling strict commitments stay explicit in Mini App.
-  if (['settings', 'reward-save', 'redeem', 'accept', 'exception', 'forfeit'].includes(args.op))
+  if (
+    ['settings', 'reward-save', 'redeem', 'accept', 'exception', 'forfeit', 'day-extend'].includes(
+      args.op,
+    )
+  )
     throw new PlanError('Відкрий «План» і підтвердь умови цієї дії у міні-апці.');
   return {
     result: await executePlanCommand(

@@ -55,7 +55,7 @@ export const BRAIN_TOOLS: readonly BrainToolDef[] = [
   tool({
     coreName: 'motivation.change',
     description:
-      'Дія в ручному плані за прямою командою власника. revision з motivation.query; command_id стабільний для повтору. payload_json: task-save {date,title,criterion,target?,unit?,effort:0..2,contribution:0..1,deadlineKind:day/time/shift,dueAt?,startAt?,endAt?,calendar?,remindMinutes?,firstStep?,goalId?,rewardId?}; report {units:кумулятивний_результат,actualAt:ISO_фактичного_виконання}; undo-report {reportId}; start {}; move-start {startAt}; snooze {minutes}; recommit {date}; goal-save {title,why?,horizon:week/month,dueDate}; shift-open {reviewAt}; shift-close {endedAt?}. Не вигадуй факти, фактичний час чи фінансову готовність; без часу уточни, чи зроблено зараз. task-save лише чернетка. Прийняти строгі обіцянки, виняток, штрафний пропуск чи отримати винагороду — в Mini App. XP рахує ядро. T0.',
+      'Дія в ручному плані за прямою командою власника. revision з motivation.query; command_id стабільний для повтору. task-save payload_json: {date,title,criterion,target?,unit?,area:work/learning/discipline/life,scoringVersion:2,effort:0..2,contribution:0..1,challenge:0..2,routine:boolean,estimateMinutes?,deadlineKind:day/time/shift,dueAt?,startAt?,endAt?,calendar?,remindMinutes?,firstStep?,goalId?,rewardId?,source?:{kind:taxi,metric:net/gross}}. Ядро пропонує одну з 9 смуг XP; не завищуй звичні дії. Джерело таксі лише за прямо названою метрикою після/до комісії, ціль у цілих грн; факти надходять із фінансів. report {units:кумулятивний_результат,actualAt:ISO_фактичного_виконання}; undo-report {reportId}; start/focus-start {}; move-start {startAt}; snooze {minutes}; recommit {date}; template-save {taskId,days:0..6_Нд..Сб}, template-use {date}, template-archive {} (id шаблону); повторення лише за прямою командою. goal-save {title,why?,horizon:week/month,dueDate}; shift-open {reviewAt}; shift-close {endedAt?}. Не вигадуй факти, фактичний час, години чи фінансову готовність; без часу уточни, чи зроблено зараз. task-save і template-use лише чернетки. Прийняти обіцянки, подовжити день, погодити виняток чи отримати винагороду — в Mini App. T0.',
     args: z.object({
       op: z.enum([
         'task-save',
@@ -63,6 +63,10 @@ export const BRAIN_TOOLS: readonly BrainToolDef[] = [
         'report',
         'undo-report',
         'start',
+        'focus-start',
+        'template-save',
+        'template-use',
+        'template-archive',
         'move-start',
         'snooze',
         'recommit',

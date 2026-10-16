@@ -199,6 +199,7 @@ export const financeSchema = z.object({
         z.object({
           id: z.string(),
           name: z.string(),
+          source: z.enum(['taxi', 'other', 'unspecified']).optional(),
           amountMinor: money,
           nextDate: z.string(),
           recurrence: z.enum(['once', 'week', 'month']),

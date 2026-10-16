@@ -1174,6 +1174,7 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
       amountMinor: minor(x.amountMinor),
       nextDate: date(x.nextDate),
       recurrence: choice(x.recurrence, ['once', 'week', 'month']),
+      source: choice(x.source ?? 'unspecified', ['taxi', 'other', 'unspecified']),
     }));
     update('UPDATE finance_settings SET forecast_json = ? WHERE id = ?', [
       JSON.stringify({ incomes }),

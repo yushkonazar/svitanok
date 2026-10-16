@@ -2,6 +2,7 @@ import type { Finance } from '../api/finance-schema.ts';
 import { financeView } from './financeView.ts';
 import { budgetRows, budgetLimit, periodWindow, type Budget } from './budgetPlanning.ts';
 import { paymentSchedule } from './paymentSchedule.ts';
+import { taxiIncomeForecast } from '../../../core/finance/income-forecast.mjs';
 import {
   kyivParts,
   shiftDate,
@@ -148,23 +149,43 @@ export function financeForecast(f: Finance, days: number, nowMs: number) {
   let genericSaving = 0;
   for (const s of savings) {
     if (s.goalIds.length === 1)
-      savingGroups.set(s.goalIds[0], Math.max(s.amount, savingGroups.get(s.goalIds[0]) ?? 0));
+      savingGroups.set(s.goalIds[0]!, Math.max(s.amount, savingGroups.get(s.goalIds[0]!) ?? 0));
     else genericSaving += s.amount;
   }
   goalPlans.forEach((g) => savingGroups.set(g.id, Math.max(g.amount, savingGroups.get(g.id) ?? 0)));
   const targetedSaving = sumMoney([...savingGroups.values()]);
   const saving = Math.max(genericSaving, targetedSaving);
   const incomes = f.forecast.incomes.flatMap((p) => {
-    const results: Array<{ name: string; date: string; amount: number }> = [];
+    const results: Array<{ name: string; date: string; amount: number; source?: string }> = [];
     let date = p.nextDate;
     for (let i = 0; i < 1200 && date <= until; i++) {
-      if (date >= today) results.push({ name: p.name, date, amount: p.amountMinor });
+      if (date >= today)
+        results.push({ name: p.name, date, amount: p.amountMinor, source: p.source });
       if (p.recurrence === 'once') break;
       date = nextPaymentDate(date, Number(p.nextDate.slice(8)), p.recurrence);
     }
     return results;
   });
+  const taxi = taxiIncomeForecast(f, nowMs);
+  const taxiInWindow = taxi.date && taxi.date >= today && taxi.date <= until;
+  // A manual estimate on the same handover date takes precedence. Never silently add both.
+  const taxiCovered = Boolean(
+    taxiInWindow &&
+    incomes.some((income) => income.date === taxi.date && income.source !== 'other'),
+  );
+  if (taxiInWindow && !taxiCovered && taxi.estimateMinor != null && taxi.estimateMinor > 0)
+    incomes.push({
+      name: 'Таксі · оцінка на перезмінку',
+      date: taxi.date!,
+      amount: taxi.estimateMinor,
+    });
   const expectedIncome = sumMoney(incomes.map((i) => i.amount));
+  const conservativeIncome = sumMoney([
+    expectedIncome,
+    -(taxiInWindow && !taxiCovered
+      ? Math.max(0, (taxi.estimateMinor ?? 0) - (taxi.lowerMinor ?? 0))
+      : 0),
+  ]);
   const incomplete =
     view.unknownBalances ||
     overlaps.length > 0 ||
@@ -182,6 +203,14 @@ export function financeForecast(f: Finance, days: number, nowMs: number) {
     plannedExpense,
     saving,
     expectedIncome,
+    conservativeResult: incomplete
+      ? null
+      : sumMoney([view.available, conservativeIncome, -obligations, -plannedExpense, -saving]),
+    currentSafe: incomplete
+      ? null
+      : sumMoney([view.available, -obligations, -plannedExpense, -saving]),
+    taxi,
+    taxiCovered,
     result: incomplete
       ? null
       : sumMoney([view.available, expectedIncome, -obligations, -plannedExpense, -saving]),

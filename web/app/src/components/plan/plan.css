@@ -788,6 +788,199 @@
 .plan-negative {
   color: var(--color-neg);
 }
+.plan-quick-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: -4px 0 18px;
+}
+.plan-quick-tools button,
+.plan-done-toggle {
+  font-size: 11px;
+  color: var(--color-tx2);
+  border: 1px solid var(--plan-line);
+  border-radius: 12px;
+  padding: 7px 10px;
+  background: var(--color-glass);
+}
+.plan-next-reward {
+  display: grid;
+  gap: 9px;
+  width: 100%;
+  margin: 18px 0 8px;
+  padding: 16px;
+  border: 1px solid var(--plan-line);
+  border-radius: 18px;
+  background: var(--color-glass);
+  text-align: left;
+}
+.plan-next-reward > span {
+  font-size: 11px;
+  color: var(--color-tx3);
+}
+.plan-next-reward b {
+  display: block;
+  color: var(--color-tx);
+  font-size: 13px;
+  font-weight: 650;
+  margin-top: 2px;
+}
+.plan-next-reward > strong {
+  font: 500 11px var(--font-mono);
+  color: var(--color-a1);
+}
+.plan-done-toggle {
+  width: 100%;
+  margin: 10px 0;
+}
+.plan-quick-tools button:hover,
+.plan-done-toggle:hover {
+  color: var(--color-a1);
+}
+.plan-area-label {
+  font-size: 9px;
+  color: var(--color-tx3);
+  margin-left: 7px;
+}
+.plan-source-label {
+  color: var(--color-a1) !important;
+  line-height: 1.5;
+}
+.plan-source-info {
+  padding: 16px;
+  border: 1px solid var(--plan-line);
+  border-radius: 16px;
+  display: grid;
+  gap: 10px;
+  font-size: 12px;
+}
+.plan-source-info a {
+  display: block;
+  text-align: center;
+}
+.plan-assist {
+  padding: 14px;
+  border: 1px solid var(--plan-line);
+  border-radius: 16px;
+  background: var(--color-glass);
+}
+.plan-assist summary {
+  font-size: 12px;
+  font-weight: 650;
+  cursor: pointer;
+  min-height: 24px;
+}
+.plan-assist label,
+.plan-extra-field {
+  display: grid;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  min-width: 0;
+}
+.plan-assist label {
+  margin: 16px 0 12px;
+}
+.plan-assist textarea,
+.plan-extra-field input,
+.plan-extra-field textarea {
+  border: 1px solid var(--plan-line);
+  border-radius: 12px;
+  padding: 12px;
+  min-width: 0;
+  width: 100%;
+  background: var(--color-bg2);
+  color: var(--color-tx);
+  font: 400 14px/1.6 var(--font-sans);
+}
+.plan-assist textarea,
+.plan-extra-field textarea {
+  min-height: 92px;
+  resize: vertical;
+}
+.plan-weekdays {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 5px;
+}
+.plan-weekdays button {
+  font-size: 11px;
+  border: 1px solid var(--plan-line);
+  border-radius: 12px;
+  color: var(--color-tx2);
+}
+.plan-weekdays [aria-pressed='true'] {
+  color: var(--color-a1);
+  border-color: var(--color-a1);
+  background: var(--color-glass);
+}
+.plan-template {
+  border: 1px solid var(--plan-line);
+  border-radius: 16px;
+  padding: 16px;
+  display: grid;
+  gap: 8px;
+  overflow-wrap: anywhere;
+}
+.plan-template h3 {
+  font-size: 14px;
+  font-weight: 700;
+}
+.plan-template p,
+.plan-template small {
+  font-size: 11px;
+  color: var(--color-tx3);
+}
+.plan-template button {
+  color: var(--color-a1);
+  font-size: 12px;
+  text-align: left;
+}
+.plan-area-insights {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin: 18px 0;
+}
+.plan-area-insights > div {
+  display: grid;
+  gap: 5px;
+  padding: 14px;
+  border: 1px solid var(--plan-line);
+  border-radius: 16px;
+  min-width: 0;
+}
+.plan-area-insights span {
+  font-size: 11px;
+  color: var(--color-tx2);
+}
+.plan-area-insights strong {
+  font: 500 22px var(--font-mono);
+}
+.plan-area-insights small {
+  font-size: 9px;
+  color: var(--color-tx3);
+}
+.plan-area-insights meter {
+  width: 100%;
+  height: 7px;
+  accent-color: var(--color-a1);
+}
+@keyframes plan-enter {
+  from {
+    opacity: 0;
+    transform: translateY(5px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.plan-task,
+.plan-toast,
+.plan-template {
+  animation: plan-enter 180ms ease-out both;
+}
 @media (max-width: 359px) {
   .plan-heading h1 {
     font-size: 21px;
@@ -813,6 +1006,11 @@
   }
 }
 @media (prefers-reduced-motion: reduce) {
+  .plan-task,
+  .plan-toast,
+  .plan-template {
+    animation: none;
+  }
   .plan-meter > span {
     transition: none;
   }

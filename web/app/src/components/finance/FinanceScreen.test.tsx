@@ -127,6 +127,13 @@ it('opens taxi terms from the taxi shortcut and keeps general finance settings s
   expect(within(settings).getByLabelText('Типовий період фінансового огляду')).toBeInTheDocument();
   expect(within(settings).queryByLabelText('Профіль')).not.toBeInTheDocument();
 });
+it('opens the taxi entry form from a linked plan and closes the deep link cleanly', () => {
+  renderFinance('/finance?action=taxi');
+  const dialog = screen.getByRole('dialog');
+  expect(within(dialog).getByLabelText('Каса після комісії, ₴')).toBeInTheDocument();
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Закрити' }));
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+});
 it('keeps an open expense and cached balances mounted when a background refresh fails', () => {
   const finance = readFinanceDemo();
   const { rerender } = renderFinance('/finance', finance);

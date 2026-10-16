@@ -28,6 +28,54 @@ function data() {
   f.forecast = { incomes: [] };
   return f;
 }
+it('counts manual taxi estimates once while allowing a separately identified income on the handover date', () => {
+  const f = data();
+  f.policies = [
+    {
+      id: 'p',
+      effectiveAt: '2026-01-01T00:00:00Z',
+      fareBps: 5000,
+      commissionBps: 5000,
+      tipsBps: 5000,
+      fuelBps: 5000,
+      thresholdMinor: null,
+      bonusFareBps: 5500,
+    },
+  ];
+  f.taxiEntries = [
+    {
+      id: 't',
+      at: '2026-10-09T12:00:00Z',
+      policyId: 'p',
+      netCashMinor: 100000,
+      commissionMinor: 0,
+      fuelMinor: 0,
+      tipsMinor: 0,
+      directMinor: 0,
+      receivedCashMinor: 0,
+      paidWorkMinor: 0,
+      commissionReported: true,
+      cashReported: true,
+      accountId: 'cash',
+      note: '',
+      revision: 1,
+    },
+  ];
+  f.forecast.incomes = [
+    {
+      id: 'i',
+      name: 'Ручна оцінка',
+      amountMinor: 10000,
+      nextDate: '2026-10-12',
+      recurrence: 'once',
+    },
+  ];
+  expect(financeForecast(f, 7, now).expectedIncome).toBe(10000);
+  f.forecast.incomes[0].source = 'other';
+  expect(financeForecast(f, 7, now).expectedIncome).toBe(60000);
+  f.forecast.incomes[0].source = 'taxi';
+  expect(financeForecast(f, 7, now).expectedIncome).toBe(10000);
+});
 it('refuses overlapping parallel subplans while permitting their shared parent envelope', () => {
   const f = data();
   const budget = {

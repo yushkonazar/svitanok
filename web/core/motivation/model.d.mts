@@ -6,6 +6,7 @@ export interface PlanState {
   settings: {
     enabled: boolean;
     reviewedAt?: string | null;
+    rulesVersion?: number;
     penaltyPercent: number;
     dayBoundary: string;
     reportGraceHours: number;
@@ -15,6 +16,8 @@ export interface PlanState {
   records: Record<string, any>;
 }
 export function emptyPlan(): PlanState;
+export function normalizePlanSettings(settings: any): PlanState['settings'];
+export function dayBoundaryAt(date: string, settings: { dayBoundary: string }): string;
 export function applyPlanCommand(
   state: PlanState,
   command: { op: string; id?: string; commandId: string; payload?: Record<string, unknown> },
@@ -32,6 +35,7 @@ export function planView(
 export function planLocalTime(date: string, clock: string): string;
 export function taskScore(effort: number, contribution: number): number;
 export function personalPlanDate(settings: PlanState['settings'], nowMs: number): string;
+export function currentPlanDate(state: PlanState, nowMs: number): string;
 export function planDate(date: unknown): string;
 export function planWallet(state: PlanState): {
   balance: number;

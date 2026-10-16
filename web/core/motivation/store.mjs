@@ -1,4 +1,11 @@
-import { applyPlanCommand, emptyPlan, PlanError, PLAN_OPERATIONS, planView } from './model.mjs';
+import {
+  applyPlanCommand,
+  emptyPlan,
+  PlanError,
+  PLAN_OPERATIONS,
+  planView,
+  normalizePlanSettings,
+} from './model.mjs';
 
 /** @param {Env} env */
 export function planDb(env) {
@@ -14,7 +21,7 @@ async function load(db) {
   const row = snapshot[0].results[0],
     defaults = emptyPlan(),
     saved = row ? JSON.parse(row.data_json) : {},
-    settings = { ...defaults.settings, ...saved.settings };
+    settings = normalizePlanSettings(saved.settings);
   // 0.11.0 already recorded settings saves, including saves while disabled.
   // Use the full ledger, not the last 100 visible events; reads stay read-only.
   if (row && saved.settings?.reviewedAt === undefined) {
@@ -66,7 +73,10 @@ function validateCommand(raw, internal) {
     typeof raw.commandId !== 'string' ||
     !/^[a-zA-Z0-9_-]{8,80}$/.test(raw.commandId ?? '') ||
     (!PLAN_OPERATIONS.includes(raw.op) &&
-      !(internal && ['_settle', '_calendar', '_notice'].includes(raw.op)))
+      !(
+        internal &&
+        ['_settle', '_calendar', '_notice', '_templates', '_source-sync'].includes(raw.op)
+      ))
   )
     throw new PlanError('Онови застосунок і повтори дію.');
   if (!internal && (!Number.isSafeInteger(raw.revision) || raw.revision < 0))
@@ -98,6 +108,11 @@ export async function executePlanCommand(env, raw, nowMs = Date.now(), options =
   const state = await load(db);
   if (!options.internal && state.revision !== command.revision)
     throw new PlanError('План уже змінився. Онови його й повтори дію.', 409);
+  if (command.op === 'redeem' && state.records[command.id]?.purchase) {
+    const { checkRewardMoney } = await import('./finance-link.mjs');
+    const check = await checkRewardMoney(env, state.records[command.id], nowMs);
+    if (!check.ready) throw new PlanError(check.reason, 409);
+  }
   const next = applyPlanCommand(state, command, nowMs);
   const account = { ...next.state, records: undefined };
   const statements = [
@@ -178,21 +193,48 @@ export async function executePlanCommand(env, raw, nowMs = Date.now(), options =
   return next.receipt;
 }
 
-/** @param {Env} env @param {number} [nowMs] @param {{from?:string,to?:string,before?:string}} [range] */
+/** @param {Env} env @param {number} [nowMs] @param {{from?:string,to?:string,before?:string,cursor?:string}} [range] */
 export async function readPlanWorkspace(env, nowMs = Date.now(), range = {}) {
   const db = planDb(env),
     state = await load(db);
   const before = range.before ?? new Date(nowMs + 1).toISOString();
+  let cursor;
+  if (range.cursor) {
+    try {
+      cursor = JSON.parse(range.cursor);
+    } catch {
+      throw new PlanError('Некоректна сторінка історії.');
+    }
+    if (
+      !cursor ||
+      typeof cursor !== 'object' ||
+      Array.isArray(cursor) ||
+      typeof cursor.at !== 'string' ||
+      !Number.isFinite(Date.parse(cursor.at)) ||
+      new Date(cursor.at).toISOString() !== cursor.at ||
+      typeof cursor.id !== 'string' ||
+      !cursor.id ||
+      cursor.id.length > 200
+    )
+      throw new PlanError('Некоректна сторінка історії.');
+  }
   const rows = await db
     .prepare(
-      'SELECT data_json FROM motivation_ledger WHERE at <= ? ORDER BY at DESC,id DESC LIMIT 101',
+      'SELECT id,at,data_json FROM motivation_ledger WHERE at <= ? AND (at < ? OR (at = ? AND id < ?)) ORDER BY at DESC,id DESC LIMIT 101',
     )
-    .bind(before)
+    .bind(before, cursor?.at ?? before, cursor?.at ?? before, cursor?.id ?? '\uffff')
     .all();
   const events = rows.results.slice(0, 100).map((r) => JSON.parse(String(r.data_json)));
-  // Cursor contains timestamp + id in a subsequent version; all events from a
-  // command share a timestamp, so include the complete timestamp boundary here.
-  return planView(state, nowMs, events);
+  // A timestamp + id cursor preserves every event when a command emits several.
+  const view = planView(state, nowMs, events);
+  const last = rows.results[99];
+  view.historyCursor =
+    rows.results.length > 100 && last ? JSON.stringify({ at: last.at, id: last.id }) : null;
+  if (Object.values(state.records).some((r) => r.kind === 'reward' && r.purchase)) {
+    const { annotatePlanRewards } = await import('./finance-link.mjs');
+    view.rewards = await annotatePlanRewards(env, view.rewards, nowMs);
+  }
+  return view;
 }
 /** @param {Env} env */
 export async function readPlanState(env) {

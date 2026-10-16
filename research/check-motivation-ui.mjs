@@ -187,15 +187,47 @@ await page.getByLabel('Що хочу зробити', { exact: true }).fill('Н�
 await page
   .getByLabel('Коли це означатиме «зроблено»', { exact: true })
   .fill('Є конкретний результат');
+await page.getByLabel('Зберегти як шаблон', { exact: true }).check();
+await page.getByText('Уточнити оцінку', { exact: true }).click();
+assert.equal(await page.getByLabel('Погоджена смуга XP').locator('option').count(), 9);
+for (const width of [320, 390]) {
+  await page.setViewportSize({ width, height: 844 });
+  assert.equal(
+    await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth),
+    false,
+    `task editor ${width} overflow`,
+  );
+  await page.screenshot({
+    path: resolve(out, `task-editor-${width}.png`),
+    fullPage: true,
+    animations: 'disabled',
+  });
+}
 await page.getByRole('button', { name: 'Зберегти в чернетку', exact: true }).click();
 await page.getByRole('heading', { name: 'Нова перевірочна задача', exact: true }).waitFor();
+await page.getByRole('button', { name: 'Наступний день', exact: true }).click();
+await page.getByRole('button', { name: /Шаблони/, exact: false }).click();
+await page.getByRole('heading', { name: 'Мої шаблони', exact: true }).waitFor();
+await page.getByRole('button', { name: 'Підготувати на цей день', exact: true }).click();
+await page.getByRole('heading', { name: 'Нова перевірочна задача', exact: true }).waitFor();
+await page.getByRole('button', { name: /Подовжений день/, exact: false }).click();
+await page.getByRole('button', { name: 'Погодити нову межу', exact: true }).click();
+await page.getByText('Збережено.', { exact: true }).waitFor();
 assert.deepEqual(errors, []);
 await browser.close();
 console.log(
   JSON.stringify(
     {
       checked,
-      journeys: ['partial completion', 'undo', 'reward gate', 'create draft'],
+      journeys: [
+        'partial completion',
+        'undo',
+        'reward gate',
+        'create draft',
+        'nine XP categories',
+        'template occurrence',
+        'explicit overtime',
+      ],
       errors,
       output: out,
     },
