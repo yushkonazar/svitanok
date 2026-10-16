@@ -17,6 +17,10 @@ function load() {
       planWorkspaceSchema.parse(planView(saved.state, Date.now(), saved.events));
       state = saved.state;
       events = saved.events;
+      if (saved.state.settings.reviewedAt === undefined) {
+        const reviewed = [...events].reverse().find((event) => event.kind === 'settings');
+        saved.state.settings.reviewedAt = typeof reviewed?.at === 'string' ? reviewed.at : null;
+      }
     }
   } catch {
     /* a corrupt demo never touches owner data */

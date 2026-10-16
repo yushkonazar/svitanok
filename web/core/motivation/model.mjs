@@ -26,6 +26,7 @@ export const PLAN_OPERATIONS = [
 export const XP_BANDS = [10, 20, 35, 50];
 export const DEFAULT_PLAN_SETTINGS = {
   enabled: false,
+  reviewedAt: /** @type {string | null} */ (null),
   penaltyPercent: 30,
   dayBoundary: '04:00',
   reportGraceHours: 12,
@@ -314,6 +315,7 @@ export function applyPlanCommand(original, command, nowMs) {
     if (p.dayBoundary != null) settings.dayBoundary = clock(p.dayBoundary);
     if (p.reportGraceHours != null) settings.reportGraceHours = integer(p.reportGraceHours, 0, 48);
     if (p.eveningAt != null) settings.eveningAt = clock(p.eveningAt);
+    settings.reviewedAt ??= now;
     state.settings = settings;
     if (p.primaryRewardId !== undefined) {
       if (p.primaryRewardId) get(state, p.primaryRewardId, 'reward');

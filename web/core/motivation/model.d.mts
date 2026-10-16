@@ -5,6 +5,7 @@ export interface PlanState {
   experience: number;
   settings: {
     enabled: boolean;
+    reviewedAt?: string | null;
     penaltyPercent: number;
     dayBoundary: string;
     reportGraceHours: number;
