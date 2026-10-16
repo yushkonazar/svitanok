@@ -12,6 +12,9 @@ import {
   calculateTaxiWeek,
   validatePolicy,
   taxiWeek,
+  taxiEntryWeek,
+  taxiPeriodStart,
+  prepareTaxiTransition,
   nextPaymentDate,
 } from './planning.mjs';
 
@@ -106,6 +109,7 @@ function categoryArray(value) {
 }
 /** @param {KvBlob} row */
 function policyOf(row) {
+  const period = jsonObject(row.period_json);
   return {
     id: String(row.id),
     effectiveAt: String(row.effective_at),
@@ -115,6 +119,15 @@ function policyOf(row) {
     tipsBps: Number(row.tips_bps ?? 5000),
     thresholdMinor: row.threshold_minor == null ? null : Number(row.threshold_minor),
     bonusFareBps: Number(row.bonus_fare_bps),
+    ...(period.periodStart === true
+      ? {
+          periodStart: true,
+          weekDay: Number(period.weekDay),
+          weekHour: Number(period.weekHour),
+          weekMinute: Number(period.weekMinute),
+          vehicleName: String(period.vehicleName ?? ''),
+        }
+      : {}),
   };
 }
 /** @param {KvBlob} row */
@@ -123,6 +136,7 @@ function taxiOf(row) {
     id: String(row.id),
     at: String(row.at),
     policyId: String(row.policy_id),
+    periodKey: row.period_key == null ? null : String(row.period_key),
     netCashMinor: Number(row.net_cash_minor),
     commissionMinor: Number(row.commission_minor),
     fuelMinor: Number(row.fuel_minor),
@@ -204,17 +218,24 @@ export async function readFinanceWorkspace(env, nowMs = Date.now(), range, optio
     accountId: String(r.account_id),
     at: String(r.at),
   }));
-  const weekKeys = [...new Set(taxiEntries.map((e) => taxiWeek(Date.parse(e.at)).key))]
-    .sort()
-    .reverse();
+  const weekKeys = [
+    ...new Set([
+      ...taxiEntries.map((e) => taxiEntryWeek(e, policies).key),
+      ...(policies.some((p) => p.periodStart && Date.parse(p.effectiveAt) <= nowMs)
+        ? [taxiWeek(nowMs, policies).key]
+        : []),
+    ]),
+  ].sort((a, b) => taxiPeriodStart(b, policies) - taxiPeriodStart(a, policies));
   const taxiWeeks = weekKeys.map((key) => {
-    const week = calculateTaxiWeek(taxiEntries, policies, kyivInstant(key));
+    const week = calculateTaxiWeek(taxiEntries, policies, taxiPeriodStart(key, policies));
     const held = sumMoney(
       week.entries.map((e) => (e.receivedCashMinor ?? 0) - (e.paidWorkMinor ?? 0)),
     );
     const settlement = settlements.find((s) => s.weekKey === key);
     return {
       key,
+      from: week.from,
+      to: week.to,
       grossMinor: week.grossMinor,
       netCashMinor: week.netCashMinor,
       commissionMinor: sumMoney(week.entries.map((e) => e.commissionMinor)),
@@ -743,6 +764,60 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
         'owner',
       ],
     );
+  } else if (type === 'taxi-transition') {
+    const policy = {
+      id,
+      effectiveAt: iso(payload.effectiveAt),
+      fareBps: payload.fareBps,
+      commissionBps: payload.commissionBps,
+      fuelBps: payload.fuelBps,
+      tipsBps: payload.tipsBps ?? 5000,
+      thresholdMinor: payload.thresholdMinor,
+      bonusFareBps: payload.bonusFareBps,
+      periodStart: true,
+      weekDay: payload.weekDay,
+      weekHour: payload.weekHour,
+      weekMinute: payload.weekMinute,
+      vehicleName: text(payload.vehicleName, 80),
+    };
+    const transition = (() => {
+      try {
+        return prepareTaxiTransition(
+          state.taxiEntries,
+          state.policies,
+          state.settlements,
+          policy,
+          payload.keepPreviousEntryIds,
+        );
+      } catch (error) {
+        throw new FinanceValidation(
+          error instanceof Error ? error.message : 'Перевір дані переходу',
+        );
+      }
+    })();
+    insert('finance_taxi_policies', {
+      id,
+      effective_at: policy.effectiveAt,
+      fare_bps: policy.fareBps,
+      commission_bps: policy.commissionBps,
+      fuel_bps: policy.fuelBps,
+      tips_bps: policy.tipsBps,
+      threshold_minor: policy.thresholdMinor,
+      bonus_fare_bps: policy.bonusFareBps,
+      period_json: JSON.stringify({
+        periodStart: true,
+        weekDay: policy.weekDay,
+        weekHour: policy.weekHour,
+        weekMinute: policy.weekMinute,
+        vehicleName: policy.vehicleName,
+      }),
+      created_at: now,
+    });
+    if (transition.updates.length)
+      update(
+        `WITH changes AS (SELECT json_extract(value,'$.id') AS id, json_extract(value,'$.policyId') AS policy_id, json_extract(value,'$.periodKey') AS period_key FROM json_each(?)) UPDATE finance_taxi_entries SET policy_id = (SELECT policy_id FROM changes WHERE changes.id = finance_taxi_entries.id), period_key = (SELECT period_key FROM changes WHERE changes.id = finance_taxi_entries.id), revision = revision + 1, updated_at = ? WHERE id IN (SELECT id FROM changes)`,
+        [JSON.stringify(transition.updates), now],
+      );
   } else if (type === 'taxi-policy') {
     const effectiveAt = iso(payload.effectiveAt);
     if (Date.parse(effectiveAt) < nowMs - 60000)
@@ -776,15 +851,26 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
     if (type === 'taxi-edit' && !previous) throw new FinanceValidation('Запис зміни не знайдено');
     if (
       previous &&
-      state.settlements.some((s) => s.weekKey === taxiWeek(Date.parse(previous.at)).key)
+      state.settlements.some((s) => s.weekKey === taxiEntryWeek(previous, state.policies).key)
     )
       throw new FinanceValidation('Розраховану зміну вже не можна змінити');
     const at = iso(payload.at);
     if (Date.parse(at) > nowMs + 60000)
       throw new FinanceValidation('Не можна записати майбутню зміну');
-    const policy = state.policies.filter((p) => p.effectiveAt <= at).at(-1);
+    const periodKey = Object.hasOwn(payload, 'periodKey')
+      ? payload.periodKey == null
+        ? null
+        : text(payload.periodKey, 40)
+      : (previous?.periodKey ?? null);
+    const period = periodKey
+      ? taxiWeek(taxiPeriodStart(periodKey, state.policies), state.policies)
+      : taxiWeek(Date.parse(at), state.policies);
+    if (periodKey && Date.parse(at) < period.from)
+      throw new FinanceValidation('Дата запису не може бути раніше початку обраного періоду');
+    const policyAt = new Date(Math.min(Date.parse(at), period.to - 1)).toISOString();
+    const policy = state.policies.filter((p) => p.effectiveAt <= policyAt).at(-1);
     if (!policy) throw new FinanceValidation('Немає умов для дати зміни');
-    if (state.settlements.some((s) => s.weekKey === taxiWeek(Date.parse(at)).key))
+    if (state.settlements.some((s) => s.weekKey === period.key))
       throw new FinanceValidation('Цей тиждень уже розраховано з парком');
     const src = account(payload.accountId, true);
     if (Date.parse(at) < Date.parse(src.asOf))
@@ -803,6 +889,7 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
     const entryValues = {
       at,
       policy_id: policy.id,
+      ...(periodKey || previous?.periodKey ? { period_key: periodKey } : {}),
       ...values,
       commission_reported: Number(!values.net_cash_minor || payload.commissionMinor != null),
       cash_reported: Number(
@@ -846,7 +933,7 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
         previous?.id ?? id,
       );
   } else if (type === 'taxi-settle') {
-    const key = date(payload.weekKey);
+    const key = text(payload.weekKey, 40);
     const week = state.taxiWeeks.find((w) => w.key === key);
     if (!week || !week.closed || week.settled || !week.complete)
       throw new FinanceValidation('Тиждень ще відкритий, неповний або вже розрахований');
@@ -866,7 +953,7 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
         bankTx.currency !== 'UAH' ||
         bankTx.amountMinor !== actual ||
         !['expense', 'income', 'unclassified', 'taxi-settlement'].includes(bankTx.kind) ||
-        Date.parse(bankTx.at) < taxiWeek(kyivInstant(key)).to ||
+        Date.parse(bankTx.at) < taxiWeek(taxiPeriodStart(key, state.policies), state.policies).to ||
         Date.parse(bankTx.at) > nowMs)
     )
       throw new FinanceValidation(
@@ -908,7 +995,7 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
         key,
       );
   } else if (type === 'taxi-settlement-edit') {
-    const key = date(payload.weekKey);
+    const key = text(payload.weekKey, 40);
     const previous = state.settlements.find((s) => s.weekKey === key);
     const week = state.taxiWeeks.find((w) => w.key === key);
     if (!previous || !week) throw new FinanceValidation('Розрахунок не знайдений');

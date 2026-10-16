@@ -71,10 +71,13 @@ export function shiftDate(date, days) {
 }
 /** Calendar date → an unambiguous Kyiv daytime instant, DST-aware.
  * @param {string} date @param {number} [hour] */
-export function kyivInstant(date, hour = 13) {
+export function kyivInstant(date, hour = 13, minute = 0) {
   shiftDate(date, 0);
   if (!Number.isInteger(hour) || hour < 0 || hour > 23) throw new Error('Некоректна година');
-  const target = Date.parse(`${date}T${String(hour).padStart(2, '0')}:00:00Z`);
+  if (!Number.isInteger(minute) || minute < 0 || minute > 59) throw new Error('Некоректна хвилина');
+  const target = Date.parse(
+    `${date}T${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}:00Z`,
+  );
   let guess = target;
   for (let i = 0; i < 4; i++) {
     const p = kyivParts(guess);
@@ -87,17 +90,58 @@ export function kyivInstant(date, hour = 13) {
   }
   throw new Error('Цей місцевий час неоднозначний або не існує');
 }
-/** Taxi business week starts Monday 13:00 Kyiv, never an assumed 168 hours.
- * @param {number} ms */
-export function taxiWeek(ms) {
+/** Historical schedule epochs split work periods without changing settled history.
+ * @param {number} ms @param {TaxiPolicy[]} [policies] */
+export function taxiWeek(ms, policies = []) {
   const p = kyivParts(ms);
+  const epochs = policies
+    .filter((policy) => policy.periodStart)
+    .sort((a, b) => Date.parse(a.effectiveAt) - Date.parse(b.effectiveAt));
+  const epoch = epochs.filter((policy) => Date.parse(policy.effectiveAt) <= ms).at(-1);
+  const next = epochs.find((policy) => Date.parse(policy.effectiveAt) > ms);
+  const day = epoch?.weekDay ?? 0,
+    hour = epoch?.weekHour ?? 13,
+    minute = epoch?.weekMinute ?? 0;
   const weekday = (new Date(`${p.date}T00:00:00Z`).getUTCDay() + 6) % 7;
-  let key = shiftDate(p.date, -weekday);
-  if (weekday === 0 && p.hour < 13) key = shiftDate(key, -7);
-  return { key, from: kyivInstant(key), to: kyivInstant(shiftDate(key, 7)) };
+  let date = shiftDate(p.date, -((weekday - day + 7) % 7));
+  if (ms < kyivInstant(date, hour, minute)) date = shiftDate(date, -7);
+  const regularFrom = kyivInstant(date, hour, minute);
+  const from = Math.max(regularFrom, epoch ? Date.parse(epoch.effectiveAt) : -Infinity);
+  const to = Math.min(
+    kyivInstant(shiftDate(date, 7), hour, minute),
+    next ? Date.parse(next.effectiveAt) : Infinity,
+  );
+  return { key: from === regularFrom ? date : new Date(from).toISOString(), from, to };
 }
-/** @typedef {{ id: string, effectiveAt: string, fareBps: number, commissionBps: number, fuelBps: number, tipsBps?: number, thresholdMinor: number|null, bonusFareBps: number }} TaxiPolicy */
-/** @typedef {{ id: string, at: string, policyId: string, netCashMinor: number, commissionMinor: number, fuelMinor: number, tipsMinor: number, directMinor: number, receivedCashMinor?: number, paidWorkMinor?: number, commissionReported?: boolean, cashReported?: boolean, note?: string }} TaxiEntry */
+/** Resolve a legacy date key or an exact, possibly same-day transition key.
+ * @param {string} key @param {TaxiPolicy[]} [policies] */
+export function taxiPeriodStart(key, policies = []) {
+  if (/^\d{4}-\d{2}-\d{2}$/.test(key)) {
+    const schedules = [{ weekHour: 13, weekMinute: 0 }, ...policies.filter((p) => p.periodStart)];
+    for (const schedule of schedules) {
+      const candidate = kyivInstant(key, schedule.weekHour ?? 13, schedule.weekMinute ?? 0);
+      if (taxiWeek(candidate, policies).key === key) return taxiWeek(candidate, policies).from;
+    }
+  } else {
+    const candidate = Date.parse(key);
+    if (
+      Number.isFinite(candidate) &&
+      new Date(candidate).toISOString() === key &&
+      taxiWeek(candidate, policies).key === key
+    )
+      return candidate;
+  }
+  throw new Error('Робочий період не знайдено');
+}
+/** Explicit attribution preserves late-entered old-car records, including their original time.
+ * @param {TaxiEntry} entry @param {TaxiPolicy[]} [policies] */
+export function taxiEntryWeek(entry, policies = []) {
+  return entry.periodKey
+    ? taxiWeek(taxiPeriodStart(entry.periodKey, policies), policies)
+    : taxiWeek(Date.parse(entry.at), policies);
+}
+/** @typedef {{ id: string, effectiveAt: string, fareBps: number, commissionBps: number, fuelBps: number, tipsBps?: number, thresholdMinor: number|null, bonusFareBps: number, periodStart?: boolean, weekDay?:number, weekHour?:number, weekMinute?:number, vehicleName?:string }} TaxiPolicy */
+/** @typedef {{ id: string, at: string, policyId: string, periodKey?: string|null, netCashMinor: number, commissionMinor: number, fuelMinor: number, tipsMinor: number, directMinor: number, receivedCashMinor?: number, paidWorkMinor?: number, commissionReported?: boolean, cashReported?: boolean, note?: string }} TaxiEntry */
 /** @param {TaxiPolicy} policy */
 export function validatePolicy(policy) {
   for (const bps of [policy.fareBps, policy.commissionBps, policy.fuelBps, policy.bonusFareBps])
@@ -106,15 +150,82 @@ export function validatePolicy(policy) {
   if (policy.thresholdMinor !== null) minor(policy.thresholdMinor);
   if (!policy.id || !Number.isFinite(Date.parse(policy.effectiveAt)))
     throw new Error('Некоректні умови таксі');
+  if (
+    policy.periodStart &&
+    (!Number.isInteger(policy.weekDay) ||
+      (policy.weekDay ?? -1) < 0 ||
+      (policy.weekDay ?? 7) > 6 ||
+      !Number.isInteger(policy.weekHour) ||
+      (policy.weekHour ?? -1) < 0 ||
+      (policy.weekHour ?? 24) > 23 ||
+      !Number.isInteger(policy.weekMinute) ||
+      (policy.weekMinute ?? -1) < 0 ||
+      (policy.weekMinute ?? 60) > 59 ||
+      typeof policy.vehicleName !== 'string' ||
+      !policy.vehicleName.trim() ||
+      policy.vehicleName.length > 80)
+  )
+    throw new Error('Вкажи авто, день і час перезмінки');
   return policy;
+}
+/** Prepare an explicit car/schedule transition; never invent settlement or cash movements.
+ * @param {TaxiEntry[]} entries @param {TaxiPolicy[]} policies @param {{weekKey:string}[]} settlements
+ * @param {TaxiPolicy} policy @param {unknown} keepPreviousEntryIds */
+export function prepareTaxiTransition(
+  entries,
+  policies,
+  settlements,
+  policy,
+  keepPreviousEntryIds,
+) {
+  validatePolicy(policy);
+  if (!policy.periodStart) throw new Error('Не вказано початок нового періоду');
+  const boundary = Date.parse(policy.effectiveAt);
+  if (policies.some((p) => Date.parse(p.effectiveAt) >= boundary))
+    throw new Error('На цю або пізнішу дату вже є умови. Спочатку звір їх.');
+  if (
+    !Array.isArray(keepPreviousEntryIds) ||
+    keepPreviousEntryIds.length > 5000 ||
+    keepPreviousEntryIds.some((id) => typeof id !== 'string') ||
+    new Set(keepPreviousEntryIds).size !== keepPreviousEntryIds.length
+  )
+    throw new Error('Перевір перелік записів попереднього авто');
+  const previous = taxiWeek(boundary - 1, policies);
+  const nextPolicies = [...policies, policy];
+  for (const settlement of settlements) {
+    const old = taxiWeek(taxiPeriodStart(settlement.weekKey, policies), policies);
+    if (old.to > boundary)
+      throw new Error('Перехід змінює вже розрахований період. Обери дату після його завершення.');
+  }
+  const keep = new Set(keepPreviousEntryIds);
+  for (const id of keep) {
+    const entry = entries.find((e) => e.id === id);
+    if (!entry || taxiEntryWeek(entry, policies).key !== previous.key)
+      throw new Error('Запис не належить попередньому авто цього періоду');
+  }
+  const updates = entries
+    .filter((e) => Date.parse(e.at) >= boundary && taxiEntryWeek(e, policies).to > boundary)
+    .map((entry) => ({
+      id: entry.id,
+      policyId: keep.has(entry.id) ? entry.policyId : policy.id,
+      periodKey: keep.has(entry.id) ? previous.key : null,
+    }));
+  return {
+    policy,
+    previous: taxiWeek(boundary - 1, nextPolicies),
+    next: taxiWeek(boundary, nextPolicies),
+    updates,
+  };
 }
 /** The confirmed bonus applies to the ENTIRE business week. Recompute from
  * entries, never append a second income when the threshold is crossed.
  * @param {TaxiEntry[]} entries @param {TaxiPolicy[]} policies @param {number} nowMs */
 export function calculateTaxiWeek(entries, policies, nowMs) {
-  const week = taxiWeek(nowMs);
-  const selected = entries.filter(
-    (e) => Date.parse(e.at) >= week.from && Date.parse(e.at) < week.to,
+  const week = taxiWeek(nowMs, policies);
+  const selected = entries.filter((e) =>
+    e.periodKey
+      ? e.periodKey === week.key
+      : Date.parse(e.at) >= week.from && Date.parse(e.at) < week.to,
   );
   const gross = sumMoney(
     selected.map((e) => sumMoney([minor(e.netCashMinor), minor(e.commissionMinor)])),

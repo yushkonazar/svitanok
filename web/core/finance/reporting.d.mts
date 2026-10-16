@@ -29,6 +29,8 @@ export interface FinanceReport {
   daily: { date: string; expenseMinor: number; incomeMinor: number }[];
   taxiWeeks: {
     key: string;
+    from?: number;
+    to?: number;
     grossMinor: number;
     netCashMinor: number;
     commissionMinor: number;

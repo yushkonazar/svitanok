@@ -1,9 +1,10 @@
 import type { Finance } from '../../api/finance-schema.ts';
 import { financeView, moneyLabel } from '../../lib/financeView.ts';
+import { taxiPeriodLabel } from '../../lib/taxiPeriods.ts';
 import { Sheet } from '../ui/Sheet.tsx';
-import { calculateTaxiWeek, kyivInstant, share } from '../../../../core/finance/planning.mjs';
+import { calculateTaxiWeek, taxiPeriodStart, share } from '../../../../core/finance/planning.mjs';
 function TaxiFormula({ finance: f, weekKey }: { finance: Finance; weekKey: string }) {
-  const taxi = calculateTaxiWeek(f.taxiEntries, f.policies, kyivInstant(weekKey));
+  const taxi = calculateTaxiWeek(f.taxiEntries, f.policies, taxiPeriodStart(weekKey, f.policies));
   return (
     <details className="mt-3">
       <summary className="renewal-link cursor-pointer">Формула заробітку</summary>
@@ -107,7 +108,8 @@ export function FinanceExplanation({
             .map((w) => (
               <div key={w.key} className="renewal-inset mt-3">
                 <p>
-                  {w.key}: готівка {moneyLabel(w.heldMinor)}, заробіток {moneyLabel(w.earnedMinor)}
+                  {taxiPeriodLabel(w.key, f.policies)}: готівка {moneyLabel(w.heldMinor)}, заробіток{' '}
+                  {moneyLabel(w.earnedMinor)}
                 </p>
                 <p className="renewal-chart-note mt-2">
                   {w.settlementMinor < 0

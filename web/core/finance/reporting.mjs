@@ -3,7 +3,8 @@ import {
   kyivInstant,
   kyivParts,
   shiftDate,
-  taxiWeek,
+  taxiEntryWeek,
+  taxiPeriodStart,
   sumMoney,
   share,
 } from './planning.mjs';
@@ -33,12 +34,14 @@ export function buildFinanceReport(state, from, to, nowMs = Date.now()) {
   /** @type {Map<string, import('./planning.mjs').TaxiEntry[]>} */
   const entriesByWeek = new Map();
   for (const entry of state.taxiEntries) {
-    const key = taxiWeek(Date.parse(entry.at)).key;
+    const key = taxiEntryWeek(entry, state.policies).key;
     const rows = entriesByWeek.get(key) ?? [];
     rows.push(entry);
     entriesByWeek.set(key, rows);
   }
-  const keys = [...entriesByWeek.keys()].sort().reverse();
+  const keys = [...entriesByWeek.keys()].sort(
+    (a, b) => taxiPeriodStart(b, state.policies) - taxiPeriodStart(a, state.policies),
+  );
   /** @type {Map<string, {expenseMinor:number,incomeMinor:number}>} */
   const dailyTotals = new Map();
   for (const tx of txs) {
@@ -51,7 +54,11 @@ export function buildFinanceReport(state, from, to, nowMs = Date.now()) {
   }
   let periodEarned = 0;
   const weeks = keys.flatMap((key) => {
-    const w = calculateTaxiWeek(entriesByWeek.get(key) ?? [], state.policies, kyivInstant(key));
+    const w = calculateTaxiWeek(
+      entriesByWeek.get(key) ?? [],
+      state.policies,
+      taxiPeriodStart(key, state.policies),
+    );
     if (w.to <= range.start || w.from >= range.end) return [];
     for (const group of w.groups) {
       const rows = w.entries
@@ -92,6 +99,8 @@ export function buildFinanceReport(state, from, to, nowMs = Date.now()) {
     return [
       {
         key,
+        from: w.from,
+        to: w.to,
         grossMinor: w.grossMinor,
         netCashMinor: w.netCashMinor,
         commissionMinor: sumMoney(w.entries.map((e) => e.commissionMinor)),
@@ -116,7 +125,7 @@ export function buildFinanceReport(state, from, to, nowMs = Date.now()) {
         const w = calculateTaxiWeek(
           entriesByWeek.get(s.weekKey) ?? [],
           state.policies,
-          kyivInstant(s.weekKey),
+          taxiPeriodStart(s.weekKey, state.policies),
         );
         const held = sumMoney(
           w.entries.map((e) => (e.receivedCashMinor ?? 0) - (e.paidWorkMinor ?? 0)),

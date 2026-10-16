@@ -145,6 +145,7 @@ const EXPECTED_COLUMNS: Record<string, string[]> = {
     'bonus_fare_bps',
     'created_at',
     'tips_bps',
+    'period_json',
   ],
   finance_taxi_entries: [
     'id',
@@ -164,6 +165,7 @@ const EXPECTED_COLUMNS: Record<string, string[]> = {
     'revision',
     'created_at',
     'updated_at',
+    'period_key',
   ],
   finance_taxi_settlements: [
     'id',
@@ -719,7 +721,7 @@ const columnsOf = (table: string): { name: string; pk: number }[] =>
   }[];
 
 describe('міграції D1 — файли', () => {
-  it('сорок два файли 0001–0042, нумерація без дірок', () => {
+  it('сорок три файли 0001–0043, нумерація без дірок', () => {
     expect(files.map((f) => f.slice(0, 4))).toEqual([
       '0001',
       '0002',
@@ -763,6 +765,7 @@ describe('міграції D1 — файли', () => {
       '0040',
       '0041',
       '0042',
+      '0043',
     ]);
   });
 });

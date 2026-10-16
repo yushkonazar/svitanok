@@ -10,6 +10,7 @@ import { PAYMENT_KIND_LABELS, isDebtKind } from '../../../../core/finance/paymen
 import { financeCategoryLabel } from '../../../../core/finance/categories.mjs';
 import { AnalyticsBars } from './AnalyticsCharts.tsx';
 import { financeRange } from './analytics-format.ts';
+import { taxiRangeLabel } from '../../lib/taxiPeriods.ts';
 export function Metric({ label, value }: { label: string; value: number | null }) {
   return (
     <div className="renewal-metric">
@@ -503,16 +504,16 @@ export function TaxiAnalytics({
         </button>
       </section>
       <section className="renewal-card">
-        <h2 className="font-bold">Повні робочі тижні</h2>
+        <h2 className="font-bold">Повні робочі періоди</h2>
         <p className="renewal-chart-note mt-2">
-          Тижні, що перетинають дати звіту: понеділок 13:00 — наступний понеділок 13:00, Київ. Нижче
-          суми за весь робочий тиждень.
+          Періоди, що перетинають дати звіту. Межі відповідають історичному розкладу та змінам авто,
+          Київ. Нижче суми за весь робочий період.
         </p>
         <AnalyticsBars
-          label="Заробіток за повні робочі тижні"
+          label="Заробіток за повні робочі періоди"
           points={[...r.taxiWeeks].reverse().map((w) => ({
             key: w.key,
-            label: w.key.slice(8) + '.' + w.key.slice(5, 7),
+            label: w.key.slice(8, 10) + '.' + w.key.slice(5, 7),
             amountMinor: w.earnedMinor,
           }))}
           onSelect={(key) => onWeek(key || undefined)}
@@ -520,7 +521,10 @@ export function TaxiAnalytics({
         {r.taxiWeeks.map((w) => (
           <details className="renewal-inset mt-3" key={w.key}>
             <summary className="renewal-link">
-              Від {w.key} · {moneyLabel(w.earnedMinor)}
+              {w.from != null && w.to != null
+                ? taxiRangeLabel(w.from, w.to)
+                : `Від ${w.key.slice(0, 10)}`}{' '}
+              · {moneyLabel(w.earnedMinor)}
             </summary>
             <div className="renewal-metrics">
               <Metric label="Брудна каса" value={w.grossMinor} />

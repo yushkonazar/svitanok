@@ -8,6 +8,7 @@ import { BankRefreshPanel } from './BankRefreshPanel.tsx';
 import { isSessionExpired, refreshFinanceBank } from '../../api/client.ts';
 import { financeView, moneyLabel } from '../../lib/financeView.ts';
 import { sumMoney, calculateTaxiWeek } from '../../../../core/finance/planning.mjs';
+import { taxiPeriodLabel, taxiScheduleLabel, taxiVehicleName } from '../../lib/taxiPeriods.ts';
 import { LoadingSkeleton, ErrorState } from '../ui/states.tsx';
 import { SessionExpired } from '../ui/SessionExpired.tsx';
 import { BudgetPlan } from './BudgetPlan.tsx';
@@ -482,14 +483,13 @@ export function FinanceScreen() {
           <div className="renewal-section-head">
             <div>
               <p className="renewal-eyebrow mb-2">РОБОТА · ТАКСІ</p>
-              <h2 className="text-lg font-bold">
-                Тиждень від {taxi.key.slice(8)}.{taxi.key.slice(5, 7)}
-              </h2>
+              <h2 className="text-lg font-bold">{taxiVehicleName(taxi.from, f.policies)}</h2>
             </div>
             <button className="renewal-link" onClick={() => setForm({ kind: 'settings' })}>
               Налаштувати таксі ↗
             </button>
           </div>
+          <p className="renewal-chart-note mb-3">{taxiPeriodLabel(taxi.key, f.policies)}, Київ</p>
           <div className="renewal-metrics mb-3">
             <div className="renewal-metric">
               <span className="renewal-muted">Чиста каса · після комісії</span>
@@ -556,7 +556,24 @@ export function FinanceScreen() {
             <button className="renewal-secondary mt-3" onClick={() => setForm({ kind: 'policy' })}>
               Змінити умови роботи
             </button>
-            <p className="renewal-muted">Перезмінка — понеділок о 13:00, Київ.</p>
+            <p className="renewal-muted mt-3">
+              Перезмінка: {taxiScheduleLabel(nowMs, f.policies)}.
+            </p>
+            <details className="renewal-inset mt-3">
+              <summary className="renewal-link cursor-pointer">
+                Додатково · зміна авто чи дня перезмінки
+              </summary>
+              <p className="renewal-muted mt-3">
+                Розділити поточний період, зберегти попередні розрахунки й почати облік нового авто.
+              </p>
+              <button
+                type="button"
+                className="renewal-secondary mt-3 w-full"
+                onClick={() => setForm({ kind: 'taxi-transition' })}
+              >
+                Змінити авто / розклад
+              </button>
+            </details>
             <div className="renewal-metrics">
               <div className="renewal-metric">
                 <span className="renewal-muted">Повна комісія</span>

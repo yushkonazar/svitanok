@@ -53,11 +53,17 @@ export const taxiPolicySchema = z.object({
   tipsBps: z.number().int().min(0).max(10000).default(5000),
   thresholdMinor: money.nullable(),
   bonusFareBps: z.number().int(),
+  periodStart: z.boolean().optional(),
+  weekDay: z.number().int().min(0).max(6).optional(),
+  weekHour: z.number().int().min(0).max(23).optional(),
+  weekMinute: z.number().int().min(0).max(59).optional(),
+  vehicleName: z.string().max(80).optional(),
 });
 export const taxiEntrySchema = z.object({
   id: z.string(),
   at: z.string(),
   policyId: z.string(),
+  periodKey: z.string().nullable().optional(),
   netCashMinor: money,
   commissionMinor: money,
   fuelMinor: money,
@@ -155,6 +161,8 @@ export const financeSchema = z.object({
   taxiWeeks: z.array(
     z.object({
       key: z.string(),
+      from: z.number().optional(),
+      to: z.number().optional(),
       grossMinor: money,
       netCashMinor: money.optional(),
       commissionMinor: money.optional(),
@@ -253,6 +261,8 @@ export const financeReportSchema = z.object({
       key: z.string(),
       grossMinor: money,
       netCashMinor: money,
+      from: z.number().optional(),
+      to: z.number().optional(),
       commissionMinor: money,
       fuelMinor: money,
       tipsMinor: money,
