@@ -83,6 +83,7 @@ import { handleDeletionsRequest } from './api-deletions.mjs';
 import { handleMailAttention } from './api-mail-attention.mjs';
 import { handleFinance } from './api-finance.mjs';
 import { handleLeisure } from './api-leisure.mjs';
+import { handlePlan } from './api-plan.mjs';
 import { handleCredentials } from './api-credentials.mjs';
 import { handleCurrencyHistory } from './api-currency-history.mjs';
 import { handleDailyContent } from './api-daily-content.mjs';
@@ -562,6 +563,7 @@ export default {
       return handleMailAttention(request, env);
     }
     if (url.pathname === '/api/leisure') return handleLeisure(request, env);
+    if (url.pathname === '/api/plan') return handlePlan(request, env);
     if (url.pathname === '/api/finance') {
       return handleFinance(request, env);
     }

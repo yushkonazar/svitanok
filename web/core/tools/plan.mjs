@@ -17,6 +17,7 @@ import {
 import { loadStats } from '../../kv-store.mjs';
 import { kyivDateKey, kyivMinuteOfDay } from '../../kyiv-time.mjs';
 import { addDaysToDateKey } from '../../reminders-core.mjs';
+import { manualPlanEnabled } from '../motivation/jobs.mjs';
 import { applyPolicy } from '../policy/proposals.mjs';
 import { enqueueOutbox, drainOutbox } from '../tg/outbox.mjs';
 import { assistantHomeTarget } from '../tg/home.mjs';
@@ -105,6 +106,10 @@ async function draftFor(env, date, items, nowMs) {
  * @param {number} nowMs
  */
 export async function runPlanIntent(env, args, nowMs) {
+  if (await manualPlanEnabled(env))
+    throw new Error(
+      'Увімкнено ручний план. Використай motivation.query/change; прийняття - у Mini App.',
+    );
   const date = resolvePlanDate(args.date, nowMs);
   if ((await getDayPlan(env, date))?.status === 'accepted')
     throw new Error(`План на ${date} уже погоджено й записано. Не замінюю його чернеткою.`);
@@ -172,6 +177,8 @@ export async function runPlanDraft(env, args, nowMs) {
  *   internal?: { tainted?: boolean } }} [ctx] - internal заповнює ЛИШЕ ядро
  */
 export async function runPlanAccept(env, args, nowMs, ctx = {}) {
+  if (await manualPlanEnabled(env))
+    throw new Error('Ручні штрафні обіцянки приймаються у Mini App «План».');
   const date = resolvePlanDate(args.date, nowMs);
   const plan = await getDayPlan(env, date);
   if (!plan) throw new Error(`на ${date} немає чернетки - спершу plan.intent`);

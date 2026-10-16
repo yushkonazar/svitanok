@@ -14,6 +14,7 @@ import { recordTrackedMessage } from '../../kv-store.mjs';
 import { assistantHomeTarget } from './home.mjs';
 import { renderContextDelivery, recoverContextDeliveries } from '../reminders/context-store.mjs';
 import { renderCheckinNotice } from '../checkin/extensions.mjs';
+import { renderPlanNotice } from '../motivation/jobs.mjs';
 import { credentialNoticeCurrent, googleScopeNoticeCurrent } from '../ops/notices.mjs';
 import {
   splitMessage,
@@ -348,6 +349,13 @@ async function sendRow(env, row, nowMs) {
     payload = { ...payload, ...notice };
   }
   delete payload.checkin_notice;
+  if (payload.plan_notice && typeof payload.plan_notice === 'object') {
+    const notice = await renderPlanNotice(env, payload.plan_notice, nowMs);
+    if (!notice) return { ok: true };
+    if ('deferSeconds' in notice) return { ok: false, retryAfterSec: notice.deferSeconds };
+    payload = { ...payload, ...notice };
+  }
+  delete payload.plan_notice;
   if (typeof payload.context_delivery_id === 'string') {
     try {
       payload = { ...payload, ...(await renderContextDelivery(env, payload.context_delivery_id)) };

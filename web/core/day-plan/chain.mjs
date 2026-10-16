@@ -13,6 +13,7 @@
 // не вмирає (00-README п.6: помилка видима, але без тиші).
 
 import { WorkflowEntrypoint } from 'cloudflare:workers';
+import { manualPlanEnabled } from '../motivation/jobs.mjs';
 import { kyivDateKey, kyivMinuteOfDay } from '../../kyiv-time.mjs';
 import { addDaysToDateKey } from '../../reminders-core.mjs';
 import { readCalendarRange } from '../../google.mjs';
@@ -993,6 +994,7 @@ export function productionIo(env, chainId, date, target = address(env)) {
     now: () => Date.now(),
     target,
     send: async (text, btns) => {
+      if (await manualPlanEnabled(env)) return;
       if (!target.chatId) throw new Error('чат асистента не налаштовано');
       await enqueueOutbox(
         env,

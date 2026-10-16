@@ -11,6 +11,22 @@ type Route = { words: readonly string[]; tools: readonly string[] };
 const ROUTES: readonly Route[] = [
   {
     words: [
+      'xp',
+      'хр',
+      'винагород',
+      'мій план',
+      'план на завтра',
+      'план на день',
+      'план дня',
+      'задач',
+      'завдан',
+      'мотивац',
+      'дисциплін',
+    ],
+    tools: ['motivation_query', 'motivation_change'],
+  },
+  {
+    words: [
       'дозвіл',
       'афіш',
       'фестивал',

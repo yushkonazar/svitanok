@@ -131,6 +131,8 @@ import {
 import { BACKUP_STATE_KEY } from './backup-state/contract.mjs';
 import { BACKUP_MAX_ATTEMPTS } from './backup/task.mjs';
 import { startDayPlanChain } from './day-plan/chain.mjs';
+import { manualPlanEnabled } from './motivation/jobs.mjs';
+import { planButton } from './motivation/links.mjs';
 import { getDayPlan } from './day-plan/store.mjs';
 import { resolveSecurityHint } from './hints/daily-hint.mjs';
 import { checkinExtensionCallback } from './checkin/extensions.mjs';
@@ -732,10 +734,25 @@ export async function prerouteMessage(env, parsed, nowMs = Date.now(), voiceStat
     // у легасі й відповідали не тим, чим асистент (скарга 12 прогону 08.09).
     if (cmd.cmd === 'plan') {
       const intent = cmd.args.replace(/^на\s+(?:день|сьогодні|завтра)\s*[:—-]?\s*/iu, '').trim();
-      const date = /\bзавтра\b/iu.test(cmd.args)
+      const date = /(?:^|[^\p{L}])завтра(?=$|[^\p{L}])/iu.test(cmd.args)
         ? addDaysToDateKey(kyivDateKey(new Date(nowMs)), 1)
         : kyivDateKey(new Date(nowMs));
       try {
+        if (await manualPlanEnabled(env)) {
+          const button = planButton(
+            env,
+            cmd.args ? `plan_date_${date}` : 'plan',
+            target.chatId ?? 0,
+          );
+          await reply(
+            env,
+            target,
+            'Твій ручний план, XP і винагороди - у «Плані» Mini App. Нові задачі спочатку зберігаються в чернетці.',
+            nowMs,
+            button ? { reply_markup: { inline_keyboard: [[button]] } } : undefined,
+          );
+          return true;
+        }
         await startInteractiveDayPlan(env, target, date, intent, nowMs);
       } catch (/** @type {any} */ e) {
         console.error('prerouter: інтерактивний план не стартував', e?.message);
@@ -915,7 +932,7 @@ export async function prerouteMessage(env, parsed, nowMs = Date.now(), voiceStat
     await reply(env, target, 'Уточни дату плану: такої дати немає.', nowMs);
     return true;
   }
-  if (dayPlanRequest) {
+  if (dayPlanRequest && !(await manualPlanEnabled(env))) {
     try {
       await startInteractiveDayPlan(env, target, dayPlanRequest.date, dayPlanRequest.intent, nowMs);
     } catch (/** @type {any} */ e) {
