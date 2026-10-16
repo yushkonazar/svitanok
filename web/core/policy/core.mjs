@@ -13,6 +13,7 @@ import { parseRecurrence } from '../reminders/recurrence.mjs';
  */
 export const ACTION_LEVELS = {
   'leisure.change': 'T1',
+  'motivation.change': 'T0',
   // T0 - виконати одразу, «Записав … ↩» (undo 10 хв)
   'facts.set': 'T0',
   record: 'T0',

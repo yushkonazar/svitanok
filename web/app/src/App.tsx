@@ -11,6 +11,7 @@ import { useBriefing, useStats } from './api/hooks.ts';
 import { useFinance } from './api/finance-hooks.ts';
 import { financePathForStartParam } from '../../core/finance/links.mjs';
 import { checkinPathForStartParam } from '../../core/checkin/windows.mjs';
+import { planPathForStartParam } from '../../core/motivation/links.mjs';
 import { Fog } from './components/ui/Fog.tsx';
 import { SessionExpired } from './components/ui/SessionExpired.tsx';
 import { NavigationPager } from './components/ui/NavigationPager.tsx';
@@ -33,6 +34,7 @@ const TABS = [
   { id: 'stats', path: '/stats', label: 'Мій стан' },
   { id: 'finance', path: '/finance', label: 'Фінанси' },
   { id: 'leisure', path: '/leisure', label: 'Дозвілля' },
+  { id: 'plan', path: '/plan', label: 'План' },
   { id: 'system', path: '/system', label: 'Система' },
 ] as const;
 
@@ -40,6 +42,9 @@ const SystemScreen = lazy(() =>
   import('./components/system/SystemScreen.tsx').then((module) => ({
     default: module.SystemScreen,
   })),
+);
+const PlanScreen = lazy(() =>
+  import('./components/plan/PlanScreen.tsx').then((module) => ({ default: module.PlanScreen })),
 );
 
 const MemoryScreen = lazy(() =>
@@ -115,6 +120,13 @@ function TabIcon({ id, active }: { id: string; active: boolean }) {
         <path d="M8 21h8M12 17v4M6 11h3l2-4 3 7 2-3h2" />
       </svg>
     );
+  if (id === 'plan')
+    return (
+      <svg width="18" height="18" viewBox="0 0 24 24" {...common}>
+        <rect x="4" y="4" width="16" height="17" rx="3" />
+        <path d="M8 2v4M16 2v4M8 12l2 2 5-5M8 18h8" />
+      </svg>
+    );
   if (id === 'leisure')
     return (
       <svg width="18" height="18" viewBox="0 0 24 24" {...common}>
@@ -159,6 +171,8 @@ function TabIcon({ id, active }: { id: string; active: boolean }) {
 
 // start_param -> шлях. Приймаємо і id ('stats'), і шлях ('/stats').
 function pathForStartParam(param: string): string | null {
+  const plan = planPathForStartParam(param);
+  if (plan) return plan;
   if (param === 'access') return '/settings?panel=access';
   if (param === 'memory') return '/memory';
   if (param.startsWith('leisure_')) return `/leisure?item=${encodeURIComponent(param.slice(8))}`;
@@ -469,6 +483,8 @@ export function App() {
                 <SystemScreen />
               ) : active.id === 'leisure' ? (
                 <LeisureScreen />
+              ) : active.id === 'plan' ? (
+                <PlanScreen />
               ) : (
                 <StatsScreen />
               )}

@@ -56,6 +56,7 @@ import { tripMonitorTask } from '../trips/monitor.mjs';
 import { refreshNewsSnapshot } from '../brief/news-snapshot.mjs';
 import { leisureCatalogTask } from '../leisure/catalog.mjs';
 import { reconcileLeisureCalendar } from '../leisure/calendar.mjs';
+import { motivationTask, motivationCalendarTask } from '../motivation/jobs.mjs';
 
 /**
  * @typedef {{
@@ -67,6 +68,8 @@ import { reconcileLeisureCalendar } from '../leisure/calendar.mjs';
 
 /** @type {Record<string, SchedulerTaskDef>} */
 export const SCHEDULER_TASKS = {
+  'motivation-plan': { periodMin: 5, run: motivationTask },
+  'motivation-calendar': { periodMin: 5, run: motivationCalendarTask },
   'leisure-catalog': { periodMin: 30, run: leisureCatalogTask },
   'leisure-calendar': { periodMin: 5, run: reconcileLeisureCalendar },
   'mini-app-news': { periodMin: 5, run: refreshNewsSnapshot }, // Snapshot gates 3/6/12h and bounded translation retries.

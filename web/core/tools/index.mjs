@@ -35,6 +35,7 @@ import { runTripContext } from './trip.mjs';
 import { TRIP_WORKSPACE_OPS } from './trip-workspace.mjs';
 import { runLeisureQuery } from './leisure.mjs';
 import { LEISURE_OPERATIONS } from '../leisure/model.mjs';
+import { runMotivationQuery } from './motivation.mjs';
 
 /**
  * @typedef {{
@@ -47,6 +48,48 @@ import { LEISURE_OPERATIONS } from '../leisure/model.mjs';
 
 /** @type {Record<string, InternalToolDef>} */
 export const TOOLS = {
+  'motivation.query': {
+    args: {
+      type: 'object',
+      properties: {
+        date: { type: 'string', maxLength: 10 },
+        id: { type: 'string', maxLength: 100 },
+      },
+    },
+    run: runMotivationQuery,
+  },
+  'motivation.change': {
+    args: {
+      type: 'object',
+      required: ['op', 'revision', 'payload_json', 'command_id'],
+      properties: {
+        op: {
+          type: 'string',
+          enum: [
+            'task-save',
+            'task-delete',
+            'report',
+            'undo-report',
+            'start',
+            'move-start',
+            'snooze',
+            'recommit',
+            'goal-save',
+            'shift-open',
+            'shift-close',
+          ],
+        },
+        id: { type: 'string', maxLength: 100 },
+        revision: { type: 'number', minimum: 0 },
+        payload_json: { type: 'string', maxLength: 10000 },
+        command_id: { type: 'string', minLength: 8, maxLength: 80 },
+      },
+    },
+    write: { kind: 'motivation.change' },
+    run: () => {
+      throw new Error('motivation.change виконується через policy');
+    },
+  },
   'leisure.query': {
     args: {
       type: 'object',

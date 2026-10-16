@@ -115,6 +115,8 @@ export const CANON_TOOLS = [
   'plan.accept',
   'plan.update',
   'plan.review',
+  'motivation.query',
+  'motivation.change',
   'proposals.create',
   'chain.start',
   'chain.cancel',

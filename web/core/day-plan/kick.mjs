@@ -11,6 +11,7 @@ import { addDaysToDateKey } from '../../reminders-core.mjs';
 import { readDayPlanConfig, getDayPlan } from './store.mjs';
 import { isoWeekday } from './slots.mjs';
 import { startDayPlanChain } from './chain.mjs';
+import { manualPlanEnabled } from '../motivation/jobs.mjs';
 
 export const DAY_PLAN_KICK_MARKER_KEY = 'dayPlanKickDay';
 export const DAY_PLAN_KICK_HOUR = 0;
@@ -21,6 +22,7 @@ export const DAY_PLAN_KICK_MINUTE = 5;
  * @param {number} [nowMs]
  */
 export async function dayPlanKickTask(env, nowMs = Date.now()) {
+  if (await manualPlanEnabled(env)) return { skipped: 'manual-plan' };
   const now = new Date(nowMs);
   if (kyivHour(now) !== DAY_PLAN_KICK_HOUR || kyivMinuteOfDay(now) < DAY_PLAN_KICK_MINUTE) {
     return { skipped: 'hour' };

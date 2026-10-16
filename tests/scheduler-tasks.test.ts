@@ -23,6 +23,8 @@ import { workerEnv } from './helpers/env.js';
 describe('SCHEDULER_TASKS — реєстр видів (07 §7)', () => {
   it('канонічні kind-и: heartbeat + крон-задачі + rebuildable memory projection + weekly-review та operational tasks', () => {
     expect(Object.keys(SCHEDULER_TASKS)).toEqual([
+      'motivation-plan',
+      'motivation-calendar',
       'leisure-catalog',
       'leisure-calendar',
       'mini-app-news',

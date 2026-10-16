@@ -24,6 +24,11 @@ export const BACKUP_DOC_VERSION = 2;
  * стабільний порядок робить diff двох бекапів читабельним).
  */
 export const BACKUP_TABLES = [
+  'motivation_account',
+  'motivation_records',
+  'motivation_commands',
+  'motivation_ledger',
+  'motivation_guards',
   'leisure_items',
   'leisure_editions',
   'leisure_records',

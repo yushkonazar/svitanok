@@ -27,6 +27,11 @@ it('кожна D1-міграція явно оголошує expand або contr
 
 /** Очікувані колонки звичайних таблиць — дослівно з 07-schema §1. */
 const EXPECTED_COLUMNS: Record<string, string[]> = {
+  motivation_account: ['id', 'revision', 'data_json'],
+  motivation_records: ['id', 'kind', 'date', 'data_json'],
+  motivation_commands: ['id', 'fingerprint', 'receipt_json', 'created_at'],
+  motivation_ledger: ['id', 'command_id', 'at', 'kind', 'delta', 'experience_delta', 'data_json'],
+  motivation_guards: ['id', 'valid'],
   usage_receipts: [
     'id',
     'at',
@@ -593,6 +598,8 @@ type IndexSpec = { cols: string[]; unique?: boolean };
  * жодного індексу поза PK — звірка точна, зайвий індекс теж провалює тест.
  */
 const EXPECTED_INDEXES: Record<string, IndexSpec[]> = {
+  motivation_records: [{ cols: ['kind', 'date'] }],
+  motivation_ledger: [{ cols: ['at', 'id'] }],
   usage_receipts: [{ cols: ['at', 'feature', 'provider'] }, { cols: ['run_id'] }],
   leisure_items: [{ cols: ['start_date', 'end_date'] }, { cols: ['venue_id'] }],
   leisure_records: [{ cols: ['kind', 'at'] }, { cols: ['item_id', 'kind'] }],
@@ -712,7 +719,7 @@ const columnsOf = (table: string): { name: string; pk: number }[] =>
   }[];
 
 describe('міграції D1 — файли', () => {
-  it('сорок один файл 0001–0041, нумерація без дірок', () => {
+  it('сорок два файли 0001–0042, нумерація без дірок', () => {
     expect(files.map((f) => f.slice(0, 4))).toEqual([
       '0001',
       '0002',
@@ -755,6 +762,7 @@ describe('міграції D1 — файли', () => {
       '0039',
       '0040',
       '0041',
+      '0042',
     ]);
   });
 });

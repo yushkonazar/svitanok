@@ -7,6 +7,7 @@ import { runFactsGet } from '../tools/facts.mjs';
 import { runRemindersCreate, runRemindersCancel } from '../tools/reminders.mjs';
 import { addDaysToDateKey } from '../../reminders-core.mjs';
 import { kyivDateKey, kyivMinuteOfDay } from '../../kyiv-time.mjs';
+import { manualPlanEnabled } from '../motivation/jobs.mjs';
 import {
   DAY_PLAN_DEFAULTS,
   HABIT_DEFAULTS,
@@ -346,6 +347,8 @@ export async function replaceItems(env, date, slots, items) {
  * @param {{ chatId: number | string | null, threadId: number | string | null }} address
  */
 export async function acceptPlan(env, date, nowMs, address) {
+  if (await manualPlanEnabled(env))
+    throw new Error('Увімкнено ручний план Mini App. Стару автоматичну чернетку не прийнято.');
   const items = await listItems(env, date);
   const d = db(env);
   /** @type {string[]} */
