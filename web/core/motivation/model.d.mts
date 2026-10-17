@@ -33,6 +33,12 @@ export function planView(
   events?: Record<string, unknown>[],
 ): { today: string; tasks: any[]; events: any[]; [key: string]: any };
 export function planLocalTime(date: string, clock: string): string;
+export function validateTaskTiming(timing: {
+  startAt: string | null;
+  endAt: string | null;
+  dueAt: string;
+  calendar?: boolean;
+}): void;
 export function taskScore(effort: number, contribution: number): number;
 export function personalPlanDate(settings: PlanState['settings'], nowMs: number): string;
 export function currentPlanDate(state: PlanState, nowMs: number): string;
@@ -62,5 +68,6 @@ export const DEFAULT_PLAN_SETTINGS: PlanState['settings'];
 export const REWARD_SUGGESTIONS: { title: string; price: number; scale: string }[];
 export class PlanError extends Error {
   status: number;
-  constructor(message?: string, status?: number);
+  field?: string;
+  constructor(message?: string, status?: number, field?: string);
 }

@@ -53,11 +53,49 @@ export const REWARD_SUGGESTIONS = [
 ];
 
 export class PlanError extends Error {
-  constructor(message = 'Перевір дані.', status = 400) {
+  constructor(
+    message = 'Перевір дані.',
+    status = 400,
+    field = /** @type {string|undefined} */ (undefined),
+  ) {
     super(message);
     this.name = 'PlanError';
     this.status = status;
+    this.field = field;
   }
+}
+
+/** Validate only explicit block endpoints; an estimate is not a calendar block.
+ * @param {{startAt:string|null,endAt:string|null,dueAt:string,calendar?:boolean}} timing */
+export function validateTaskTiming({ startAt, endAt, dueAt, calendar }) {
+  if (startAt && startAt > dueAt)
+    throw new PlanError(
+      'Початок задачі пізніше за її крайній строк. Уточни дату або час.',
+      400,
+      'startAt',
+    );
+  if (calendar && !startAt)
+    throw new PlanError('Для Google Calendar укажи початок блоку.', 400, 'startAt');
+  if (calendar && !endAt)
+    throw new PlanError('Для Google Calendar укажи кінець блоку.', 400, 'endAt');
+  if (endAt && !startAt)
+    throw new PlanError(
+      'Указано кінець блоку без початку. Додай початок або прибери кінець.',
+      400,
+      'startAt',
+    );
+  if (endAt && startAt && endAt <= startAt)
+    throw new PlanError(
+      'Кінець блоку має бути пізніше за початок. Перевір дату й час завершення.',
+      400,
+      'endAt',
+    );
+  if (endAt && endAt > dueAt)
+    throw new PlanError(
+      'Блок закінчується після крайнього строку задачі. Уточни кінець блоку або строк.',
+      400,
+      'endAt',
+    );
 }
 
 /** @typedef {{revision:number,balance:number,experience:number,settings:typeof DEFAULT_PLAN_SETTINGS,primaryRewardId:string|null,records:Record<string,any>}} PlanState */
@@ -586,11 +624,7 @@ export function applyPlanCommand(original, command, nowMs) {
         : iso(p.dueAt);
     const startAt = p.startAt ? iso(p.startAt) : null,
       endAt = p.endAt ? iso(p.endAt) : null;
-    if (startAt && startAt > dueAt) throw new PlanError('Початок має бути до крайнього строку.');
-    if (p.calendar && (!startAt || !endAt || endAt <= startAt))
-      throw new PlanError('Для календаря обери реальний початок і кінець блоку.');
-    if (endAt && (endAt > dueAt || !startAt || endAt <= startAt))
-      throw new PlanError('Перевір тривалість блоку.');
+    validateTaskTiming({ startAt, endAt, dueAt, calendar: p.calendar });
     if (p.goalId) get(state, p.goalId, 'goal');
     if (p.rewardId) get(state, p.rewardId, 'reward');
     if (p.timeSensitive && target !== 1)

@@ -9,6 +9,7 @@ import {
 } from '../../api/plan.ts';
 import { planLocalTime } from '../../../../core/motivation/model.mjs';
 import { PLAN_AREAS } from '../../../../core/motivation/scoring.mjs';
+import { readablePlanDate } from './PlanLocalTime.tsx';
 
 type Run = (op: string, payload?: Record<string, unknown>, id?: string) => Promise<boolean>;
 const nextDate = (date: string) =>
@@ -26,11 +27,15 @@ export const WEEK_DAYS = [
 export function TaskAssist({
   date,
   onApply,
+  initialText = '',
+  onTextChange,
 }: {
   date: string;
   onApply: (draft: TaskDraftSuggestion) => void;
+  initialText?: string;
+  onTextChange?: (value: string) => void;
 }) {
-  const [text, setText] = useState(''),
+  const [text, setText] = useState(initialText),
     [busy, setBusy] = useState(false),
     [error, setError] = useState(''),
     [questions, setQuestions] = useState<string[]>([]),
@@ -38,12 +43,21 @@ export function TaskAssist({
   return (
     <details className="plan-assist">
       <summary>Допомогти заповнити з мого опису ✧</summary>
+      <p className="plan-muted">
+        День задачі: {readablePlanDate(date)}. Для іншого дня спочатку зміни дату вище.
+      </p>
       <label>
         Опиши одну задачу
         <textarea
           maxLength={3000}
           value={text}
-          onChange={(e) => setText(e.target.value)}
+          disabled={busy}
+          onChange={(e) => {
+            setText(e.target.value);
+            onTextChange?.(e.target.value);
+            setDone(false);
+            setQuestions([]);
+          }}
           placeholder="Завтра хочу попрактикувати SQL: п’ять задач самостійно, приблизно година після обіду."
         />
       </label>
@@ -54,6 +68,7 @@ export function TaskAssist({
         onClick={async () => {
           setBusy(true);
           setError('');
+          setDone(false);
           try {
             const draft = await suggestPlanTask(text, date);
             onApply(draft);
