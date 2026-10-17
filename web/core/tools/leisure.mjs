@@ -21,7 +21,7 @@ export async function runLeisureQuery(env, args, nowMs) {
   const workspace = await readLeisureWorkspace(
       env,
       nowMs,
-      Boolean(args.id || ['plans', 'visits', 'places'].includes(args.view)),
+      Boolean(args.id || ['interested', 'plans', 'visits', 'places'].includes(args.view)),
     ),
     view = args.view ?? 'week',
     query = String(args.query ?? '').toLocaleLowerCase('uk');
@@ -30,17 +30,21 @@ export async function runLeisureQuery(env, args, nowMs) {
       ? [args.id]
       : view === 'saved'
         ? workspace.saved
-        : view === 'week'
-          ? [...(workspace.edition?.ids ?? []), ...(workspace.edition?.futureIds ?? [])]
-          : workspace.records
-              .filter((r) =>
-                view === 'places'
-                  ? ['visit', 'familiarity'].includes(r.kind)
-                  : r.kind === (view === 'plans' ? 'plan' : 'visit'),
-              )
-              .flatMap((r) =>
-                r.itemId ? [r.itemId] : r.stops.map((/** @type {any} */ s) => s.itemId),
-              ),
+        : view === 'interested'
+          ? workspace.records
+              .filter((r) => r.kind === 'reaction' && r.verdict === 'interested')
+              .map((r) => r.itemId)
+          : view === 'week'
+            ? [...(workspace.edition?.ids ?? []), ...(workspace.edition?.futureIds ?? [])]
+            : workspace.records
+                .filter((r) =>
+                  view === 'places'
+                    ? ['visit', 'familiarity'].includes(r.kind)
+                    : r.kind === (view === 'plans' ? 'plan' : 'visit'),
+                )
+                .flatMap((r) =>
+                  r.itemId ? [r.itemId] : r.stops.map((/** @type {any} */ s) => s.itemId),
+                ),
   );
   const ranking = new Map(
     (workspace.edition?.rankings ?? []).map((/** @type {any} */ r, /** @type {number} */ n) => [
@@ -53,7 +57,13 @@ export async function runLeisureQuery(env, args, nowMs) {
       (i) =>
         ids.has(i.id) &&
         (!args.category || i.category === args.category) &&
-        (!query || `${i.title} ${i.venue ?? ''}`.toLocaleLowerCase('uk').includes(query)),
+        (!query ||
+          `${i.title} ${i.venue ?? ''} ${workspace.records
+            .filter((r) => r.itemId === i.id)
+            .map((r) => r.reason ?? '')
+            .join(' ')}`
+            .toLocaleLowerCase('uk')
+            .includes(query)),
     )
     .sort((a, b) => (ranking.get(a.id) ?? 100000) - (ranking.get(b.id) ?? 100000));
   const offset = args.id ? 0 : Math.max(0, Math.floor(Number(args.offset ?? 0)));
@@ -64,6 +74,9 @@ export async function runLeisureQuery(env, args, nowMs) {
     sessionCount: i.sessions.length,
     ranking: workspace.edition?.rankings.find((/** @type {any} */ r) => r.id === i.id),
     known: workspace.knownPlaces[i.id],
+    reaction:
+      workspace.records.find((r) => r.kind === 'reaction' && r.itemId === i.id)?.verdict ?? null,
+    saved: workspace.saved.includes(i.id),
   }));
   return {
     result: wrapExternal(
@@ -76,15 +89,17 @@ export async function runLeisureQuery(env, args, nowMs) {
         records: workspace.records
           .filter(
             (r) =>
-              (view === 'plans'
-                ? r.kind === 'plan'
-                : view === 'places'
-                  ? ['visit', 'familiarity'].includes(r.kind)
-                  : view === 'visits'
-                    ? r.kind === 'visit'
-                    : r.kind === 'plan' || r.kind === 'visit') &&
+              (view === 'interested'
+                ? r.kind === 'reaction' && r.verdict === 'interested'
+                : view === 'plans'
+                  ? r.kind === 'plan'
+                  : view === 'places'
+                    ? ['visit', 'familiarity'].includes(r.kind)
+                    : view === 'visits'
+                      ? r.kind === 'visit'
+                      : r.kind === 'plan' || r.kind === 'visit') &&
               (!query ||
-                String(r.title ?? '')
+                String(`${r.title ?? ''} ${r.reason ?? ''}`)
                   .toLocaleLowerCase('uk')
                   .includes(query)),
           )
@@ -104,6 +119,10 @@ export async function runLeisureQuery(env, args, nowMs) {
         week: workspace.edition?.week,
         sources: workspace.edition?.sources,
         settings: workspace.settings,
+        preferenceProfile: {
+          signals: workspace.preferenceProfile.signals,
+          interests: workspace.preferenceProfile.interests,
+        },
         note: 'Збереження, плани, відвідування та оцінки — різні стани. Банківська оплата не підтверджує відвідування. Записи календаря — після погодження.',
       }),
     ),

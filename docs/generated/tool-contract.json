@@ -442,7 +442,10 @@
           "offset": { "minimum": 0, "type": "number" },
           "plan_json": { "maxLength": 20000, "type": "string" },
           "query": { "maxLength": 160, "type": "string" },
-          "view": { "enum": ["week", "saved", "plans", "visits", "places"], "type": "string" }
+          "view": {
+            "enum": ["week", "interested", "saved", "plans", "visits", "places"],
+            "type": "string"
+          }
         },
         "type": "object"
       },

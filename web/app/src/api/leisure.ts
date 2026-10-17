@@ -118,6 +118,19 @@ const familiaritySchema = z.object({
   cleared: z.boolean().default(false),
 });
 export const leisureWorkspaceSchema = z.object({
+  preferenceProfile: z
+    .object({
+      signals: z.number(),
+      interests: z.array(
+        z.object({
+          feature: z.string(),
+          label: z.string(),
+          score: z.number(),
+          samples: z.number(),
+        }),
+      ),
+    })
+    .optional(),
   version: z.literal(1),
   generatedAt: z.string(),
   settings: z.object({
@@ -275,23 +288,46 @@ export async function changeLeisure(command: LeisureCommand) {
     const { changeLeisureDemo } = await import('./leisure-demo.ts');
     return changeLeisureDemo(command);
   }
-  const response = await fetch('/api/leisure', {
-    method: 'POST',
-    headers: { ...headers(), 'content-type': 'application/json' },
-    body: JSON.stringify(command),
-  }).catch(() => {
-    throw new Error('Не отримав підтвердження. Онови дозвілля перед повтором.');
-  });
-  session(response);
-  const body = await response.json().catch(() => null);
-  if (!response.ok || !body?.ok)
-    throw new Error(typeof body?.error === 'string' ? body.error : 'Не вдалося підтвердити зміну.');
-  const receipt = receiptSchema.safeParse(body.receipt);
-  if (!receipt.success) throw new Error('Онови дозвілля, щоб перевірити результат дії.');
-  const workspace = body.workspace ? leisureWorkspaceSchema.safeParse(body.workspace) : null;
-  // A successful write with a failed follow-up read must not become a false error.
-  return { receipt: receipt.data, workspace: workspace?.success ? workspace.data : null };
+  const serialized = JSON.stringify(command);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15000);
+    try {
+      const response = await fetch('/api/leisure', {
+        method: 'POST',
+        headers: { ...headers(), 'content-type': 'application/json' },
+        body: serialized,
+        signal: controller.signal,
+      });
+      session(response);
+      if (response.status >= 500) throw new LeisureSaveUncertainError();
+      const body = await response.json().catch(() => null);
+      if (!response.ok)
+        throw new LeisureCommandRejectedError(
+          typeof body?.error === 'string' ? body.error : 'Не вдалося підтвердити зміну.',
+        );
+      const receipt = receiptSchema.safeParse(body?.receipt);
+      if (!body?.ok || !receipt.success) throw new LeisureSaveUncertainError();
+      const workspace = body.workspace ? leisureWorkspaceSchema.safeParse(body.workspace) : null;
+      return { receipt: receipt.data, workspace: workspace?.success ? workspace.data : null };
+    } catch (error) {
+      if (error instanceof SessionExpiredError || error instanceof LeisureCommandRejectedError)
+        throw error;
+    } finally {
+      clearTimeout(timeout);
+    }
+    if (attempt === 0) await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  throw new LeisureSaveUncertainError();
 }
+export class LeisureSaveUncertainError extends Error {
+  constructor() {
+    super(
+      'Не отримано підтвердження збереження. Натисни «Перевірити збереження»: повторимо ту саму дію без нового запису.',
+    );
+  }
+}
+export class LeisureCommandRejectedError extends Error {}
 export function useLeisure() {
   return useQuery({
     queryKey: LEISURE_QUERY,
@@ -307,7 +343,7 @@ export function useLeisureChange() {
     mutationFn: changeLeisure,
     onSuccess: async (result) => {
       if (result.workspace) cache.setQueryData(LEISURE_QUERY, result.workspace);
-      else await cache.invalidateQueries({ queryKey: LEISURE_QUERY });
+      else void cache.invalidateQueries({ queryKey: LEISURE_QUERY });
       void cache.invalidateQueries({ queryKey: ['saved'] });
       void cache.invalidateQueries({ queryKey: ['stats'] });
     },

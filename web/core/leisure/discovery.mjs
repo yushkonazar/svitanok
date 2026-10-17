@@ -50,13 +50,46 @@ export const FEATURE_LABELS = {
   restaurant: 'ресторан',
   bakery: 'пекарня',
   bar: 'бар',
+  marvel: 'Marvel',
+  dc: 'DC',
+  starwars: 'Зоряні війни',
+  pixar: 'Pixar',
+  cinema: 'кіно',
+  food: 'заклади',
+  exhibition: 'виставки',
+  concert: 'концерти',
+  festival: 'фестивалі',
+  show: 'шоу й театр',
+  trip: 'поїздки',
 };
+const INTERESTS = {
+  marvel: /marvel|марвел|людин[аи]-?павук|spider.?man|месник|avengers|залізн[аи]й? люд|iron man/iu,
+  dc: /(?:^|\W)dc(?:\W|$)|бетмен|batman|супермен|superman/iu,
+  starwars: /зоряні війни|star wars/iu,
+  pixar: /pixar|піксар/iu,
+};
+/** Explicit phrases in a review, never an inferred partner preference. @param {string} note */
+export function explicitLeisureInterests(note) {
+  const result = new Map();
+  for (const sentence of String(note ?? '').split(/[.!?;,\n]+|\s+(?:але|проте|однак)\s+/iu)) {
+    if (/дівчин|кохан|партнер/iu.test(sentence) && !/(?:^|\s)(?:мені|я)(?:\s|$)/iu.test(sentence))
+      continue;
+    const negative = /не\s+(?:люблю|подоба|цікав)|ненавиджу/iu.test(sentence);
+    const positive = !negative && /люблю|обожнюю|подоба[єл]|улюблен/iu.test(sentence);
+    if (!positive && !negative) continue;
+    for (const [id, expression] of Object.entries(INTERESTS))
+      if (expression.test(sentence)) result.set(`interest:${id}`, positive ? 1 : -1);
+  }
+  return [...result].map(([feature, direction]) => ({ feature, direction }));
+}
 /** Tags describe explicit source words, not a guessed personality or partner preference. @param {any} item */
 export function leisureFeatures(item) {
   const features = [`category:${item.category}`];
   for (const [key, re] of Object.entries(GENRES))
     if (re.test(item.genre ?? '')) features.push(`genre:${key}`);
   const text = `${item.title ?? ''} ${item.genre ?? ''}`;
+  for (const [id, expression] of Object.entries(INTERESTS))
+    if (expression.test(`${text} ${item.summary ?? ''}`)) features.push(`interest:${id}`);
   for (const [key, re] of Object.entries({
     standup: /стендап|stand.?up/i,
     jazz: /джаз|jazz/i,
@@ -94,6 +127,91 @@ export function leisureFeatures(item) {
     .match(/[\p{L}\p{N}]{4,}/gu) ?? [])
     if (!stop.has(word)) features.push(`topic:${word}`);
   return [...new Set(features)];
+}
+/** Small content-based profile with a neutral prior. Records remain the source
+ * of truth; archived signals contain features, not expired event descriptions.
+ * @param {any[]} items @param {any[]} records @param {number} nowMs */
+export function leisurePreferenceProfile(items, records, nowMs) {
+  const byId = new Map(items.map((i) => [i.id, i]));
+  const archived = records.find((r) => r.kind === 'profile');
+  const archivedAt = Date.parse(archived?.at ?? '');
+  const archiveDecay = Number.isFinite(archivedAt)
+    ? Math.pow(0.5, Math.max(0, nowMs - archivedAt) / (180 * 86400000))
+    : 1;
+  /** @type {Map<string,{positive:number,negative:number}>} */
+  const weights = new Map(
+    Object.entries(archived?.weights ?? {}).map(([key, value]) => [
+      key,
+      {
+        positive: Number(/** @type {any} */ (value).positive ?? 0) * archiveDecay,
+        negative: Number(/** @type {any} */ (value).negative ?? 0) * archiveDecay,
+      },
+    ]),
+  );
+  let signals = archived?.signals ?? 0;
+  const visited = new Set();
+  const add = (
+    /** @type {string} */ tag,
+    /** @type {number} */ direction,
+    /** @type {number} */ amount,
+  ) => {
+    const row = weights.get(tag) ?? { positive: 0, negative: 0 };
+    if (direction > 0) row.positive += amount;
+    else row.negative += amount;
+    weights.set(tag, row);
+  };
+  for (const record of records) {
+    const reaction =
+      record.kind === 'reaction' && ['interested', 'uninterested'].includes(record.verdict);
+    const visit = record.kind === 'visit' && ['liked', 'disliked'].includes(record.rating);
+    if (!reaction && !visit) continue;
+    if (visit) {
+      const key = `${record.itemId}|${record.visitedOn ?? 'unknown'}|${record.rating}`;
+      if (visited.has(key)) continue;
+      visited.add(key);
+    }
+    signals++;
+    const tags =
+      record.features ?? (byId.has(record.itemId) ? leisureFeatures(byId.get(record.itemId)) : []);
+    const positive = reaction ? record.verdict === 'interested' : record.rating === 'liked';
+    const reason = record.reasonCode ?? 'other';
+    const applicable = positive
+      ? tags.filter((/** @type {string} */ tag) => !tag.startsWith('topic:'))
+      : reaction && ['genre', 'format', 'topic', 'audience', 'place'].includes(reason)
+        ? tags.filter((/** @type {string} */ tag) => tag.startsWith(reason + ':'))
+        : visit
+          ? tags.filter((/** @type {string} */ tag) =>
+              tag.startsWith(record.category === 'cinema' ? 'genre:' : 'place:'),
+            )
+          : [];
+    const at = Date.parse(record.at ?? record.updatedAt ?? '');
+    const recency = Number.isFinite(at)
+      ? Math.pow(0.5, Math.max(0, nowMs - at) / (180 * 86400000))
+      : 1;
+    for (const tag of applicable)
+      add(
+        tag,
+        positive ? 1 : -1,
+        ((tag.startsWith('category:') ? 0.15 : visit ? 2 : 1) * recency) /
+          Math.max(1, applicable.length),
+      );
+    for (const interest of explicitLeisureInterests(record.reason))
+      add(interest.feature, interest.direction, 3 * recency);
+  }
+  return {
+    signals,
+    weights: Object.fromEntries(weights),
+    interests: [...weights]
+      .map(([feature, row]) => ({
+        feature,
+        label: FEATURE_LABELS[feature.split(':')[1] ?? ''] ?? feature.split(':').at(-1) ?? feature,
+        score: (8 * (row.positive - row.negative)) / (3 + row.positive + row.negative),
+        samples: row.positive + row.negative,
+      }))
+      .filter((x) => !x.feature.startsWith('topic:') && !x.feature.startsWith('place:'))
+      .sort((a, b) => Math.abs(b.score) - Math.abs(a.score))
+      .slice(0, 16),
+  };
 }
 /** @param {any[]} records */
 export function leisurePlaceIndex(records) {
@@ -146,40 +264,16 @@ export function rankLeisureItems(items, records, previousIds, settings, nowMs) {
   void settings;
   const byId = new Map(items.map((i) => [i.id, i]));
   const knownIndex = leisurePlaceIndex(records);
-  const weights = new Map();
+  const profile = leisurePreferenceProfile(items, records, nowMs);
+  const weights = new Map(
+    Object.entries(profile.weights).map(([key, row]) => [
+      key,
+      (8 * (row.positive - row.negative)) / (3 + row.positive + row.negative),
+    ]),
+  );
   const feedback = records.filter(
     (r) => r.kind === 'reaction' && ['interested', 'uninterested'].includes(r.verdict),
   );
-  for (const r of feedback) {
-    const tags = r.features ?? (byId.has(r.itemId) ? leisureFeatures(byId.get(r.itemId)) : []);
-    const direction = r.verdict === 'interested' ? 1 : -1;
-    const reason = r.reasonCode ?? 'other';
-    const applicable =
-      r.verdict === 'interested'
-        ? tags.filter((/** @type {string} */ t) => !t.startsWith('topic:'))
-        : ['genre', 'format', 'topic', 'audience', 'place'].includes(reason)
-          ? tags.filter((/** @type {string} */ t) => t.startsWith(`${reason}:`))
-          : [];
-    for (const tag of applicable)
-      weights.set(
-        tag,
-        (weights.get(tag) ?? 0) +
-          (direction * (tag.startsWith('category:') ? 0.3 : 3)) / Math.max(1, applicable.length),
-      );
-  }
-  for (const r of records.filter((r) => r.kind === 'visit' && r.rating)) {
-    if (r.category === 'cinema' && r.rating === 'liked') {
-      const tags = r.features ?? (byId.has(r.itemId) ? leisureFeatures(byId.get(r.itemId)) : []);
-      const genres = tags.filter((/** @type {string} */ tag) => tag.startsWith('genre:'));
-      for (const tag of genres)
-        weights.set(tag, (weights.get(tag) ?? 0) + 2 / Math.max(1, genres.length));
-    } else if (r.venueId && r.category !== 'cinema')
-      weights.set(
-        `place:${r.venueId}`,
-        (weights.get(`place:${r.venueId}`) ?? 0) +
-          (r.rating === 'liked' ? 3 : r.rating === 'disliked' ? -3 : 0),
-      );
-  }
   const previous = new Set(previousIds);
   const planned = new Set(
     records
@@ -187,7 +281,7 @@ export function rankLeisureItems(items, records, previousIds, settings, nowMs) {
       .flatMap((r) => r.stops?.map((/** @type {any} */ stop) => stop.itemId) ?? []),
   );
   const visited = new Set(records.filter((r) => r.kind === 'visit').map((r) => r.itemId));
-  return items
+  const ranked = items
     .map((item) => {
       const tags = leisureFeatures(item),
         reasons = [];
@@ -248,4 +342,22 @@ export function rankLeisureItems(items, records, previousIds, settings, nowMs) {
         ) ||
         a.id.localeCompare(b.id),
     );
+  // Every sixth slot can explore an underrepresented category. It remains
+  // deterministic for the current catalog and never hides the full selection.
+  for (let slot = 5; slot < ranked.length; slot += 6) {
+    const recentCategories = ranked.slice(slot - 3, slot).map((r) => byId.get(r.id)?.category);
+    const next = ranked.findIndex(
+      (r, index) =>
+        index > slot &&
+        r.score >= (ranked[slot]?.score ?? r.score) - 4 &&
+        !recentCategories.includes(byId.get(r.id)?.category),
+    );
+    if (next >= 0 && ranked[next]) {
+      const [candidate] = ranked.splice(next, 1);
+      if (!candidate) continue;
+      candidate.reasons = ['Новий напрямок для знайомства', ...candidate.reasons].slice(0, 3);
+      ranked.splice(slot, 0, candidate);
+    }
+  }
+  return ranked;
 }
