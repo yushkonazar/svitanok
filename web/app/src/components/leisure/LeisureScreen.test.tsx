@@ -4,12 +4,14 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { resetLeisureDemo } from '../../api/leisure-demo.ts';
+import * as demoApi from '../../api/leisure-demo.ts';
 import { LeisureScreen } from './LeisureScreen.tsx';
 import {
   fetchLeisure,
   fromKyivInput,
   leisureWorkspaceSchema,
   toKyivInput,
+  LeisureSaveUncertainError,
 } from '../../api/leisure.ts';
 
 vi.mock('../../telegram.ts', () => ({
@@ -19,7 +21,10 @@ vi.mock('../../telegram.ts', () => ({
   haptic: vi.fn(),
   setVerticalSwipes: vi.fn(),
 }));
-beforeEach(() => resetLeisureDemo());
+beforeEach(() => {
+  resetLeisureDemo();
+  sessionStorage.clear();
+});
 afterEach(() => vi.restoreAllMocks());
 async function setup(initialEntry = '/') {
   const cache = new QueryClient({
@@ -36,10 +41,86 @@ async function setup(initialEntry = '/') {
   );
   return { cache, data };
 }
+function openFirst() {
+  fireEvent.click(screen.getAllByRole('button', { name: /Деталі/ })[0]!);
+  fireEvent.click(screen.getByText('Мій досвід і вибір'));
+}
 describe('leisure mobile interactions', () => {
+  it('moves a right choice into Interesting and keeps it separate from bookmarks and plans', async () => {
+    const { cache, data } = await setup();
+    fireEvent.click(screen.getByRole('button', { name: 'Цікаво' }));
+    await waitFor(() =>
+      expect(screen.queryByRole('heading', { name: data.items[0]!.title })).not.toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Цікаве' }));
+    expect(screen.getByRole('heading', { name: data.items[0]!.title })).toBeInTheDocument();
+    expect((cache.getQueryData(['leisure']) as LeisureWorkspace).saved).toEqual([]);
+    fireEvent.click(screen.getByLabelText('Лише закладки'));
+    expect(screen.queryByRole('heading', { name: data.items[0]!.title })).not.toBeInTheDocument();
+  });
+  it('shows old movie impressions in searchable history and edits the saved review instead of duplicating it', async () => {
+    const seed = await fetchLeisure(),
+      movie = seed.items.find((i) => i.category === 'cinema')!;
+    const date = toKyivInput(new Date().toISOString()).slice(0, 10);
+    await demoApi.changeLeisureDemo({
+      op: 'visit',
+      id: movie.id,
+      commandId: 'existing-review',
+      payload: { visitedOn: date, rating: 'liked', reason: 'Обожнюю Marvel' },
+    });
+    const { cache } = await setup();
+    fireEvent.click(screen.getByRole('button', { name: 'Історія' }));
+    expect(screen.getByText('Обожнюю Marvel')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Пошук і фільтри' }));
+    fireEvent.change(screen.getByLabelText('Пошук'), { target: { value: 'Marvel' } });
+    expect(screen.getByRole('heading', { name: movie.title })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Відкрити місце' }));
+    fireEvent.click(screen.getByText('Мій досвід і вибір'));
+    fireEvent.click(screen.getByRole('button', { name: 'Записати перегляд' }));
+    expect(screen.getByRole('button', { name: 'Зберегти відвідування' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Доповнити збережений відгук' }));
+    expect(screen.getByLabelText('Що варто врахувати наступного разу? Необов’язково')).toHaveValue(
+      'Обожнюю Marvel',
+    );
+    fireEvent.change(screen.getByLabelText('Що варто врахувати наступного разу? Необов’язково'), {
+      target: { value: 'Обожнюю Marvel. Чудова історія.' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Оновити враження' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    const records = (cache.getQueryData(['leisure']) as LeisureWorkspace).records.filter(
+      (r) => r.kind === 'visit',
+    );
+    expect(records).toHaveLength(1);
+    expect(records[0]?.reason).toBe('Обожнюю Marvel. Чудова історія.');
+  });
+  it('recovers the same uncertain command after a reload before allowing another choice', async () => {
+    const original = demoApi.changeLeisureDemo;
+    const spy = vi
+      .spyOn(demoApi, 'changeLeisureDemo')
+      .mockRejectedValueOnce(new LeisureSaveUncertainError())
+      .mockImplementation(original);
+    const first = await setup();
+    fireEvent.click(screen.getByRole('button', { name: 'Цікаво' }));
+    await screen.findByRole('button', { name: 'Перевірити збереження' });
+    expect(screen.getByRole('button', { name: 'Цікаво' })).toBeDisabled();
+    const command = spy.mock.calls[0]![0];
+    first.cache.clear();
+    // Simulate reopening the screen while session storage retains the pending action.
+    const { cleanup } = await import('@testing-library/react');
+    cleanup();
+    await setup();
+    fireEvent.click(screen.getByRole('button', { name: 'Перевірити збереження' }));
+    await waitFor(() =>
+      expect(
+        screen.queryByRole('button', { name: 'Перевірити збереження' }),
+      ).not.toBeInTheDocument(),
+    );
+    expect(spy.mock.calls[1]![0]).toEqual(command);
+    expect(sessionStorage.getItem('svitanok-leisure-pending-v1')).toBeNull();
+  });
   it('asks why first, hides only after confirmation and closes the detail sheet', async () => {
     const { cache } = await setup();
-    fireEvent.click(screen.getAllByRole('button', { name: /Деталі/ })[0]!);
+    openFirst();
     fireEvent.click(screen.getByRole('button', { name: 'Нецікаво' }));
     expect(screen.getByRole('heading', { name: 'Чому нецікаво?' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Приховати варіант' })).toBeDisabled();
@@ -51,7 +132,7 @@ describe('leisure mobile interactions', () => {
       verdict: 'uninterested',
       reasonCode: 'genre',
     });
-    fireEvent.click(screen.getByRole('button', { name: 'Повернути прихований варіант' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Скасувати вибір' }));
     await waitFor(() =>
       expect(
         (cache.getQueryData(['leisure']) as LeisureWorkspace).records.find(
@@ -62,7 +143,7 @@ describe('leisure mobile interactions', () => {
   });
   it('closes and hides a not-this-week choice without recording a dislike', async () => {
     const { cache } = await setup();
-    fireEvent.click(screen.getAllByRole('button', { name: /Деталі/ })[0]!);
+    openFirst();
     const title = screen.getByRole('dialog').querySelector('h2')?.textContent;
     fireEvent.click(screen.getByRole('button', { name: 'Нецікаво' }));
     fireEvent.click(screen.getByRole('button', { name: 'Не на цей тиждень' }));
@@ -75,7 +156,7 @@ describe('leisure mobile interactions', () => {
   });
   it('uses Interesting as its own learning signal without implicitly saving or planning', async () => {
     const { cache } = await setup();
-    fireEvent.click(screen.getAllByRole('button', { name: /Деталі/ })[0]!);
+    openFirst();
     fireEvent.click(screen.getByRole('button', { name: 'Цікаво' }));
     await screen.findByRole('button', { name: 'Цікаво ✓' });
     const data = cache.getQueryData(['leisure']) as LeisureWorkspace;
@@ -88,7 +169,7 @@ describe('leisure mobile interactions', () => {
   it('records a frequent earlier-place baseline without inventing individual visits', async () => {
     const { cache } = await setup();
     fireEvent.click(screen.getByRole('button', { name: 'Заклади' }));
-    fireEvent.click(screen.getAllByRole('button', { name: /Деталі/ })[0]!);
+    openFirst();
     fireEvent.click(screen.getByRole('button', { name: 'Були тут раніше' }));
     fireEvent.click(screen.getByRole('button', { name: 'Були багато разів' }));
     fireEvent.click(screen.getByRole('button', { name: 'Зберегти попередній досвід' }));
@@ -100,13 +181,13 @@ describe('leisure mobile interactions', () => {
       mode: 'many',
       previousCount: null,
     });
-    fireEvent.click(screen.getByRole('button', { name: 'Ваші місця' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Історія' }));
     expect(screen.getByText(/Бували багато разів/)).toBeInTheDocument();
   });
   it('uses reservation confirmation for a restaurant without asking about tickets', async () => {
     await setup();
     fireEvent.click(screen.getByRole('button', { name: 'Заклади' }));
-    fireEvent.click(screen.getAllByRole('button', { name: /Деталі/ })[0]!);
+    openFirst();
     fireEvent.click(screen.getByRole('button', { name: 'Додати до плану вечора' }));
     fireEvent.click(screen.getByRole('button', { name: 'Далі: час і бронювання' }));
     expect(screen.getByLabelText('Бронювання підтверджено')).toBeInTheDocument();
@@ -116,7 +197,7 @@ describe('leisure mobile interactions', () => {
   });
   it('requires fresh calendar approval after changing the composition of a plan', async () => {
     const { data } = await setup();
-    fireEvent.click(screen.getAllByRole('button', { name: /Деталі/ })[0]!);
+    openFirst();
     fireEvent.click(screen.getByRole('button', { name: 'Додати до плану вечора' }));
     if (screen.queryByRole('button', { name: 'Далі: час і бронювання' }))
       fireEvent.click(screen.getByRole('button', { name: 'Далі: час і бронювання' }));
@@ -142,7 +223,7 @@ describe('leisure mobile interactions', () => {
   });
   it('discards a calendar response for an older time when inputs change during the request', async () => {
     await setup();
-    fireEvent.click(screen.getAllByRole('button', { name: /Деталі/ })[0]!);
+    openFirst();
     fireEvent.click(screen.getByRole('button', { name: 'Додати до плану вечора' }));
     if (screen.queryByRole('button', { name: 'Далі: час і бронювання' }))
       fireEvent.click(screen.getByRole('button', { name: 'Далі: час і бронювання' }));
@@ -159,7 +240,7 @@ describe('leisure mobile interactions', () => {
   });
   it('keeps unsaved form edits when the shared workspace refetches', async () => {
     const { cache, data } = await setup();
-    fireEvent.click(screen.getAllByRole('button', { name: /Деталі/ })[0]!);
+    openFirst();
     fireEvent.click(screen.getByRole('button', { name: 'Додати до плану вечора' }));
     const input = screen.getByLabelText('Назва');
     fireEvent.change(input, { target: { value: 'Наше побачення' } });
@@ -172,7 +253,7 @@ describe('leisure mobile interactions', () => {
   it('does not publish an invented cinema session in demo mode', async () => {
     await setup();
     fireEvent.click(screen.getByRole('button', { name: 'Кіно' }));
-    fireEvent.click(screen.getAllByRole('button', { name: /Деталі/ })[0]!);
+    openFirst();
     expect(
       within(screen.getByRole('dialog')).queryByRole('button', { name: 'Запланувати' }),
     ).not.toBeInTheDocument();
@@ -181,13 +262,13 @@ describe('leisure mobile interactions', () => {
   it('records an unknown-date visit and permits another visit to the same venue', async () => {
     await setup();
     fireEvent.click(screen.getByRole('button', { name: 'Заклади' }));
-    fireEvent.click(screen.getAllByRole('button', { name: /Деталі/ })[0]!);
+    openFirst();
     fireEvent.click(screen.getByRole('button', { name: 'Записати відвідування' }));
     fireEvent.change(screen.getByLabelText('Коли були? Необов’язково'), { target: { value: '' } });
     fireEvent.click(screen.getByRole('button', { name: 'Зберегти відвідування' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
-    fireEvent.click(screen.getByRole('button', { name: 'Ваші місця' }));
-    expect(screen.getByText('Минула дата невідома · Без оцінки')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Історія' }));
+    expect(screen.getByText('Дата невідома · Без оцінки')).toBeInTheDocument();
   });
   it('handles dates in Kyiv and rejects nonexistent daylight-saving times', () => {
     expect(fromKyivInput('2026-10-12T18:00')).toBe('2026-10-12T15:00:00.000Z');

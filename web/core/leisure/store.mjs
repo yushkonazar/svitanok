@@ -4,6 +4,7 @@ import {
   leisureFeatures,
   knownLeisurePlace,
   leisurePlaceIndex,
+  leisurePreferenceProfile,
 } from './discovery.mjs';
 import { placeDetails, routesEta } from '../adapters/maps.mjs';
 import { readCalendarRange } from '../../google.mjs';
@@ -28,7 +29,13 @@ export function leisureDb(env) {
 }
 /** @param {any} row */
 export function recordOf(row) {
-  return { ...JSON.parse(row.data_json), id: row.id, kind: row.kind, revision: row.revision };
+  return {
+    ...JSON.parse(row.data_json),
+    id: row.id,
+    kind: row.kind,
+    revision: row.revision,
+    updatedAt: row.updated_at,
+  };
 }
 /** @param {Env} env @param {string} id */
 export async function leisureRecord(env, id) {
@@ -106,13 +113,14 @@ export async function readLeisureWorkspace(env, nowMs = Date.now(), allHistory =
     leisureSettings(env),
     db
       .prepare(
-        `SELECT * FROM leisure_records WHERE kind IN ('plan','visit','reaction','familiarity') ORDER BY updated_at DESC`,
+        `SELECT * FROM leisure_records WHERE kind IN ('plan','visit','reaction','familiarity','profile') ORDER BY updated_at DESC`,
       )
       .all(),
     db.prepare('SELECT * FROM leisure_editions ORDER BY week DESC LIMIT 1').first(),
     loadStats(env),
   ]);
-  const allRecords = rows.results.map(recordOf);
+  const learningRecords = rows.results.map(recordOf);
+  const allRecords = learningRecords.filter((r) => r.kind !== 'profile');
   const recent = allRecords.slice(0, 250),
     recentIds = new Set(recent.map((r) => r.id));
   const records = allHistory
@@ -137,7 +145,7 @@ export async function readLeisureWorkspace(env, nowMs = Date.now(), allHistory =
   });
   const selected = selectLeisureEdition(
     items.filter((i) => nowMs - Date.parse(i.checkedAt) <= 8 * 86400000),
-    allRecords,
+    learningRecords,
     previousIds,
     settings,
     nowMs,
@@ -157,6 +165,7 @@ export async function readLeisureWorkspace(env, nowMs = Date.now(), allHistory =
     .first();
   const knownIndex = leisurePlaceIndex(allRecords);
   return {
+    preferenceProfile: leisurePreferenceProfile(items, learningRecords, nowMs),
     knownPlaces: Object.fromEntries(
       items.map((i) => [i.id, knownLeisurePlace(i, allRecords, knownIndex)]),
     ),
@@ -195,7 +204,7 @@ export async function publishLeisureEdition(env, items, sources, nowMs, cinemaOn
     leisureSettings(env),
     db
       .prepare(
-        "SELECT * FROM leisure_records WHERE kind IN ('visit','reaction','plan','familiarity')",
+        "SELECT * FROM leisure_records WHERE kind IN ('visit','reaction','plan','familiarity','profile')",
       )
       .all(),
     db.prepare('SELECT data_json FROM leisure_editions WHERE week < ?').bind(week).all(),
@@ -260,7 +269,84 @@ export async function publishLeisureEdition(env, items, sources, nowMs, cinemaOn
     )
     .bind(week, JSON.stringify(edition), edition.createdAt)
     .run();
+  await compactLeisureCatalog(env, nowMs);
   return edition;
+}
+/** Retire unprotected ended cards during batch catalog updates, not on opens.
+ * Personal visits/plans and their notes remain independently addressable.
+ * @param {Env} env @param {number} nowMs */
+export async function compactLeisureCatalog(env, nowMs) {
+  const db = leisureDb(env);
+  const [items, rows, stats] = await Promise.all([
+    leisureItems(env),
+    db.prepare('SELECT * FROM leisure_records').all(),
+    loadStats(env),
+  ]);
+  const records = rows.results.map(recordOf);
+  const protectedIds = new Set([
+    ...(stats.saved ?? [])
+      .filter((/** @type {any} */ s) => s.kind === 'leisure')
+      .map((/** @type {any} */ s) => s.id),
+    ...records
+      .filter((r) => ['visit', 'plan', 'familiarity'].includes(r.kind))
+      .flatMap((r) =>
+        r.itemId ? [r.itemId] : (r.stops ?? []).map((/** @type {any} */ s) => s.itemId),
+      ),
+    ...records
+      .filter((r) => r.kind === 'reaction' && r.verdict === 'interested')
+      .map((r) => r.itemId),
+  ]);
+  const expired = items
+    .filter((i) => i.endDate && i.endDate < kyivDateKey(new Date(nowMs)) && !protectedIds.has(i.id))
+    .slice(0, 80);
+  if (!expired.length) return { removed: 0 };
+  const ids = expired.map((i) => i.id),
+    old = records.find((r) => r.kind === 'profile');
+  const profile = leisurePreferenceProfile(
+    items,
+    records.filter(
+      (r) => r.kind === 'profile' || (r.kind === 'reaction' && ids.includes(r.itemId)),
+    ),
+    nowMs,
+  );
+  const token = crypto.randomUUID();
+  const snapshot = records
+    .filter((r) => r.kind !== 'profile')
+    .map((r) => `${r.id}:${r.revision}`)
+    .sort()
+    .join('|');
+  const durableWeights = Object.fromEntries(
+    Object.entries(profile.weights).filter(
+      ([tag]) => !tag.startsWith('topic:') && !tag.startsWith('place:'),
+    ),
+  );
+  const value = {
+    id: 'preference-profile',
+    kind: 'profile',
+    weights: durableWeights,
+    signals: profile.signals,
+    at: new Date(nowMs).toISOString(),
+    compactionId: token,
+  };
+  const placeholders = ids.map(() => '?').join(',');
+  const guard =
+    "EXISTS (SELECT 1 FROM leisure_records WHERE id='preference-profile' AND json_extract(data_json,'$.compactionId')=?)";
+  const results = await db.batch([
+    db
+      .prepare(
+        "INSERT INTO leisure_records(id,kind,data_json,revision,updated_at) SELECT 'preference-profile','profile',?,1,? WHERE COALESCE((SELECT group_concat(entry,'|') FROM (SELECT id || ':' || revision AS entry FROM leisure_records WHERE kind!='profile' ORDER BY id)), '')=? ON CONFLICT(id) DO UPDATE SET data_json=excluded.data_json,revision=revision+1,updated_at=excluded.updated_at WHERE leisure_records.revision=?",
+      )
+      .bind(JSON.stringify(value), value.at, snapshot, old?.revision ?? 0),
+    db
+      .prepare(
+        `DELETE FROM leisure_records WHERE kind='reaction' AND item_id IN (${placeholders}) AND ${guard}`,
+      )
+      .bind(...ids, token),
+    db
+      .prepare(`DELETE FROM leisure_items WHERE id IN (${placeholders}) AND ${guard}`)
+      .bind(...ids, token),
+  ]);
+  return { removed: Number(results[2]?.meta?.changes ?? 0) };
 }
 /** @param {any} input */
 export function validateLeisureCommand(input) {
@@ -313,14 +399,16 @@ export async function checkLeisureCalendar(env, plan) {
             })),
   };
 }
-/** @param {Env} env @param {any} record @param {number} nowMs @param {number | null} [expected] */
-async function writeRecord(env, record, nowMs, expected = null) {
+/** @param {Env} env @param {any} record @param {number} nowMs @param {number | null} [expected] @param {boolean} [uniqueFilmDay] */
+async function writeRecord(env, record, nowMs, expected = null, uniqueFilmDay = false) {
   const db = leisureDb(env),
     at = record.startAt ?? record.visitedOn ?? null;
   if (expected == null) {
-    await db
+    const inserted = await db
       .prepare(
-        'INSERT INTO leisure_records (id,kind,item_id,venue_id,at,data_json,revision,updated_at) VALUES (?,?,?,?,?,?,1,?) ON CONFLICT(id) DO NOTHING',
+        uniqueFilmDay
+          ? "INSERT INTO leisure_records (id,kind,item_id,venue_id,at,data_json,revision,updated_at) SELECT ?,?,?,?,?,?,1,? WHERE NOT EXISTS (SELECT 1 FROM leisure_records WHERE kind='visit' AND item_id=? AND json_extract(data_json,'$.visitedOn')=?) ON CONFLICT(id) DO NOTHING"
+          : 'INSERT INTO leisure_records (id,kind,item_id,venue_id,at,data_json,revision,updated_at) VALUES (?,?,?,?,?,?,1,?) ON CONFLICT(id) DO NOTHING',
       )
       .bind(
         record.id,
@@ -330,8 +418,19 @@ async function writeRecord(env, record, nowMs, expected = null) {
         at,
         JSON.stringify(record),
         new Date(nowMs).toISOString(),
+        ...(uniqueFilmDay ? [record.itemId, record.visitedOn] : []),
       )
       .run();
+    if (!inserted.meta.changes) {
+      const duplicate = await leisureRecord(env, record.id);
+      if (
+        record.lastCommandId &&
+        duplicate?.lastCommandId === record.lastCommandId &&
+        duplicate?.lastCommandFingerprint === record.lastCommandFingerprint
+      )
+        return;
+      throw new LeisureError('Запис уже збережено або змінено. Онови дані перед повтором.', 409);
+    }
   } else {
     const result = await db
       .prepare(
@@ -384,13 +483,14 @@ export async function executeLeisureCommand(env, raw, nowMs = Date.now()) {
       .run();
     return receipt;
   }
-  /** @param {Env} targetEnv @param {any} record @param {number} atMs @param {number|null} [expected] */
-  const writeCommandRecord = (targetEnv, record, atMs, expected = null) =>
+  /** @param {Env} targetEnv @param {any} record @param {number} atMs @param {number|null} [expected] @param {boolean} [uniqueFilmDay] */
+  const writeCommandRecord = (targetEnv, record, atMs, expected = null, uniqueFilmDay = false) =>
     writeRecord(
       targetEnv,
       { ...record, lastCommandId: commandId, lastCommandFingerprint: fingerprint },
       atMs,
       expected,
+      uniqueFilmDay,
     );
   /** @type {any} */ let receipt = { message: 'Збережено.' };
   const item = id
@@ -603,6 +703,24 @@ export async function executeLeisureCommand(env, raw, nowMs = Date.now()) {
       throw new LeisureError('Відвідування не знайдено.', 404);
     if (existingVisit && Number(payload.revision) !== existingVisit.revision)
       throw new LeisureError('Відгук уже змінився. Онови історію.', 409);
+    if (
+      !existingVisit &&
+      visitedOn &&
+      selectedItem.category === 'cinema' &&
+      payload.allowRepeat !== true
+    ) {
+      const duplicate = await db
+        .prepare(
+          "SELECT id FROM leisure_records WHERE kind='visit' AND item_id=? AND json_extract(data_json,'$.visitedOn')=? LIMIT 1",
+        )
+        .bind(id, visitedOn)
+        .first();
+      if (duplicate)
+        throw new LeisureError(
+          'Цей перегляд за цю дату вже записано. Відкрий історію й доповни враження або підтвердь, що це окремий повторний перегляд.',
+          409,
+        );
+    }
     const visitId = existingVisit?.id ?? (plan ? `visit-${plan.id}-${id}` : `visit-${commandId}`);
     await writeCommandRecord(
       env,
@@ -618,10 +736,12 @@ export async function executeLeisureCommand(env, raw, nowMs = Date.now()) {
         legacy: payload.legacy === true || existingVisit?.legacy === true,
         rating: payload.rating ?? null,
         reason: cleanText(payload.reason, 500),
+        at: new Date(nowMs).toISOString(),
         planId: plan?.id ?? existingVisit?.planId ?? null,
       },
       nowMs,
       existingVisit?.revision ?? null,
+      selectedItem.category === 'cinema' && !!visitedOn && payload.allowRepeat !== true,
     );
     receipt = { message: 'Відвідування збережено.', id: visitId };
   } else if (op === 'plan' || op === 'calendar-check') {

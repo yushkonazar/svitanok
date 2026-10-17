@@ -1,4 +1,5 @@
 import { leisureWorkspaceSchema, type LeisureWorkspace, type LeisureCommand } from './leisure.ts';
+import { leisurePreferenceProfile, rankLeisureItems } from '../../../core/leisure/discovery.mjs';
 
 let demo: LeisureWorkspace | null = null;
 export function resetLeisureDemo() {
@@ -184,6 +185,16 @@ export async function changeLeisureDemo(command: LeisureCommand) {
     return { receipt: { message: 'Демо: дорога не перевіряється.', legs: [] }, workspace: data };
   if (command.op === 'visit' && item) {
     const old = data.records.find((r) => r.id === payload.visitId && r.kind === 'visit');
+    if (
+      !old &&
+      item.category === 'cinema' &&
+      payload.visitedOn &&
+      !payload.allowRepeat &&
+      data.records.some(
+        (r) => r.kind === 'visit' && r.itemId === item.id && r.visitedOn === payload.visitedOn,
+      )
+    )
+      throw new Error('За цю дату вже є перегляд. Доповни збережений відгук.');
     id = old?.id ?? `visit-${command.commandId}`;
     data.records = data.records.filter((r) => r.id !== id);
     data.records.push({
@@ -262,43 +273,15 @@ export async function changeLeisureDemo(command: LeisureCommand) {
     data.saved = [];
   }
   if (data.edition) {
-    data.edition.profileSignals = data.records.filter(
-      (r) => r.kind === 'reaction' && ['interested', 'uninterested'].includes(r.verdict),
-    ).length;
-    data.edition.rankings = data.items
-      .map((i) => {
-        const positive = data.records.find(
-          (r) => r.kind === 'reaction' && r.itemId === i.id && r.verdict === 'interested',
-        );
-        const previous = data.records.find(
-          (r) =>
-            r.kind === 'familiarity' &&
-            (i.venueId ? r.venueId === i.venueId : r.itemId === i.id) &&
-            !r.cleared,
-        );
-        const fam = previous?.kind === 'familiarity' ? previous : null;
-        const visits = data.records.filter(
-          (r) => r.kind === 'visit' && (i.venueId ? r.venueId === i.venueId : r.itemId === i.id),
-        );
-        return {
-          id: i.id,
-          score: positive ? 30 : 10,
-          reasons: positive
-            ? ['Ти позначив цей варіант як цікавий']
-            : ['Демо: рейтинг навчається на оцінках'],
-          known: {
-            familiar: !!fam || !!visits.length,
-            frequent: fam?.mode === 'many',
-            previousCount: fam?.previousCount ?? null,
-            trackedCount: visits.filter((r) => r.kind === 'visit' && !r.legacy && r.visitedOn)
-              .length,
-            legacyCount: visits.filter((r) => r.kind === 'visit' && (r.legacy || !r.visitedOn))
-              .length,
-            since: fam?.trackingSince ?? null,
-          },
-        };
-      })
-      .sort((a, b) => b.score - a.score);
+    data.preferenceProfile = leisurePreferenceProfile(data.items, data.records, Date.now());
+    data.edition.profileSignals = data.preferenceProfile.signals;
+    data.edition.rankings = rankLeisureItems(
+      data.items,
+      data.records,
+      [],
+      data.settings,
+      Date.now(),
+    );
     data.edition.ids = data.edition.rankings.map((r) => r.id);
     data.knownPlaces = Object.fromEntries(data.edition.rankings.map((r) => [r.id, r.known]));
   }

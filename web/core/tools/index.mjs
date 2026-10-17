@@ -100,7 +100,10 @@ export const TOOLS = {
       properties: {
         plan_json: { type: 'string', maxLength: 20000 },
         id: { type: 'string', maxLength: 320 },
-        view: { type: 'string', enum: ['week', 'saved', 'plans', 'visits', 'places'] },
+        view: {
+          type: 'string',
+          enum: ['week', 'interested', 'saved', 'plans', 'visits', 'places'],
+        },
         query: { type: 'string', maxLength: 160 },
         category: {
           type: 'string',

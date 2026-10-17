@@ -1,4 +1,4 @@
-import { rankLeisureItems } from './discovery.mjs';
+import { rankLeisureItems, leisurePreferenceProfile } from './discovery.mjs';
 import { kyivDateKey } from '../../kyiv-time.mjs';
 import { addDaysToDateKey } from '../../reminders-core.mjs';
 
@@ -260,11 +260,7 @@ export function selectLeisureEdition(items, records, previousIds, settings, nowM
       .map((r) => r.id),
     futureIds: ranking.filter((r) => lookup.get(r.id).startDate > end).map((r) => r.id),
     rankings: ranking,
-    profileSignals: records.filter(
-      (r) =>
-        (r.kind === 'reaction' && ['interested', 'uninterested'].includes(r.verdict)) ||
-        (r.kind === 'visit' && ['liked', 'disliked'].includes(r.rating)),
-    ).length,
+    profileSignals: leisurePreferenceProfile(items, records, nowMs).signals,
     createdAt: new Date(nowMs).toISOString(),
     reason: 'Повний перевірений каталог, впорядкований за твоїми явними оцінками й актуальністю.',
   };

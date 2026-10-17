@@ -4,14 +4,22 @@ import {
   selectLeisureEdition,
   DEFAULT_LEISURE_SETTINGS,
 } from '../web/core/leisure/model.mjs';
-import { leisureFeatures, knownLeisurePlace } from '../web/core/leisure/discovery.mjs';
+import {
+  leisureFeatures,
+  knownLeisurePlace,
+  explicitLeisureInterests,
+  leisurePreferenceProfile,
+  rankLeisureItems,
+} from '../web/core/leisure/discovery.mjs';
 import {
   executeLeisureCommand,
   upsertLeisureItems,
   readLeisureWorkspace,
   publishLeisureEdition,
+  compactLeisureCatalog,
 } from '../web/core/leisure/store.mjs';
 import { handleLeisure } from '../web/api-leisure.mjs';
+import { runLeisureQuery } from '../web/core/tools/leisure.mjs';
 import { d1FromSqlite } from './helpers/d1.js';
 import { workerEnv } from './helpers/env.js';
 import { buildInitData } from './helpers/init-data.js';
@@ -48,6 +56,264 @@ const cmd = (
   payload: Record<string, unknown>,
   commandId = crypto.randomUUID(),
 ) => ({ op, id, payload, commandId });
+describe('swipe feedback, durable preferences and review safety', () => {
+  it('extracts explicit positive and negative interests without inventing partner preferences', () => {
+    expect(explicitLeisureInterests('Обожнюю Марвел! Не люблю DC. Pixar — подобається.')).toEqual([
+      { feature: 'interest:marvel', direction: 1 },
+      { feature: 'interest:dc', direction: -1 },
+      { feature: 'interest:pixar', direction: 1 },
+    ]);
+    expect(explicitLeisureInterests('Marvel. Не зараз, зайнятий.')).toEqual([]);
+    expect(
+      explicitLeisureInterests('Обожнюю Marvel, але не люблю DC. Дівчині подобається Pixar.'),
+    ).toEqual([
+      { feature: 'interest:marvel', direction: 1 },
+      { feature: 'interest:dc', direction: -1 },
+    ]);
+    expect(
+      leisureFeatures({ category: 'cinema', title: 'Людина-павук', genre: 'Бойовик, пригоди' }),
+    ).toEqual(expect.arrayContaining(['interest:marvel', 'genre:action', 'genre:adventure']));
+  });
+  it('learns from an old review and deduplicates same-day film evidence', async () => {
+    const a = await item(1, { title: 'Людина-павук', genre: 'Бойовик' });
+    const visit = {
+      kind: 'visit',
+      itemId: a.id,
+      category: 'cinema',
+      rating: 'liked',
+      visitedOn: '2026-08-06',
+      reason: 'Обожнюю Marvel',
+      at: new Date(now).toISOString(),
+    };
+    const once = leisurePreferenceProfile([a], [visit], now),
+      twice = leisurePreferenceProfile([a], [visit, { ...visit, reason: 'Обожнюю Марвел' }], now);
+    expect(twice).toEqual(once);
+    expect(once.signals).toBe(1);
+    expect(once.interests[0]).toMatchObject({ feature: 'interest:marvel', label: 'Marvel' });
+    const next = await item(2, { title: 'Месники', genre: 'Бойовик' }),
+      other = await item(3);
+    expect(rankLeisureItems([other, next], [visit], [], {}, now)[0]?.id).toBe(next.id);
+  });
+  it('uses a neutral prior, does not generalize time/price dislikes, and decays old signals', async () => {
+    const a = await item(1);
+    const feedback = {
+      kind: 'reaction',
+      itemId: a.id,
+      verdict: 'uninterested',
+      features: leisureFeatures(a),
+      reasonCode: 'price',
+    };
+    expect(leisurePreferenceProfile([a], [feedback], now).weights).toEqual({});
+    expect(
+      leisurePreferenceProfile([a], [{ ...feedback, verdict: 'later', reasonCode: 'time' }], now)
+        .signals,
+    ).toBe(0);
+    const positive = { ...feedback, verdict: 'interested', at: new Date(now).toISOString() };
+    const fresh = leisurePreferenceProfile([a], [positive], now),
+      aged = leisurePreferenceProfile([a], [positive], now + 180 * 86400000);
+    expect(fresh.interests.every((r) => r.score > 0 && r.score < 8)).toBe(true);
+    expect(aged.weights['genre:drama']!.positive).toBeCloseTo(
+      fresh.weights['genre:drama']!.positive / 2,
+    );
+    const archived = leisurePreferenceProfile(
+      [],
+      [{ kind: 'profile', weights: fresh.weights, signals: 1, at: new Date(now).toISOString() }],
+      now + 180 * 86400000,
+    );
+    expect(archived.weights).toEqual(aged.weights);
+  });
+  it('explores another category only when it remains close in relevance', async () => {
+    const films = await Promise.all(Array.from({ length: 12 }, (_, n) => item(n))),
+      cafe = await item(20, { category: 'food', placeType: 'restaurant' });
+    const mixed = rankLeisureItems([...films, cafe], [], [], {}, now);
+    expect(mixed[5]?.id).toBe(cafe.id);
+    expect(mixed[5]?.reasons[0]).toBe('Новий напрямок для знайомства');
+    const records = Array.from({ length: 20 }, (_, n) => ({
+      kind: 'reaction',
+      itemId: String(n),
+      verdict: 'uninterested',
+      reasonCode: 'format',
+      features: ['format:restaurant'],
+    }));
+    expect(
+      rankLeisureItems([...films, cafe], records, [], {}, now)
+        .slice(0, 6)
+        .every((r) => r.id !== cafe.id),
+    ).toBe(true);
+  });
+  it('retires expired unchosen cards while retaining personal selections, plans and reviews', async () => {
+    const { env, db } = setup();
+    const [expired, visited, saved, liked, familiar] = await Promise.all(
+      [1, 2, 3, 4, 5].map((n) => item(n, { endDate: '2026-10-11', genre: 'Комедія' })),
+    );
+    await upsertLeisureItems(env, [expired!, visited!, saved!, liked!, familiar!]);
+    await executeLeisureCommand(
+      env,
+      cmd('reaction', expired!.id, { verdict: 'uninterested', reasonCode: 'genre' }),
+      now,
+    );
+    await executeLeisureCommand(
+      env,
+      cmd('visit', visited!.id, {
+        visitedOn: '2026-10-10',
+        rating: 'liked',
+        reason: 'Обожнюю Marvel',
+      }),
+      now,
+    );
+    await executeLeisureCommand(env, cmd('save', saved!.id, { saved: true }), now);
+    await executeLeisureCommand(env, cmd('reaction', liked!.id, { verdict: 'interested' }), now);
+    await executeLeisureCommand(env, cmd('familiarity', familiar!.id, { mode: 'many' }), now);
+    expect(await compactLeisureCatalog(env, now)).toEqual({ removed: 1 });
+    const data = await readLeisureWorkspace(env, now, true);
+    expect(data.items.map((i) => i.id)).not.toContain(expired!.id);
+    expect(data.records.some((r) => r.itemId === expired!.id)).toBe(false);
+    expect(data.records.find((r) => r.kind === 'visit')?.reason).toBe('Обожнюю Marvel');
+    expect(data.items.map((i) => i.id)).toEqual(
+      expect.arrayContaining([visited!.id, saved!.id, liked!.id, familiar!.id]),
+    );
+    expect(data.preferenceProfile.weights['genre:comedy']?.negative).toBeGreaterThan(0);
+    const stored = db
+      .prepare("SELECT data_json FROM leisure_records WHERE kind='profile'")
+      .get() as { data_json: string };
+    expect(stored.data_json).not.toContain('Фільм');
+    expect(stored.data_json).not.toContain('topic:');
+    expect(await compactLeisureCatalog(env, now)).toEqual({ removed: 0 });
+    expect((await readLeisureWorkspace(env, now)).preferenceProfile).toEqual(
+      data.preferenceProfile,
+    );
+    db.close();
+  });
+  it('aborts compaction when feedback changes after the read, instead of folding stale evidence', async () => {
+    const { env, db } = setup(),
+      a = await item(1, { endDate: '2026-10-11' });
+    await upsertLeisureItems(env, [a]);
+    await executeLeisureCommand(
+      env,
+      cmd('reaction', a.id, { verdict: 'uninterested', reasonCode: 'genre' }),
+      now,
+    );
+    const batch = env.DB!.batch.bind(env.DB);
+    env.DB!.batch = async (statements) => {
+      db.prepare(
+        "UPDATE leisure_records SET revision=revision+1,data_json=json_set(data_json,'$.verdict','interested') WHERE kind='reaction'",
+      ).run();
+      return batch(statements);
+    };
+    expect(await compactLeisureCatalog(env, now)).toEqual({ removed: 0 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM leisure_items').get()).toMatchObject({ n: 1 });
+    expect(
+      db.prepare("SELECT COUNT(*) AS n FROM leisure_records WHERE kind='profile'").get(),
+    ).toMatchObject({ n: 0 });
+    db.close();
+  });
+  it('prevents accidental duplicate film reviews, permits explicit repeat viewing and retains edits', async () => {
+    const { env, db } = setup(),
+      a = await item(1);
+    await upsertLeisureItems(env, [a]);
+    const command = cmd('visit', a.id, {
+      visitedOn: '2026-10-11',
+      rating: 'liked',
+      reason: 'Обожнюю Marvel',
+    });
+    const first = await executeLeisureCommand(env, command, now);
+    expect(await executeLeisureCommand(env, command, now)).toEqual(first);
+    await expect(
+      executeLeisureCommand(env, cmd('visit', a.id, command.payload), now),
+    ).rejects.toThrow('вже записано');
+    await executeLeisureCommand(
+      env,
+      cmd('visit', a.id, {
+        ...command.payload,
+        visitId: first.id,
+        revision: 1,
+        reason: 'Доповнив враження',
+      }),
+      now,
+    );
+    await executeLeisureCommand(
+      env,
+      cmd('visit', a.id, { ...command.payload, allowRepeat: true }),
+      now,
+    );
+    const records = (await readLeisureWorkspace(env, now)).records.filter(
+      (r) => r.kind === 'visit',
+    );
+    expect(records).toHaveLength(2);
+    expect(records.find((r) => r.id === first.id)).toMatchObject({
+      revision: 2,
+      reason: 'Доповнив враження',
+    });
+    db.close();
+  });
+  it('does not acknowledge a competing insert as a successful new visit', async () => {
+    const { env, db } = setup(),
+      a = await item(1);
+    await upsertLeisureItems(env, [a]);
+    const outcomes = await Promise.allSettled(
+      [1, 2].map(() =>
+        executeLeisureCommand(env, cmd('visit', a.id, { visitedOn: '2026-10-11' }), now),
+      ),
+    );
+    expect(outcomes.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    expect(
+      (await readLeisureWorkspace(env, now)).records.filter((r) => r.kind === 'visit'),
+    ).toHaveLength(1);
+    db.close();
+  });
+  it('accepts concurrent delivery of the same original command only once', async () => {
+    const { env, db } = setup(),
+      a = await item(1);
+    await upsertLeisureItems(env, [a]);
+    const command = cmd('visit', a.id, { visitedOn: '2026-10-11', reason: 'Обожнюю Marvel' });
+    const [first, second] = await Promise.all([
+      executeLeisureCommand(env, command, now),
+      executeLeisureCommand(env, command, now),
+    ]);
+    expect(first.id).toBe(second.id);
+    const data = await readLeisureWorkspace(env, now);
+    expect(data.records.filter((r) => r.kind === 'visit')).toHaveLength(1);
+    await executeLeisureCommand(
+      env,
+      cmd('visit', a.id, {
+        visitId: first.id,
+        revision: 1,
+        visitedOn: '2026-10-10',
+        reason: 'Виправив дату',
+      }),
+      now,
+    );
+    await executeLeisureCommand(
+      env,
+      cmd('visit', a.id, { visitedOn: '2026-10-11', reason: 'Новий перегляд' }),
+      now,
+    );
+    expect(
+      (await readLeisureWorkspace(env, now)).records.filter((r) => r.kind === 'visit'),
+    ).toHaveLength(2);
+    db.close();
+  });
+  it('shares Interesting and review-text search with the assistant without treating a like as a plan', async () => {
+    const { env, db } = setup(),
+      a = await item(1);
+    await publishLeisureEdition(env, [a], [], now);
+    await executeLeisureCommand(env, cmd('reaction', a.id, { verdict: 'interested' }), now);
+    const interesting = await runLeisureQuery(env, { view: 'interested' }, now);
+    expect(interesting.result).toContain(a.id);
+    expect(interesting.result).toContain('"reaction":"interested"');
+    expect(interesting.result).toContain('"saved":false');
+    await executeLeisureCommand(
+      env,
+      cmd('visit', a.id, { reason: 'Обожнюю Marvel', rating: 'liked' }),
+      now,
+    );
+    const found = await runLeisureQuery(env, { view: 'visits', query: 'Marvel' }, now);
+    expect(found.result).toContain('Обожнюю Marvel');
+    expect(found.result).toContain('interest:marvel');
+    expect(found.result).not.toContain('lastCommandFingerprint');
+    db.close();
+  });
+});
 describe('full discovery and explicit learning', () => {
   it('exposes every verified film and more than three future events, not an editorial quota', async () => {
     const films = await Promise.all(Array.from({ length: 40 }, (_, n) => item(n))),
