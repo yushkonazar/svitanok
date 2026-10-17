@@ -28,6 +28,7 @@ import {
 } from '../../api/leisure.ts';
 import { PlanBuilder } from './PlanBuilder.tsx';
 import { SwipeDeck } from './SwipeDeck.tsx';
+import { CategoryArtwork } from './CategoryArtwork.tsx';
 import { readPendingLeisure, keepPendingLeisure } from './pending-command.ts';
 import { LeisureFeedback, PreviousVisits } from './LeisureFeedback.tsx';
 import './leisure.css';
@@ -232,12 +233,15 @@ function ItemCard({
 }) {
   return (
     <GlassCard className="leisure-item">
+      <button
+        type="button"
+        className="leisure-item-open"
+        aria-label={`Деталі: ${item.title}`}
+        aria-haspopup="dialog"
+        onClick={onOpen}
+      />
       <div className="leisure-item-head">
-        <div className="leisure-art">
-          <Icon
-            kind={item.category === 'cinema' ? 'cinema' : item.category === 'food' ? 'food' : 'pin'}
-          />
-        </div>
+        <CategoryArtwork category={item.category} variant="thumb" />
         <div className="min-w-0 flex-1">
           <div className="leisure-caption">
             {categoryLabels[item.category]}
@@ -248,7 +252,7 @@ function ItemCard({
         </div>
         <button
           type="button"
-          className={`leisure-icon-button${saved ? ' is-saved' : ''}`}
+          className={`leisure-icon-button leisure-item-save${saved ? ' is-saved' : ''}`}
           aria-label={saved ? `Прибрати ${item.title} зі збереженого` : `Зберегти ${item.title}`}
           aria-pressed={saved}
           disabled={busy}
@@ -282,9 +286,9 @@ function ItemCard({
                 : dateLabel(item)}
           </p>
         </div>
-        <button type="button" className="leisure-text-button" onClick={onOpen}>
+        <span className="leisure-text-button">
           Деталі <Icon kind="open" />
-        </button>
+        </span>
       </div>
     </GlassCard>
   );
@@ -1062,6 +1066,7 @@ function ItemDetail({
     : item;
   return (
     <>
+      <CategoryArtwork category={item.category} variant="detail" eager />
       <div className="leisure-caption">{categoryLabels[item.category]}</div>
       <h2 className="leisure-detail-title">{item.title}</h2>
       <p>{item.summary}</p>
@@ -1102,10 +1107,37 @@ function ItemDetail({
         <PlaceInfo item={item} now={data.generatedAt} />
         {item.registration && <p>Потрібна попередня реєстрація.</p>}
         {item.studentNote && <p className="leisure-secondary">{item.studentNote}</p>}
-        {item.durationMinutes && (
+        {item.genre && <p className="leisure-secondary">Жанр: {item.genre}</p>}
+        {item.age && <p className="leisure-secondary">Вікова категорія: {item.age}</p>}
+        {item.endAt && (
           <p className="leisure-secondary">
-            Тривалість фільму: {item.durationMinutes} хв · {item.age}
+            Завершення: {leisureDate(item.endAt)} · {leisureTime(item.endAt)}
           </p>
+        )}
+        {item.price.min != null &&
+          item.price.max != null &&
+          item.price.max > item.price.min &&
+          item.price.basis !== 'unknown' && (
+            <p className="leisure-secondary">
+              Діапазон ціни за двох:{' '}
+              {money(item.price.min * (item.price.basis === 'person' ? 2 : 1))} —{' '}
+              {money(item.price.max * (item.price.basis === 'person' ? 2 : 1))}.
+            </p>
+          )}
+        {item.status !== 'available' && (
+          <p className="leisure-notice">
+            {
+              {
+                'sold-out': 'У джерелі квитки розпродані',
+                cancelled: 'Подію скасовано',
+                postponed: 'Подію перенесено — перевір нову дату у джерелі',
+                'schedule-pending': 'Розклад ще не підтверджено',
+              }[item.status]
+            }
+          </p>
+        )}
+        {item.durationMinutes && (
+          <p className="leisure-secondary">Тривалість фільму: {item.durationMinutes} хв</p>
         )}
       </GlassCard>
       {item.category === 'cinema' && item.source === 'Планета кіно' ? (
