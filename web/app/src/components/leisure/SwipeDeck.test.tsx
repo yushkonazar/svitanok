@@ -28,6 +28,47 @@ function swipe(x: number, y: number) {
   fireEvent.pointerUp(surface, { pointerId: 1, clientX: 120 + x, clientY: 200 + y });
 }
 describe('swipe deck', () => {
+  it('opens full details with a short tap anywhere on the card without recording a reaction', () => {
+    const { onOpen, onLike, onReject, onVisit, items } = setup();
+    const surface = screen.getByRole('button', { name: 'Картка дозвілля' });
+    fireEvent.pointerDown(surface, { pointerId: 1, button: 0, clientX: 120, clientY: 200 });
+    fireEvent.pointerUp(surface, { pointerId: 1, clientX: 123, clientY: 202 });
+    fireEvent.click(surface);
+    expect(onOpen).toHaveBeenCalledExactlyOnceWith(items[0]);
+    expect(onLike).not.toHaveBeenCalled();
+    expect(onReject).not.toHaveBeenCalled();
+    expect(onVisit).not.toHaveBeenCalled();
+  });
+  it('does not open details from the click produced after a drag, including a drag back to the origin', () => {
+    const { onOpen, onReject } = setup();
+    const surface = screen.getByRole('button', { name: 'Картка дозвілля' });
+    swipe(-110, 4);
+    fireEvent.click(surface);
+    expect(onReject).toHaveBeenCalledTimes(1);
+    expect(onOpen).not.toHaveBeenCalled();
+    fireEvent.pointerDown(surface, { pointerId: 2, button: 0, clientX: 120, clientY: 200 });
+    fireEvent.pointerMove(surface, { pointerId: 2, clientX: 170, clientY: 201 });
+    fireEvent.pointerMove(surface, { pointerId: 2, clientX: 120, clientY: 200 });
+    fireEvent.pointerUp(surface, { pointerId: 2, clientX: 120, clientY: 200 });
+    fireEvent.click(surface);
+    expect(onOpen).not.toHaveBeenCalled();
+    fireEvent.pointerDown(surface, { pointerId: 3, button: 0, clientX: 120, clientY: 200 });
+    fireEvent.pointerUp(surface, { pointerId: 3, clientX: 120, clientY: 200 });
+    fireEvent.click(surface);
+    expect(onOpen).toHaveBeenCalledTimes(1);
+  });
+  it('ignores the click after a cancelled touch, and opens from Enter or Space', () => {
+    const { onOpen, items } = setup();
+    const surface = screen.getByRole('button', { name: 'Картка дозвілля' });
+    fireEvent.pointerDown(surface, { pointerId: 1, button: 0, clientX: 120, clientY: 200 });
+    fireEvent.pointerCancel(surface);
+    fireEvent.click(surface);
+    expect(onOpen).not.toHaveBeenCalled();
+    fireEvent.keyDown(surface, { key: 'Enter' });
+    fireEvent.keyDown(surface, { key: ' ' });
+    expect(onOpen).toHaveBeenCalledTimes(2);
+    expect(onOpen).toHaveBeenLastCalledWith(items[0]);
+  });
   it('waits for acknowledgement before advancing and permits only one pending choice', async () => {
     let finish!: () => void;
     const onLike = vi.fn(

@@ -1,4 +1,5 @@
 import { useRef, useState } from 'react';
+import { CategoryArtwork } from './CategoryArtwork.tsx';
 import {
   categoryLabels,
   leisureDate,
@@ -31,7 +32,8 @@ export function SwipeDeck({
   const [dragging, setDragging] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
-  const gesture = useRef<{ id: number; x: number; y: number } | null>(null);
+  const gesture = useRef<{ id: number; x: number; y: number; distance: number } | null>(null);
+  const ignoreClick = useRef(false);
   const submitting = useRef(false);
   const available = items.filter((i) => !dismissed.has(i.id));
   const item = held ?? available.find((i) => i.id === anchor) ?? available[0];
@@ -98,9 +100,24 @@ export function SwipeDeck({
       <section
         className="leisure-swipe-surface"
         aria-label="Картка дозвілля"
+        aria-haspopup="dialog"
+        aria-disabled={busy || saving}
+        role="button"
         tabIndex={0}
+        onClick={() => {
+          if (ignoreClick.current) {
+            ignoreClick.current = false;
+            return;
+          }
+          if (!busy && !submitting.current) onOpen(item);
+        }}
         onKeyDown={(e) => {
           if (e.target !== e.currentTarget) return;
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            if (!busy && !submitting.current) onOpen(item);
+            return;
+          }
           const d =
             e.key === 'ArrowRight'
               ? 'right'
@@ -123,7 +140,8 @@ export function SwipeDeck({
             (e.pointerType === 'touch' && e.isPrimary === false)
           )
             return;
-          gesture.current = { id: e.pointerId, x: e.clientX, y: e.clientY };
+          ignoreClick.current = false;
+          gesture.current = { id: e.pointerId, x: e.clientX, y: e.clientY, distance: 0 };
           setHeld(item);
           setDragging(true);
           e.currentTarget.setPointerCapture?.(e.pointerId);
@@ -131,6 +149,7 @@ export function SwipeDeck({
         onPointerMove={(e) => {
           const g = gesture.current;
           if (!g || g.id !== e.pointerId) return;
+          g.distance = Math.max(g.distance, Math.hypot(e.clientX - g.x, e.clientY - g.y));
           setPosition({
             x: Math.max(-450, Math.min(450, e.clientX - g.x)),
             y: Math.max(-25, Math.min(220, e.clientY - g.y)),
@@ -141,6 +160,7 @@ export function SwipeDeck({
           if (!g || g.id !== e.pointerId) return;
           const x = e.clientX - g.x,
             y = e.clientY - g.y;
+          ignoreClick.current = Math.max(g.distance, Math.hypot(x, y)) > 8;
           gesture.current = null;
           setDragging(false);
           if (Math.abs(x) > 70 && Math.abs(x) > Math.abs(y) * 1.2)
@@ -152,6 +172,7 @@ export function SwipeDeck({
           }
         }}
         onPointerCancel={() => {
+          ignoreClick.current = true;
           gesture.current = null;
           setDragging(false);
           if (!submitting.current) {
@@ -161,6 +182,7 @@ export function SwipeDeck({
         }}
         onLostPointerCapture={() => {
           if (gesture.current) {
+            ignoreClick.current = true;
             gesture.current = null;
             setDragging(false);
             setHeld(null);
@@ -175,19 +197,7 @@ export function SwipeDeck({
             transform: `translate3d(${position.x}px, ${position.y}px, 0) rotate(${position.x / 28}deg)`,
           }}
         >
-          <div className="leisure-swipe-art" aria-hidden="true">
-            <span>
-              {item.category === 'cinema'
-                ? '◉'
-                : item.category === 'food'
-                  ? '♧'
-                  : item.category === 'trip'
-                    ? '⌁'
-                    : '✧'}
-            </span>
-            <i />
-            <i />
-          </div>
+          <CategoryArtwork category={item.category} eager />
           {direction && (
             <span className={`leisure-swipe-verdict is-${direction}`}>
               {direction === 'right'

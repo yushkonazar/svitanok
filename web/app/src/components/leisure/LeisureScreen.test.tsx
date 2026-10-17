@@ -46,6 +46,53 @@ function openFirst() {
   fireEvent.click(screen.getByText('Мій досвід і вибір'));
 }
 describe('leisure mobile interactions', () => {
+  it('opens the whole description and available facts by tapping the discovery card', async () => {
+    const { cache, data } = await setup();
+    const item = data.items[0]!;
+    await act(async () =>
+      cache.setQueryData(['leisure'], {
+        ...data,
+        items: data.items.map((i) =>
+          i.id === item.id
+            ? {
+                ...i,
+                summary: 'Повний опис виставки, який доступний у джерелі для обдуманого вибору.',
+                genre: 'Сучасне мистецтво',
+                age: '16+',
+                endAt: '2026-10-25T18:00:00.000Z',
+                price: { ...i.price, min: 100, max: 300, basis: 'person' },
+              }
+            : i,
+        ),
+      }),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Картка дозвілля' }));
+    const dialog = within(screen.getByRole('dialog'));
+    expect(dialog.getByRole('heading', { name: item.title })).toBeInTheDocument();
+    expect(
+      dialog.getByText('Повний опис виставки, який доступний у джерелі для обдуманого вибору.'),
+    ).toBeInTheDocument();
+    expect(dialog.getByText('Жанр: Сучасне мистецтво')).toBeInTheDocument();
+    expect(dialog.getByText('Вікова категорія: 16+')).toBeInTheDocument();
+    expect(dialog.getByText(/Діапазон ціни за двох: 200 ₴ — 600 ₴/)).toBeInTheDocument();
+    expect(dialog.getByRole('button', { name: /Джерело:/ })).toBeInTheDocument();
+    expect((cache.getQueryData(['leisure']) as LeisureWorkspace).records).toHaveLength(0);
+  });
+  it('opens a saved card from its main area while the bookmark button remains a separate action', async () => {
+    const { cache, data } = await setup();
+    await act(async () => cache.setQueryData(['leisure'], { ...data, saved: [data.items[0]!.id] }));
+    fireEvent.click(screen.getByRole('button', { name: 'Цікаве' }));
+    fireEvent.click(screen.getByRole('button', { name: `Деталі: ${data.items[0]!.title}` }));
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Закрити вікно дозвілля' }));
+    fireEvent.click(
+      screen.getByRole('button', { name: `Прибрати ${data.items[0]!.title} зі збереженого` }),
+    );
+    await waitFor(() =>
+      expect((cache.getQueryData(['leisure']) as LeisureWorkspace).saved).toEqual([]),
+    );
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
   it('moves a right choice into Interesting and keeps it separate from bookmarks and plans', async () => {
     const { cache, data } = await setup();
     fireEvent.click(screen.getByRole('button', { name: 'Цікаво' }));
