@@ -27,6 +27,25 @@ it('кожна D1-міграція явно оголошує expand або contr
 
 /** Очікувані колонки звичайних таблиць — дослівно з 07-schema §1. */
 const EXPECTED_COLUMNS: Record<string, string[]> = {
+  idea_bookmark_commands: ['id', 'fingerprint', 'receipt_json', 'created_at'],
+  idea_bookmark_guards: ['id', 'valid'],
+  idea_formulations: [
+    'id',
+    'idea_id',
+    'source_hash',
+    'source_json',
+    'source_version',
+    'status',
+    'context_version',
+    'result_json',
+    'custom_prompt',
+    'revision',
+    'published',
+    'error',
+    'created_at',
+    'started_at',
+    'finished_at',
+  ],
   motivation_account: ['id', 'revision', 'data_json'],
   motivation_records: ['id', 'kind', 'date', 'data_json'],
   motivation_commands: ['id', 'fingerprint', 'receipt_json', 'created_at'],
@@ -600,6 +619,10 @@ type IndexSpec = { cols: string[]; unique?: boolean };
  * жодного індексу поза PK — звірка точна, зайвий індекс теж провалює тест.
  */
 const EXPECTED_INDEXES: Record<string, IndexSpec[]> = {
+  idea_formulations: [
+    { cols: ['idea_id', 'created_at', 'id'] },
+    { cols: ['idea_id'], unique: true },
+  ],
   motivation_records: [{ cols: ['kind', 'date'] }],
   motivation_ledger: [{ cols: ['at', 'id'] }],
   usage_receipts: [{ cols: ['at', 'feature', 'provider'] }, { cols: ['run_id'] }],
@@ -721,7 +744,7 @@ const columnsOf = (table: string): { name: string; pk: number }[] =>
   }[];
 
 describe('міграції D1 — файли', () => {
-  it('сорок три файли 0001–0043, нумерація без дірок', () => {
+  it('сорок чотири файли 0001–0044, нумерація без дірок', () => {
     expect(files.map((f) => f.slice(0, 4))).toEqual([
       '0001',
       '0002',
@@ -766,6 +789,7 @@ describe('міграції D1 — файли', () => {
       '0041',
       '0042',
       '0043',
+      '0044',
     ]);
   });
 });

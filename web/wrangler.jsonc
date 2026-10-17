@@ -142,6 +142,11 @@
     // Аналіз ідеї по коду (етап 4 PR-2): dispatch Actions → wait(artifact 42 хв)
     // → ideas.analysis_md + документ у тред.
     { "name": "svitanok-idea-analysis", "binding": "IDEA_ANALYSIS", "class_name": "IdeaAnalysis" },
+    {
+      "name": "svitanok-idea-formulation",
+      "binding": "IDEA_FORMULATION",
+      "class_name": "IdeaFormulation",
+    },
     // Столик (етап 5 PR-2): від нагадування до «Як було?», події з кнопок c:.
     { "name": "svitanok-table-chain", "binding": "TABLE_CHAIN", "class_name": "TableChain" },
     // Відстеження ціни (етап 5 PR-3): щодня профіль price-check → price_points.
