@@ -222,6 +222,10 @@ interface Env {
       status?: () => Promise<unknown>;
     }>;
   };
+  IDEA_FORMULATION?: {
+    create: (opts: { id: string; params: { requestId: string } }) => Promise<unknown>;
+    get: (id: string) => Promise<{ status: () => Promise<unknown> }>;
+  };
   /** Workflow ланцюга столика (етап 5 PR-2, 07 §6 TableChain) - той самий контракт. */
   TABLE_CHAIN?: {
     create: (opts: { id?: string; params?: unknown }) => Promise<unknown>;

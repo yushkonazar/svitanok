@@ -57,6 +57,9 @@ export const BACKUP_TABLES = [
   'places',
   'ideas',
   'idea_events',
+  'idea_formulations',
+  'idea_bookmark_commands',
+  'idea_bookmark_guards',
   'wishes',
   'price_points',
   'trips',
@@ -298,6 +301,16 @@ export function prepareRestoreTables(doc) {
   for (const row of tables.knowledge_chunks ?? []) {
     if (rebuild.has(row.document_version_id) && row.projection_status === 'ready') {
       row.projection_status = 'pending';
+    }
+  }
+  // A restored DB cannot resume the original durable step history. Never
+  // silently replay a paid request or leave it permanently "running".
+  for (const row of tables.idea_formulations ?? []) {
+    if (row.status === 'queued' || row.status === 'running') {
+      row.status = 'failed';
+      row.error =
+        'Формування перерване відновленням даних. Початковий запис збережено; можна сформувати новий варіант.';
+      row.finished_at = doc.created_at;
     }
   }
   return tables;

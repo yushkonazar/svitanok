@@ -55,6 +55,7 @@ const MemoryScreen = lazy(() =>
 
 const SETTINGS_PATH = '/settings';
 const SAVED_PATH = '/saved';
+const BOOKMARKS_PATH = '/bookmarks';
 
 // Маршрутні екрани ізолюємо в окремі chunks: статистика тягне D3, вакансії —
 // drag UI, чек-ін — великий набір питань. Вони не мають затримувати перший
@@ -86,6 +87,11 @@ const SettingsScreen = lazy(() =>
 const SavedScreen = lazy(() =>
   import('./components/saved/SavedScreen.tsx').then((module) => ({ default: module.SavedScreen })),
 );
+const BookmarksScreen = lazy(() =>
+  import('./components/bookmarks/BookmarksScreen.tsx').then((module) => ({
+    default: module.BookmarksScreen,
+  })),
+);
 const LeisureScreen = lazy(() =>
   import('./components/leisure/LeisureScreen.tsx').then((module) => ({
     default: module.LeisureScreen,
@@ -99,6 +105,7 @@ const LeisureScreen = lazy(() =>
 const FULL: Array<{ path: string; title: string }> = [
   { path: SETTINGS_PATH, title: 'Налаштування' },
   { path: SAVED_PATH, title: 'Збережене' },
+  { path: BOOKMARKS_PATH, title: 'Закладки Світанку' },
   { path: '/memory', title: 'Пам’ять асистента' },
 ];
 
@@ -377,23 +384,17 @@ export function App() {
                 </svg>
               )}
             </button>
-            {/* Збережене — ЛІВОРУЧ від налаштувань (фідбек власника: перенести
-                до теми й налаштувань). Доти вхід у /saved жив рядком усередині
-                блоку «Інтереси» на вкладці статистики — тобто щоб дістатись
-                архіву, треба було спершу згадати, що він саме там. Тепер це
-                глобальна дія в хедері, поруч із рештою глобальних. */}
+            {/* Особисті ідеї та поправки — швидкий вхід поруч із налаштуваннями. */}
             {!full && (
               <button
                 type="button"
-                aria-label="Збережене"
+                aria-label="Закладки"
                 onClick={() => {
-                  navigate(SAVED_PATH);
+                  navigate(BOOKMARKS_PATH);
                   haptic('light');
                 }}
                 className="grid h-9 w-9 place-items-center rounded-xl border border-glassb bg-glass"
               >
-                {/* Закладка — той самий 🔖, що був у рядку, але іконкою: емодзі
-                    в ряду зі stroke-іконками виглядало б чужорідно. */}
                 <svg
                   width="18"
                   height="18"
@@ -468,6 +469,8 @@ export function App() {
                   <SettingsScreen />
                 ) : full.path === '/memory' ? (
                   <MemoryScreen />
+                ) : full.path === BOOKMARKS_PATH ? (
+                  <BookmarksScreen />
                 ) : (
                   <SavedScreen />
                 )
