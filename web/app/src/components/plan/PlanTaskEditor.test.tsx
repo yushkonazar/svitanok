@@ -104,7 +104,7 @@ describe('the reported morning-task failure', () => {
     await user.click(screen.getByRole('button', { name: 'Зберегти в чернетку' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
     const saved = await fetchPlan();
-    expect(localStorage.getItem('svitanok:plan:task-draft:v1:2026-10-17')).toBeNull();
+    expect(localStorage.getItem('svitanok:plan:task-draft:v1:new::')).toBeNull();
     expect(saved.tasks).toHaveLength(1);
     expect(saved.tasks[0]).toMatchObject({
       date: '2026-10-18',
@@ -177,7 +177,7 @@ describe('the reported morning-task failure', () => {
     expect(screen.queryByText(/Твій вибір/)).not.toBeInTheDocument();
     expect(screen.getByText('+50 XP')).toBeInTheDocument();
   });
-  it('restores the owner description, dates, times and XP choice after the editor closes', async () => {
+  it('restores the owner description, dates, times and XP choice even after the plan day changes', async () => {
     const view = setup();
     await openAndFill(view.user);
     await view.user.click(screen.getByText('Уточнити оцінку'));
@@ -185,6 +185,7 @@ describe('the reported morning-task failure', () => {
     await view.user.click(screen.getByRole('button', { name: /На завтра/ }));
     await view.user.click(screen.getByRole('button', { name: 'Закрити панель' }));
     view.unmount();
+    vi.mocked(Date.now).mockReturnValue(Date.parse('2026-10-18T05:00:00Z'));
     const reopened = setup();
     await reopened.user.click(await screen.findByRole('button', { name: 'Додати першу задачу' }));
     expect(screen.getByLabelText('Що хочу зробити')).toHaveValue(draft.title);

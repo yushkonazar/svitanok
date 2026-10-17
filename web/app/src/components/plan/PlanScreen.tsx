@@ -1000,7 +1000,7 @@ function TaskEditor({
   save: Run;
   onError: (s: string) => void;
 }) {
-  const draftId = initial?.id ?? date;
+  const draftId = initial?.id ?? ['new', goalId ?? '', rewardId ?? ''].join(':');
   const [cached] = useState(() => readTaskEditorDraft(draftId));
   const restore = <T,>(name: string, fallback: T): T =>
     cached && Object.hasOwn(cached, name) ? cached[name] : fallback;
