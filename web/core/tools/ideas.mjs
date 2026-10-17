@@ -12,19 +12,9 @@
 // кеш за head_sha, Workflow IdeaAnalysis, Actions.
 
 /** Домени - дослівно 07 §1. */
-export const IDEA_DOMAINS = ['svitanok', 'робота', 'побут', 'бізнес', 'інше'];
+import { IDEA_DOMAINS, IDEA_STATUSES, IDEA_EFFORTS } from '../ideas/registry.mjs';
+export { IDEA_DOMAINS, IDEA_STATUSES, IDEA_EFFORTS };
 /** Статуси - дослівно 07 §1, у порядку життєвого циклу. */
-export const IDEA_STATUSES = [
-  'нова',
-  'в аналізі',
-  'план готовий',
-  'погоджено',
-  'у роботі',
-  'зроблено',
-  'відкладено',
-  'відхилено',
-];
-export const IDEA_EFFORTS = ['S', 'M', 'L'];
 /** Стеля списку (S-3-6: «список ≤ 10»). */
 export const IDEAS_LIST_MAX = 10;
 import { startIdeaAnalysis } from '../ideas/analysis.mjs';

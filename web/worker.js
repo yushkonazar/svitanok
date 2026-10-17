@@ -49,6 +49,8 @@ export { LeisureCatalogDO } from './core/leisure/catalog-do.mjs';
 // Workflow плану дня (етап 3 PR-8) - той самий контракт деплою, що й DO.
 export { DayPlanChain } from './core/day-plan/chain.mjs';
 export { IdeaAnalysis } from './core/ideas/analysis.mjs';
+export { IdeaFormulation } from './core/ideas/formulation.mjs';
+import { handleBookmarks } from './api-bookmarks.mjs';
 export { TableChain } from './core/chains/table.mjs';
 export { PriceTrack } from './core/chains/price.mjs';
 export { TripChain } from './core/chains/trip.mjs';
@@ -563,6 +565,7 @@ export default {
       return handleMailAttention(request, env);
     }
     if (url.pathname === '/api/leisure') return handleLeisure(request, env);
+    if (url.pathname === '/api/bookmarks') return handleBookmarks(request, env);
     if (url.pathname === '/api/plan') return handlePlan(request, env);
     if (url.pathname === '/api/finance') {
       return handleFinance(request, env);
