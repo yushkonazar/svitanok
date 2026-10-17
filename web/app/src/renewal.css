@@ -1398,6 +1398,65 @@
 }
 
 /* Adaptive check-in: bounded inline detail and compact, consistent summaries. */
+.checkin-slot-card {
+  position: relative;
+}
+.checkin-slot-card[data-completion='saving'] .checkin-adaptive-flow {
+  pointer-events: none;
+}
+.checkin-completion {
+  position: absolute;
+  left: 20px;
+  right: 20px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  text-align: center;
+  animation: checkin-completed 0.3s ease-out both;
+  transition: opacity 0.3s ease;
+}
+[data-completion='leaving'] .checkin-completion {
+  opacity: 0;
+}
+.checkin-completion-mark {
+  width: 56px;
+  height: 56px;
+  fill: none;
+  stroke: var(--color-a2);
+  stroke-width: 2.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.checkin-completion-mark path {
+  stroke-dasharray: 36;
+  animation: checkin-mark 0.35s ease-out both;
+}
+@keyframes checkin-completed {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@keyframes checkin-mark {
+  from {
+    stroke-dashoffset: 36;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .checkin-completion,
+  .checkin-completion-mark path {
+    animation: none;
+    transition: none;
+  }
+}
 .checkin-screen {
   /* Inline details change height. Never anchor the viewport to the buttons
      or inactive slots below them while the user is scrolling the document. */

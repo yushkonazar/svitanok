@@ -22,6 +22,11 @@ export function followupsV3(
   a: Record<string, unknown>,
   context?: Partial<AdaptiveContext>,
 ): Card[];
+export function contextualCardV3(
+  card: Card,
+  answers: Record<string, unknown>,
+  context?: Partial<AdaptiveContext>,
+): Card;
 export function fieldVisibleV3(f: Field, a: Record<string, unknown>): boolean;
 export function validValueV3(f: Field, v: unknown): boolean;
 export function cleanCheckinV3(

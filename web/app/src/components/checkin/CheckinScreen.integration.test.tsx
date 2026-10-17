@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { CheckinV3Screen } from './CheckinV3Screen.tsx';
 import { EMPTY_STATS } from '../../api/sample.ts';
 import { SessionExpiredError } from '../../api/client.ts';
+import { setVerticalSwipes } from '../../telegram.ts';
 
 const api = vi.hoisted(() => ({
   fetchStats: vi.fn(),
@@ -37,6 +38,7 @@ const snapshot = () => ({
 beforeEach(() => {
   sessionStorage.clear();
   vi.clearAllMocks();
+  vi.spyOn(window, 'scrollTo').mockImplementation(() => {});
   qc = new QueryClient({
     defaultOptions: {
       queries: { retry: false, gcTime: Infinity, staleTime: Infinity },
@@ -55,6 +57,8 @@ afterEach(() => {
   cleanup();
   qc.clear();
   sessionStorage.clear();
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
 function open(target?: { date: string | null; slot: string | null }) {
@@ -90,6 +94,90 @@ function windowSnapshot(extended = false) {
     },
   };
 }
+async function readyToConfirm() {
+  const data = snapshot();
+  data.stats.checkinToday.evening = {
+    questionVersion: 3,
+    energy: 3,
+    mood: 3,
+    satisfactionV3: 3,
+    activitiesV3: ['rest'],
+    companyV3: ['alone'],
+    priorityOutcomeV3: 'noplan',
+    developmentActualV3: 'none',
+    freeTimeV3: 'lt30',
+    napV3: 'no',
+  } as typeof data.stats.checkinToday.evening;
+  qc.setQueryData(['stats'], data);
+  api.fetchStats.mockResolvedValue(data);
+  const view = open();
+  await screen.findByRole('heading', { name: 'Як ти зараз?' });
+  for (let i = 0; i < 4; i++) fireEvent.click(screen.getByRole('button', { name: 'Далі →' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Перевірити' }));
+  return { view, data, button: screen.getByRole('button', { name: 'Підтвердити чек-ін' }) };
+}
+it.each([false, true])(
+  'preserves height until an acknowledged completion returns to the top (reduced motion: %s)',
+  async (reduced) => {
+    const scroll = vi.spyOn(window, 'scrollTo').mockImplementation(() => {});
+    vi.spyOn(window, 'scrollY', 'get').mockReturnValue(1600);
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({
+      height: 1800,
+      top: -1400,
+    } as DOMRect);
+    vi.stubGlobal('matchMedia', () => ({ matches: reduced }));
+    let clock = 0;
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) =>
+      setTimeout(() => callback((clock += 100)), 1),
+    );
+    vi.stubGlobal('cancelAnimationFrame', (id: number) => clearTimeout(id));
+    let resolve!: () => void;
+    api.postEvent.mockImplementationOnce(
+      () =>
+        new Promise<void>((done) => {
+          resolve = done;
+        }),
+    );
+    const { view, data, button } = await readyToConfirm();
+    fireEvent.click(button);
+    await screen.findByRole('button', { name: 'Зберігаю…' });
+    const section = view.container.querySelector('[data-checkin-slot="evening"]')!;
+    expect(section).toHaveStyle({ minHeight: '1800px' });
+    expect(screen.queryByRole('timer')).not.toBeInTheDocument();
+    expect(scroll).not.toHaveBeenCalled();
+    api.fetchStats.mockResolvedValue({
+      ...data,
+      stats: {
+        ...data.stats,
+        checkinToday: { evening: { ...data.stats.checkinToday.evening, confirmed: true } },
+      },
+    });
+    await act(async () => resolve());
+    if (!reduced) {
+      expect(screen.getByText('Чек-ін збережено')).toBeInTheDocument();
+      expect(section).toHaveStyle({ minHeight: '1800px' });
+      expect(setVerticalSwipes).toHaveBeenLastCalledWith(false);
+    }
+    await waitFor(() => expect(screen.getByRole('timer')).toBeInTheDocument(), { timeout: 2000 });
+    expect(scroll).toHaveBeenLastCalledWith({ top: 0, behavior: 'auto' });
+    const positions = scroll.mock.calls.map(([value]) => (value as ScrollToOptions).top!);
+    expect(positions.every((top, i) => i === 0 || top <= positions[i - 1]!)).toBe(true);
+    if (reduced) expect(positions).toEqual([0]);
+    expect(section).toHaveStyle({ minHeight: '' });
+    expect(setVerticalSwipes).toHaveBeenLastCalledWith(true);
+    expect(api.postEvent).toHaveBeenCalledTimes(1);
+  },
+);
+it('keeps the review open without success animation or scrolling when confirmation fails', async () => {
+  const scroll = vi.spyOn(window, 'scrollTo').mockImplementation(() => {});
+  api.postEvent.mockRejectedValueOnce(new Error('Не вдалося зберегти чек-ін'));
+  const { button } = await readyToConfirm();
+  fireEvent.click(button);
+  await screen.findByRole('alert');
+  expect(screen.getByRole('button', { name: 'Підтвердити чек-ін' })).toBeEnabled();
+  expect(screen.queryByText('Чек-ін збережено')).not.toBeInTheDocument();
+  expect(scroll).not.toHaveBeenCalled();
+});
 it('extends the chosen slot once, with a pending state and a server-confirmed new deadline', async () => {
   api.fetchStats.mockResolvedValue(windowSnapshot());
   let resolve!: () => void;

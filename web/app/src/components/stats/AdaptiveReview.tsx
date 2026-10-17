@@ -74,6 +74,30 @@ function Distribution({
     </div>
   );
 }
+function AdditionalDetails({
+  days,
+  slot,
+  ids,
+}: {
+  days: AdaptiveDay[];
+  slot: CheckinSlot;
+  ids: string[];
+}) {
+  const fields = FOLLOWUP_CARDS_V3.flatMap((c) => c.fields).filter(
+    (f) => ids.includes(f.id) && frequenciesV3(days, slot, f.id).n > 0,
+  );
+  if (!fields.length) return null;
+  return (
+    <details className="checkin-option-group">
+      <summary>Уточнення до відповідей · {names[slot].toLowerCase()}</summary>
+      <div className="flex flex-col gap-6 mt-4">
+        {fields.map((f) => (
+          <Distribution key={f.id} days={days} slot={slot} fieldId={f.id} title={f.label} />
+        ))}
+      </div>
+    </details>
+  );
+}
 function RecordedDay({ day }: { day: AdaptiveDay }) {
   const points = (key: 'energy' | 'mood') =>
     slots.flatMap((slot) => {
@@ -159,7 +183,11 @@ export function AdaptiveReview({
         Object.values(r).some((a) => a?.questionVersion === 3),
       ),
     ),
-    [to]: { ...(demo ? demoAdaptive(to)[to] : {}), ...(s.checkinToday ?? {}) },
+    [to]: {
+      ...(demo ? demoAdaptive(to)[to] : {}),
+      ...s.checkinRaw.records[to],
+      ...(s.checkinToday ?? {}),
+    },
   };
   const a = analyzeAdaptive(records, to, days);
   const chosen =
@@ -281,12 +309,35 @@ export function AdaptiveReview({
           <summary className="renewal-link cursor-pointer">Розподіл оцінок і пояснення</summary>
           <div className="flex flex-col gap-6 mt-4">
             <Distribution days={a.current} slot={slot} fieldId={metric} title="Обрані оцінки" />
-            <Distribution
-              days={a.current}
-              slot={slot}
-              fieldId={metric === 'mood' ? 'moodFactorsV3' : 'energyKindV3'}
-              title="Що ти пов’язував зі станом"
-            />
+            {metric === 'mood' ? (
+              [
+                { values: [4, 5], title: 'Пояснення хорошого настрою · оцінки 4–5' },
+                { values: [3], title: 'Пояснення змішаного настрою · оцінка 3' },
+                { values: [1, 2], title: 'Пояснення поганого настрою · оцінки 1–2' },
+              ].map(({ values, title }) => (
+                <Distribution
+                  key={title}
+                  days={a.current.filter((d) => values.includes(d[slot].mood as number))}
+                  slot={slot}
+                  fieldId="moodFactorsV3"
+                  title={title}
+                />
+              ))
+            ) : (
+              <>
+                <Distribution
+                  days={a.current}
+                  slot={slot}
+                  fieldId="energyKindV3"
+                  title="Якою була нестача сил"
+                />
+                <AdditionalDetails
+                  days={a.current}
+                  slot={slot}
+                  ids={['energyFactorsV3', 'energyHelpersV3']}
+                />
+              </>
+            )}
           </div>
         </details>
         {(a.recordedDays > 0 ||
@@ -358,6 +409,11 @@ export function AdaptiveReview({
             title="Що відсунуло відхід до сну"
           />
           <Distribution days={a.current} slot="evening" fieldId="napV3" title="Додаткова дрімота" />
+          <AdditionalDetails
+            days={a.current}
+            slot="morning"
+            ids={['bedtimeHelpersV3', 'bedtimeChangesV3', 'sleepMixedV3', 'sleepAbsenceV3']}
+          />
           <p className="renewal-chart-note">
             Причини — твої пояснення. Частки рахуємо лише серед явних відповідей на відповідне
             уточнення. Додаткову дрімоту не додаємо до основного сну без перевірки епізодів.
@@ -427,6 +483,22 @@ export function AdaptiveReview({
             Діапазони не перетворюються на точні години. Свідома зміна плану та відпочинок не є
             невдачею.
           </p>
+          <AdditionalDetails
+            days={a.current}
+            slot="afternoon"
+            ids={['priorityHelpersV3', 'priorityChangesV3', 'priorityReasonsV3']}
+          />
+          <AdditionalDetails
+            days={a.current}
+            slot="evening"
+            ids={[
+              'priorityHelpersV3',
+              'priorityChangesV3',
+              'priorityReasonsV3',
+              'learningChallengesV3',
+              'learningHelpersV3',
+            ]}
+          />
         </div>
       </details>
       <details className="renewal-card">
@@ -479,6 +551,11 @@ export function AdaptiveReview({
             Не всі дні мають ці уточнення. «Не показано» чи пропуск не означають відсутність перерв
             або відновлення. Дані Apple «Здоров’я» ще не підключені.
           </p>
+          <AdditionalDetails
+            days={a.current}
+            slot="evening"
+            ids={['workFactorsV3', 'recoveryHelpersV3', 'recoveryBlockersV3']}
+          />
         </div>
       </details>
       <p className="renewal-inset renewal-chart-note">

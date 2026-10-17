@@ -38,6 +38,14 @@ import { BLOCKS as LEGACY_BLOCKS } from './questions.ts';
 import { AdaptivePreferences } from './AdaptivePreferences.tsx';
 
 type Answers = Record<string, unknown>;
+type Completion = {
+  date: string;
+  slot: CheckinSlot;
+  answers: Answers;
+  height: number;
+  feedbackTop: number;
+  phase: 'saving' | 'success' | 'leaving';
+};
 const slots: CheckinSlot[] = ['morning', 'afternoon', 'evening'];
 const names = { morning: 'Ранок', afternoon: 'День', evening: 'Вечір' };
 const icons = { morning: '🌅', afternoon: '☀️', evening: '🌙' };
@@ -101,7 +109,9 @@ export function AdaptiveFlow({
   // Selection prioritizes answered details; presentation must not move them
   // past each other as answers arrive while the user is scrolling.
   const branches = followupsV3(slot, answers, context).sort(
-    (a, b) => FOLLOWUP_CARDS_V3.indexOf(a) - FOLLOWUP_CARDS_V3.indexOf(b),
+    (a, b) =>
+      FOLLOWUP_CARDS_V3.findIndex((c) => c.id === a.id) -
+      FOLLOWUP_CARDS_V3.findIndex((c) => c.id === b.id),
   );
   const card = core[step];
   const owner = (id: string) =>
@@ -317,6 +327,44 @@ export function CheckinV3Screen({
     null,
   );
   const upgraded = useRef(false);
+  const [completion, setCompletion] = useState<Completion | null>(null);
+  const confirming = useRef(false);
+  const slotNodes = useRef<Partial<Record<CheckinSlot, HTMLElement>>>({});
+  useEffect(() => {
+    if (!completion || completion.phase === 'saving') return;
+    setVerticalSwipes(false);
+    const reduced = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true;
+    if (completion.phase === 'success') {
+      const pause = setTimeout(
+        () => setCompletion((c) => (c ? { ...c, phase: 'leaving' } : null)),
+        reduced ? 0 : 450,
+      );
+      return () => {
+        clearTimeout(pause);
+        setVerticalSwipes(true);
+      };
+    }
+    // Keep the old section height until the viewport is at the top. Removing
+    // a long form first lets WebKit clamp scrollY before smooth scrolling starts.
+    const from = window.scrollY;
+    let start: number | undefined;
+    let frame: number;
+    const tick = (time: number) => {
+      start ??= time;
+      const progress = reduced ? 1 : Math.min(1, (time - start) / 650);
+      window.scrollTo({ top: from * Math.pow(1 - progress, 3), behavior: 'auto' });
+      if (progress < 1) frame = requestAnimationFrame(tick);
+      else {
+        confirming.current = false;
+        setCompletion(null);
+      }
+    };
+    frame = requestAnimationFrame(tick);
+    return () => {
+      cancelAnimationFrame(frame);
+      setVerticalSwipes(true);
+    };
+  }, [completion]);
   useEffect(() => {
     if (!settings.data || upgraded.current || settings.data.settings.checkin?.version === 3) return;
     upgraded.current = true;
@@ -432,7 +480,7 @@ export function CheckinV3Screen({
       ? prior
       : { ...prior, ...(drafts[draftKey(date, slot)] ?? readDraft(draftKey(date, slot))) };
   };
-  const current = active ? answers(active) : {};
+  const current = completion?.date === date ? completion.answers : active ? answers(active) : {};
   // useTick can lag behind a just-received snapshot. Never turn a zero gap into +1 minute.
   // Optimistic autosaves update dataUpdatedAt, but must not restart the server countdown.
   const elapsed = Math.floor(elapsedMs / 60000),
@@ -470,6 +518,21 @@ export function CheckinV3Screen({
     }, 1200);
   }
   function confirm(slot: CheckinSlot) {
+    if (confirming.current) return;
+    confirming.current = true;
+    const bounds = slotNodes.current[slot]?.getBoundingClientRect();
+    const height = bounds?.height ?? 0;
+    setCompletion({
+      date,
+      slot,
+      answers: answers(slot),
+      height,
+      feedbackTop: Math.max(
+        24,
+        Math.min(Math.max(24, height - 180), -(bounds?.top ?? 0) + window.innerHeight * 0.3),
+      ),
+      phase: 'saving',
+    });
     if (timer.current) clearTimeout(timer.current);
     timer.current = null;
     pendingDraft.current = null;
@@ -488,7 +551,11 @@ export function CheckinV3Screen({
             return copy;
           });
           haptic('success');
-          window.scrollTo({ top: 0, behavior: 'smooth' });
+          setCompletion((c) => (c ? { ...c, phase: 'success' } : null));
+        },
+        onError: () => {
+          confirming.current = false;
+          setCompletion(null);
         },
       },
     );
@@ -598,7 +665,7 @@ export function CheckinV3Screen({
           )}
         </section>
       )}
-      {(!active || current.confirmed === true) && (
+      {!completion && (!active || current.confirmed === true) && (
         <section className="renewal-card text-center">
           <span className="renewal-pill">
             {active ? '✓ Чек-ін підтверджено' : 'Пауза між чек-інами'}
@@ -632,14 +699,23 @@ export function CheckinV3Screen({
         </section>
       )}
       {slots.map((slot) => {
-        const value = answers(slot),
-          live = slot === active,
+        const finishing = completion?.slot === slot && completion.date === date ? completion : null;
+        const value = finishing
+            ? { ...finishing.answers, confirmed: finishing.phase !== 'saving' }
+            : answers(slot),
+          live = slot === active || finishing != null,
           confirmed = value.confirmed === true;
         return (
           <section
             key={`${date}:${slot}`}
-            className="renewal-card"
+            ref={(node) => {
+              slotNodes.current[slot] = node ?? undefined;
+            }}
+            className="renewal-card checkin-slot-card"
+            style={finishing ? { minHeight: finishing.height } : undefined}
             data-checkin-slot={slot}
+            data-completion={finishing?.phase}
+            aria-busy={finishing?.phase === 'saving' || undefined}
             onClickCapture={() => {
               if (live && !demo && !selected && s.checkinWindows) setSelection({ date, slot });
             }}
@@ -658,8 +734,24 @@ export function CheckinV3Screen({
                     : `Від ${p.schedule[slot]}`}
               </span>
             </div>
-            {live && !confirmed && allowed ? (
-              <div className="mt-5">
+            {finishing && finishing.phase !== 'saving' ? (
+              <div
+                className="checkin-completion"
+                style={{ top: finishing.feedbackTop }}
+                role="status"
+                aria-live="polite"
+              >
+                <svg className="checkin-completion-mark" viewBox="0 0 48 48" aria-hidden="true">
+                  <circle cx="24" cy="24" r="21" />
+                  <path d="m14 24 7 7 14-15" />
+                </svg>
+                <h3 className="text-lg font-semibold">Чек-ін збережено</h3>
+                <p className="renewal-chart-note">
+                  {names[slot]} · відповіді вже у твоїй статистиці
+                </p>
+              </div>
+            ) : live && !confirmed && allowed ? (
+              <div className="mt-5" inert={finishing?.phase === 'saving' || undefined}>
                 <AdaptiveFlow
                   key={`${date}:${slot}`}
                   slot={slot}
@@ -667,7 +759,7 @@ export function CheckinV3Screen({
                   answers={value}
                   morning={answers('morning')}
                   p={p}
-                  pending={save.isPending}
+                  pending={save.isPending || finishing?.phase === 'saving'}
                   onChange={(key, v) => change(slot, key, v)}
                   onConfirm={() => confirm(slot)}
                   context={adaptiveContext(
