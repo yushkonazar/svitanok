@@ -8,6 +8,7 @@ import {
   cleanCheckinV3,
   clearHiddenV3,
   coreCompleteV3,
+  contextualCardV3,
   followupsV3,
   validValueV3,
 } from '../web/core/checkin/adaptive.mjs';
@@ -22,7 +23,12 @@ import { checkinClock } from '../web/core/checkin/catalog.mjs';
 import { normalizeSettings } from '../web/settings-core.mjs';
 import { buildCheckinPeriod } from '../web/core/tools/checkin-period.mjs';
 import { monthlyRollup, weeklyRollup } from '../web/stats-archive.mjs';
-import { statsSchema } from '../web/app/src/api/schema.ts';
+import {
+  statsSchema,
+  checkinMorningSchema,
+  checkinAfternoonSchema,
+  checkinEveningSchema,
+} from '../web/app/src/api/schema.ts';
 const date = '2026-10-06';
 const morning = {
   questionVersion: 3,
@@ -63,6 +69,152 @@ const write = (
   day = date,
 ) => recordEvent(s, { type: 'checkin', slot, ...answers }, day, null, iso);
 describe('adaptive check-in v3', () => {
+  it('preserves every declared answer through the Mini App API schemas', () => {
+    const schemas = {
+      morning: checkinMorningSchema,
+      afternoon: checkinAfternoonSchema,
+      evening: checkinEveningSchema,
+    };
+    for (const slot of ['morning', 'afternoon', 'evening'] as const) {
+      const sample = Object.fromEntries(
+        [...CHECKIN_CARDS_V3[slot]!, ...FOLLOWUP_CARDS_V3]
+          .flatMap((c) => c.fields)
+          .map((f) => [
+            f.id,
+            f.type === 'multi'
+              ? [f.options![0]![1]]
+              : f.options
+                ? f.options[0]![1]
+                : f.type === 'duration'
+                  ? 30
+                  : f.type === 'time'
+                    ? '23:00'
+                    : 'Результат',
+          ]),
+      );
+      const parsed = schemas[slot].parse({ ...sample, questionVersion: 3 });
+      for (const [id, value] of Object.entries(sample))
+        expect(parsed, `${slot}.${id}`).toHaveProperty(id, value);
+    }
+  });
+  const branch = (id: string, answers: Record<string, unknown>) =>
+    contextualCardV3(
+      FOLLOWUP_CARDS_V3.find((c) => c.id === id)!,
+      answers,
+    );
+  const options = (id: string, answers: Record<string, unknown>, field: string) =>
+    branch(id, answers)
+      .fields.find((f) => f.id === field)!
+      .options!.map(([, v]) => v);
+  it('keeps positive and negative mood contexts separate, while mixed mood can describe both', () => {
+    const high = options('mood-context', { mood: 4 }, 'moodFactorsV3');
+    expect(high).toEqual(
+      expect.arrayContaining(['connection', 'good_news', 'creativity', 'self_care']),
+    );
+    expect(high).not.toEqual(expect.arrayContaining(['conflict']));
+    const low = options('mood-context', { mood: 2 }, 'moodFactorsV3');
+    expect(low).toContain('conflict');
+    expect(low).not.toContain('good_news');
+    expect(options('mood-context', { mood: 3 }, 'moodFactorsV3')).toEqual(
+      expect.arrayContaining(['connection', 'conflict']),
+    );
+    const clean = clearHiddenV3('afternoon', {
+      energy: 3,
+      mood: 4,
+      moodFactorsV3: ['conflict', 'support'],
+    });
+    expect(clean.moodFactorsV3).toEqual(['support']);
+  });
+  it('resolves a low-energy sub-branch and removes both levels when energy becomes high', () => {
+    const sleepy = options(
+      'energy-context',
+      { energy: 1, energyKindV3: 'sleepy' },
+      'energyFactorsV3',
+    );
+    expect(sleepy).toContain('sleep');
+    expect(sleepy).not.toContain('missed_food');
+    const clean = clearHiddenV3('afternoon', {
+      energy: 5,
+      mood: 3,
+      energyKindV3: 'sleepy',
+      energyFactorsV3: ['sleep'],
+      energyHelpersV3: ['rest'],
+    });
+    expect(clean.energyKindV3).toBeUndefined();
+    expect(clean.energyFactorsV3).toBeUndefined();
+    expect(clean.energyHelpersV3).toEqual(['rest']);
+  });
+  it('distinguishes successful plans, intentional changes and blockers', () => {
+    expect(branch('plan-blocked', { priorityPaceV3: 'finished' }).fields.map((f) => f.id)).toEqual([
+      'priorityHelpersV3',
+    ]);
+    expect(
+      branch('plan-blocked', { priorityOutcomeV3: 'changed' }).fields.map((f) => f.id),
+    ).toEqual(['priorityChangesV3']);
+    expect(branch('plan-blocked', { priorityPaceV3: 'external' }).fields.map((f) => f.id)).toEqual([
+      'priorityReasonsV3',
+    ]);
+    expect(
+      clearHiddenV3('afternoon', {
+        energy: 3,
+        mood: 3,
+        priorityPaceV3: 'finished',
+        priorityReasonsV3: ['late_work'],
+        priorityHelpersV3: ['focus'],
+      }),
+    ).toMatchObject({ priorityHelpersV3: ['focus'] });
+    expect(
+      clearHiddenV3('afternoon', { priorityPaceV3: 'finished', priorityReasonsV3: ['late_work'] })
+        .priorityReasonsV3,
+    ).toBeUndefined();
+  });
+  it('offers only relevant load factors and clears hidden recovery and learning children', () => {
+    expect(options('work', { workLoadV3: 1 }, 'workFactorsV3')).not.toContain('many_tasks');
+    expect(options('work', { workLoadV3: 5 }, 'workFactorsV3')).not.toContain('calm');
+    const a = clearHiddenV3('evening', {
+      ...evening,
+      mood: 3,
+      energy: 3,
+      priorityOutcomeV3: 'noplan',
+      activitiesV3: ['rest'],
+      recoveryEffectV3: 4,
+      recoveryBlockersV3: ['overload'],
+      recoveryHelpersV3: ['calm'],
+    });
+    expect(a.recoveryBlockersV3).toBeUndefined();
+    expect(a.recoveryHelpersV3).toEqual(['calm']);
+    const b = clearHiddenV3('evening', {
+      ...evening,
+      developmentActualV3: 'none',
+      comprehensionV3: 1,
+      learningChallengesV3: ['practice'],
+    });
+    expect(b.comprehensionV3).toBeUndefined();
+    expect(b.learningChallengesV3).toBeUndefined();
+  });
+  it('cleans incompatible factors on the server across partial writes and preserves confirmed history', () => {
+    let s = write(emptyStore(), 'afternoon', {
+      questionVersion: 3,
+      energy: 3,
+      mood: 2,
+      moodFactorsV3: ['conflict'],
+    });
+    s = write(s, 'afternoon', { questionVersion: 3, mood: 4 });
+    expect(s.checkins[date].afternoon.moodFactorsV3).toBeUndefined();
+    expect(s.checkins[date].afternoon.answerTimesV3.moodFactorsV3).toBeUndefined();
+    s = write(s, 'afternoon', {
+      questionVersion: 3,
+      moodFactorsV3: ['good_news'],
+      activitiesV3: ['rest'],
+      companyV3: ['alone'],
+      priorityPaceV3: 'noplan',
+      confirmed: true,
+    });
+    expect(s.checkins[date].afternoon.confirmed).toBe(true);
+    const saved = structuredClone(s.checkins[date]);
+    s = write(s, 'afternoon', { questionVersion: 3, mood: 1 });
+    expect(s.checkins[date]).toEqual(saved);
+  });
   it('has universal core answers and independent state choices', () => {
     const catalog = JSON.stringify([CHECKIN_CARDS_V3, FOLLOWUP_CARDS_V3]);
     expect(catalog).not.toMatch(/таксі|Mate|мейте|academy/i);

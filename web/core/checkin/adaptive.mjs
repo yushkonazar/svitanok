@@ -74,6 +74,12 @@ export const FACTOR_OPTIONS_V3 = [
   ['Обставини :: Поїздка / подія', 'event'],
   ['Обставини :: Фінансові переживання', 'money'],
   ['Обставини :: Зовнішні умови', 'conditions'],
+  ['Люди :: Відчуття самотності', 'loneliness'],
+  ['Справи :: Розчарування результатом', 'disappointment'],
+  ['Обставини :: Тривожні новини', 'worrying_news'],
+  ['Обставини :: Добрі новини', 'good_news'],
+  ['Справи :: Творчість / самовираження', 'creativity'],
+  ['Увага й час :: Вдалося зробити щось для себе', 'self_care'],
   ['Інше', 'other'],
   ['Нічого виразного', 'none'],
   ['Не знаю', 'unknown'],
@@ -114,6 +120,9 @@ const blockers = [
   ['Відволікся', 'distraction'],
   ['Зовнішні обставини', 'external'],
   ['Немає чіткого наступного кроку', 'unclear'],
+  ['Не виділив окремого часу', 'no_time_slot'],
+  ['Не було потрібних матеріалів або умов', 'resources'],
+  ['Самопочуття змінило плани', 'health'],
   ['Інше', 'other'],
   ['Не знаю', 'unknown'],
 ];
@@ -372,12 +381,50 @@ export const FOLLOWUP_CARDS_V3 = [
           ['Ігри / фільм', 'leisure'],
           ['Телефон / стрічка', 'phone'],
           ['Не хотів завершувати вечір', 'choice'],
+          ['Пізно вечеряв / готував', 'late_food'],
+          ['З’явилися непередбачені справи', 'unexpected'],
+          ['Не відчував сонливості', 'not_sleepy'],
           ['Інше', 'other'],
           ['Не знаю', 'unknown'],
         ],
         {
           optional: true,
           when: { key: 'bedtimeOutcomeV3', values: ['later'] },
+          period: 'sleep_episode',
+        },
+      ),
+      multi(
+        'bedtimeHelpersV3',
+        'Що допомогло лягти вчасно або раніше?',
+        [
+          ['Завершив справи завчасно', 'finished'],
+          ['Відклав телефон / контент', 'screens_off'],
+          ['Залишив час на спокійний вечір', 'calm'],
+          ['Відчув сонливість і пішов спати', 'sleepy'],
+          ['Допоміг звичний вечірній порядок', 'routine'],
+          ['Інше', 'other'],
+          ['Не знаю', 'unknown'],
+        ],
+        {
+          optional: true,
+          when: { key: 'bedtimeOutcomeV3', values: ['earlier', 'ontime'] },
+          period: 'sleep_episode',
+        },
+      ),
+      multi(
+        'bedtimeChangesV3',
+        'Чому змінився план сну?',
+        [
+          ['Свідомо обрав інший час', 'choice'],
+          ['Змінився графік роботи / дороги', 'schedule'],
+          ['З’явилися несподівані справи', 'unexpected'],
+          ['Змінилося самопочуття', 'health'],
+          ['Інше', 'other'],
+          ['Не знаю', 'unknown'],
+        ],
+        {
+          optional: true,
+          when: { key: 'bedtimeOutcomeV3', values: ['changed'] },
           period: 'sleep_episode',
         },
       ),
@@ -398,6 +445,9 @@ export const FOLLOWUP_CARDS_V3 = [
           ['Дискомфорт', 'discomfort'],
           ['Шум / температура / умови', 'conditions'],
           ['Сон у дорозі', 'travel'],
+          ['Телефон / контент перед сном', 'screens'],
+          ['Пізня їжа або кофеїн', 'food_caffeine'],
+          ['Незвичний графік сну', 'schedule'],
           ['Інше', 'other'],
           ['Не знаю', 'unknown'],
         ],
@@ -418,7 +468,49 @@ export const FOLLOWUP_CARDS_V3 = [
           ['Комфортні умови', 'conditions'],
           ['Вдалося розслабитися', 'relax'],
           ['Ліг коли хотів', 'ontime'],
+          ['Звичний порядок перед сном', 'routine'],
+          ['Рух або прогулянка протягом дня', 'movement'],
+          ['Майже не прокидався', 'uninterrupted'],
           ['Нічого виразного', 'none'],
+          ['Не знаю', 'unknown'],
+        ],
+        { optional: true, period: 'sleep_episode' },
+      ),
+    ],
+  },
+  {
+    id: 'sleep-mixed',
+    title: 'Сон дав лише частину відпочинку',
+    fields: [
+      multi(
+        'sleepMixedV3',
+        'Що найточніше описує цей сон?',
+        [
+          ['Виспався частково, але часу не вистачило', 'short'],
+          ['Частина сну була спокійною, частина — ні', 'fragmented'],
+          ['Спав достатньо, але не повністю відновився', 'unrefreshed'],
+          ['Нічого виразного', 'none'],
+          ['Інше', 'other'],
+          ['Не знаю', 'unknown'],
+        ],
+        { optional: true, period: 'sleep_episode' },
+      ),
+    ],
+  },
+  {
+    id: 'sleep-none',
+    title: 'Цього разу без сну',
+    fields: [
+      multi(
+        'sleepAbsenceV3',
+        'Що пов’язано з тим, що не спав?',
+        [
+          ['Робота або обов’язкові справи', 'work'],
+          ['Дорога / поїздка', 'travel'],
+          ['Не вдавалося заснути', 'latency'],
+          ['Свідомо залишився без сну', 'choice'],
+          ['Несподівані зовнішні обставини', 'external'],
+          ['Інше', 'other'],
           ['Не знаю', 'unknown'],
         ],
         { optional: true, period: 'sleep_episode' },
@@ -442,6 +534,33 @@ export const FOLLOWUP_CARDS_V3 = [
       multi('priorityReasonsV3', 'Головна перешкода або причина зміни', blockers, {
         optional: true,
       }),
+      multi(
+        'priorityHelpersV3',
+        'Що допомогло просунутися або завершити?',
+        [
+          ['Чіткий наступний крок', 'clear_step'],
+          ['Виділив час і зосередився', 'focus'],
+          ['Вистачило сил', 'energy'],
+          ['Допомога або підтримка', 'support'],
+          ['Справ виявилося менше, ніж очікував', 'lighter_load'],
+          ['Інше', 'other'],
+          ['Не знаю', 'unknown'],
+        ],
+        { optional: true },
+      ),
+      multi(
+        'priorityChangesV3',
+        'Що стало важливішим замість початкового плану?',
+        [
+          ['Відпочинок / самопочуття', 'rest'],
+          ['Близькі люди / спілкування', 'people'],
+          ['Інша справа виявилася важливішою', 'reprioritized'],
+          ['Нова цікава можливість', 'opportunity'],
+          ['Інше', 'other'],
+          ['Не знаю', 'unknown'],
+        ],
+        { optional: true },
+      ),
     ],
   },
   {
@@ -469,9 +588,61 @@ export const FOLLOWUP_CARDS_V3 = [
           ['Важко включитися у справи', 'activation'],
           ['Фізичний дискомфорт', 'discomfort'],
           ['Кілька причин', 'mixed'],
+          ['Голод / давно не їв', 'hunger'],
           ['Не знаю', 'unknown'],
         ],
-        { optional: true, period: 'now' },
+        { optional: true, period: 'now', when: { key: 'energy', values: [1, 2] } },
+      ),
+      multi(
+        'energyFactorsV3',
+        'Що пов’язуєш із нестачею сил?',
+        [
+          ['Недостатньо або погано спав', 'sleep'],
+          ['Довго без перерв / відпочинку', 'no_breaks'],
+          ['Значне фізичне навантаження', 'physical_load'],
+          ['Напруження / складні переживання', 'stress'],
+          ['Забагато справ одночасно', 'many_tasks'],
+          ['Немає зрозумілого наступного кроку', 'unclear'],
+          ['Часто відволікаюся', 'distraction'],
+          ['Незручно сидів / мало рухався', 'immobility'],
+          ['Нездужання або біль', 'health'],
+          ['Пропустив прийом їжі', 'missed_food'],
+          ['Не встиг поїсти через справи / дорогу', 'no_food_time'],
+          ['Інше', 'other'],
+          ['Не знаю', 'unknown'],
+        ],
+        {
+          optional: true,
+          period: 'perceived_context',
+          when: {
+            key: 'energyKindV3',
+            values: [
+              'sleepy',
+              'physical',
+              'emotional',
+              'activation',
+              'discomfort',
+              'hunger',
+              'mixed',
+            ],
+          },
+        },
+      ),
+      multi(
+        'energyHelpersV3',
+        'Що підтримує твою бадьорість?',
+        [
+          ['Достатньо поспав', 'sleep'],
+          ['Відпочив / зробив перерву', 'rest'],
+          ['Прогулянка або посильний рух', 'movement'],
+          ['Вчасно поїв', 'food'],
+          ['Цікава справа й зрозумілий план', 'engagement'],
+          ['Приємне спілкування / підтримка', 'connection'],
+          ['Нічого виразного', 'none'],
+          ['Інше', 'other'],
+          ['Не знаю', 'unknown'],
+        ],
+        { optional: true, period: 'perceived_context', when: { key: 'energy', values: [4, 5] } },
       ),
     ],
   },
@@ -508,6 +679,32 @@ export const FOLLOWUP_CARDS_V3 = [
         period: 'whole_day',
         when: { key: 'developmentActualV3', values: ['read', 'both'] },
       }),
+      multi(
+        'learningChallengesV3',
+        'Що ускладнило розуміння матеріалу?',
+        [
+          ['Бракує попередніх знань', 'foundation'],
+          ['Пояснення або темп були складними', 'explanation'],
+          ['Втома / відволікання', 'focus'],
+          ['Замало практики чи прикладів', 'practice'],
+          ['Інше', 'other'],
+          ['Не знаю', 'unknown'],
+        ],
+        { optional: true, period: 'whole_day', when: { key: 'comprehensionV3', values: [1, 2] } },
+      ),
+      multi(
+        'learningHelpersV3',
+        'Що допомогло зрозуміти матеріал?',
+        [
+          ['Зрозумілі пояснення / приклади', 'explanation'],
+          ['Власна практика', 'practice'],
+          ['Повторення й нотатки', 'revision'],
+          ['Достатньо часу й уваги', 'focus'],
+          ['Інше', 'other'],
+          ['Не знаю', 'unknown'],
+        ],
+        { optional: true, period: 'whole_day', when: { key: 'comprehensionV3', values: [4, 5] } },
+      ),
     ],
   },
   {
@@ -531,6 +728,40 @@ export const FOLLOWUP_CARDS_V3 = [
           optional: true,
           period: 'retrospective_comparison',
           help: 'Власна оцінка. Це не дві окремі виміряні точки.',
+        },
+      ),
+      multi(
+        'recoveryHelpersV3',
+        'Що найбільше допомогло відновитися?',
+        [
+          ['Відключився від справ / екранів', 'disconnect'],
+          ['Посильний рух / свіже повітря', 'movement'],
+          ['Спокій і достатньо часу', 'calm'],
+          ['Приємна компанія', 'company'],
+          ['Інше', 'other'],
+          ['Не знаю', 'unknown'],
+        ],
+        {
+          optional: true,
+          period: 'perceived_context',
+          when: { key: 'recoveryEffectV3', values: [4, 5] },
+        },
+      ),
+      multi(
+        'recoveryBlockersV3',
+        'Що пов’язуєш із погіршенням після відпочинку або руху?',
+        [
+          ['Навантаження було завеликим', 'overload'],
+          ['Відпочинок постійно переривався', 'interruptions'],
+          ['Біль / фізичний дискомфорт', 'discomfort'],
+          ['Не вдалося відключитися від переживань', 'thoughts'],
+          ['Інше', 'other'],
+          ['Не знаю', 'unknown'],
+        ],
+        {
+          optional: true,
+          period: 'perceived_context',
+          when: { key: 'recoveryEffectV3', values: [1, 2] },
         },
       ),
     ],
@@ -558,9 +789,143 @@ export const FOLLOWUP_CARDS_V3 = [
         ],
         { optional: true, period: 'whole_day' },
       ),
+      multi(
+        'workFactorsV3',
+        'Що визначало це навантаження?',
+        [
+          ['Спокійний темп', 'calm'],
+          ['Зрозумілі звичні завдання', 'routine'],
+          ['Допомога / розподіл справ', 'support'],
+          ['Рівномірний темп протягом роботи', 'steady'],
+          ['Були і спокійні, і напружені відрізки', 'varied'],
+          ['Багато або термінові завдання', 'many_tasks'],
+          ['Довга робота без відновлення', 'duration'],
+          ['Емоційно складні взаємодії', 'interaction'],
+          ['Несподівані зміни / проблеми', 'unexpected'],
+          ['Інше', 'other'],
+          ['Не знаю', 'unknown'],
+        ],
+        {
+          optional: true,
+          period: 'perceived_context',
+          when: { key: 'workLoadV3', values: [1, 2, 3, 4, 5] },
+        },
+      ),
     ],
   },
 ];
+
+/** Keep the full catalog for historical labels and input parsing; resolve the
+ * current branch identically in the UI and server-side cleanup.
+ * @param {Card} card @param {KvBlob} a @param {KvBlob} [context] @returns {Card} */
+export function contextualCardV3(card, a, context = {}) {
+  const selected = { ...card, fields: card.fields.map((f) => ({ ...f })) };
+  const filter = (/** @type {string} */ id, /** @type {string[]} */ values) => {
+    const field = selected.fields.find((f) => f.id === id);
+    if (field) field.options = field.options?.filter(([, value]) => values.includes(String(value)));
+  };
+  const moodPositive = [
+    'connection',
+    'support',
+    'meeting',
+    'success',
+    'workout',
+    'walk',
+    'rest',
+    'focus',
+    'free_time',
+    'event',
+    'good_news',
+    'creativity',
+    'self_care',
+    'other',
+    'none',
+    'unknown',
+  ];
+  if (card.id === 'mood-context' && selected.fields[0]) {
+    selected.title =
+      a.mood >= 4
+        ? 'Що підтримує хороший настрій?'
+        : a.mood <= 2
+          ? 'Що пов’язуєш із поганим настроєм?'
+          : 'Що пов’язуєш зі змішаним настроєм?';
+    selected.fields[0].label =
+      a.mood >= 4
+        ? 'Що приємно вплинуло на твій стан? · до двох'
+        : a.mood <= 2
+          ? 'Що могло погіршити твій стан? · до двох'
+          : 'Що впливало на стан у різні боки? · до двох';
+    if (a.mood >= 4) filter('moodFactorsV3', moodPositive);
+    else if (a.mood <= 2)
+      filter(
+        'moodFactorsV3',
+        FACTOR_OPTIONS_V3.map(([, v]) => String(v)).filter(
+          (v) => !moodPositive.includes(v) || ['other', 'none', 'unknown'].includes(v),
+        ),
+      );
+  }
+  if (card.id === 'energy-context') {
+    selected.title = a.energy >= 4 ? 'Що додає тобі сил?' : 'Мало сил — який це стан?';
+    if (a.energy >= 4) selected.fields = selected.fields.filter((f) => f.id === 'energyHelpersV3');
+    else {
+      /** @type {Record<string,string[]>} */
+      const causes = {
+        sleepy: ['sleep', 'no_breaks', 'many_tasks'],
+        physical: ['no_breaks', 'physical_load', 'immobility', 'health'],
+        emotional: ['stress', 'many_tasks', 'no_breaks'],
+        activation: ['unclear', 'distraction', 'sleep', 'stress'],
+        discomfort: ['health', 'immobility', 'physical_load'],
+        hunger: ['missed_food', 'no_food_time'],
+      };
+      const matching = causes[a.energyKindV3];
+      if (matching) filter('energyFactorsV3', [...matching, 'other', 'unknown']);
+    }
+  }
+  if (card.id === 'plan-blocked') {
+    const result = a.priorityPaceV3 ?? a.priorityOutcomeV3;
+    const positive = ['progress', 'finished'].includes(result);
+    selected.title = positive
+      ? 'Що допомогло з головним пріоритетом?'
+      : result === 'changed'
+        ? 'Свідомо змінив напрям'
+        : 'Що змінило план?';
+    selected.fields = selected.fields.filter(
+      (f) =>
+        f.id ===
+        (positive
+          ? 'priorityHelpersV3'
+          : result === 'changed'
+            ? 'priorityChangesV3'
+            : 'priorityReasonsV3'),
+    );
+  }
+  if (card.id === 'development-blocked' && selected.fields[0]) {
+    const plan = context.morning?.developmentPlanV3;
+    const missing =
+      plan === 'learn' || (plan === 'both' && a.developmentActualV3 === 'read')
+        ? 'навчанню'
+        : plan === 'read' || (plan === 'both' && a.developmentActualV3 === 'learn')
+          ? 'читанню'
+          : 'навчанню або читанню';
+    selected.fields[0].label = `Що завадило саме запланованому ${missing}?`;
+  }
+  if (card.id === 'work') {
+    if ([1, 2].includes(a.workLoadV3))
+      filter('workFactorsV3', ['calm', 'routine', 'support', 'other', 'unknown']);
+    else if (a.workLoadV3 === 3)
+      filter('workFactorsV3', ['steady', 'varied', 'routine', 'other', 'unknown']);
+    else if ([4, 5].includes(a.workLoadV3))
+      filter('workFactorsV3', [
+        'many_tasks',
+        'duration',
+        'interaction',
+        'unexpected',
+        'other',
+        'unknown',
+      ]);
+  }
+  return selected;
+}
 
 /** @param {Field} f @param {KvBlob} a */
 export function fieldVisibleV3(f, a) {
@@ -630,12 +995,21 @@ export function followupsV3(slot, a, context = {}) {
           ['main', 'naps'].includes(a.sleepModeV3) &&
           [4, 5].includes(a.sleepQualityV3)
         );
+      case 'sleep-mixed':
+        return (
+          slot === 'morning' && ['main', 'naps'].includes(a.sleepModeV3) && a.sleepQualityV3 === 3
+        );
+      case 'sleep-none':
+        return slot === 'morning' && a.sleepModeV3 === 'none';
       case 'development-blocked':
         return slot === 'evening' && actual != null && missed;
       case 'plan-blocked':
         return slot === 'afternoon'
-          ? ['notstarted', 'external'].includes(a.priorityPaceV3)
-          : slot === 'evening' && ['notstarted', 'external'].includes(a.priorityOutcomeV3);
+          ? ['notstarted', 'external', 'changed', 'progress', 'finished'].includes(a.priorityPaceV3)
+          : slot === 'evening' &&
+              ['notstarted', 'external', 'changed', 'progress', 'finished'].includes(
+                a.priorityOutcomeV3,
+              );
       case 'mood-context':
         return (
           typeof a.mood === 'number' &&
@@ -644,7 +1018,7 @@ export function followupsV3(slot, a, context = {}) {
               Math.abs(a.mood - context.previous.mood) >= 2))
         );
       case 'energy-context':
-        return [1, 2].includes(a.energy);
+        return [1, 2, 4, 5].includes(a.energy);
       case 'learning':
         return slot === 'evening' && ['learn', 'read', 'both'].includes(actual);
       case 'reading':
@@ -661,9 +1035,23 @@ export function followupsV3(slot, a, context = {}) {
     }
   };
   // Keep an already answered eligible detail when a later core answer adds a branch.
-  const rank = (/** @type {Card} */ c) =>
-    c.id === 'learning' ? 3.5 : FOLLOWUP_CARDS_V3.indexOf(c);
+  const order = [
+    'bedtime',
+    'sleep-poor',
+    'sleep-good',
+    'sleep-mixed',
+    'sleep-none',
+    'development-blocked',
+    'learning',
+    'plan-blocked',
+    'mood-context',
+    'energy-context',
+    'recovery',
+    'work',
+  ];
+  const rank = (/** @type {Card} */ c) => order.indexOf(c.id);
   return FOLLOWUP_CARDS_V3.filter(eligible)
+    .map((c) => contextualCardV3(c, a, context))
     .sort(
       (x, y) =>
         Number(y.fields.some((f) => a[f.id] != null)) -
@@ -688,13 +1076,33 @@ export function cleanCheckinV3(slot, raw) {
 /** @param {string} slot @param {KvBlob} a @param {KvBlob} [context] */
 export function clearHiddenV3(slot, a, context = {}) {
   const out = { ...a };
-  const shown = followupsV3(slot, out, context);
-  const fields = [...(CHECKIN_CARDS_V3[slot] ?? []), ...shown].flatMap((c) => c.fields);
-  const allowed = new Set(fields.filter((f) => fieldVisibleV3(f, out)).map((f) => f.id));
-  for (const f of [...(CHECKIN_CARDS_V3[slot] ?? []), ...FOLLOWUP_CARDS_V3].flatMap(
-    (c) => c.fields,
-  ))
-    if (!allowed.has(f.id)) delete out[f.id];
+  let changed;
+  // Removing a controller can hide its child too. Only delete/filter, so this
+  // reaches a fixed point without adding answers or inventing observations.
+  do {
+    changed = false;
+    const shown = followupsV3(slot, out, context);
+    const fields = [...(CHECKIN_CARDS_V3[slot] ?? []), ...shown].flatMap((c) => c.fields);
+    const allowed = new Map(fields.filter((f) => fieldVisibleV3(f, out)).map((f) => [f.id, f]));
+    for (const f of [...(CHECKIN_CARDS_V3[slot] ?? []), ...FOLLOWUP_CARDS_V3].flatMap(
+      (c) => c.fields,
+    )) {
+      if (out[f.id] == null) continue;
+      const current = allowed.get(f.id);
+      let value = out[f.id];
+      if (current?.type === 'multi' && Array.isArray(value))
+        value = value.filter((/** @type {unknown} */ v) =>
+          current.options?.some(([, id]) => id === v),
+        );
+      if (!current || !validValueV3(current, value)) {
+        delete out[f.id];
+        changed = true;
+      } else if (JSON.stringify(value) !== JSON.stringify(out[f.id])) {
+        out[f.id] = value;
+        changed = true;
+      }
+    }
+  } while (changed);
   if (out.priorityV3 === 'noplan') delete out.priorityStepV3;
   return out;
 }

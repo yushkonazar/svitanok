@@ -55,6 +55,20 @@ it('opens a relevant sleep explanation and removes it when quality changes', () 
   expect(screen.getByRole('region', { name: 'Що допомогло виспатися?' })).toBeInTheDocument();
   expect(screen.getByTestId('answers').textContent).not.toContain('awakenings');
 });
+it('shows positive factors for good mood, switches to negative factors and clears the old selection', () => {
+  render(<Flow slot="afternoon" initial={{ energy: 3, mood: 4 }} />);
+  expect(screen.getByRole('region', { name: 'Що підтримує хороший настрій?' })).toBeInTheDocument();
+  expect(screen.queryByText('Конфлікт')).not.toBeInTheDocument();
+  fireEvent.click(screen.getByText('Люди'));
+  fireEvent.click(screen.getByRole('button', { name: 'Підтримка' }));
+  fireEvent.click(screen.getByRole('button', { name: '2 · Радше поганий' }));
+  expect(screen.queryByText('Підтримка')).not.toBeInTheDocument();
+  expect(screen.getByTestId('answers').textContent).not.toContain('support');
+  fireEvent.click(screen.getByRole('button', { name: 'Конфлікт' }));
+  fireEvent.click(screen.getByRole('button', { name: '5 · Дуже хороший' }));
+  expect(screen.queryByText('Конфлікт')).not.toBeInTheDocument();
+  expect(screen.getByTestId('answers').textContent).not.toContain('conflict');
+});
 it('allows a sleepless morning without inventing quality or duration', () => {
   render(<Flow />);
   fireEvent.click(screen.getByRole('button', { name: 'Не спав' }));
@@ -123,19 +137,19 @@ it('keeps one in-place afternoon option and releases pointer focus before changi
   render(<Flow slot="afternoon" initial={{ energy: 2, mood: 2 }} />);
   const summary = screen.getByText('Люди');
   fireEvent.click(summary);
-  const option = screen.getByRole('button', { name: 'Приємне спілкування' });
+  const option = screen.getByRole('button', { name: 'Неприємна взаємодія' });
   const group = option.closest('details')!;
   option.focus();
   fireEvent.click(option, { detail: 1 });
   expect(option).not.toHaveFocus();
-  expect(screen.getAllByRole('button', { name: 'Приємне спілкування' })).toEqual([option]);
+  expect(screen.getAllByRole('button', { name: 'Неприємна взаємодія' })).toEqual([option]);
   expect(group).toHaveAttribute('open');
   expect(group.querySelector('.checkin-group-count')).toHaveTextContent('1');
   // Safari may keep focus on the opened summary instead of the tapped button.
   summary.focus();
   fireEvent.click(option, { detail: 1 });
   expect(summary).not.toHaveFocus();
-  expect(screen.getAllByRole('button', { name: 'Приємне спілкування' })).toEqual([option]);
+  expect(screen.getAllByRole('button', { name: 'Неприємна взаємодія' })).toEqual([option]);
   expect(screen.getByRole('region', { name: 'Мало сил — який це стан?' })).toBeInTheDocument();
 });
 
