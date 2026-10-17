@@ -1,6 +1,7 @@
 import {
   cloneElement,
   useId,
+  useEffect,
   useRef,
   useState,
   type FormEvent,
@@ -20,7 +21,13 @@ import {
 import { isSessionExpired } from '../../api/client.ts';
 import { SessionExpired } from '../ui/SessionExpired.tsx';
 import { Sheet } from '../ui/Sheet.tsx';
-import { planDate, planLocalTime } from '../../../../core/motivation/model.mjs';
+import {
+  planDate,
+  planLocalTime,
+  dayBoundaryAt,
+  validateTaskTiming,
+  PlanError,
+} from '../../../../core/motivation/model.mjs';
 import {
   XP_CATEGORIES,
   PLAN_AREAS,
@@ -38,6 +45,14 @@ import {
 import { inTelegram, haptic } from '../../telegram.ts';
 import { parseMoney } from '../../../../core/finance/planning.mjs';
 import './plan.css';
+import { PlanLocalTime, PlanDateInput, readablePlanDate } from './PlanLocalTime.tsx';
+import {
+  taskEditorIso,
+  moveTaskClock,
+  readTaskEditorDraft,
+  saveTaskEditorDraft,
+  clearTaskEditorDraft,
+} from './task-editor-state.ts';
 
 type Payload = Record<string, unknown>;
 type Run = (op: string, payload?: Payload, id?: string) => Promise<boolean>;
@@ -271,7 +286,15 @@ export function PlanScreen() {
   };
   const save: Run = async (...args) => {
     const ok = await run(...args);
-    if (ok) close();
+    if (ok) {
+      close();
+      if (args[0] === 'task-save' && typeof args[1]?.date === 'string') {
+        const next = new URLSearchParams(params);
+        next.delete('task');
+        next.set('date', args[1].date);
+        setParams(next, { replace: true });
+      }
+    }
     return ok;
   };
   const recoverLast = async () => {
@@ -777,7 +800,9 @@ export function PlanScreen() {
                   }
                   date={date}
                   data={data}
-                  initial={activePanel.task}
+                  initial={
+                    data.tasks.find((task) => task.id === activePanel.task?.id) ?? activePanel.task
+                  }
                   goalId={activePanel.goalId}
                   rewardId={activePanel.rewardId}
                   save={save}
@@ -975,33 +1000,125 @@ function TaskEditor({
   save: Run;
   onError: (s: string) => void;
 }) {
-  const [title, setTitle] = useState(initial?.title ?? ''),
-    [criterion, setCriterion] = useState(initial?.criterion ?? ''),
-    [target, setTarget] = useState(initial?.target ?? 1),
-    [unit, setUnit] = useState(initial?.unit ?? 'крок');
-  const [effort, setEffort] = useState(initial?.effort ?? 1),
-    [contribution, setContribution] = useState(initial?.contribution ?? 0),
-    [xp, setXp] = useState(initial?.xp ?? 20);
-  const [deadline, setDeadline] = useState(initial?.deadlineKind ?? 'day'),
-    [due, setDue] = useState(initial ? localValue(initial.dueAt) : `${date}T21:00`),
-    [sensitive, setSensitive] = useState(initial?.timeSensitive ?? false);
-  const [first, setFirst] = useState(initial?.firstStep ?? ''),
-    [start, setStart] = useState(initial?.startAt ? localValue(initial.startAt) : ''),
-    [end, setEnd] = useState(initial?.endAt ? localValue(initial.endAt) : ''),
-    [calendar, setCalendar] = useState(initial?.calendar ?? false),
-    [remind, setRemind] = useState(
-      initial?.remindMinutes == null ? (initial ? '' : '10') : String(initial.remindMinutes),
+  const draftId = initial?.id ?? ['new', goalId ?? '', rewardId ?? ''].join(':');
+  const [cached] = useState(() => readTaskEditorDraft(draftId));
+  const restore = <T,>(name: string, fallback: T): T =>
+    cached && Object.hasOwn(cached, name) ? cached[name] : fallback;
+  const sourceBase = initial ? JSON.stringify(initial) : null;
+  const [baseTask, setBaseTask] = useState<string | null>(restore('baseTask', sourceBase));
+  const sourceChanged = Boolean(initial && baseTask !== sourceBase);
+  const [taskDate, setTaskDate] = useState(restore('date', date));
+  const [title, setTitle] = useState(restore('title', initial?.title ?? '')),
+    [criterion, setCriterion] = useState(restore('criterion', initial?.criterion ?? '')),
+    [target, setTarget] = useState(restore('target', initial?.target ?? 1)),
+    [unit, setUnit] = useState(restore('unit', initial?.unit ?? 'крок'));
+  const [effort, setEffort] = useState(restore('effort', initial?.effort ?? 1)),
+    [contribution, setContribution] = useState(restore('contribution', initial?.contribution ?? 0)),
+    [xpOverride, setXpOverride] = useState<number | null>(
+      restore('xpOverride', initial?.xp ?? null),
+    );
+  const [deadline, setDeadline] = useState(restore('deadline', initial?.deadlineKind ?? 'day')),
+    [due, setDue] = useState(restore('due', initial ? localValue(initial.dueAt) : `${date}T21:00`)),
+    [sensitive, setSensitive] = useState(restore('sensitive', initial?.timeSensitive ?? false));
+  const [first, setFirst] = useState(restore('first', initial?.firstStep ?? '')),
+    [start, setStart] = useState(
+      restore('start', initial?.startAt ? localValue(initial.startAt) : ''),
     ),
-    [estimate, setEstimate] = useState(initial?.estimateMinutes ?? 0),
-    [goal, setGoal] = useState(initial?.goalId ?? goalId ?? ''),
-    [reward, setReward] = useState(initial?.rewardId ?? rewardId ?? '');
-  const shift = data.shifts.find((s) => !s.endedAt && s.date === date);
-  const [area, setArea] = useState(initial?.area ?? 'life'),
-    [challenge, setChallenge] = useState(initial?.challenge ?? 0),
-    [routine, setRoutine] = useState(initial?.routine ?? false),
-    [source, setSource] = useState(initial?.source?.metric ?? ''),
-    [template, setTemplate] = useState(false),
-    [templateDays, setTemplateDays] = useState([1, 2, 3, 4, 5]);
+    [end, setEnd] = useState(restore('end', initial?.endAt ? localValue(initial.endAt) : '')),
+    [calendar, setCalendar] = useState(restore('calendar', initial?.calendar ?? false)),
+    [remind, setRemind] = useState(
+      restore(
+        'remind',
+        initial?.remindMinutes == null ? (initial ? '' : '10') : String(initial.remindMinutes),
+      ),
+    ),
+    [estimate, setEstimate] = useState(restore('estimate', initial?.estimateMinutes ?? 0)),
+    [goal, setGoal] = useState(restore('goal', initial?.goalId ?? goalId ?? '')),
+    [reward, setReward] = useState(restore('reward', initial?.rewardId ?? rewardId ?? ''));
+  const shift = data.shifts.find((s) => !s.endedAt && s.date === taskDate);
+  const [area, setArea] = useState(restore('area', initial?.area ?? 'life')),
+    [challenge, setChallenge] = useState(restore('challenge', initial?.challenge ?? 0)),
+    [routine, setRoutine] = useState(restore('routine', initial?.routine ?? false)),
+    [source, setSource] = useState(restore('source', initial?.source?.metric ?? '')),
+    [template, setTemplate] = useState(restore('template', false)),
+    [templateDays, setTemplateDays] = useState(restore('templateDays', [1, 2, 3, 4, 5])),
+    [assistantText, setAssistantText] = useState(restore('assistantText', '')),
+    [issue, setIssue] = useState<{ field: string; message: string } | null>(null);
+  const form = useRef<HTMLFormElement>(null);
+  const timingDetails = useRef<HTMLDetailsElement>(null);
+  useEffect(() => {
+    saveTaskEditorDraft(draftId, {
+      date: taskDate,
+      title,
+      criterion,
+      target,
+      unit,
+      effort,
+      contribution,
+      xpOverride,
+      deadline,
+      due,
+      sensitive,
+      first,
+      start,
+      end,
+      calendar,
+      remind,
+      estimate,
+      goal,
+      reward,
+      area,
+      challenge,
+      routine,
+      source,
+      template,
+      templateDays,
+      assistantText,
+      baseTask,
+    });
+  }, [
+    draftId,
+    taskDate,
+    title,
+    criterion,
+    target,
+    unit,
+    effort,
+    contribution,
+    xpOverride,
+    deadline,
+    due,
+    sensitive,
+    first,
+    start,
+    end,
+    calendar,
+    remind,
+    estimate,
+    goal,
+    reward,
+    area,
+    challenge,
+    routine,
+    source,
+    template,
+    templateDays,
+    assistantText,
+    baseTask,
+  ]);
+  useEffect(() => {
+    if (!issue) return;
+    if (timingDetails.current && issue.field !== 'dueAt') timingDetails.current.open = true;
+    const label =
+      issue.field === 'startAt'
+        ? 'Запланований початок · Київ'
+        : issue.field === 'endAt'
+          ? 'Кінець блоку · Київ'
+          : 'Крайній час · Київ';
+    const field = form.current?.querySelector<HTMLElement>(`[data-time-field="${label}"]`);
+    field?.scrollIntoView?.({ block: 'center', behavior: 'smooth' });
+    field?.querySelector<HTMLInputElement>('input[type="text"]')?.focus({ preventScroll: true });
+  }, [issue]);
   const suggested = (overrides: Record<string, unknown> = {}) =>
     suggestTaskScore({
       effort,
@@ -1011,13 +1128,47 @@ function TaskEditor({
       estimateMinutes: estimate,
       ...overrides,
     });
+  const recommendation = suggested(),
+    xp = xpOverride ?? recommendation.xp;
+  const moveDate = (next: string) => {
+    if (!next) return;
+    setDue(moveTaskClock(due, taskDate, next));
+    setStart(moveTaskClock(start, taskDate, next));
+    setEnd(moveTaskClock(end, taskDate, next));
+    setTaskDate(next);
+    setIssue(null);
+  };
+  let pastDeadline = false;
+  try {
+    pastDeadline = deadline === 'time' && taskEditorIso(due, 'Крайній час') <= data.now;
+  } catch {
+    /* explained on submit */
+  }
   const submit = (e: FormEvent) => {
     e.preventDefault();
+    setIssue(null);
+    if (sourceChanged) {
+      onError('Задача змінилася в іншому місці. Порівняй версії перед збереженням.');
+      return;
+    }
+    let field = 'dueAt';
     try {
+      const dueAt =
+        deadline === 'shift'
+          ? (shift?.reviewAt ?? planLocalTime(dayPlus(taskDate, 1), '12:00'))
+          : deadline === 'time'
+            ? taskEditorIso(due, 'Крайній час')
+            : (data.days.find((day) => day.date === taskDate)?.until ??
+              dayBoundaryAt(dayPlus(taskDate, 1), data.settings));
+      field = 'startAt';
+      const startAt = start ? taskEditorIso(start, 'Запланований початок') : null;
+      field = 'endAt';
+      const endAt = end ? taskEditorIso(end, 'Кінець блоку') : null;
+      validateTaskTiming({ startAt, endAt, dueAt, calendar });
       void save(
         'task-save',
         {
-          date,
+          date: taskDate,
           title,
           criterion,
           target,
@@ -1034,16 +1185,11 @@ function TaskEditor({
           calendarOriginId: initial?.calendarOriginId ?? null,
           xp,
           deadlineKind: deadline,
-          dueAt:
-            deadline === 'shift'
-              ? (shift?.reviewAt ?? planLocalTime(dayPlus(date, 1), '12:00'))
-              : deadline === 'time'
-                ? localIso(due)
-                : undefined,
+          dueAt: deadline === 'day' ? undefined : dueAt,
           timeSensitive: sensitive,
           firstStep: first,
-          startAt: start ? localIso(start) : null,
-          endAt: end ? localIso(end) : null,
+          startAt,
+          endAt,
           calendar,
           remindMinutes: remind === '' ? null : Number(remind),
           estimateMinutes: estimate,
@@ -1051,19 +1197,51 @@ function TaskEditor({
           rewardId: reward || null,
         },
         initial?.id,
-      );
+      ).then((ok) => {
+        if (ok) clearTaskEditorDraft(draftId);
+      });
     } catch (error) {
-      onError((error as Error).message);
+      onError('');
+      setIssue({
+        field: error instanceof PlanError ? (error.field ?? field) : field,
+        message: (error as Error).message,
+      });
     }
   };
   return (
-    <form onSubmit={submit} className="plan-form">
+    <form ref={form} onSubmit={submit} className="plan-form">
       <FormTitle sub="Спочатку результат. Час, підказки й зв’язки — за потреби.">
         {initial ? 'Уточнити чернетку' : 'Новий крок'}
       </FormTitle>
+      {sourceChanged && initial && (
+        <div className="plan-inset" role="status">
+          <p>Задача змінилася в іншому місці. Твої незбережені правки залишилися у формі.</p>
+          <details>
+            <summary>Порівняти з актуальною задачею</summary>
+            <p>{initial.title}</p>
+            <p>{initial.criterion}</p>
+          </details>
+          <button
+            type="button"
+            className="plan-secondary"
+            onClick={() => {
+              setBaseTask(sourceBase);
+              onError('');
+            }}
+          >
+            Використати актуальну версію як основу
+          </button>
+        </div>
+      )}
+      <div className="plan-field">
+        <span className="plan-field-label">День плану</span>
+        <PlanDateInput label="День задачі" value={taskDate} onChange={moveDate} required />
+      </div>
       {!initial?.fromTaskId && (
         <TaskAssist
-          date={date}
+          date={taskDate}
+          initialText={assistantText}
+          onTextChange={setAssistantText}
           onApply={(draft) => {
             setTitle(draft.title);
             setCriterion(draft.criterion);
@@ -1076,7 +1254,10 @@ function TaskEditor({
             setRoutine(draft.routine);
             setEstimate(draft.estimateMinutes);
             setFirst(draft.firstStep);
-            setXp(draft.xp);
+            setXpOverride(null);
+            setIssue(null);
+            setEnd('');
+            setCalendar(false);
             setSource(
               draft.source === 'taxi-net' ? 'net' : draft.source === 'taxi-gross' ? 'gross' : '',
             );
@@ -1084,12 +1265,12 @@ function TaskEditor({
             if (draft.dueTime) {
               setDeadline('time');
               setDue(
-                `${draft.dueTime < data.settings.dayBoundary ? dayPlus(date, 1) : date}T${draft.dueTime}`,
+                `${draft.dueTime < data.settings.dayBoundary ? dayPlus(taskDate, 1) : taskDate}T${draft.dueTime}`,
               );
             } else setDeadline('day');
             setStart(
               draft.startTime
-                ? `${draft.startTime < data.settings.dayBoundary ? dayPlus(date, 1) : date}T${draft.startTime}`
+                ? `${draft.startTime < data.settings.dayBoundary ? dayPlus(taskDate, 1) : taskDate}T${draft.startTime}`
                 : '',
             );
           }}
@@ -1180,20 +1361,35 @@ function TaskEditor({
         </select>
       </Field>
       {deadline === 'time' && (
-        <Field label="Крайній час · Київ">
-          <input
-            type="datetime-local"
-            required
-            value={due}
-            onChange={(e) => setDue(e.target.value)}
-          />
-        </Field>
+        <PlanLocalTime
+          label="Крайній час · Київ"
+          required
+          value={due}
+          defaultDate={taskDate}
+          onChange={(value) => {
+            setDue(value);
+            setIssue(null);
+          }}
+          error={issue?.field === 'dueAt' ? issue.message : undefined}
+        />
+      )}
+      {pastDeadline && (
+        <div className="plan-inset plan-date-warning" role="status">
+          <p>Крайній час цього дня вже минув. Для нового ранкового плану обери потрібну дату.</p>
+          <button
+            type="button"
+            className="plan-secondary"
+            onClick={() => moveDate(dayPlus(data.today, 1))}
+          >
+            На завтра · {readablePlanDate(dayPlus(data.today, 1))}
+          </button>
+        </div>
       )}
       {deadline === 'shift' && (
         <p className="plan-muted">
           {shift
             ? `Поточна зміна: перевірка до ${when(shift.reviewAt)}.`
-            : `Без відкритої зміни межа перевірки — ${dateText(dayPlus(date, 1))}, 12:00. Почнеш зміну — вона прив’яжеться до цього дня.`}{' '}
+            : `Без відкритої зміни межа перевірки — ${dateText(dayPlus(taskDate, 1))}, 12:00. Почнеш зміну — вона прив’яжеться до цього дня.`}{' '}
           Підсумок зміни фіксується окремо від звичайної межі дня.
         </p>
       )}
@@ -1216,7 +1412,6 @@ function TaskEditor({
               value={effort}
               onChange={(e) => {
                 setEffort(Number(e.target.value));
-                setXp(suggested({ effort: Number(e.target.value) }).xp);
               }}
             >
               <option value={0}>Малі</option>
@@ -1229,11 +1424,10 @@ function TaskEditor({
               value={contribution}
               onChange={(e) => {
                 setContribution(Number(e.target.value));
-                setXp(suggested({ contribution: Number(e.target.value) }).xp);
               }}
             >
               <option value={0}>Необхідна дія</option>
-              <option value={1}>Важливий крок до цілі</option>
+              <option value={1}>Крок до цілі</option>
             </select>
           </Field>
         </div>
@@ -1242,12 +1436,11 @@ function TaskEditor({
             value={challenge}
             onChange={(e) => {
               setChallenge(Number(e.target.value));
-              setXp(suggested({ challenge: Number(e.target.value) }).xp);
             }}
           >
             <option value={0}>Звична складність</option>
-            <option value={1}>Потрібно подолати відкладання або опанувати нове</option>
-            <option value={2}>Складний самостійний результат</option>
+            <option value={1}>Відкладання або новизна</option>
+            <option value={2}>Складний результат</option>
           </select>
         </Field>
         <label className="plan-toggle">
@@ -1256,15 +1449,26 @@ function TaskEditor({
             checked={routine}
             onChange={(e) => {
               setRoutine(e.target.checked);
-              setXp(suggested({ routine: e.target.checked }).xp);
             }}
           />
           Звична повторювана дія
         </label>
         <p className="plan-muted">
-          Пропозиція: {suggested().title} · {suggested().xp} XP.{' '}
-          {XP_CATEGORIES.find((category) => category.xp === xp)?.detail}
+          Рекомендація: {recommendation.xp} XP · {recommendation.title}. {recommendation.detail}
         </p>
+        {xpOverride != null && xpOverride !== recommendation.xp && (
+          <div className="plan-xp-choice">
+            <p>
+              Твій вибір: {xp} XP · {XP_CATEGORIES.find((category) => category.xp === xp)?.title}.
+              Саме ця оцінка збережеться.
+            </p>
+            {!initial?.fromTaskId && (
+              <button type="button" onClick={() => setXpOverride(null)}>
+                Застосувати рекомендацію · {recommendation.xp} XP
+              </button>
+            )}
+          </div>
+        )}
         <div className="plan-score-result">
           <span>
             За результат <strong>+{xp} XP</strong>
@@ -1275,8 +1479,12 @@ function TaskEditor({
         </div>
         <details>
           <summary>Уточнити оцінку</summary>
-          <Field label="Погоджена смуга XP">
-            <select value={xp} onChange={(e) => setXp(Number(e.target.value))}>
+          <Field label="Обрана категорія XP">
+            <select
+              value={xp}
+              disabled={Boolean(initial?.fromTaskId)}
+              onChange={(e) => setXpOverride(Number(e.target.value))}
+            >
               {XP_CATEGORIES.map((category) => (
                 <option key={category.xp} value={category.xp}>
                   {category.xp} XP · {category.title}
@@ -1289,7 +1497,18 @@ function TaskEditor({
           </p>
         </details>
       </div>
-      <details open={Boolean(initial?.startAt || goalId || rewardId)}>
+      <details
+        ref={timingDetails}
+        open={Boolean(
+          start ||
+          end ||
+          calendar ||
+          issue?.field === 'startAt' ||
+          issue?.field === 'endAt' ||
+          goalId ||
+          rewardId,
+        )}
+      >
         <summary>Початок, нагадування й зв’язки</summary>
         <Field label="Перший простий крок">
           <input
@@ -1299,9 +1518,16 @@ function TaskEditor({
             placeholder="Після сніданку відкрити першу задачу"
           />
         </Field>
-        <Field label="Запланований початок · Київ">
-          <input type="datetime-local" value={start} onChange={(e) => setStart(e.target.value)} />
-        </Field>
+        <PlanLocalTime
+          label="Запланований початок · Київ"
+          value={start}
+          defaultDate={taskDate}
+          onChange={(value) => {
+            setStart(value);
+            setIssue(null);
+          }}
+          error={issue?.field === 'startAt' ? issue.message : undefined}
+        />
         <Field label="Нагадати до початку або строку">
           <select value={remind} onChange={(e) => setRemind(e.target.value)}>
             <option value="">Без сигналу</option>
@@ -1315,19 +1541,26 @@ function TaskEditor({
           <input
             type="checkbox"
             checked={calendar}
-            onChange={(e) => setCalendar(e.target.checked)}
+            onChange={(e) => {
+              setCalendar(e.target.checked);
+              if (!e.target.checked) setEnd('');
+              setIssue(null);
+            }}
           />
           Додати цей блок у Google Calendar після прийняття
         </label>
-        {calendar && (
-          <Field label="Кінець календарного блоку · Київ">
-            <input
-              type="datetime-local"
-              required
-              value={end}
-              onChange={(e) => setEnd(e.target.value)}
-            />
-          </Field>
+        {(calendar || end) && (
+          <PlanLocalTime
+            label="Кінець блоку · Київ"
+            required={calendar}
+            value={end}
+            defaultDate={start.slice(0, 10) || taskDate}
+            onChange={(value) => {
+              setEnd(value);
+              setIssue(null);
+            }}
+            error={issue?.field === 'endAt' ? issue.message : undefined}
+          />
         )}
         <Field label="Приблизно хвилин">
           <input
@@ -1337,7 +1570,6 @@ function TaskEditor({
             value={estimate}
             onChange={(e) => {
               setEstimate(Number(e.target.value));
-              setXp(suggested({ estimateMinutes: Number(e.target.value) }).xp);
             }}
           />
         </Field>
@@ -1364,6 +1596,9 @@ function TaskEditor({
           </select>
         </Field>
       </details>
+      <p className="plan-muted">
+        Незбережені правки й опис для помічника лишаються на цьому пристрої.
+      </p>
       {!initial?.fromTaskId && (
         <>
           <label className="plan-toggle">
@@ -1385,7 +1620,7 @@ function TaskEditor({
           )}
         </>
       )}
-      <button className="plan-primary" type="submit">
+      <button className="plan-primary" type="submit" disabled={sourceChanged}>
         Зберегти в чернетку
       </button>
       {initial && (

@@ -452,7 +452,12 @@ describe('complete journal and reviewed assistant suggestions', () => {
     expect(request.store).toBe(false);
     expect(request.tools).toBeUndefined();
     expect(request.text.format.strict).toBe(true);
-    expect(JSON.parse(request.input)).toEqual({ date: DATE, text: 'Хочу практикувати SQL' });
+    expect(JSON.parse(request.input)).toEqual({
+      date: DATE,
+      text: 'Хочу практикувати SQL',
+      currentDate: DATE,
+      timeZone: 'Europe/Kyiv',
+    });
     expect(db.prepare('SELECT count(*) n FROM motivation_records').get()?.n).toBe(0);
   });
   it.each(['refusal', 'malformed', 'invalid-score'])(
@@ -774,6 +779,89 @@ const goodDraft = {
   questions: [],
 };
 describe('assistant input and provider failures', () => {
+  it.each([
+    [
+      { startAt: '2026-10-17T05:00:00Z', dueAt: '2026-10-17T04:30:00Z' },
+      'startAt',
+      'Початок задачі пізніше',
+    ],
+    [{ calendar: true }, 'startAt', 'початок блоку'],
+    [{ calendar: true, startAt: '2026-10-17T04:00:00Z' }, 'endAt', 'кінець блоку'],
+    [{ endAt: '2026-10-17T04:30:00Z' }, 'startAt', 'без початку'],
+    [
+      { startAt: '2026-10-17T04:00:00Z', endAt: '2026-10-17T04:00:00Z' },
+      'endAt',
+      'пізніше за початок',
+    ],
+    [
+      {
+        startAt: '2026-10-17T04:00:00Z',
+        endAt: '2026-10-17T05:00:00Z',
+        dueAt: '2026-10-17T04:30:00Z',
+      },
+      'endAt',
+      'після крайнього строку',
+    ],
+  ] as const)(
+    'rejects an invalid schedule %j at its specific field without touching XP',
+    (extra, field, message) => {
+      const state = emptyPlan();
+      try {
+        step(
+          state,
+          'task-save',
+          taskPayload({ deadlineKind: 'time', dueAt: '2026-10-17T20:00:00Z', ...extra }),
+        );
+        throw new Error('Expected timing rejection');
+      } catch (cause) {
+        expect(cause).toMatchObject({
+          field,
+          status: 400,
+          message: expect.stringContaining(message),
+        });
+      }
+      expect(state.records).toEqual({});
+      expect(state.balance).toBe(0);
+    },
+  );
+  it('reports a rejected time field without logging the owner description or committing any task', async () => {
+    const { env, db } = setup(),
+      init = await buildInitData(42, env.TELEGRAM_BOT_TOKEN!);
+    const diagnostic = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const response = await handlePlan(
+      new Request('https://test/api/plan', {
+        method: 'POST',
+        headers: { 'X-Telegram-Init-Data': init, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          op: 'task-save',
+          commandId: 'invalid-time-fixture',
+          revision: 0,
+          payload: taskPayload({
+            title: 'PRIVATE-OWNER-DESCRIPTION',
+            deadlineKind: 'time',
+            dueAt: '2026-10-17T04:30:00Z',
+            startAt: '2026-10-17T04:00:00Z',
+            endAt: '2026-10-17T05:00:00Z',
+          }),
+        }),
+      }),
+      env,
+    );
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({
+      ok: false,
+      field: 'endAt',
+      error: expect.stringContaining('після крайнього строку'),
+    });
+    expect(diagnostic).toHaveBeenCalledWith('plan.task-timing-rejected', {
+      field: 'endAt',
+      commandId: 'invalid-time-fixture',
+    });
+    expect(JSON.stringify(diagnostic.mock.calls)).not.toContain('PRIVATE-OWNER-DESCRIPTION');
+    expect(db.prepare('SELECT count(*) n FROM motivation_records').get()?.n).toBe(0);
+    expect(db.prepare('SELECT count(*) n FROM motivation_commands').get()?.n).toBe(0);
+    diagnostic.mockRestore();
+  });
   it('returns a successful owner-only form suggestion without writing a task or a commitment', async () => {
     const { env, db } = setup(),
       init = await buildInitData(42, env.TELEGRAM_BOT_TOKEN!);

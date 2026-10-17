@@ -45,6 +45,11 @@ export async function handlePlan(request, env) {
     });
   } catch (error) {
     if (receipt) return reply({ ok: true, receipt, refreshRequired: true });
+    if (body?.op === 'task-save' && error instanceof PlanError && error.field)
+      console.warn('plan.task-timing-rejected', {
+        field: error.field,
+        commandId: /^[a-zA-Z0-9_-]{8,80}$/.test(body.commandId ?? '') ? body.commandId : null,
+      });
     return reply(
       {
         ok: false,
@@ -52,6 +57,7 @@ export async function handlePlan(request, env) {
           error instanceof PlanError
             ? error.message
             : 'План зараз недоступний. Збережені дані залишаються на місці.',
+        ...(error instanceof PlanError && error.field ? { field: error.field } : {}),
       },
       error instanceof PlanError ? error.status : 503,
     );
