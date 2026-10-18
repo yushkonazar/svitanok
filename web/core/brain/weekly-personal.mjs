@@ -44,11 +44,34 @@ export function weeklyPersonalPeriods(checkins, asOfMs) {
         selected[date] = copy;
     }
     const metrics = buildCheckinPeriod(selected, dateTo, days);
+    const coverage = (/** @type {number} */ version) => {
+      const records = Object.values(selected);
+      const confirmed = (/** @type {any} */ row, /** @type {string} */ slot) =>
+        row[slot]?.questionVersion === version && row[slot]?.confirmed === true;
+      const bySlot = Object.fromEntries(
+        ['morning', 'afternoon', 'evening'].map((slot) => [
+          slot,
+          records.filter((row) => confirmed(row, slot)).length,
+        ]),
+      );
+      return {
+        recordedDays: records.filter((row) =>
+          ['morning', 'afternoon', 'evening'].some((slot) => confirmed(row, slot)),
+        ).length,
+        confirmedSlots: Object.values(bySlot).reduce((sum, n) => sum + n, 0),
+        bySlot,
+      };
+    };
     return {
       period: reportPeriod(dateFrom, dateTo, cutoff),
       legacy: metrics.current,
       observationsV2: metrics.observationsV2.currentMetrics,
       observationsV3: metrics.observationsV3.currentMetrics,
+      coverage: {
+        legacy: { recordedDays: metrics.current.recordedDays, scope: 'legacy-only' },
+        v2: coverage(2),
+        v3: coverage(3),
+      },
       unknownTimingSlots,
     };
   };

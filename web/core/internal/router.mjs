@@ -260,6 +260,16 @@ export async function handleInternal(request, env, nowMs = Date.now(), ctx = und
       const anchor = ['data.read', 'finance.query', 'runs.query'].includes(name)
         ? await weeklyRunAnchor(env, auth.runId, nowMs)
         : null;
+      if (
+        anchor &&
+        name === 'data.read' &&
+        args.scope === 'weekly' &&
+        typeof args.cap === 'number' &&
+        args.cap < 50_000
+      )
+        throw new ToolArgumentError(
+          'Підготовлений тижневий пакет потребує профільного cap 50000. Повтори data.read(scope="weekly") без cap і period.',
+        );
       const effectiveArgs =
         anchor &&
         name === 'finance.query' &&
@@ -479,8 +489,22 @@ async function handleDeliver(env, ctx, runId, body, nowMs) {
     'finance-conversion': 'гривневі суми',
     'finance-classification': 'типи операцій',
     'finance-comparison': 'база порівняння',
+    'finance-balances': 'повнота балансів і резервів',
+    'finance-payment-amounts': 'суми найближчих платежів',
+    'finance-context-coverage': 'деталі платежів і підписок',
+    'finance-evidence-coverage': 'деталі фінансових операцій',
     'personal-time-coverage': 'час частини відповідей',
+    'personal-context-coverage': 'деталі контексту старших базових тижнів',
     'system-coverage': 'повнота телеметрії',
+    'system-sources': 'читання системних джерел',
+    'system-cost-sources': 'читання обліку вартості',
+    'system-cost-coverage': 'ціни й історія витрат API',
+    'system-credentials': 'метадані доступів',
+    'plan-coverage': 'деталі задач і пояснень',
+    'finance-summary': 'фінансові підсумки',
+    'system-summary': 'системні підсумки',
+    'plans-summary': 'підсумки чинних задач',
+    'personal-summary': 'особисті підсумки',
     'prepared-data-not-read': 'підготовлені показники',
   });
   const coverageNotice =

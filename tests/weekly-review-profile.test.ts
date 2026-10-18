@@ -425,7 +425,9 @@ describe('задача weekly-review (нд 09:00, повтор 12:00, алерт
       payload_json: string;
     }[];
     expect(
-      alerts.some((a) => a.thread_id === '7' && a.payload_json.includes('повторюю о 12:00')),
+      alerts.some(
+        (a) => a.thread_id === '7' && a.payload_json.includes('повторюю зараз (12:10, Київ)'),
+      ),
     ).toBe(true);
 
     // Повтор теж упав: після 12:00 - алерт «не вдався двічі», стан alerted.
@@ -449,6 +451,53 @@ describe('задача weekly-review (нд 09:00, повтор 12:00, алерт
     expect(rows.some((r) => r.payload_json.includes('не вдався двічі'))).toBe(true);
     expect(await weeklyReviewTask(twice.env, SUNDAY_1310 + 60_000)).toEqual({ skipped: 'done' });
     expect(start).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([SUNDAY_1310 - 10 * 60_000, SUNDAY_0910 + (9 * 60 + 45) * 60_000])(
+    'does not catch up a missed morning run or partial retry after the retry window (%s)',
+    async (now) => {
+      const empty = taskEnv();
+      expect(await weeklyReviewTask(empty.env, now)).toEqual({ skipped: 'outside-window' });
+      const s = taskEnv([{ id: 'run-w1', error: null, finished: true }], true);
+      s.d1.db
+        .prepare('UPDATE reports SET status = ?, text_md = ?')
+        .run('partial', `${VALID_REPORT}\n\nЧОГО Я НЕ БАЧИВ\n• Сон`);
+      s.kv.set(
+        WEEKLY_REVIEW_STATE_KEY,
+        JSON.stringify({
+          date: '2026-09-06',
+          attempts: 1,
+          runIds: ['run-w1'],
+          alerted: false,
+        }),
+      );
+      expect(await weeklyReviewTask(s.env, now)).toEqual({ skipped: 'retry-window-missed' });
+      expect(start).not.toHaveBeenCalled();
+      expect(s.d1.db.prepare('SELECT count(*) AS n FROM outbox').get()?.n).toBe(0);
+      expect(fetch).not.toHaveBeenCalled();
+    },
+  );
+
+  it('allows one partial retry at 12:59 and uses its actual time', async () => {
+    const s = taskEnv([{ id: 'run-w1', error: null, finished: true }], true);
+    s.d1.db.prepare('UPDATE reports SET status = ?').run('partial');
+    s.kv.set(
+      WEEKLY_REVIEW_STATE_KEY,
+      JSON.stringify({
+        date: '2026-09-06',
+        attempts: 1,
+        runIds: ['run-w1'],
+        alerted: false,
+      }),
+    );
+    expect(await weeklyReviewTask(s.env, SUNDAY_1210 + 49 * 60_000)).toEqual({
+      started: true,
+      queued: false,
+    });
+    expect(start).toHaveBeenCalledTimes(1);
+    const alerts = JSON.stringify(s.d1.db.prepare('SELECT payload_json FROM outbox').all());
+    expect(alerts).toContain('повторюю зараз (12:59, Київ)');
+    expect(alerts).not.toContain('повторюю о 12:00');
   });
 
   it('втрата стану weekly-review не перетворює кожен 5-хвилинний тік на новий запуск', async () => {

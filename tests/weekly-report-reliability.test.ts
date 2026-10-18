@@ -402,9 +402,9 @@ describe('Brain → signed Core API → report quality', () => {
     version_hash: instructionHash('Пиши огляд із перевірених даних.'),
   };
 
-  it.each(['2026-10-12..2026-10-18', 'wrong-format'])(
-    'corrects invalid period %s exactly once and persists a ready report',
-    async (period) => {
+  it.each([{ period: '2026-10-12..2026-10-18' }, { period: 'wrong-format' }, { cap: 2000 }])(
+    'corrects invalid weekly arguments %j exactly once and persists a ready report',
+    async (args) => {
       const s = transport();
       const reportRuns = vi.fn(async () => undefined);
       const client = {
@@ -419,7 +419,7 @@ describe('Brain → signed Core API → report quality', () => {
       const engine = {
         readTranscript: async () => null,
         run: async (opts: EngineRunOptions) => {
-          const out = await opts.onToolCall('data_read', { scope: 'weekly', period });
+          const out = await opts.onToolCall('data_read', { scope: 'weekly', ...args });
           expect(out.isError).toBe(false);
           expect(JSON.parse(out.text).finance.summary.expenseMinor).toBe(778023);
           return { finalText: TEXT, sessionId: null };
@@ -473,6 +473,17 @@ describe('Brain → signed Core API → report quality', () => {
     const outbox = JSON.stringify(s.d1.db.prepare('SELECT payload_json FROM outbox').all());
     expect(outbox).toContain('Частковий звіт');
     expect(outbox).toContain('особиста статистика');
+  });
+
+  it('names incomplete API cost coverage in the partial header', async () => {
+    const s = transport();
+    s.d1.db
+      .prepare('UPDATE runs SET weekly_context_json = ? WHERE id = ?')
+      .run(JSON.stringify({ missing: ['system-cost-coverage'], sources: {} }), 'run-1');
+    await s.client.deliver('run-1', TEXT);
+    const outbox = JSON.stringify(s.d1.db.prepare('SELECT payload_json FROM outbox').all());
+    expect(outbox).toContain('ціни й історія витрат API');
+    expect(outbox).not.toContain('Неповні дані: джерело');
   });
 
   it.each([

@@ -6,15 +6,15 @@
 //
 // Модуль чистий: на вході вже прочитані агрегати (aggregateStats, архіви,
 // важелі, ряди плану), на виході - рядок. Стеля - не «обрізати рядок посередині
-// JSON»: драбина SHRINK_LADDER знімає найважчі блоки по одному, доки текст не
-// вміститься, і КАЖЕ, що зняла (`dropped`), - модель бачить межу даних, а не
-// зламаний документ. Зріз посередині лишається останнім кроком, коли навіть
-// скелет не влазить (кап < 500 неможливий за схемою, тож це страховка).
+// JSON»: semantic compaction скорочує деталі всередині блоків, зберігаючи
+// фінансові й особисті підсумки. Недостатній кап дає явний малий manifest,
+// а не пакет із тихо видаленими задачами чи фінансами.
 
 import { totalProgress } from '../../roadmap-core.mjs';
 import { addDaysToDateKey } from '../../reminders-core.mjs';
 import { weekStartKey } from '../../stats-core.mjs';
 import { ToolArgumentError } from '../tool-arguments.mjs';
+import { compactWeeklyDetails } from './weekly-compaction.mjs';
 
 /** Глибина сирих чек-інів у weekly за замовчуванням = вікно моделі
  *  «Індексу дня» (STATS_WINDOWS.checkinDeep). */
@@ -85,11 +85,12 @@ export function buildWeeklyDigest(input) {
   const { agg, todayKey } = input;
   const rawDays = input.rawDays ?? WEEKLY_RAW_DAYS;
   const week = weekBounds(todayKey);
-  const doc = {
+  const doc = structuredClone({
+    packetVersion: 2,
     scope: 'weekly',
     sources: input.sources ?? {},
     period: input.period ?? null,
-    finance: input.finance ? structuredClone(input.finance) : null,
+    finance: input.finance ?? null,
     system: input.system ?? null,
     personalPeriods: input.personalPeriods ?? null,
     today: todayKey,
@@ -99,7 +100,9 @@ export function buildWeeklyDigest(input) {
       raw: windowRaw(agg.checkinRaw, todayKey, rawDays),
       series: agg.checkinSeries ?? null,
       weekly: agg.checkinWeekly ?? null,
-      fill: agg.checkinFill ?? null,
+      fill: agg.checkinFill
+        ? { ...agg.checkinFill, questionnaire: 'legacy', allVersionCoverage: false }
+        : null,
       tops: agg.checkinTops ?? null,
       sleepLog: agg.sleepLog ?? null,
       sleepVsDayScore: agg.sleepVsDayScore ?? null,
@@ -125,9 +128,7 @@ export function buildWeeklyDigest(input) {
     },
     funnel: {
       counts: agg.funnel ?? null,
-      // Копії рядків: драбина нижче знімає history з КОЖНОГО ряду, а агрегат
-      // належить викликачу - функція не має правити чужий обʼєкт.
-      list: Array.isArray(agg.funnelList) ? agg.funnelList.map((row) => ({ ...row })) : [],
+      list: Array.isArray(agg.funnelList) ? agg.funnelList : [],
       speed: agg.funnelSpeed ?? null,
       goal: agg.goal ?? null,
       conversion: agg.conversion ?? null,
@@ -145,7 +146,7 @@ export function buildWeeklyDigest(input) {
     plan: input.plans ?? { error: 'план дня не читався' },
     archive: buildArchiveBlock(input.archive, input.weeklyArchive),
     levers: input.levers ?? null,
-  };
+  });
   if (input.sources?.stats?.status === 'unavailable') {
     for (const key of ['checkin', 'index', 'habits', 'funnel', 'interests', 'reliability'])
       /** @type {any} */ (doc)[key] = null;
@@ -153,7 +154,14 @@ export function buildWeeklyDigest(input) {
   }
   if (input.sources?.state?.status === 'unavailable')
     /** @type {any} */ (doc.mastery).roadmap = null;
-  return shrinkToCap(doc, input.cap, WEEKLY_LADDER);
+  for (const level of [0, 1, 2, 3, 4]) {
+    if (level) compactWeeklyDetails(doc, level);
+    const text = JSON.stringify({ ...doc, dropped: [] });
+    if (text.length <= input.cap) return { text, dropped: [] };
+  }
+  // Never exchange entire business summaries for a misleading partial packet.
+  // A caller with an insufficient cap gets a small, explicitly unusable JSON.
+  return shrinkToCap(doc, input.cap, []);
 }
 
 /**
@@ -202,76 +210,6 @@ function buildArchiveBlock(monthly, weekly) {
     weekly: weeks ? Object.fromEntries(recentWeeks.map((k) => [k, weeks[k]])) : null,
     weeksTotal: weekKeys.length,
   };
-}
-
-/**
- * Драбина зрізу: кожен крок - {name, apply(doc) → true, якщо щось зняв}.
- * Порядок - від найважчого і найменш потрібного звіту до скелета.
- * @type {{ name: string, apply: (doc: any) => boolean }[]}
- */
-const WEEKLY_LADDER = [
-  step('checkin.raw', (d) => dropKey(d.checkin, 'raw')),
-  step('finance.evidence', (d) => shrinkFinanceEvidence(d.finance)),
-  step('habits.heatmap', (d) => dropKey(d.habits, 'heatmap')),
-  step('archive.weekly', (d) => dropKey(d.archive, 'weekly')),
-  step('funnel.list.history', (d) => {
-    let touched = false;
-    for (const row of d.funnel?.list ?? []) {
-      if (row && 'history' in row) {
-        delete row.history;
-        touched = true;
-      }
-    }
-    return touched;
-  }),
-  step('index', (d) => dropKey(d, 'index')),
-  step('checkin.sleepLog', (d) => dropKey(d.checkin, 'sleepLog')),
-  step('habits.openRhythm', (d) => dropKey(d.habits, 'openRhythm')),
-  step('checkin.series', (d) => dropKey(d.checkin, 'series')),
-  step('archive.monthly', (d) => dropKey(d.archive, 'monthly')),
-  step('levers', (d) => dropKey(d, 'levers')),
-  // Нижче - скелет: цілі блоки по одному, від найменш потрібного звіту.
-  // Після цих кроків лишаються заголовок і `dropped`, тобто модель дістає
-  // чесний перелік того, чого не побачила, а не обірваний JSON.
-  step('interests', (d) => dropKey(d, 'interests')),
-  step('mastery', (d) => dropKey(d, 'mastery')),
-  step('habits', (d) => dropKey(d, 'habits')),
-  step('funnel', (d) => dropKey(d, 'funnel')),
-  step('checkin', (d) => dropKey(d, 'checkin')),
-  step('reliability', (d) => dropKey(d, 'reliability')),
-  step('plan', (d) => dropKey(d, 'plan')),
-  step('archive', (d) => dropKey(d, 'archive')),
-  step('finance', (d) => dropKey(d, 'finance')),
-];
-
-/** Totals and the full category distribution survive evidence compaction.
- * @param {any} finance */
-function shrinkFinanceEvidence(finance) {
-  if (!finance) return false;
-  let changed = false;
-  const trim = (
-    /** @type {any} */ parent,
-    /** @type {string} */ key,
-    /** @type {string} */ flag,
-  ) => {
-    if (!Array.isArray(parent?.[key]) || parent[key].length <= 3) return;
-    parent[key] = parent[key].slice(0, 3);
-    parent[flag] = true;
-    changed = true;
-  };
-  trim(finance.review?.pending, 'operations', 'truncated');
-  trim(finance.review?.unusual, 'operations', 'truncated');
-  for (const repayment of [
-    finance.review?.repayment,
-    ...(finance.comparison?.weeks ?? []).map((/** @type {any} */ w) => w.repayment),
-  ]) {
-    trim(repayment, 'exclusions', 'exclusionsTruncated');
-    trim(repayment, 'unverified', 'unverifiedTruncated');
-  }
-  trim(finance.context?.upcoming, 'payments', 'truncated');
-  trim(finance.context?.overdue, 'payments', 'truncated');
-  trim(finance.context?.detectedSubscriptions, 'items', 'truncated');
-  return changed;
 }
 
 const ARCHIVE_LADDER = [
