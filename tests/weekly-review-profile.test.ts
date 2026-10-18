@@ -52,6 +52,8 @@ const SUNDAY_0910 = Date.parse('2026-09-06T06:10:00.000Z');
 const SUNDAY_1210 = Date.parse('2026-09-06T09:10:00.000Z');
 const SUNDAY_1310 = Date.parse('2026-09-06T10:10:00.000Z');
 const WEDNESDAY = Date.parse('2026-09-02T09:00:00.000Z');
+const VALID_REPORT =
+  '📊 Тиждень 31.08 - 06.09\n\nГРОШІ\n• Немає записів.\n\nСИСТЕМА\n• Дані прочитано.\n\nЩО ЗРОБИТИ\nЦього тижня від тебе нічого не потрібно';
 
 const WEEKLY_FILE = readFileSync(
   join(__dirname, '..', 'docs', 'assistant', 'weekly-review.md'),
@@ -176,9 +178,9 @@ describe('вхід прогону (§0) і reports', () => {
     d1.db
       .prepare(
         `INSERT INTO reports (id, kind, period_from, period_to, text_md, instruction_hash, created_at)
-         VALUES ('rep-1', 'weekly', '2026-08-24', '2026-08-30', 'минулий звіт про сон', 'h', '2026-08-30T06:00:00Z')`,
+         VALUES ('rep-1', 'weekly', '2026-08-24', '2026-08-30', ?, 'h', '2026-08-30T06:00:00Z')`,
       )
-      .run();
+      .run(`${VALID_REPORT}\nминулий звіт про сон`);
     const second = await buildWeeklyReviewInput(env, WEDNESDAY);
     expect(second).toMatchObject({
       periodFrom: '2026-08-31',
@@ -303,13 +305,13 @@ describe('вхід прогону (§0) і reports', () => {
         SUNDAY_0910,
       );
     };
-    const w = await post('r-w', '📊 Тиждень 31.08 - 06.09', 'n1');
+    const w = await post('r-w', VALID_REPORT, 'n1');
     expect(w.status).toBe(200);
     expect(await w.json()).toMatchObject({ ok: true, report_id: expect.any(String) });
     const c = await post('r-c', 'звичайна відповідь', 'n2');
     expect(await c.json()).not.toHaveProperty('report_id');
     const rows = d1.db.prepare('SELECT text_md FROM reports').all() as { text_md: string }[];
-    expect(rows.map((r) => r.text_md)).toEqual(['📊 Тиждень 31.08 - 06.09']);
+    expect(rows.map((r) => r.text_md)).toEqual([VALID_REPORT]);
     // ⚠️ Під звітом - кнопки «що з цим робити» (PR-6 §2.5): блок «ЩО ЗРОБИТИ»
     // без жодної кнопки лишав би дії на памʼять власника. Під звичайною
     // відповіддю їх бути не має.
@@ -335,10 +337,10 @@ describe('задача weekly-review (нд 09:00, повтор 12:00, алерт
     if (reportToday) {
       d1.db
         .prepare(
-          `INSERT INTO reports (id, kind, period_from, period_to, text_md, instruction_hash, created_at)
-           VALUES ('rep-today', 'weekly', '2026-08-31', '2026-09-06', 'звіт', 'h', '2026-09-06T06:20:00Z')`,
+          `INSERT INTO reports (id, kind, period_from, period_to, text_md, instruction_hash, created_at, status)
+           VALUES ('rep-today', 'weekly', '2026-08-31', '2026-09-06', ?, 'h', '2026-09-06T06:20:00Z', 'ready')`,
         )
-        .run();
+        .run(VALID_REPORT);
     }
     for (const r of runRows) {
       d1.db
@@ -465,6 +467,35 @@ describe('задача weekly-review (нд 09:00, повтор 12:00, алерт
       runIds: ['run-w1', 'run-w2'],
     });
   });
+
+  it.each(['partial', 'failed'])(
+    '%s не скасовує повтор; частковий огляд не оголошується відсутнім',
+    async (status) => {
+      const s = taskEnv([{ id: 'run-w1', error: null, finished: true }], true);
+      s.d1.db
+        .prepare('UPDATE reports SET status = ?, text_md = ?')
+        .run(
+          status,
+          status === 'failed' ? '⚠️ Немає кредиту' : `${VALID_REPORT}\n\nЧОГО Я НЕ БАЧИВ\n• Сон`,
+        );
+      s.kv.set(
+        WEEKLY_REVIEW_STATE_KEY,
+        JSON.stringify({ date: '2026-09-06', attempts: 1, runIds: ['run-w1'], alerted: false }),
+      );
+      expect(await weeklyReviewTask(s.env, SUNDAY_1210)).toEqual({ started: true, queued: false });
+      if (status === 'partial') {
+        s.d1.db
+          .prepare(
+            "INSERT INTO runs(id,trigger,profile,started_at,finished_at) VALUES('run-w2','chat','weekly-review','2026-09-06T09:10:00Z','2026-09-06T09:11:00Z')",
+          )
+          .run();
+        expect(await weeklyReviewTask(s.env, SUNDAY_1310)).toEqual({ alerted: true });
+        const messages = JSON.stringify(s.d1.db.prepare('SELECT payload_json FROM outbox').all());
+        expect(messages).toContain('залишився частковим');
+        expect(messages).not.toContain('цього тижня без нього');
+      }
+    },
+  );
 
   it('вимкнений доступ Claude Code не ретраїться о 12:00', async () => {
     const { env, kv, d1 } = taskEnv([{ id: 'run-w1', error: 'brain-error', finished: true }]);

@@ -39,19 +39,21 @@ function seeded() {
 }
 
 describe('runs.query', () => {
-  it('зареєстрований у ядрі без обовʼязкових полів; period ≤ 16', () => {
+  it('зареєстрований у ядрі без обовʼязкових полів; period ≤ 32, включно з датами', () => {
     const tool = TOOLS['runs.query'];
     expect(tool).toBeDefined();
     expect(tool?.tainting).toBeFalsy();
     expect(validateAgainst(tool!.args, {}).ok).toBe(true);
-    expect(validateAgainst(tool!.args, { period: 'x'.repeat(17) }).ok).toBe(false);
+    expect(validateAgainst(tool!.args, { period: '2026-08-31..2026-09-02' }).ok).toBe(true);
+    expect(validateAgainst(tool!.args, { period: 'x'.repeat(33) }).ok).toBe(false);
   });
 
   it('тиждень за замовчуванням: профілі, медіана/p90, помилки, незавершені; старе не входить', async () => {
     const { env } = seeded();
     const { result } = await runRunsQuery(env, {}, NOW);
     const doc = JSON.parse(String(result));
-    expect(doc.period.days).toBe(7);
+    expect(doc.period.days).toBe(3); // Monday through the current Wednesday.
+    expect(doc.period.from).toBe('2026-08-30T21:00:00.000Z');
     expect(doc.runs.total).toBe(5);
     expect(doc.runs.capped).toBe(false);
     const chat = doc.runs.profiles.find((p: { profile: string }) => p.profile === 'chat');
@@ -88,7 +90,7 @@ describe('runs.query', () => {
 
   it('крива period - помилка; без DB - помилка, не порожній звіт', async () => {
     const { env } = seeded();
-    await expect(runRunsQuery(env, { period: 'вчора' }, NOW)).rejects.toThrow(/period/);
+    await expect(runRunsQuery(env, { period: 'невідомий' }, NOW)).rejects.toThrow(/період/);
     await expect(runRunsQuery(workerEnv(), {}, NOW)).rejects.toThrow(/DB/);
   });
 

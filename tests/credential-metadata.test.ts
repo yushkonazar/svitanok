@@ -34,7 +34,7 @@ function setup(migrated = true) {
   const d1 = d1FromSqlite([
     '0001_base.sql',
     '0002_assistant.sql',
-    ...(migrated ? ['0037_credential_metadata.sql'] : []),
+    ...(migrated ? ['0037_credential_metadata.sql', '0046_credential_expiry_kind.sql'] : []),
   ]);
   const kv = new Map<string, string>();
   const batch = d1.stub.batch;

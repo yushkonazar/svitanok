@@ -90,6 +90,7 @@ export async function readSystemBilling(env, period, nowMs = Date.now()) {
   const items = await Promise.all(
     BILLING_GUIDES.map(async (guide) => {
       let row = null;
+      let cacheAvailable = Boolean(env.DB);
       try {
         row = env.DB
           ? await env.DB.prepare(
@@ -99,11 +100,13 @@ export async function readSystemBilling(env, period, nowMs = Date.now()) {
               .first()
           : null;
       } catch {
+        cacheAvailable = false;
         /* No schema yet: setup stays usable. */
       }
       const snapshot = safeSnapshot(row?.snapshot_json);
       return {
         ...guide,
+        cacheAvailable,
         configured: configured(env, guide.provider),
         normalizationApplied: (guide.provider === 'openai'
           ? [env.SYSTEM_BILLING_MODE, env.OPENAI_BILLING_ADMIN_KEY, env.OPENAI_BILLING_PROJECT_ID]

@@ -140,7 +140,7 @@ export const BRAIN_TOOLS: readonly BrainToolDef[] = [
     coreName: 'runs.query',
     description:
       'Телеметрія системи за період (типово тиждень; «30d», «місяць»): прогони за профілями (кількість, медіана і p90 тривалості, помилки, кроки), останні помилки, квоти місяця з лімітами. Для блоку СИСТЕМА звіту.',
-    args: z.object({ period: z.string().max(16).optional() }),
+    args: z.object({ period: z.string().max(32).optional() }),
   }),
   tool({
     coreName: 'briefing.feedback',

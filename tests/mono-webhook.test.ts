@@ -581,6 +581,15 @@ describe('вебхук: шлях транзакції', () => {
       amount: -134_000,
       amount_uah: -134_000,
     });
+    expect(
+      JSON.parse(
+        String(db.prepare('SELECT raw_json FROM transactions WHERE id=?').get('tx-1')!.raw_json),
+      ),
+    ).toMatchObject({
+      hold: false,
+      bankCheckedAt: new Date(NOON).toISOString(),
+      bankCheckSource: 'webhook',
+    });
     expect(outboxTexts(db)).toHaveLength(0);
   });
 
@@ -717,6 +726,51 @@ describe('звірка mono-reconcile', () => {
     name: 'Назар',
     webHookUrl,
     accounts: [{ id: ACCOUNT, currencyCode: 980, type: 'black', maskedPan: ['44**11'] }],
+  });
+
+  it('continues a full 500-row statement page on the same account and publishes freshness only after completion', async () => {
+    const { env, db } = setup();
+    const expected = monoWebhookUrl(env, 'https://svitanok.yushko.dev');
+    routeFetch([{ match: 'client-info', body: clientBody(expected) }]);
+    await monoReconcileTask(env, NIGHT);
+    const items = Array.from({ length: 500 }, (_, i) =>
+      item({ id: `page-${i}`, time: NIGHT / 1000 - i - 1 }),
+    );
+    routeFetch([{ match: 'statement', body: items }]);
+    await monoReconcileTask(env, NIGHT + 300000);
+    const state = JSON.parse((await env.BRIEFING.get(RECONCILE_STATE_KEY))!);
+    expect(state).toMatchObject({ idx: 0, phase: 'statement', cursorToS: NIGHT / 1000 - 500 });
+    expect(
+      db.prepare("SELECT id FROM facts WHERE key='mono_statement_sync'").get(),
+    ).toBeUndefined();
+    const last = items.at(-1)!;
+    const second = routeFetch([
+      {
+        match: 'statement',
+        body: [last, item({ id: 'older', time: NIGHT / 1000 - 1000, hold: true })],
+      },
+    ]);
+    expect(await monoReconcileTask(env, NIGHT + 600000)).toMatchObject({
+      done: true,
+      imported: 501,
+    });
+    expect(second.calls[0]!.url).toContain(`/${state.cursorToS}`);
+    expect(db.prepare('SELECT COUNT(*) AS n FROM transactions').get()!.n).toBe(501);
+    const metadata = JSON.parse(
+      String(
+        db.prepare("SELECT value_json FROM facts WHERE key='mono_statement_sync'").get()!
+          .value_json,
+      ),
+    );
+    expect(metadata.completedAt).toBe(new Date(NIGHT + 600000).toISOString());
+    const pending = JSON.parse(
+      String(db.prepare("SELECT raw_json FROM transactions WHERE id='older'").get()!.raw_json),
+    );
+    expect(pending).toMatchObject({
+      hold: true,
+      bankCheckedAt: metadata.completedAt,
+      bankCheckSource: 'statement',
+    });
   });
 
   it('поза 23:30 не працює - але за відсутнього списку рахунків іде по client-info', async () => {

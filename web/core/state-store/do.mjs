@@ -64,6 +64,16 @@ export class StateStoreDO extends DurableObject {
     return this.#serial(() => this.#read(key, legacyValue));
   }
 
+  /** Read without seeding or writing: reports must not repair missing data.
+   * @param {'state'|'stats'|'settings'} key @returns {Promise<MutableRecord | null>} */
+  async peek(key) {
+    return this.#serial(async () => {
+      this.#assertKey(key);
+      const record = /** @type {MutableRecord | undefined} */ (await this.ctx.storage.get(key));
+      return record ?? null;
+    });
+  }
+
   /** @param {'state'|'stats'|'settings'} key @param {unknown} legacyValue
    * @returns {Promise<MutableRecord>} */
   async #read(key, legacyValue) {

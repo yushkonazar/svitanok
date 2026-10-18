@@ -112,6 +112,8 @@ export async function handleMonoWebhook(request, env, ctx = undefined, nowMs = D
         item,
         account,
         accountCurrency: known.currency,
+        checkedAt: new Date(nowMs).toISOString(),
+        checkSource: 'webhook',
       });
       if (inserted && tx) await announceTransaction(env, tx, nowMs);
     } catch (/** @type {any} */ e) {

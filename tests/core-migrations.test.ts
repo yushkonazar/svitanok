@@ -268,6 +268,7 @@ const EXPECTED_COLUMNS: Record<string, string[]> = {
     'rotate_after_days',
     'version',
     'updated_at',
+    'expiry_kind',
   ],
   ops_notices: ['id', 'claim', 'at'],
   facts: [
@@ -426,6 +427,7 @@ const EXPECTED_COLUMNS: Record<string, string[]> = {
     'tools_json',
     'error',
     'cost_note',
+    'weekly_context_json',
   ],
   run_steps: ['id', 'run_id', 'n', 'at', 'kind', 'name', 'ms', 'ok', 'note'],
   quota_counters: ['key', 'period', 'value', 'limit_value', 'updated_at'],
@@ -530,7 +532,19 @@ const EXPECTED_COLUMNS: Record<string, string[]> = {
   records: ['id', 'collection_id', 'data_json', 'created_at', 'updated_at'],
   instructions: ['name', 'kind', 'version_hash', 'body_md', 'max_chars', 'deployed_at'],
   instruction_history: ['name', 'version_hash', 'body_md', 'deployed_at'],
-  reports: ['id', 'kind', 'period_from', 'period_to', 'text_md', 'instruction_hash', 'created_at'],
+  reports: [
+    'id',
+    'kind',
+    'period_from',
+    'period_to',
+    'text_md',
+    'instruction_hash',
+    'created_at',
+    'status',
+    'run_id',
+    'as_of',
+    'quality_json',
+  ],
   worker_card_actions: ['report_id', 'action_key', 'created_at'],
   learning_sessions: [
     'id',
@@ -690,7 +704,7 @@ const EXPECTED_INDEXES: Record<string, IndexSpec[]> = {
   inbox_digests: [{ cols: ['created_at'] }],
   collections: [{ cols: ['name'], unique: true }],
   records: [{ cols: ['collection_id', 'created_at'] }],
-  reports: [{ cols: ['kind', 'created_at'] }],
+  reports: [{ cols: ['kind', 'created_at'] }, { cols: ['kind', 'status', 'created_at'] }],
   worker_card_actions: [{ cols: ['report_id'], unique: true }],
   learning_sessions: [{ cols: ['thread_id', 'chat_id', 'status', 'updated_at'] }],
   style_corpus: [{ cols: ['at'] }],
@@ -744,7 +758,7 @@ const columnsOf = (table: string): { name: string; pk: number }[] =>
   }[];
 
 describe('міграції D1 — файли', () => {
-  it('сорок чотири файли 0001–0044, нумерація без дірок', () => {
+  it('сорок шість файлів 0001–0046, нумерація без дірок', () => {
     expect(files.map((f) => f.slice(0, 4))).toEqual([
       '0001',
       '0002',
@@ -790,6 +804,8 @@ describe('міграції D1 — файли', () => {
       '0042',
       '0043',
       '0044',
+      '0045',
+      '0046',
     ]);
   });
 });

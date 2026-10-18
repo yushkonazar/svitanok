@@ -3,6 +3,7 @@ import { readFinanceWorkspace, financeTransactionOf } from './workspace.mjs';
 import { buildFinanceReport, validateReportRange } from './reporting.mjs';
 import { NOT_TEST_SQL } from './store.mjs';
 import { kyivParts, shiftDate, sumMoney } from './planning.mjs';
+import { financeReviewAccumulator, financeReviewContext } from './review.mjs';
 
 const COLUMNS = 'id,at,amount,currency,amount_uah,category,description,raw_json,flags_json';
 const RAW = "CASE WHEN json_valid(raw_json) THEN raw_json ELSE '{}' END";
@@ -32,15 +33,23 @@ function readCursor(cursor) {
   }
 }
 /** Reads bounded pages on the server; the phone receives aggregates, not the ledger.
- * @param {Env} env @param {URLSearchParams} params @param {number} [nowMs] */
-export async function readFinanceAnalytics(env, params, nowMs = Date.now(), catalog = false) {
+ * @param {Env} env @param {URLSearchParams} params @param {number} [nowMs]
+ * @param {boolean} [catalog] @param {{review?:boolean,context?:boolean}} [options] */
+export async function readFinanceAnalytics(
+  env,
+  params,
+  nowMs = Date.now(),
+  catalog = false,
+  options = {},
+) {
   if (!env.DB) throw new Error('Finance DB unavailable');
   const s = analyticsSelection(params, nowMs);
   const f = await readFinanceWorkspace(env, nowMs, undefined, { omitTransactions: true });
+  const review = options.review ? financeReviewAccumulator(s, f.payments, f.merchantAliases) : null;
   const current = validateReportRange(s.from, s.to, nowMs),
     previous = validateReportRange(s.previousFrom, s.previousTo, nowMs);
   const from = new Date(Math.min(current.start, previous.start)).toISOString();
-  const to = new Date(Math.min(current.end, nowMs + 1)).toISOString();
+  const to = s.period?.to ?? new Date(Math.min(current.end, nowMs + 1)).toISOString();
   const acc = analyticsAccumulator(
       s,
       params.get('ungrouped') === '1' ? {} : f.merchantAliases,
@@ -71,6 +80,7 @@ export async function readFinanceAnalytics(env, params, nowMs = Date.now(), cata
       const tx = financeTransactionOf(row);
       acc.consume(tx);
       global.consume(tx);
+      review?.consume(tx);
     }
     if ((result.results?.length ?? 0) <= 2000) break;
     /** @type {KvBlob|undefined} */ const last = rows.at(-1);
@@ -111,10 +121,27 @@ export async function readFinanceAnalytics(env, params, nowMs = Date.now(), cata
     !oldest?.oldest || s.previousFrom < kyivParts(Date.parse(String(oldest.oldest))).date;
   if (previousBeforeFirstRecord || s.previousFrom < shiftDate(kyivParts(nowMs).date, -720))
     data.summary.changeBps = null;
+  let context;
+  if (options.context) {
+    const nightly = await env.DB.prepare(
+      "SELECT value_json FROM facts WHERE kind='setting' AND key='mono_statement_sync' LIMIT 1",
+    )
+      .bind()
+      .first();
+    let metadata = null;
+    try {
+      metadata = JSON.parse(String(nightly?.value_json ?? 'null'));
+    } catch {
+      /* No verified timestamp. */
+    }
+    context = financeReviewContext(f, nowMs, metadata);
+  }
   return {
     ok: true,
     generatedAt: new Date(nowMs).toISOString(),
     ...data,
+    review: review?.finish(),
+    context,
     report,
     reportScope: 'all-accounts',
     coverage: {

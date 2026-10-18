@@ -151,7 +151,7 @@ export const TOOLS = {
   'runs.query': {
     args: {
       type: 'object',
-      properties: { period: { type: 'string', maxLength: 16 } },
+      properties: { period: { type: 'string', maxLength: 32 } },
     },
     run: (env, args, nowMs) => runRunsQuery(env, args, nowMs),
   },

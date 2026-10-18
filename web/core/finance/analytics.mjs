@@ -1,6 +1,7 @@
 import { validDate } from '../ops/system-period.mjs';
 import { validateReportRange } from './reporting.mjs';
 import { kyivParts, shiftDate, sumMoney } from './planning.mjs';
+import { reportPeriod, shiftReportCutoff } from '../report-period.mjs';
 /** Calendar periods shared by the assistant and dashboard, without 24h DST arithmetic.
  * @param {string} period @param {number} [nowMs] */
 export function analyticsPeriod(period, nowMs = Date.now()) {
@@ -68,6 +69,14 @@ export function analyticsSelection(params, nowMs = Date.now()) {
     previousFrom = `${last.slice(0, 7)}-01`;
     previousTo = shiftDate(previousFrom, Math.min(range.days, Number(last.slice(8))) - 1);
   }
+  const period = reportPeriod(from, to, nowMs);
+  const previousPeriod = reportPeriod(
+    previousFrom,
+    previousTo,
+    period.complete
+      ? nowMs
+      : shiftReportCutoff(nowMs, (Date.parse(previousTo) - Date.parse(to)) / 86_400_000),
+  );
   return {
     from,
     to,
@@ -80,6 +89,8 @@ export function analyticsSelection(params, nowMs = Date.now()) {
     comparison,
     previousFrom,
     previousTo,
+    period,
+    previousPeriod,
   };
 }
 /** @param {import('./analytics.mjs').AnalyticsTransaction} tx
@@ -115,6 +126,9 @@ export function analyticsAccumulator(selection, aliases = {}, catalog = false) {
   /** @type {number[]} */ const amounts = [];
   const quality = {
     unclassifiedCount: 0,
+    unclassifiedOutflowMinor: 0,
+    unclassifiedInflowMinor: 0,
+    unclassifiedUnknownCurrencyCount: 0,
     unknownCurrencyCount: 0,
     pendingCount: 0,
     pendingMinor: 0,
@@ -127,17 +141,38 @@ export function analyticsAccumulator(selection, aliases = {}, catalog = false) {
     previousExpenseMinor = 0,
     otherIncomeMinor = 0,
     operationCount = 0;
+  const sourceTotals = {
+    mono: { expenseMinor: 0, count: 0 },
+    manual: { expenseMinor: 0, count: 0 },
+  };
   /** @type {{id:string,description:string,at:string,amountMinor:number}|null} */ let largest =
     null;
   /** @param {import('./analytics.mjs').AnalyticsTransaction} tx */
   const consume = (tx) => {
     const date = kyivParts(Date.parse(tx.at)).date;
-    const current = date >= s.from && date <= s.to,
-      previous = date >= s.previousFrom && date <= s.previousTo;
+    const at = Date.parse(tx.at);
+    const current = date >= s.from && date <= s.to && (!s.period || at < Date.parse(s.period.to)),
+      previous =
+        date >= s.previousFrom &&
+        date <= s.previousTo &&
+        (!s.previousPeriod || at < Date.parse(s.previousPeriod.to));
     if ((!current && !previous) || !matchesAnalytics(tx, s, aliases)) return;
     if (current) {
       operationCount++;
-      if (tx.kind === 'unclassified') quality.unclassifiedCount++;
+      if (tx.kind === 'unclassified') {
+        quality.unclassifiedCount++;
+        if (tx.amountUah == null) quality.unclassifiedUnknownCurrencyCount++;
+        else if (tx.amountUah < 0)
+          quality.unclassifiedOutflowMinor = sumMoney([
+            quality.unclassifiedOutflowMinor,
+            -tx.amountUah,
+          ]);
+        else
+          quality.unclassifiedInflowMinor = sumMoney([
+            quality.unclassifiedInflowMinor,
+            tx.amountUah,
+          ]);
+      }
       if (['expense', 'income'].includes(tx.kind) && tx.amountUah == null)
         quality.unknownCurrencyCount++;
       if (tx.duplicateSuspected) {
@@ -168,6 +203,9 @@ export function analyticsAccumulator(selection, aliases = {}, catalog = false) {
     const value = -tx.amountUah;
     if (current) {
       expenseMinor = sumMoney([expenseMinor, value]);
+      const source = tx.bank ? sourceTotals.mono : sourceTotals.manual;
+      source.expenseMinor = sumMoney([source.expenseMinor, value]);
+      source.count++;
       amounts.push(value);
       const day = byDay.get(date);
       if (day) {
@@ -244,6 +282,7 @@ export function analyticsAccumulator(selection, aliases = {}, catalog = false) {
     );
     return {
       selection: s,
+      sourceTotals,
       summary: {
         expenseMinor,
         previousExpenseMinor,

@@ -33,6 +33,15 @@ function setup(seed: Record<string, string> = {}) {
 }
 
 describe('StateStoreDO — canonical mutable state', () => {
+  it('report peek never seeds missing state and returns the canonical record after a real read', async () => {
+    const { stateStore } = setup({ stats: JSON.stringify({ old: true }) });
+    expect(await stateStore.peek('stats')).toBeNull();
+    await stateStore.read('stats', { checkins: { recorded: true } });
+    expect(await stateStore.peek('stats')).toEqual({
+      version: 0,
+      value: { checkins: { recorded: true } },
+    });
+  });
   it('одноразово сіє state з legacy KV і далі не довіряє його застарілій копії', async () => {
     const { env, kv } = setup({ state: JSON.stringify({ legacy: 1 }) });
     expect(await loadState(env)).toEqual({ legacy: 1 });

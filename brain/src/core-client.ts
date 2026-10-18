@@ -102,11 +102,13 @@ export class CoreClient {
     text: string,
     buttons?: DeliverButtons,
     worker?: DeliverWorker,
+    failed = false,
   ): Promise<void> {
     const body = {
       text,
       ...(buttons?.length ? { buttons } : {}),
       ...(worker ? { worker } : {}),
+      ...(failed ? { failed: true } : {}),
     };
     const res = await this.post('/internal/deliver', runId, body);
     if (res.status < 200 || res.status >= 300) {

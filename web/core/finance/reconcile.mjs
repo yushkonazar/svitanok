@@ -22,8 +22,10 @@ import {
   clientInfo,
   setWebhook,
   statement,
+  STATEMENT_PAGE,
 } from '../adapters/mono.mjs';
 import { isLoud } from './rules.mjs';
+import { runFactsSet } from '../tools/facts.mjs';
 import { announceTransaction } from './notify.mjs';
 import { monoWebhookUrl } from './webhook.mjs';
 import {
@@ -58,7 +60,7 @@ export const TRANSIENT_ALERT_AFTER_MS = 15 * 60_000;
  * @typedef {{ date: string, phase: 'client' | 'statement' | 'done', idx: number,
  *   initial: boolean, fromS: number, toS: number, imported: number, loud: number,
  *   startedMs: number, alerted: boolean, transientSinceMs: number,
- *   transientAlerted: boolean }} ReconcileState
+ *   transientAlerted: boolean, cursorToS?:number|null }} ReconcileState
  */
 
 /** Стан сеансу з KV; null - сеансу ще не було. @param {Env} env
@@ -91,6 +93,7 @@ function normalizeState(saved) {
     alerted: raw.alerted === true,
     transientSinceMs: Number.isFinite(raw.transientSinceMs) ? raw.transientSinceMs : 0,
     transientAlerted: raw.transientAlerted === true,
+    cursorToS: Number.isFinite(raw.cursorToS) ? raw.cursorToS : null,
   };
 }
 
@@ -273,6 +276,7 @@ async function phaseClient(env, state, nowMs, writeState) {
     initial,
     fromS,
     toS,
+    cursorToS: null,
     transientSinceMs: 0,
   });
   return { accounts: accounts.length, rearmed, initial };
@@ -294,8 +298,16 @@ async function phaseStatement(env, state, accounts, nowMs, writeState) {
   const items = await statement(env, {
     account: account.id,
     fromS: state.fromS,
-    toS: state.toS,
+    toS: state.cursorToS ?? state.toS,
   });
+  const oldest = items.length ? Math.min(...items.map((item) => item.timeS)) : null;
+  if (
+    items.length >= STATEMENT_PAGE &&
+    (oldest === (state.cursorToS ?? state.toS) || oldest === state.fromS)
+  )
+    throw new Error('Mono: повноту виписки на часовій межі не підтверджено.');
+  const cursorToS =
+    items.length >= STATEMENT_PAGE && oldest != null && oldest > state.fromS ? oldest : null;
   let imported = 0;
   let loud = state.loud;
   // Старіші перші: власник побачить пропущені покупки в тому ж порядку, у
@@ -306,6 +318,8 @@ async function phaseStatement(env, state, accounts, nowMs, writeState) {
       account: account.id,
       accountCurrency: account.currency,
       silent: state.initial,
+      checkedAt: new Date(nowMs).toISOString(),
+      checkSource: 'statement',
     });
     if (!inserted || !tx) continue;
     imported += 1;
@@ -318,7 +332,8 @@ async function phaseStatement(env, state, accounts, nowMs, writeState) {
   }
   const next = {
     ...state,
-    idx: state.idx + 1,
+    idx: cursorToS == null ? state.idx + 1 : state.idx,
+    cursorToS,
     imported: state.imported + imported,
     loud,
     transientSinceMs: 0,
@@ -336,6 +351,22 @@ async function phaseStatement(env, state, accounts, nowMs, writeState) {
  * @param {Env} env @param {ReconcileState} state @param {number} nowMs
  */
 async function finish(env, state, nowMs) {
+  if (state.idx > 0)
+    await runFactsSet(
+      env,
+      {
+        kind: 'setting',
+        key: 'mono_statement_sync',
+        source: 'observed_event',
+        value: {
+          completedAt: new Date(nowMs).toISOString(),
+          from: new Date(state.fromS * 1000).toISOString(),
+          to: new Date(state.toS * 1000).toISOString(),
+          source: 'nightly-reconcile',
+        },
+      },
+      nowMs,
+    );
   const messages = state.transientAlerted ? ['✅ Звірку Monobank відновлено й завершено.'] : [];
   if (state.initial && state.imported) {
     messages.push(`Завантажив історію Mono за ${INITIAL_DAYS} діб: ${state.imported} транзакцій.`);

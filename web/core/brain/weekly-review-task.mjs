@@ -11,10 +11,12 @@
 // повтор з алертом у TOPIC_SYSTEM; впав і повтор - о 13:00+ алерт «не
 // вдався двічі», більше спроб немає.
 
-import { kyivHour, kyivDateKey, kyivMinuteOfDay } from '../../kyiv-time.mjs';
+import { kyivHour, kyivDateKey } from '../../kyiv-time.mjs';
 import { sendSystemAlert } from '../tg/outbox.mjs';
 import { startOrQueueThreadText, THREAD_DM } from '../prerouter.mjs';
 import { assistantHomeTarget } from '../tg/home.mjs';
+import { usableWeeklyReports } from './weekly-report-quality.mjs';
+import { kyivInstant } from '../finance/planning.mjs';
 import { weeklyClaim, weeklyComplete, weeklyRelease } from '../weekly-review-state/client.mjs';
 import {
   WEEKLY_REVIEW_LEASE_MS,
@@ -48,7 +50,7 @@ export async function weeklyReviewTask(env, nowMs = Date.now()) {
   // такого звіряння кожен 5-хвилинний тік вважав би себе «першою» спробою і
   // знову викликав би модель. Відновлюємо лічильник з durable D1 перед будь-
   // яким новим стартом; максимум дві спроби лишається тим самим.
-  const dayStartIso = new Date(nowMs - kyivMinuteOfDay(now) * 60_000).toISOString();
+  const dayStartIso = new Date(kyivInstant(today, 0)).toISOString();
   const persistedRuns = await weeklyRunsSince(env, dayStartIso);
 
   const legacy = await readState(env, today);
@@ -77,7 +79,8 @@ export async function weeklyReviewTask(env, nowMs = Date.now()) {
     // Київська північ сьогодні в ISO: звіт, доставлений сьогодні, і є успіх.
     if (state.attempts === 1) {
       if (hour < WEEKLY_REVIEW_RETRY_HOUR) return { skipped: 'wait-first' };
-      if (await reportExistsSince(env, dayStartIso)) return { skipped: 'ok' };
+      const reportStatus = await reportStatusSince(env, dayStartIso);
+      if (reportStatus === 'ready') return { skipped: 'ok' };
       const verdict = await runVerdict(env, /** @type {string} */ (state.runIds[0]));
       if (verdict === 'running') return { skipped: 'running' };
       if (await isPermanentModelAccessFailure(env, /** @type {string} */ (state.runIds[0]))) {
@@ -91,7 +94,9 @@ export async function weeklyReviewTask(env, nowMs = Date.now()) {
       }
       await sendSystemAlert(
         env,
-        `weekly-review о 09:00 не дав звіту (${verdict}) - повторюю о 12:00.`,
+        reportStatus === 'partial'
+          ? 'Тижневий звіт о 09:00 був частковим — повторюю о 12:00, щоб перевірити пропущені джерела.'
+          : `weekly-review о 09:00 не дав звіту (${verdict}) - повторюю о 12:00.`,
         nowMs,
       );
       return start(env, state, nowMs, writeState);
@@ -100,13 +105,16 @@ export async function weeklyReviewTask(env, nowMs = Date.now()) {
     // Обидві спроби зроблено: лишилось перевірити другу і сказати вголос.
     if (state.alerted) return { skipped: 'done' };
     if (hour <= WEEKLY_REVIEW_RETRY_HOUR) return { skipped: 'wait-retry' };
-    const delivered = await reportExistsSince(env, dayStartIso);
+    const reportStatus = await reportStatusSince(env, dayStartIso);
+    const delivered = reportStatus === 'ready';
     if (!delivered) {
       const verdict = await runVerdict(env, /** @type {string} */ (state.runIds[1]));
       if (verdict === 'running') return { skipped: 'running' };
       await sendSystemAlert(
         env,
-        `Тижневий звіт не вдався двічі (${verdict}) - цього тижня без нього.`,
+        reportStatus === 'partial'
+          ? 'Тижневий звіт залишився частковим після повтору. Доступний огляд збережено; пропущені джерела названо в ньому.'
+          : `Тижневий звіт не вдався двічі (${verdict}) - цього тижня без нього.`,
         nowMs,
       );
     }
@@ -155,14 +163,11 @@ async function start(env, state, nowMs, writeState) {
  * @param {Env} env
  * @param {string} sinceIso
  */
-async function reportExistsSince(env, sinceIso) {
-  if (!env.DB) return false;
-  const row = await env.DB.prepare(
-    `SELECT id FROM reports WHERE kind = 'weekly' AND created_at >= ? LIMIT 1`,
-  )
-    .bind(sinceIso)
-    .first();
-  return row != null;
+async function reportStatusSince(env, sinceIso) {
+  if (!env.DB) return null;
+  const rows = await usableWeeklyReports(env, 'created_at >= ?', [sinceIso]);
+  if (rows.some((row) => row.status === 'ready')) return 'ready';
+  return rows.length ? 'partial' : null;
 }
 
 /**

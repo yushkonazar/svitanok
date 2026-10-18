@@ -35,6 +35,7 @@ export function CredentialEditor({
 }) {
   const [rotatedAt, setRotatedAt] = useState(entry.rotatedAt ?? ''),
     [expiresAt, setExpiresAt] = useState(entry.expiresAt ?? ''),
+    [nonExpiring, setNonExpiring] = useState(entry.expiryKind === 'non-expiring'),
     [rotation, setRotation] = useState(
       entry.rotateAfterDays == null ? '' : String(entry.rotateAfterDays),
     ),
@@ -49,7 +50,8 @@ export function CredentialEditor({
           id: entry.id,
           version,
           rotatedAt: rotatedAt || null,
-          expiresAt: expiresAt || null,
+          expiresAt: nonExpiring ? null : expiresAt || null,
+          expiryKind: nonExpiring ? 'non-expiring' : expiresAt ? 'date' : 'unknown',
           rotateAfterDays: rotation ? Number(rotation) : null,
         });
       }}
@@ -72,8 +74,20 @@ export function CredentialEditor({
           type="date"
           value={expiresAt}
           onChange={(e) => setExpiresAt(e.target.value)}
-          disabled={pending}
+          disabled={pending || nonExpiring}
         />
+      </label>
+      <label className="flex gap-3 mt-3 items-start text-sm">
+        <input
+          type="checkbox"
+          checked={nonExpiring}
+          disabled={pending}
+          onChange={(e) => {
+            setNonExpiring(e.target.checked);
+            if (e.target.checked) setExpiresAt('');
+          }}
+        />
+        Провайдер підтвердив, що строк дії не обмежений
       </label>
       <p className="renewal-chart-note">
         Залиш порожнім, якщо строк не вказано. Дата оновлення не визначає строк дії.
@@ -256,9 +270,11 @@ export function OperationsPanel() {
                     ; це не перевірка чинності.
                   </p>
                   <p className="renewal-chart-note">
-                    {entry.expiresAt
-                      ? `Строк дії: ${entry.expiresAt}`
-                      : 'Строк дії не вказано — це не помилка.'}
+                    {entry.expiryKind === 'non-expiring'
+                      ? 'Безстроковий за вказаними даними; чинність окремо не перевірена.'
+                      : entry.expiresAt
+                        ? `Строк дії: ${entry.expiresAt}`
+                        : 'Строк дії не вказано — це не помилка.'}
                   </p>
                   {entry.rotateAfterDays && (
                     <p className="renewal-chart-note">

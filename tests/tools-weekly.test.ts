@@ -166,10 +166,10 @@ describe('buildWeeklyDigest', () => {
     expect(withFunnel.funnelList[0]?.history).toHaveLength(1);
   });
 
-  it('кап менший за скелет - жорсткий зріз із маркером truncated', () => {
+  it('кап менший за скелет - валідний JSON із маркером truncated', () => {
     const { text } = shrinkToCap({ a: 'x'.repeat(2_000), b: 'y'.repeat(2_000) }, 600, []);
-    expect(text.length).toBe(600);
-    expect(text.endsWith(',"truncated":true}')).toBe(true);
+    expect(text.length).toBeLessThanOrEqual(600);
+    expect(JSON.parse(text)).toMatchObject({ truncated: true, dropped: ['remaining-data'] });
   });
 });
 
@@ -214,7 +214,7 @@ describe('buildArchiveDigest', () => {
   });
 });
 
-describe('runDataRead: weekly і archive наскрізь (KV + D1 0007)', () => {
+describe('runDataRead: weekly і archive наскрізь (KV + чинний план)', () => {
   function env(planRows = true) {
     const store = new Map<string, string>([
       ['stats', JSON.stringify(statsWithCheckins(30))],
@@ -223,7 +223,7 @@ describe('runDataRead: weekly і archive наскрізь (KV + D1 0007)', () =>
       [WEEKLY_ARCHIVE_KEY, JSON.stringify({ '2026-08-17': { checkinDays: 5 } })],
       ['levers', JSON.stringify({ weeksUsable: 9 })],
     ]);
-    const d1 = d1FromSqlite(['0007_instructions_plans.sql']);
+    const d1 = d1FromSqlite(['0007_instructions_plans.sql', '0042_motivation_plan.sql']);
     if (planRows) {
       d1.db
         .prepare(
@@ -245,18 +245,16 @@ describe('runDataRead: weekly і archive наскрізь (KV + D1 0007)', () =>
     expect(DATA_READ_SCOPES).toContain('archive');
   });
 
-  it('weekly: кап 50k за замовчуванням, план дня з D1, архів і важелі з KV', async () => {
+  it('weekly: кап 50k, чинний план ігнорує старі day_plans; архів і важелі з KV', async () => {
     const { result } = await runDataRead(env(), { scope: 'weekly' }, NOW);
     const text = String(result);
     expect(text.length).toBeLessThanOrEqual(DATA_READ_WEEKLY_CAP);
     const doc = JSON.parse(text);
     expect(doc.scope).toBe('weekly');
-    expect(doc.plan.days).toEqual([
-      expect.objectContaining({ date: '2026-09-01', status: 'reviewed', fill_ratio: 0.6 }),
-    ]);
-    expect(doc.plan.items[0]).toEqual(
-      expect.objectContaining({ title: 'Презентація', status: 'done', est_min: 90 }),
-    );
+    expect(doc.plan.source).toBe('motivation');
+    expect(doc.plan.tasks).toEqual([]);
+    expect(doc.plan.summary.acceptedCommitments).toBe(0);
+    expect(doc.plan.items).toBeUndefined();
     expect(doc.archive.monthly['2026-06'].checkinDays).toBe(12);
     expect(doc.levers.weeksUsable).toBe(9);
     expect(Object.keys(doc.checkin.raw.records)).toHaveLength(30);
@@ -274,7 +272,8 @@ describe('runDataRead: weekly і archive наскрізь (KV + D1 0007)', () =>
     const e = env();
     e.DB = undefined;
     const doc = JSON.parse(String((await runDataRead(e, { scope: 'weekly' }, NOW)).result));
-    expect(doc.plan.error).toMatch(/DB/);
+    expect(doc.sources.plans.status).toBe('unavailable');
+    expect(doc.plan.error).toMatch(/чинні задачі/);
     expect(doc.habits).toBeDefined();
   });
 
@@ -290,7 +289,8 @@ describe('runDataRead: weekly і archive наскрізь (KV + D1 0007)', () =>
       }),
     } as unknown as Env['DB'];
     const doc = JSON.parse(String((await runDataRead(e, { scope: 'weekly' }, NOW)).result));
-    expect(doc.plan.error).toMatch(/не прочитався: D1_ERROR/);
+    expect(doc.sources.plans.status).toBe('unavailable');
+    expect(doc.plan.error).toMatch(/чинні задачі/);
     expect(doc.habits).toBeDefined();
   });
 

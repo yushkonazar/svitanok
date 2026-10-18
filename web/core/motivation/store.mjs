@@ -44,6 +44,43 @@ async function load(db) {
     ),
   };
 }
+
+/** Read-only report source; unlike commands it never settles commitments or awards XP.
+ * @param {Env} env @param {{from:string,to:string}} period */
+export async function readPlanReportSource(env, period) {
+  const db = planDb(env);
+  const [state, events, counts, latest] = await Promise.all([
+    Promise.resolve().then(() => load(db)),
+    Promise.resolve().then(() =>
+      db
+        .prepare(
+          'SELECT at,data_json FROM motivation_ledger WHERE at>=? AND at<? ORDER BY at DESC,id DESC LIMIT 2001',
+        )
+        .bind(period.from, period.to)
+        .all(),
+    ),
+    Promise.resolve().then(() =>
+      db
+        .prepare(
+          'SELECT kind,COUNT(*) AS total FROM motivation_ledger WHERE at>=? AND at<? GROUP BY kind',
+        )
+        .bind(period.from, period.to)
+        .all(),
+    ),
+    Promise.resolve().then(() =>
+      db.prepare('SELECT MAX(at) AS at FROM motivation_ledger').bind().first(),
+    ),
+  ]);
+  if (Object.keys(state.records).length > 10000)
+    throw new Error('Plan report requires a narrower source');
+  return {
+    state,
+    events: events.results.slice(0, 2000).map((r) => JSON.parse(String(r.data_json))),
+    eventsTruncated: events.results.length > 2000,
+    counts: counts.results,
+    latestAt: latest?.at ?? null,
+  };
+}
 /** @param {any} value @returns {string} */
 function canonical(value) {
   return JSON.stringify(

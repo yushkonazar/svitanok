@@ -8,6 +8,7 @@ import { MonoReconcileDO } from '../web/core/mono-reconcile/do.mjs';
 import { writeMonoAccounts, ingestTransaction } from '../web/core/finance/store.mjs';
 import { parseStatementItem } from '../web/core/adapters/mono.mjs';
 import { readFinanceWorkspace, executeFinanceCommand } from '../web/core/finance/workspace.mjs';
+import { financeReviewContext } from '../web/core/finance/review.mjs';
 import {
   claimMonoClientRefresh,
   claimMonoStatementRefresh,
@@ -127,6 +128,111 @@ async function setup() {
   return { env, db: d1.db, collector, storage, alarms, seed };
 }
 describe('shared resumable Monobank refresh', () => {
+  it('refuses to declare a saturated boundary page complete or mark its unseen holds missing', async () => {
+    const { env, collector, seed } = await setup();
+    await seed(row('unseen', NOW / 1000 - 1000, true));
+    bankFetch(async () =>
+      Response.json(
+        Array.from({ length: 500 }, (_, i) => row(`boundary-${i}`, NOW / 1000 - 31 * 86400)),
+      ),
+    );
+    await collector.requestRefresh('mono:card', undefined, NOW);
+    await advance(collector);
+    const f = await readFinanceWorkspace(env, NOW);
+    expect(f.bankSync).toMatchObject({ phase: 'error', active: false });
+    expect(financeReviewContext(f, NOW).bankFreshness.lastCompletedStatementRefreshAt).toBeNull();
+    expect(f.transactions.find((t) => t.id === 'unseen')).toMatchObject({
+      bankHold: true,
+      bankMissingFromStatement: false,
+    });
+  });
+
+  it('settles a legacy numeric hold, then accepts a newer statement correction without another debit or lost owner data', async () => {
+    const { env, db, seed } = await setup();
+    await seed(row('legacy', undefined, true));
+    db.prepare(
+      "UPDATE transactions SET category='освіта',note='ручна примітка',raw_json=json_patch(raw_json,?) WHERE id='legacy'",
+    ).run(
+      JSON.stringify({
+        hold: 1,
+        financeKind: 'expense',
+        financeReference: 'contract',
+        financePrincipalMinor: 12000,
+        financeOverpaymentMinor: 1464,
+        financeBankVerifiedByOwner: true,
+        financeConfirmedAmountMinor: -13464,
+        bankMissingFromStatement: true,
+      }),
+    );
+    const read = (
+      amount: number,
+      checkedAt: string,
+      checkSource: 'statement' | 'webhook' = 'statement',
+      hold = false,
+    ) =>
+      ingestTransaction(env, {
+        item: parseStatementItem(row('legacy', undefined, hold, amount))!,
+        account: 'card',
+        accountCurrency: 'UAH',
+        silent: true,
+        versioned: true,
+        checkedAt,
+        checkSource,
+      });
+    expect(await read(-14000, '2026-10-12T12:01:00.000Z')).toMatchObject({
+      inserted: false,
+      updated: true,
+    });
+    expect(await read(-14100, '2026-10-12T12:02:00.000Z')).toMatchObject({
+      inserted: false,
+      updated: true,
+    });
+    const version = db.prepare("SELECT version FROM finance_settings WHERE id='owner'").get()!
+      .version;
+    expect(await read(-14100, '2026-10-12T12:03:00.000Z')).toMatchObject({ updated: false });
+    expect(db.prepare("SELECT version FROM finance_settings WHERE id='owner'").get()!.version).toBe(
+      version,
+    );
+    await read(-13464, '2026-10-12T12:00:00.000Z'); // Older statement page.
+    await read(-13464, '2026-10-12T12:04:00.000Z', 'webhook'); // Delayed posted webhook.
+    await read(-13464, '2026-10-12T12:05:00.000Z', 'webhook', true); // Delayed authorization.
+    const tx = (await readFinanceWorkspace(env, NOW)).transactions.find((t) => t.id === 'legacy')!;
+    expect(tx).toMatchObject({
+      bankHold: false,
+      amountUah: -14100,
+      bankAmountChanged: true,
+      reference: 'contract',
+      principalMinor: 12000,
+      overpaymentMinor: 1464,
+      category: 'освіта',
+      bankMissingFromStatement: false,
+    });
+    expect(db.prepare("SELECT note FROM transactions WHERE id='legacy'").get()!.note).toBe(
+      'ручна примітка',
+    );
+    expect(db.prepare('SELECT COUNT(*) AS n FROM transactions').get()!.n).toBe(1);
+  });
+
+  it('refreshes a changed pending amount and its check date without declaring it posted', async () => {
+    const { env, seed } = await setup();
+    await seed(row('pending', undefined, true));
+    await ingestTransaction(env, {
+      item: parseStatementItem(row('pending', undefined, true, -15000))!,
+      account: 'card',
+      accountCurrency: 'UAH',
+      silent: true,
+      checkedAt: new Date(NOW).toISOString(),
+      checkSource: 'statement',
+    });
+    const tx = (await readFinanceWorkspace(env, NOW)).transactions.find((t) => t.id === 'pending')!;
+    expect(tx).toMatchObject({
+      amountUah: -15000,
+      bankHold: true,
+      bankCheckSource: 'statement',
+      bankCheckedAt: new Date(NOW).toISOString(),
+    });
+  });
+
   it('coalesces simultaneous requests, imports in batches and preserves owner links when the bank settles', async () => {
     const { env, db, collector, storage, seed } = await setup();
     await seed(row('apple', undefined, true));

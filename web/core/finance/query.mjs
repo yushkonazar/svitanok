@@ -16,7 +16,7 @@ import { NOT_TEST_SQL } from './store.mjs';
 
 /** Скільки транзакцій віддаємо списком (решта - у сумах). */
 export const LIST_MAX = 40;
-/** Скільки розрізів за категоріями/мерчантами. */
+/** Скільки мерчантів у рейтингу. Категорії завжди повні. */
 export const BREAKDOWN_MAX = 12;
 const PAGE_SIZE = 1_000;
 const MAX_SCAN_ROWS = 20_000;
@@ -248,10 +248,7 @@ export function summarize(rows) {
     n: rows.length,
     total_uah: total,
     unconverted,
-    by_category: [...byCategory.entries()]
-      .map(([category, v]) => ({ category, ...v }))
-      .sort(sort)
-      .slice(0, BREAKDOWN_MAX),
+    by_category: [...byCategory.entries()].map(([category, v]) => ({ category, ...v })).sort(sort),
     by_merchant: [...byMerchant.values()].sort(sort).slice(0, BREAKDOWN_MAX),
   };
 }

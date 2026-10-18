@@ -347,7 +347,25 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
       args: unknown,
       names: { okName: string; failName: string; t0: number },
     ): Promise<ToolExecution & { proposalId?: string; undoId?: string }> => {
-      const outcome: ToolCallOutcome = await deps.client.callTool(req.run_id, def.coreName, args);
+      let outcome: ToolCallOutcome = await deps.client.callTool(req.run_id, def.coreName, args);
+      if (
+        profile.name === 'weekly-review' &&
+        def.coreName === 'data.read' &&
+        !outcome.ok &&
+        outcome.status === 400 &&
+        /^(invalid-arguments|contract:)/u.test(outcome.error) &&
+        toolCalls < profile.maxToolCalls
+      ) {
+        pushStep({
+          kind: 'tool',
+          name: names.failName,
+          ms: now() - names.t0,
+          ok: false,
+          note: 'invalid-arguments: corrected once',
+        });
+        toolCalls++;
+        outcome = await deps.client.callTool(req.run_id, def.coreName, { scope: 'weekly' });
+      }
       if (!outcome.ok) {
         pushStep({
           kind: 'tool',
@@ -870,7 +888,9 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
       ];
       // Додаткові аргументи лише коли є що показати: deliver без кнопок і без
       // працівника лишається тим самим викликом, що й був.
-      if (lastWorker && !tripCard)
+      if (profile.name === 'weekly-review' && finalText === '')
+        await deps.client.deliver(req.run_id, delivered, undefined, undefined, true);
+      else if (lastWorker && !tripCard)
         await deps.client.deliver(req.run_id, delivered, buttons, lastWorker);
       else if (buttons.length > 0) await deps.client.deliver(req.run_id, delivered, buttons);
       else await deps.client.deliver(req.run_id, delivered);
@@ -924,7 +944,16 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
       // Помилка видима (00-README п.6): власник має побачити збій, не тишу.
       try {
         await finishStatuses();
-        await deps.client.deliver(req.run_id, `⚠️ ${userFacingError(err, abort.signal.reason)}`);
+        if (profile.name === 'weekly-review')
+          await deps.client.deliver(
+            req.run_id,
+            `⚠️ ${userFacingError(err, abort.signal.reason)}`,
+            undefined,
+            undefined,
+            true,
+          );
+        else
+          await deps.client.deliver(req.run_id, `⚠️ ${userFacingError(err, abort.signal.reason)}`);
       } catch (deliverErr) {
         console.error(`run ${req.run_id}: deliver збою теж упав: ${String(deliverErr)}`);
       }

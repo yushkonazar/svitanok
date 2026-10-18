@@ -53,6 +53,7 @@ function makeEnv(facts: Record<string, unknown> = {}, over: Record<string, unkno
     '0002_assistant.sql',
     '0003_telemetry.sql',
     '0037_credential_metadata.sql',
+    '0046_credential_expiry_kind.sql',
   ]);
   for (const [key, value] of Object.entries(facts)) {
     d1.db

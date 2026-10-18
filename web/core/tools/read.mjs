@@ -30,6 +30,8 @@ import {
   loadSettings,
   loadLevers,
   readJson,
+  readReportJson,
+  readReportState,
 } from '../../kv-store.mjs';
 import { aggregateStats } from '../../stats-core.mjs';
 import { totalProgress } from '../../roadmap-core.mjs';
@@ -43,12 +45,14 @@ import { buildAnalyticsSnapshot, serializeAnalyticsSnapshot } from '../../analyt
 import { buildCheckinPeriod } from './checkin-period.mjs';
 import { buildLearningContext } from './learning-context.mjs';
 import { wrapExternal } from './markup.mjs';
-import {
-  buildWeeklyDigest,
-  buildArchiveDigest,
-  parsePeriodDays,
-  WEEKLY_PLAN_DAYS,
-} from './weekly.mjs';
+import { ToolArgumentError } from '../tool-arguments.mjs';
+import { readWeeklyFinance } from '../brain/weekly-finance.mjs';
+import { weeklyPersonalPeriods } from '../brain/weekly-personal.mjs';
+import { readPlanReport } from '../motivation/reporting.mjs';
+import { runRunsQuery } from './runs.mjs';
+import { reportPeriod } from '../report-period.mjs';
+import { weekBounds } from './weekly.mjs';
+import { buildWeeklyDigest, buildArchiveDigest, parsePeriodDays } from './weekly.mjs';
 
 /** Кап data.read за замовчуванням = профіль chat (07 §4: chat 12k). */
 export const DATA_READ_DEFAULT_CAP = 12_000;
@@ -75,7 +79,9 @@ const MAIL_ID_RE = /^[A-Za-z0-9_-]{1,128}$/; // той самий контрак
  */
 export async function runDataRead(env, args, nowMs) {
   if (!DATA_READ_SCOPES.includes(args.scope)) {
-    throw new Error(`невідомий scope "${args.scope}" (чинні: ${DATA_READ_SCOPES.join(', ')})`);
+    throw new ToolArgumentError(
+      `невідомий scope "${args.scope}" (чинні: ${DATA_READ_SCOPES.join(', ')})`,
+    );
   }
   const defaultCap = ['weekly', 'progress'].includes(args.scope)
     ? DATA_READ_WEEKLY_CAP
@@ -96,24 +102,70 @@ export async function runDataRead(env, args, nowMs) {
   }
 
   if (args.scope === 'weekly') {
-    const [stats, state, archive, weeklyArchive, levers, plans] = await Promise.all([
-      loadStats(env),
-      loadState(env),
-      readJson(env, ARCHIVE_KEY, null),
-      readJson(env, WEEKLY_ARCHIVE_KEY, null),
-      loadLevers(env),
-      readPlanRows(env, todayKey, WEEKLY_PLAN_DAYS),
+    const names = [
+      'stats',
+      'state',
+      'archive',
+      'weeklyArchive',
+      'levers',
+      'plans',
+      'finance',
+      'system',
+    ];
+    const week = weekBounds(todayKey);
+    const reads = await Promise.allSettled([
+      readReportState(env, 'stats'),
+      readReportState(env, 'state'),
+      readReportJson(env, ARCHIVE_KEY),
+      readReportJson(env, WEEKLY_ARCHIVE_KEY),
+      readReportJson(env, 'levers'),
+      readPlanReport(env, reportPeriod(week.from, todayKey, nowMs)),
+      readWeeklyFinance(env, nowMs),
+      runRunsQuery(env, { period: `${week.from}..${todayKey}` }, nowMs).then((r) =>
+        JSON.parse(r.result),
+      ),
     ]);
+    /** @type {Record<string, any>} */ const data = {};
+    /** @type {Record<string, any>} */ const sources = {};
+    reads.forEach((read, i) => {
+      const name = /** @type {string} */ (names[i]);
+      const value = read.status === 'fulfilled' ? read.value : null;
+      const unavailable =
+        read.status === 'rejected' || (value && typeof value === 'object' && 'error' in value);
+      sources[name] = unavailable
+        ? { status: 'unavailable', reason: 'Не вдалося прочитати джерело' }
+        : { status: value == null || Object.keys(value).length === 0 ? 'empty' : 'available' };
+      data[name] = unavailable
+        ? name === 'plans'
+          ? { error: 'Не вдалося прочитати чинні задачі' }
+          : null
+        : value;
+    });
+    let agg = {};
+    let personalPeriods = null;
+    if (data.stats) {
+      try {
+        agg = aggregateStats(data.stats, todayKey);
+        personalPeriods = weeklyPersonalPeriods(data.stats.checkins ?? {}, nowMs);
+      } catch {
+        sources.stats = { status: 'unavailable', reason: 'Не вдалося обчислити статистику' };
+      }
+    }
     const digest = buildWeeklyDigest({
-      agg: aggregateStats(stats, todayKey),
-      roadmapProgress: state.roadmapProgress ?? {},
-      archive,
-      weeklyArchive,
-      levers,
-      plans,
+      agg,
+      roadmapProgress: data.state?.roadmapProgress ?? {},
+      archive: data.archive,
+      weeklyArchive: data.weeklyArchive,
+      levers: data.levers,
+      plans: data.plans,
       todayKey,
       rawDays: periodDays,
       cap,
+      sources,
+      personalPeriods,
+      period: reportPeriod(week.from, todayKey, nowMs),
+      finance: data.finance,
+      system: data.system,
     });
     return { result: digest.text };
   }
@@ -183,39 +235,6 @@ export async function runDataRead(env, args, nowMs) {
       ? formatBriefingEngagementDigest(stats.briefingEngagement, { todayKey })
       : '';
   return { result: [digest, engagement].filter(Boolean).join('\n').slice(0, cap) };
-}
-
-/**
- * Ряди плану дня за останні `days` діб (weekly-review §1 «План дня»): дні з
- * їхніми пунктами. Без DB - явний error у блоці (модель пише «ЧОГО Я НЕ
- * БАЧИВ»), збій читання - теж error, а не порожній масив «планів не було».
- * @param {Env} env @param {string} todayKey @param {number} days
- * @returns {Promise<{ days: any[], items: any[] } | { error: string }>}
- */
-async function readPlanRows(env, todayKey, days) {
-  if (!env.DB) return { error: 'привʼязки DB немає' };
-  const from = addDaysToDateKey(todayKey, -(days - 1));
-  try {
-    const [plans, items] = await Promise.all([
-      env.DB.prepare(
-        `SELECT date, status, fill_ratio, intent_text, reviewed_at FROM day_plans
-         WHERE date >= ?1 AND date <= ?2 ORDER BY date`,
-      )
-        .bind(from, todayKey)
-        .all(),
-      env.DB.prepare(
-        `SELECT date, title, kind, est_min, hard_at, window_start, window_end, status, done_at,
-                carried_from, priority
-         FROM plan_items WHERE date >= ?1 AND date <= ?2 ORDER BY date, window_start`,
-      )
-        .bind(from, todayKey)
-        .all(),
-    ]);
-    return { days: plans.results ?? [], items: items.results ?? [] };
-  } catch (/** @type {any} */ e) {
-    console.error('data.read: план дня не прочитався', e?.message);
-    return { error: `план дня не прочитався: ${String(e?.message ?? '')}` };
-  }
 }
 
 /** KV + D1 без дублів: за одним id перемагає D1 (там свіжий статус).

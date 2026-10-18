@@ -5,6 +5,17 @@ const AT = '2026-10-05T10:00:00.000Z';
 /** Synthetic rows only: no production database, credentials or user documents. */
 export function lifecycleRows(): Record<string, Record<string, string | number | null>[]> {
   return {
+    credential_metadata: [
+      {
+        id: 'OPENAI_API_KEY:vps',
+        rotated_at: '2026-10-01',
+        expires_at: null,
+        rotate_after_days: 365,
+        version: 1,
+        updated_at: AT,
+        expiry_kind: 'non-expiring',
+      },
+    ],
     work_contexts: [
       {
         id: 'synthetic-context',
@@ -86,6 +97,10 @@ export function lifecycleRows(): Record<string, Record<string, string | number |
         text_md: 'Тестовий звіт',
         instruction_hash: 'fixture',
         created_at: AT,
+        status: null,
+        run_id: null,
+        as_of: null,
+        quality_json: null,
       },
     ],
     worker_card_actions: [
