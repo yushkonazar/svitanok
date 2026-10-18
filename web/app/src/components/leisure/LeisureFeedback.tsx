@@ -20,15 +20,20 @@ export function LeisureFeedback({
   }, []);
   const [reason, setReason] = useState(''),
     [note, setNote] = useState(''),
-    [error, setError] = useState('');
+    [error, setError] = useState(''),
+    [saving, setSaving] = useState(false);
   const choices = [
+    ['time', 'Не на цей тиждень'],
+    ['not-now', 'Зараз немає бажання'],
+    ['this-option', 'Не хочу саме цей варіант'],
+    ['company', 'Не для нашого спільного виходу'],
     ['genre', 'Жанр'],
     ['format', 'Формат'],
     ['topic', 'Тема / виконавець'],
     ['audience', 'Аудиторія'],
     ['place', 'Місце'],
     ['price', 'Ціна'],
-    ['time', 'Не на цей тиждень'],
+    ['seen', item.category === 'cinema' ? 'Уже дивився' : 'Уже знайомий варіант'],
     ['other', 'Інша причина'],
   ];
   return (
@@ -36,8 +41,7 @@ export function LeisureFeedback({
       <h2>Чому нецікаво?</h2>
       <p>{item.title}</p>
       <p className="leisure-secondary">
-        Обереш причину — варіант сховається, а вікно закриється. «Не на цей тиждень» не погіршує
-        профіль інтересів.
+        Обери причину й підтвердь. Картка зникне після збереження.
       </p>
       <div className="leisure-pills">
         {choices.map(([id, label]) => (
@@ -46,12 +50,24 @@ export function LeisureFeedback({
             type="button"
             className="leisure-feedback-choice"
             aria-pressed={reason === id}
+            disabled={busy || saving}
             onClick={() => setReason(id!)}
           >
             {label}
           </button>
         ))}
       </div>
+      {reason && (
+        <p className="leisure-notice" role="note">
+          {['time', 'not-now', 'company'].includes(reason)
+            ? 'Приберемо до наступного тижня. Схожі варіанти залишаться у добірках — інтерес до жанру не знижуємо.'
+            : ['this-option', 'seen', 'other'].includes(reason)
+              ? 'Приберемо саме цю картку. Інтерес до схожих варіантів, жанру й категорії не знижуємо.'
+              : ['genre', 'format', 'topic', 'audience', 'place'].includes(reason)
+                ? 'Врахуємо саме обрану ознаку при наступних рекомендаціях. Інші напрямки не відхиляємо.'
+                : 'Приберемо цю картку через ціну. Не робимо висновків про нелюбов до жанру.'}
+        </p>
+      )}
       <label className="leisure-field">
         Уточнення · необов’язково
         <textarea
@@ -62,31 +78,40 @@ export function LeisureFeedback({
         />
       </label>
       <div className="leisure-actions">
-        <button type="button" className="leisure-button" onClick={back}>
+        <button type="button" className="leisure-button" disabled={busy || saving} onClick={back}>
           Назад до варіанта
         </button>
         <button
           type="button"
           className="leisure-button is-primary"
-          disabled={busy || !reason}
+          disabled={busy || saving || !reason}
+          aria-busy={busy || saving}
           onClick={() => {
+            if (busy || saving) return;
             setError('');
+            setSaving(true);
             void send(
               'reaction',
               {
-                verdict: reason === 'time' ? 'later' : 'uninterested',
+                verdict: ['time', 'not-now', 'company'].includes(reason) ? 'later' : 'uninterested',
                 reasonCode: reason,
                 reason: note,
               },
               item.id,
             )
               .then(done)
-              .catch((e) => setError(e.message));
+              .catch((e) => setError(e instanceof Error && 'inlineRecovery' in e ? '' : e.message))
+              .finally(() => setSaving(false));
           }}
         >
-          Приховати варіант
+          {saving || busy ? 'Зберігаю…' : 'Підтвердити й прибрати'}
         </button>
       </div>
+      {(saving || busy) && (
+        <p className="leisure-secondary" role="status">
+          Зберігаю вибір і чекаю підтвердження. Вікно закриється автоматично.
+        </p>
+      )}
       {error && (
         <p role="alert" className="leisure-error">
           {error}

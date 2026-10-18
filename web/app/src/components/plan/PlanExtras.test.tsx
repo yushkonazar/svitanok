@@ -39,7 +39,14 @@ it('uses the owner description to prefill a reviewable form without creating or 
   requests.suggest.mockResolvedValue(draft);
   const onApply = vi.fn();
   render(<TaskAssist date="2026-10-17" onApply={onApply} />);
-  fireEvent.click(screen.getByText('Допомогти заповнити з мого опису ✧'));
+  if (
+    !(
+      screen
+        .getByText('Допомогти заповнити з мого опису ✧')
+        .closest('details') as HTMLDetailsElement
+    ).open
+  )
+    fireEvent.click(screen.getByText('Допомогти заповнити з мого опису ✧'));
   fireEvent.change(screen.getByLabelText('Опиши одну задачу'), {
     target: { value: 'Хочу практикувати SQL' },
   });

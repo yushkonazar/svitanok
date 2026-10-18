@@ -46,6 +46,9 @@ const queryClient = new QueryClient({
   // цього рядка тап виглядав як «не зарахувався» без причини.
   mutationCache: new MutationCache({
     onError: (error) => {
+      // A persistent recovery panel already explains uncertain leisure saves.
+      // A second floating error would cover the very controls needed to recover.
+      if ('inlineRecovery' in error && error.inlineRecovery === true) return;
       const text = mutationErrorText(error);
       if (deliverToast) deliverToast(text);
       else pendingToasts.push(text);

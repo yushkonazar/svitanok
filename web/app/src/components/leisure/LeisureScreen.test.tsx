@@ -170,10 +170,10 @@ describe('leisure mobile interactions', () => {
     openFirst();
     fireEvent.click(screen.getByRole('button', { name: 'Нецікаво' }));
     expect(screen.getByRole('heading', { name: 'Чому нецікаво?' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Приховати варіант' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Підтвердити й прибрати' })).toBeDisabled();
     expect((cache.getQueryData(['leisure']) as LeisureWorkspace).records).toHaveLength(0);
     fireEvent.click(screen.getByRole('button', { name: 'Жанр' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Приховати варіант' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Підтвердити й прибрати' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
     expect((cache.getQueryData(['leisure']) as LeisureWorkspace).records[0]).toMatchObject({
       verdict: 'uninterested',
@@ -194,7 +194,7 @@ describe('leisure mobile interactions', () => {
     const title = screen.getByRole('dialog').querySelector('h2')?.textContent;
     fireEvent.click(screen.getByRole('button', { name: 'Нецікаво' }));
     fireEvent.click(screen.getByRole('button', { name: 'Не на цей тиждень' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Приховати варіант' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Підтвердити й прибрати' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
     expect((cache.getQueryData(['leisure']) as LeisureWorkspace).records[0]).toMatchObject({
       verdict: 'later',

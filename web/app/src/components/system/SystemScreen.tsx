@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import { fetchSystem, type SystemSelection } from '../../api/client.ts';
 import { inTelegram } from '../../telegram.ts';
 import { PageHeading } from '../ui/PageHeading.tsx';
+import { RequestDiagnostics } from '../ui/RequestDiagnostics.tsx';
 import {
   ControlsPanel,
   ServiceCards,
@@ -397,6 +398,7 @@ export function SystemScreen() {
           )}
         </>
       )}
+      <RequestDiagnostics />
     </div>
   );
 }

@@ -2,6 +2,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { z } from 'zod';
 import { inTelegram, tg } from '../telegram.ts';
 import { SessionExpiredError } from './client.ts';
+import { recordRequestDiagnostic, type RequestDiagnostic } from './request-diagnostics.ts';
 
 const sessionSchema = z.object({
   id: z.string(),
@@ -263,7 +264,7 @@ export interface LeisureCommand {
 }
 export const LEISURE_QUERY = ['leisure'] as const;
 const headers = (): Record<string, string> =>
-  inTelegram() && tg ? { 'X-Telegram-Init-Data': tg.initData, 'X-Leisure-Format': '2' } : {};
+  inTelegram() && tg ? { 'X-Telegram-Init-Data': tg.initData, 'X-Leisure-Format': '3' } : {};
 function session(response: Response) {
   if (response.status === 401 || response.status === 403)
     throw new SessionExpiredError(response.status);
@@ -283,13 +284,49 @@ export async function fetchLeisure(allHistory = false) {
   if (!parsed.success) throw new Error('Формат дозвілля змінився. Онови застосунок.');
   return parsed.data;
 }
-export async function changeLeisure(command: LeisureCommand) {
+export async function verifyLeisureCommand(command: LeisureCommand) {
+  const r = await fetch(`/api/leisure?commandId=${encodeURIComponent(command.commandId)}`, {
+    headers: headers(),
+    cache: 'no-store',
+    signal: AbortSignal.timeout(10000),
+  });
+  session(r);
+  if (!r.ok) return null;
+  const body = await r.json();
+  const verified = body?.verification;
+  if (!verified?.found) return null;
+  const expected = JSON.stringify({
+    op: command.op,
+    id: command.id ?? null,
+    payload: command.payload,
+  });
+  if (verified.fingerprint !== expected)
+    throw new LeisureCommandRejectedError('Ідентифікатор належить іншій дії. Онови дозвілля.');
+  const receipt = receiptSchema.safeParse(verified.receipt);
+  return receipt.success ? { receipt: receipt.data, workspace: null } : null;
+}
+export async function changeLeisure(command: LeisureCommand, verifyFirst = false) {
   if (!inTelegram()) {
     const { changeLeisureDemo } = await import('./leisure-demo.ts');
     return changeLeisureDemo(command);
   }
+  if (verifyFirst) {
+    try {
+      const applied = await verifyLeisureCommand(command);
+      if (applied) return applied;
+    } catch (error) {
+      if (error instanceof SessionExpiredError || error instanceof LeisureCommandRejectedError)
+        throw error;
+    }
+  }
   const serialized = JSON.stringify(command);
+  let diagnostic: RequestDiagnostic | undefined;
   for (let attempt = 0; attempt < 2; attempt++) {
+    const started = Date.now();
+    let status: number | null = null,
+      requestId = command.commandId,
+      code = 'network-failure',
+      phase = 'send';
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 15000);
     try {
@@ -299,18 +336,45 @@ export async function changeLeisure(command: LeisureCommand) {
         body: serialized,
         signal: controller.signal,
       });
+      status = response.status;
+      if (status === 401 || status === 403) code = 'session-expired';
+      else if (status >= 400 && status < 500) code = 'command-rejected';
+      requestId = response.headers.get('X-Request-Id') ?? requestId;
       session(response);
-      if (response.status >= 500) throw new LeisureSaveUncertainError();
       const body = await response.json().catch(() => null);
+      if (body?.diagnostic) {
+        if (/^[a-z-]{1,50}$/.test(body.diagnostic.code)) code = body.diagnostic.code;
+        if (/^[a-z-]{1,30}$/.test(body.diagnostic.phase)) phase = body.diagnostic.phase;
+      }
+      if (response.status >= 500) {
+        if (code === 'network-failure') code = 'server-failure';
+        throw new Error(code);
+      }
       if (!response.ok)
         throw new LeisureCommandRejectedError(
           typeof body?.error === 'string' ? body.error : 'Не вдалося підтвердити зміну.',
         );
       const receipt = receiptSchema.safeParse(body?.receipt);
-      if (!body?.ok || !receipt.success) throw new LeisureSaveUncertainError();
+      if (!body?.ok || !receipt.success) {
+        code = 'invalid-response';
+        phase = 'decode';
+        throw new Error(code);
+      }
       const workspace = body.workspace ? leisureWorkspaceSchema.safeParse(body.workspace) : null;
       return { receipt: receipt.data, workspace: workspace?.success ? workspace.data : null };
     } catch (error) {
+      diagnostic = recordRequestDiagnostic({
+        at: new Date().toISOString(),
+        area: 'leisure',
+        operation: command.op,
+        requestId,
+        phase,
+        status,
+        code: error instanceof DOMException && error.name === 'AbortError' ? 'timeout' : code,
+        layer: status == null ? 'network' : code === 'invalid-response' ? 'client' : 'server',
+        durationMs: Date.now() - started,
+        attempt: attempt + 1,
+      });
       if (error instanceof SessionExpiredError || error instanceof LeisureCommandRejectedError)
         throw error;
     } finally {
@@ -318,13 +382,16 @@ export async function changeLeisure(command: LeisureCommand) {
     }
     if (attempt === 0) await new Promise((resolve) => setTimeout(resolve, 500));
   }
-  throw new LeisureSaveUncertainError();
+  throw new LeisureSaveUncertainError(diagnostic);
 }
 export class LeisureSaveUncertainError extends Error {
-  constructor() {
+  readonly inlineRecovery = true;
+  diagnostic?: RequestDiagnostic;
+  constructor(diagnostic?: RequestDiagnostic) {
     super(
       'Не отримано підтвердження збереження. Натисни «Перевірити збереження»: повторимо ту саму дію без нового запису.',
     );
+    this.diagnostic = diagnostic;
   }
 }
 export class LeisureCommandRejectedError extends Error {}
@@ -340,10 +407,36 @@ export function useLeisure() {
 export function useLeisureChange() {
   const cache = useQueryClient();
   return useMutation({
-    mutationFn: changeLeisure,
-    onSuccess: async (result) => {
+    mutationFn: (command: LeisureCommand & { verifyFirst?: boolean }) => {
+      const { verifyFirst, ...original } = command;
+      return changeLeisure(original, verifyFirst);
+    },
+    onSuccess: async (result, command) => {
+      await cache.cancelQueries({ queryKey: LEISURE_QUERY });
       if (result.workspace) cache.setQueryData(LEISURE_QUERY, result.workspace);
-      else void cache.invalidateQueries({ queryKey: LEISURE_QUERY });
+      else {
+        if (command.op === 'reaction' && command.id)
+          cache.setQueryData<LeisureWorkspace>(LEISURE_QUERY, (old) => {
+            if (!old) return old;
+            const records = old.records.filter(
+              (r) => !(r.kind === 'reaction' && r.itemId === command.id),
+            );
+            records.push({
+              id: `reaction-${command.id}`,
+              kind: 'reaction',
+              itemId: command.id!,
+              venueId: old.items.find((i) => i.id === command.id)?.venueId ?? null,
+              verdict: String(command.payload.verdict),
+              reasonCode:
+                typeof command.payload.reasonCode === 'string' ? command.payload.reasonCode : null,
+              reason: String(command.payload.reason ?? ''),
+              at: new Date().toISOString(),
+              revision: 0,
+            });
+            return { ...old, records };
+          });
+        void cache.invalidateQueries({ queryKey: LEISURE_QUERY });
+      }
       void cache.invalidateQueries({ queryKey: ['saved'] });
       void cache.invalidateQueries({ queryKey: ['stats'] });
     },

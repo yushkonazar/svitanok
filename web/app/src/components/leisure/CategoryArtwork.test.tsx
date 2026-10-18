@@ -4,7 +4,7 @@ import { CategoryArtwork, categoryArtwork } from './CategoryArtwork.tsx';
 import { categoryLabels, type LeisureItem } from '../../api/leisure.ts';
 
 describe('category illustrations', () => {
-  it('gives all seven categories distinct covers with a clear illustration label', () => {
+  it('gives all seven categories distinct covers without a visible overlay label', () => {
     expect(new Set(Object.values(categoryArtwork)).size).toBe(7);
     for (const category of Object.keys(categoryArtwork) as LeisureItem['category'][]) {
       const { unmount } = render(<CategoryArtwork category={category} eager />);
@@ -12,7 +12,7 @@ describe('category illustrations', () => {
       expect(screen.getByRole('img')).toHaveAccessibleName(
         `Ілюстрація категорії «${categoryLabels[category]}»`,
       );
-      expect(screen.getByText('Ілюстрація')).toBeInTheDocument();
+      expect(screen.queryByText('Ілюстрація')).not.toBeInTheDocument();
       unmount();
     }
   });

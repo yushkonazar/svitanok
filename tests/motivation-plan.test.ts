@@ -63,6 +63,113 @@ function prepared(balance = 100, over: Record<string, unknown> = {}) {
 function task(state: PlanState, id: string) {
   return state.records[id];
 }
+describe('deadline status, explanations and exceptional rescheduling', () => {
+  it('marks missed immediately at due time without fabricating a report or waiting for settlement', () => {
+    const { state, id } = prepared(100, { target: 1, timeSensitive: true });
+    expect(planView(state, Date.parse(DUE) - 1).tasks.find((t) => t.id === id).lifecycle).not.toBe(
+      'missed',
+    );
+    expect(planView(state, Date.parse(DUE)).tasks.find((t) => t.id === id).lifecycle).toBe(
+      'missed',
+    );
+    expect(state.records[state.records[id].resultId].reports).toHaveLength(0);
+    expect(state.balance).toBe(100);
+    expect(state.records[id].settledAt).toBeUndefined();
+    const corrected = reduce(
+      state,
+      'report',
+      { units: 1, actualAt: DUE },
+      id,
+      Date.parse(DUE) + 60000,
+    );
+    expect(
+      planView(corrected.state, Date.parse(DUE) + 60000).tasks.find((t) => t.id === id).lifecycle,
+    ).toBe('completed');
+  });
+  it('stores a normal explanation without changing the deadline, risk or exception', () => {
+    const { state, id } = prepared();
+    const next = reduce(
+      state,
+      'task-note',
+      { reason: 'Прокинувся, але знову заснув.' },
+      id,
+      Date.parse(DUE) + 1000,
+    );
+    expect(next.state.records[id]).toMatchObject({
+      status: 'accepted',
+      dueAt: DUE,
+      outcomeNote: 'Прокинувся, але знову заснув.',
+    });
+    expect(next.events).toHaveLength(1);
+    expect(next.events[0]).toMatchObject({ kind: 'task-note', delta: 0 });
+    expect(next.state.balance).toBe(state.balance);
+    expect(() => reduce(state, 'task-note', { reason: ' ' }, id)).toThrow();
+  });
+  it('revokes a mistaken exemption while preserving its explanation and original settlement terms', () => {
+    const { state, id } = prepared();
+    const excepted = reduce(state, 'exception', { reason: 'Проспав' }, id).state;
+    const next = reduce(excepted, 'exception-revoke', {}, id, AFTER);
+    expect(next.state.records[id]).toMatchObject({
+      status: 'accepted',
+      outcomeNote: 'Проспав',
+      exceptionReason: '',
+      penaltyApplied: 11,
+    });
+    expect(planView(next.state, AFTER).tasks.find((t) => t.id === id).lifecycle).toBe('missed');
+    expect(() => reduce(next.state, 'exception-revoke', {}, id, AFTER)).toThrow();
+  });
+  it('reschedules only by an explicit exceptional decision and keeps the old deadline in history', () => {
+    const { state, id } = prepared();
+    const dueAt = new Date(AFTER + 3600000).toISOString();
+    const next = reduce(
+      state,
+      'reschedule',
+      { critical: true, reason: 'Невідкладна сімейна обставина', dueAt, date: '2026-10-17' },
+      id,
+      AFTER,
+    );
+    expect(next.state.records[id]).toMatchObject({
+      dueAt,
+      status: 'accepted',
+      settledAt: null,
+      penaltyApplied: 0,
+      deadlineChanges: [{ from: DUE, to: dueAt, reason: 'Невідкладна сімейна обставина' }],
+    });
+    expect(next.state.balance).toBe(100);
+    expect(next.state.records[id].resultId).toBe(state.records[id].resultId);
+    expect(planView(next.state, AFTER).tasks.find((t) => t.id === id).lifecycle).toBe('ready');
+    expect(() => reduce(state, 'reschedule', { reason: 'Причина', dueAt }, id, AFTER)).toThrow(
+      'виняткова',
+    );
+    expect(() =>
+      reduce(state, 'reschedule', { critical: true, reason: 'Причина', dueAt: DUE }, id, AFTER),
+    ).toThrow('майбутньому');
+    expect(() =>
+      reduce(state, 'reschedule', { critical: true, reason: ' ', dueAt }, id, AFTER),
+    ).toThrow();
+  });
+  it('keeps calendar/source/completed tasks out of manual deadline changes', () => {
+    const { state, id } = prepared();
+    for (const override of [
+      { calendar: true },
+      { source: { kind: 'taxi' } },
+      { factsDone: true },
+    ]) {
+      const s = structuredClone(state);
+      Object.assign(s.records[id], override);
+      if (override.factsDone) s.records[s.records[id].resultId].units = 5;
+      expect(() =>
+        reduce(
+          s,
+          'reschedule',
+          { critical: true, reason: 'Причина', dueAt: new Date(AFTER + 3600000).toISOString() },
+          id,
+          AFTER,
+        ),
+      ).toThrow('ручної');
+    }
+  });
+});
 function setup() {
   const d1 = d1FromSqlite(['0001_base.sql', '0002_assistant.sql', '0042_motivation_plan.sql'], {
     atomicBatch: true,

@@ -25,7 +25,7 @@ import {
 /** @param {Env} env */
 export function leisureDb(env) {
   if (!env.DB) throw new LeisureError('Сховище дозвілля недоступне.', 503);
-  return env.DB;
+  return env.DB.withSession ? env.DB.withSession('first-primary') : env.DB;
 }
 /** @param {any} row */
 export function recordOf(row) {
@@ -444,6 +444,32 @@ async function writeRecord(env, record, nowMs, expected = null, uniqueFilmDay = 
         409,
       );
   }
+}
+/** Read-only acknowledgement lookup, also recovers a record whose receipt write
+ * was interrupted. Never replay a mutation just to find out whether it committed.
+ * @param {Env} env @param {string} commandId */
+export async function inspectLeisureCommand(env, commandId) {
+  if (!/^[a-zA-Z0-9_-]{8,80}$/.test(commandId))
+    throw new LeisureError('Некоректний ідентифікатор дії.');
+  const db = leisureDb(env);
+  const saved = await db
+    .prepare('SELECT receipt_json FROM leisure_commands WHERE id=?')
+    .bind(commandId)
+    .first();
+  if (saved) return { found: true, ...JSON.parse(String(saved.receipt_json)) };
+  const row = await db
+    .prepare(
+      "SELECT * FROM leisure_records WHERE json_extract(data_json,'$.lastCommandId')=? LIMIT 1",
+    )
+    .bind(commandId)
+    .first();
+  if (!row) return { found: false };
+  const record = recordOf(row);
+  return {
+    found: true,
+    fingerprint: record.lastCommandFingerprint,
+    receipt: { message: 'Збережено.', id: record.id },
+  };
 }
 /** Shared Mini App/assistant command boundary. No unsolicited messages.
  * @param {Env} env @param {any} raw @param {number} [nowMs] */
