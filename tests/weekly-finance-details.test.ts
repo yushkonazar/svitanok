@@ -376,8 +376,12 @@ describe('weekly finance evidence', () => {
     const data = JSON.parse(packed.text);
     expect(data.finance.summary.expenseMinor).toBe(5490);
     expect(data.finance.categories).toEqual(f.categories);
-    expect(data.dropped).toContain('finance.evidence');
+    expect(data.dropped).toEqual([]);
+    expect(data.compaction.detailsOmitted).toContain('finance.review.pending.operations');
     expect(data.finance.review.pending).toMatchObject({ count: 45, truncated: true });
+    expect(data.finance.review.pending.operations).toHaveLength(8);
+    expect(data.finance.review.outflows).toEqual(f.review?.outflows);
+    expect(data.finance.comparison.weeks).toHaveLength(4);
     expect(JSON.stringify(f)).toBe(before);
   });
 

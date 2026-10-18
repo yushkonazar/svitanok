@@ -26,6 +26,9 @@ import {
 export { WEEKLY_REVIEW_STATE_KEY };
 export const WEEKLY_REVIEW_HOUR = 9;
 export const WEEKLY_REVIEW_RETRY_HOUR = 12;
+/** Scheduled retries may start only during 12:00–12:59 Kyiv. A deploy must not
+ * reinterpret a morning legacy report into an evening catch-up generation. */
+export const WEEKLY_REVIEW_RETRY_END_HOUR = 13;
 /** Скільки спроб на тиждень: перша о 09:00 і один повтор о 12:00. */
 export const WEEKLY_REVIEW_MAX_ATTEMPTS = 2;
 
@@ -74,7 +77,10 @@ export async function weeklyReviewTask(env, nowMs = Date.now()) {
       // 5-хвилинний тік уже побачить відновлений стан і діятиме один раз.
       return { skipped: 'state-reconciled' };
     }
-    if (state.attempts === 0) return start(env, state, nowMs, writeState);
+    if (state.attempts === 0) {
+      if (hour >= WEEKLY_REVIEW_RETRY_END_HOUR) return { skipped: 'outside-window' };
+      return start(env, state, nowMs, writeState);
+    }
 
     // Київська північ сьогодні в ISO: звіт, доставлений сьогодні, і є успіх.
     if (state.attempts === 1) {
@@ -83,6 +89,7 @@ export async function weeklyReviewTask(env, nowMs = Date.now()) {
       if (reportStatus === 'ready') return { skipped: 'ok' };
       const verdict = await runVerdict(env, /** @type {string} */ (state.runIds[0]));
       if (verdict === 'running') return { skipped: 'running' };
+      if (hour >= WEEKLY_REVIEW_RETRY_END_HOUR) return { skipped: 'retry-window-missed' };
       if (await isPermanentModelAccessFailure(env, /** @type {string} */ (state.runIds[0]))) {
         await sendSystemAlert(
           env,
@@ -92,11 +99,17 @@ export async function weeklyReviewTask(env, nowMs = Date.now()) {
         await writeState({ ...state, attempts: WEEKLY_REVIEW_MAX_ATTEMPTS, alerted: true });
         return { skipped: 'model-access-disabled' };
       }
+      const retryTime = new Intl.DateTimeFormat('uk-UA', {
+        timeZone: 'Europe/Kyiv',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false,
+      }).format(now);
       await sendSystemAlert(
         env,
         reportStatus === 'partial'
-          ? 'Тижневий звіт о 09:00 був частковим — повторюю о 12:00, щоб перевірити пропущені джерела.'
-          : `weekly-review о 09:00 не дав звіту (${verdict}) - повторюю о 12:00.`,
+          ? `Ранковий тижневий звіт був частковим — повторюю зараз (${retryTime}, Київ), щоб перевірити пропущені джерела.`
+          : `Ранковий тижневий звіт не сформовано (${verdict}) — повторюю зараз (${retryTime}, Київ).`,
         nowMs,
       );
       return start(env, state, nowMs, writeState);

@@ -1,6 +1,6 @@
 // data.read scope=weekly | archive (етап 3 PR-2): дайджест для тижневого
 // звіту - усі блоки §1 weekly-review.md одним читанням, стеля 50k через
-// драбину зрізу (знімає блоки й КАЖЕ, що зняла), period звужує сирі серії,
+// скорочення деталей зі збереженням підсумків; period звужує сирі серії,
 // план дня - зі справжньої міграції 0007 у node:sqlite.
 
 import { describe, it, expect } from 'vitest';
@@ -117,7 +117,7 @@ describe('buildWeeklyDigest', () => {
     expect(doc.checkin.series).not.toBeNull();
   });
 
-  it('тісний кап: драбина знімає блоки по порядку і називає їх; текст ≤ cap і лишається JSON', () => {
+  it('тісний кап: скорочує деталі, зберігаючи підсумки кожного блока у валідному JSON', () => {
     const { text, dropped } = buildWeeklyDigest({
       agg,
       plans: { days: [], items: [] },
@@ -130,10 +130,14 @@ describe('buildWeeklyDigest', () => {
     });
     expect(text.length).toBeLessThanOrEqual(6_000);
     const doc = JSON.parse(text);
-    expect(dropped[0]).toBe('checkin.raw');
+    expect(dropped).toEqual([]);
+    expect(doc.compaction.detailsOmitted).toContain('checkin.raw');
     expect(doc.checkin.raw).toBeNull();
     expect(doc.dropped).toEqual(dropped);
-    // Скелет цілий - модель бачить, ЩО саме зняли, а не обірваний документ.
+    expect(doc.funnel.counts).toEqual(agg.funnel);
+    expect(doc.mastery.mock).toBeDefined();
+    expect(doc.habits.streaks).toEqual(agg.streaks);
+    expect(doc.plan).toEqual({ days: [], items: [] });
     expect(doc.truncated).toBeUndefined();
   });
 

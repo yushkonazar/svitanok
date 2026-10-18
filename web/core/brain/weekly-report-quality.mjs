@@ -27,6 +27,31 @@ export function weeklyPacketQuality(packet) {
     'system',
   ].filter((name) => !['available', 'empty'].includes(packet.sources?.[name]?.status));
   if (packet.dropped?.length || packet.truncated) missing.push('truncated-data');
+  if (packet.compaction?.detailsOmitted?.includes('personalPeriods.olderContextFrequencies'))
+    missing.push('personal-context-coverage');
+  if (packet.packetVersion === 2) {
+    for (const [source, field] of /** @type {[string, string][]} */ ([
+      ['finance', 'finance'],
+      ['system', 'system'],
+      ['plans', 'plan'],
+    ])) {
+      if (packet.sources?.[source]?.status === 'available' && !packet[field])
+        missing.push(`${source}-summary`);
+    }
+    if (
+      packet.sources?.stats?.status === 'available' &&
+      [
+        'personalPeriods',
+        'checkin',
+        'habits',
+        'funnel',
+        'mastery',
+        'interests',
+        'reliability',
+      ].some((key) => !packet[key])
+    )
+      missing.push('personal-summary');
+  }
   if (packet.finance?.quality?.unknownCurrencyCount) missing.push('finance-conversion');
   if (packet.finance?.quality?.unclassifiedCount || packet.finance?.quality?.invalidDirectionCount)
     missing.push('finance-classification');
