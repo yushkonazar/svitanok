@@ -1,6 +1,7 @@
 import { kyivDateKey, kyivMinuteOfDay } from '../../kyiv-time.mjs';
 import { addDaysToDateKey } from '../../reminders-core.mjs';
 import { XP_CATEGORIES, PLAN_AREAS, suggestTaskScore } from './scoring.mjs';
+import { planTaskState } from './status.mjs';
 
 export const PLAN_OPERATIONS = [
   'settings',
@@ -13,6 +14,9 @@ export const PLAN_OPERATIONS = [
   'move-start',
   'snooze',
   'exception',
+  'task-note',
+  'exception-revoke',
+  'reschedule',
   'forfeit',
   'recommit',
   'goal-save',
@@ -314,6 +318,7 @@ export function planView(state, nowMs, events = []) {
     tasks: planRecords(state, 'task').map((t) => ({
       ...t,
       facts: taskFacts(state, t),
+      lifecycle: planTaskState({ ...t, facts: taskFacts(state, t) }, nowMs),
       lastReport:
         resultOf(state, t)
           .reports.filter((/** @type {any} */ r) => !r.retracted)
@@ -944,6 +949,67 @@ export function applyPlanCommand(original, command, nowMs) {
         : op === 'undo-report'
           ? 'Позначку скасовано.'
           : 'Факт збережено.';
+  } else if (op === 'task-note' || op === 'exception-revoke' || op === 'reschedule') {
+    const task = get(state, id, 'task');
+    if (!task.acceptedAt || !['accepted', 'excepted'].includes(task.status))
+      throw new PlanError('Спочатку прийми задачу в план.', 409);
+    if (op === 'task-note') {
+      task.outcomeNote = text(p.reason, 500, true);
+      event('task-note', task.title, 0, 0, { taskId: id, reason: task.outcomeNote });
+      receipt.message = 'Пояснення збережено. Строк і наслідки не змінено.';
+    } else if (op === 'exception-revoke') {
+      if (task.status !== 'excepted') throw new PlanError('Ця задача не має винятку.', 409);
+      task.outcomeNote = text(p.reason || task.exceptionReason, 500, true);
+      task.exceptionReason = '';
+      task.status = 'accepted';
+      task.settledAt = null;
+      task.penaltyApplied = 0;
+      task.penaltyRequested = 0;
+      if (Date.parse(task.settleAfter) <= nowMs) settle(task, true);
+      event('exception-revoked', task.title, 0, 0, { taskId: id, reason: task.outcomeNote });
+      receipt.message = 'Виняток скасовано. Пояснення залишилось, початкові умови відновлено.';
+    } else {
+      if (task.source || task.calendar || taskFacts(state, task).done)
+        throw new PlanError(
+          'Перенесення тут доступне для незавершеної ручної задачі без календарного блоку.',
+        );
+      const reason = text(p.reason, 500, true),
+        dueAt = iso(p.dueAt);
+      if (p.critical !== true) throw new PlanError('Підтвердь, що це виняткова обставина.');
+      if (dueAt <= now) throw new PlanError('Новий строк має бути в майбутньому.');
+      const date = planDate(p.date ?? task.date);
+      const startAt = p.startAt ? iso(p.startAt) : null;
+      validateTaskTiming({ startAt, endAt: null, dueAt });
+      if (task.penaltyApplied)
+        event('exception-refund', task.title, task.penaltyApplied, 0, { taskId: id, reason });
+      task.deadlineChanges = [
+        ...(task.deadlineChanges ?? []),
+        { from: task.dueAt, to: dueAt, at: now, reason },
+      ];
+      task.date = date;
+      task.dueAt = dueAt;
+      task.deadlineKind = 'time';
+      task.startAt = startAt;
+      task.endAt = null;
+      task.startedAt = null;
+      task.status = 'accepted';
+      task.exceptionReason = '';
+      task.settledAt = null;
+      task.forfeitedAt = null;
+      task.penaltyApplied = 0;
+      task.penaltyRequested = 0;
+      task.settleAfter = new Date(
+        Date.parse(dueAt) + task.reportGraceHours * 3600000,
+      ).toISOString();
+      task.reminderVersion = (task.reminderVersion ?? 0) + 1;
+      event('task-rescheduled', task.title, 0, 0, {
+        taskId: id,
+        reason,
+        previousDueAt: task.deadlineChanges.at(-1).from,
+        dueAt,
+      });
+      receipt.message = 'Строк змінено. Попередній строк і причина залишилися в історії.';
+    }
   } else if (
     ['start', 'focus-start', 'move-start', 'snooze', 'exception', 'forfeit'].includes(op)
   ) {
@@ -988,6 +1054,7 @@ export function applyPlanCommand(original, command, nowMs) {
     if (op === 'forfeit') {
       if (!task.settledAt) settle(task, true);
       task.forfeitedAt = now;
+      if (p.reason) task.outcomeNote = text(p.reason, 500, true);
       event('forfeited', task.title, 0, 0, { taskId: id });
     }
   } else if (op === 'recommit') {
@@ -1031,6 +1098,9 @@ export function applyPlanCommand(original, command, nowMs) {
       startedAt: null,
       snoozeUntil: null,
       fromTaskId: id,
+      outcomeNote: '',
+      exceptionReason: '',
+      deadlineChanges: [],
       baseline: resultOf(state, task).units,
       createdAt: now,
     };

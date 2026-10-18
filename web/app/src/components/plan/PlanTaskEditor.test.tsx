@@ -73,7 +73,14 @@ afterEach(() => {
 });
 async function openAndFill(user: ReturnType<typeof userEvent.setup>) {
   await user.click(await screen.findByRole('button', { name: 'Додати першу задачу' }));
-  await user.click(screen.getByText('Допомогти заповнити з мого опису ✧'));
+  if (
+    !(
+      screen
+        .getByText('Допомогти заповнити з мого опису ✧')
+        .closest('details') as HTMLDetailsElement
+    ).open
+  )
+    await user.click(screen.getByText('Допомогти заповнити з мого опису ✧'));
   await user.type(
     screen.getByLabelText('Опиши одну задачу'),
     'Прокинутись о 7:00, виїхати на роботу о 7:20–7:30',
@@ -116,7 +123,7 @@ describe('the reported morning-task failure', () => {
       estimateMinutes: 30,
     });
     expect(saved.templates).toHaveLength(1);
-    expect(screen.getByRole('heading', { name: draft.title })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: draft.title })).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Прийняти план' }));
     await user.click(screen.getByRole('button', { name: 'Приймаю цей план' }));
     await waitFor(async () => expect((await fetchPlan()).tasks[0]!.status).toBe('accepted'));

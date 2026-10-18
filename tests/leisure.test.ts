@@ -12,6 +12,7 @@ import {
 } from '../web/core/leisure/model.mjs';
 import {
   executeLeisureCommand,
+  inspectLeisureCommand,
   leisureRecord,
   publishLeisureEdition,
   readLeisureWorkspace,
@@ -96,6 +97,85 @@ const planPayload = (id: string) => ({
   stops: [{ itemId: id, startAt: '2026-10-15T15:00:00Z', endAt: '2026-10-15T16:00:00Z' }],
   calendar: true,
   revision: 0,
+});
+describe('read-only verification and fast mutation acknowledgements', () => {
+  it('acknowledges a reaction without loading the catalog and verifies it without replaying a write', async () => {
+    const { env, db } = setup(),
+      i = await item();
+    await upsertLeisureItems(env, [i]);
+    const c = command('reaction', { verdict: 'later', reasonCode: 'not-now' }, i.id);
+    const init = await buildInitData(42, 'test-token');
+    const request = new Request('https://app.test/api/leisure', {
+      method: 'POST',
+      headers: {
+        'X-Telegram-Init-Data': init,
+        'X-Leisure-Format': '3',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify(c),
+    });
+    const r = await handleLeisure(request, env);
+    expect(r.status).toBe(200);
+    expect(r.headers.get('X-Request-Id')).toBeTruthy();
+    expect(await r.json()).toEqual({
+      ok: true,
+      acknowledged: true,
+      receipt: { message: 'Збережено.' },
+    });
+    const count = db.prepare('SELECT COUNT(*) AS n FROM leisure_commands').get()!.n;
+    const verified = await handleLeisure(
+      new Request(`https://app.test/api/leisure?commandId=${c.commandId}`, {
+        headers: { 'X-Telegram-Init-Data': init },
+      }),
+      env,
+    );
+    expect(await verified.json()).toMatchObject({
+      ok: true,
+      verification: { found: true, receipt: { message: 'Збережено.' } },
+    });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM leisure_commands').get()!.n).toBe(count);
+    expect(await inspectLeisureCommand(env, 'not-saved-command')).toEqual({ found: false });
+    db.prepare('DELETE FROM leisure_commands WHERE id=?').run(c.commandId);
+    expect(await inspectLeisureCommand(env, c.commandId)).toMatchObject({
+      found: true,
+      receipt: { id: `reaction-${i.id}` },
+    });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM leisure_commands').get()!.n).toBe(0);
+    await expect(inspectLeisureCommand(env, 'bad')).rejects.toThrow('ідентифікатор');
+    db.close();
+  });
+  it('returns an actionable, payload-free diagnostic for storage errors', async () => {
+    const { env, db } = setup(),
+      init = await buildInitData(42, 'test-token');
+    const failed = workerEnv({
+      ...env,
+      DB: {
+        ...env.DB!,
+        prepare: () => {
+          throw Error('D1_ERROR secret-personal-payload');
+        },
+      },
+    });
+    const response = await handleLeisure(
+      new Request('https://app.test/api/leisure', {
+        method: 'POST',
+        headers: { 'X-Telegram-Init-Data': init, 'content-type': 'application/json' },
+        body: JSON.stringify(command('reaction', { verdict: 'later' }, 'event-id')),
+      }),
+      failed,
+    );
+    expect(response.status).toBe(503);
+    const body = (await response.json()) as { diagnostic: Record<string, unknown> };
+    expect(body.diagnostic).toMatchObject({
+      area: 'leisure',
+      phase: 'command',
+      status: 503,
+      code: 'storage-failure',
+      operation: 'reaction',
+    });
+    expect(JSON.stringify(body)).not.toContain('secret-personal-payload');
+    db.close();
+  });
 });
 beforeEach(() => {
   maps.search.mockResolvedValue({

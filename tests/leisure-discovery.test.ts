@@ -57,6 +57,37 @@ const cmd = (
   commandId = crypto.randomUUID(),
 ) => ({ op, id, payload, commandId });
 describe('swipe feedback, durable preferences and review safety', () => {
+  it.each(['time', 'not-now', 'this-option', 'company', 'seen'])(
+    'keeps %s feedback neutral for the genre and category',
+    async (reasonCode) => {
+      const i = await item(1, { category: 'concert', genre: 'Джаз' });
+      const profile = leisurePreferenceProfile(
+        [i],
+        [
+          {
+            kind: 'reaction',
+            itemId: i.id,
+            verdict: 'uninterested',
+            reasonCode,
+            features: leisureFeatures(i),
+            at: new Date(now).toISOString(),
+          },
+        ],
+        now,
+      );
+      expect(profile.weights).toEqual({});
+      expect(profile.signals).toBe(0);
+      const { env, db } = setup();
+      await upsertLeisureItems(env, [i]);
+      await executeLeisureCommand(
+        env,
+        cmd('reaction', i.id, { verdict: 'uninterested', reasonCode }),
+        now,
+      );
+      expect((await readLeisureWorkspace(env, now)).edition).toBeNull();
+      db.close();
+    },
+  );
   it('extracts explicit positive and negative interests without inventing partner preferences', () => {
     expect(explicitLeisureInterests('Обожнюю Марвел! Не люблю DC. Pixar — подобається.')).toEqual([
       { feature: 'interest:marvel', direction: 1 },

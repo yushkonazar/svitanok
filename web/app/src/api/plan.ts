@@ -66,6 +66,22 @@ export const planTaskSchema = z.object({
   settleAfter: nullableTime,
   reportGraceHours: z.number().optional(),
   exceptionReason: z.string().optional(),
+  outcomeNote: z.string().optional(),
+  lifecycle: z
+    .enum([
+      'draft',
+      'scheduled',
+      'ready',
+      'in-progress',
+      'completed',
+      'completed-late',
+      'missed',
+      'excepted',
+    ])
+    .optional(),
+  deadlineChanges: z
+    .array(z.object({ from: z.string(), to: z.string(), at: z.string(), reason: z.string() }))
+    .optional(),
   fromTaskId: nullableTime,
   facts: z.object({
     units: z.number(),
@@ -365,6 +381,14 @@ export function usePlan() {
     refetchOnMount: 'always',
     refetchOnWindowFocus: 'always',
   });
+}
+/** Call from an action, using the original server observation exactly once. */
+export function currentPlanActionTime(
+  serverNow: string,
+  receivedAt: number,
+  localNow = Date.now(),
+) {
+  return new Date(Date.parse(serverNow) + Math.max(0, localNow - receivedAt)).toISOString();
 }
 export function usePlanChange() {
   const cache = useQueryClient();

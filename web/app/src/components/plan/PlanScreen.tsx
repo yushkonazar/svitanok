@@ -13,6 +13,7 @@ import {
   usePlan,
   usePlanChange,
   readPendingPlanCommand,
+  currentPlanActionTime,
   type PlanTask,
   type PlanReward,
   type PlanWorkspace,
@@ -43,6 +44,7 @@ import {
   EarlierHistory,
 } from './PlanExtras.tsx';
 import { inTelegram, haptic } from '../../telegram.ts';
+import { planTaskState, PLAN_TASK_STATES } from '../../../../core/motivation/status.mjs';
 import { parseMoney } from '../../../../core/finance/planning.mjs';
 import './plan.css';
 import { PlanLocalTime, PlanDateInput, readablePlanDate } from './PlanLocalTime.tsx';
@@ -113,29 +115,22 @@ function when(iso: string) {
   });
 }
 function TaskStatus({ task, now }: { task: PlanTask; now: string }) {
-  const label =
-    task.status === 'draft'
-      ? 'Чернетка'
-      : task.status === 'excepted'
-        ? 'Виняток'
-        : task.facts.onTimeUnits >= task.target
-          ? 'Вчасно'
-          : task.facts.done
-            ? 'Зроблено пізніше'
-            : task.forfeitedAt
-              ? 'Підсумок зафіксовано'
-              : task.dueAt < now
-                ? 'Потрібен факт'
-                : task.startedAt
-                  ? 'У роботі'
-                  : task.startAt
-                    ? when(task.startAt)
-                    : task.deadlineKind === 'time'
-                      ? `До ${when(task.dueAt)}`
-                      : task.deadlineKind === 'shift'
-                        ? 'До завершення зміни'
-                        : 'Протягом дня';
-  return <span className={`plan-status ${task.facts.done ? 'is-done' : ''}`}>{label}</span>;
+  const state = planTaskState(task, Date.parse(now));
+  return (
+    <span className={`plan-status is-${state} ${task.facts.done ? 'is-done' : ''}`}>
+      {PLAN_TASK_STATES[state]}
+    </span>
+  );
+}
+function usePlanClock(serverNow: string | undefined, receivedAt: number) {
+  const [tick, setTick] = useState(Date.now);
+  useEffect(() => {
+    const id = window.setInterval(() => setTick(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, []);
+  return new Date(
+    serverNow ? Date.parse(serverNow) + Math.max(0, tick - receivedAt) : tick,
+  ).toISOString();
 }
 function Meter({ value, max, label }: { value: number; max: number; label: string }) {
   return (
@@ -185,7 +180,8 @@ export function PlanScreen() {
   const [undo, setUndo] = useState<{ taskId: string; reportId: string } | null>(null);
   const [recovery, setRecovery] = useState(readPendingPlanCommand);
   const retry = useRef<{ signature: string; command: PlanCommand } | null>(null);
-  const data = query.data;
+  const clock = usePlanClock(query.data?.now, query.dataUpdatedAt);
+  const data = query.data ? { ...query.data, now: clock } : undefined;
   if (isSessionExpired(query.error) || isSessionExpired(mutation.error)) return <SessionExpired />;
   if (!data)
     return (
@@ -257,9 +253,7 @@ export function PlanScreen() {
               op === 'report' && !payload.actualAt
                 ? {
                     ...payload,
-                    actualAt: new Date(
-                      Date.parse(data.now) + Math.max(0, Date.now() - query.dataUpdatedAt),
-                    ).toISOString(),
+                    actualAt: currentPlanActionTime(query.data!.now, query.dataUpdatedAt),
                   }
                 : payload,
             id,
@@ -287,13 +281,14 @@ export function PlanScreen() {
   const save: Run = async (...args) => {
     const ok = await run(...args);
     if (ok) {
-      close();
-      if (args[0] === 'task-save' && typeof args[1]?.date === 'string') {
+      if (['task-save', 'reschedule'].includes(args[0]) && typeof args[1]?.date === 'string') {
         const next = new URLSearchParams(params);
         next.delete('task');
         next.set('date', args[1].date);
         setParams(next, { replace: true });
-      }
+        setPanel(null);
+        setError('');
+      } else close();
     }
     return ok;
   };
@@ -498,7 +493,7 @@ export function PlanScreen() {
                 .map((task) => (
                   <article
                     key={task.id}
-                    className={`plan-task ${task.facts.done ? 'is-done' : ''} ${task.status === 'draft' ? 'is-draft' : ''}`}
+                    className={`plan-task is-${planTaskState(task, Date.parse(data.now))} ${task.facts.done ? 'is-done' : ''} ${task.status === 'draft' ? 'is-draft' : ''}`}
                   >
                     <button
                       className="plan-check"
@@ -507,15 +502,22 @@ export function PlanScreen() {
                           ? `Редагувати ${task.title}`
                           : task.facts.done
                             ? `Переглянути ${task.title}`
-                            : `Виконати ${task.title}`
+                            : task.dueAt <= data.now
+                              ? `Уточнити ${task.title}`
+                              : `Виконати ${task.title}`
                       }
                       disabled={mutation.isPending}
                       onClick={() => {
                         if (task.status === 'draft') open({ type: 'task', task });
                         else if (task.source) open({ type: 'detail', task });
-                        else if (task.facts.done || task.status === 'excepted')
+                        else if (
+                          task.facts.done ||
+                          task.status === 'excepted' ||
+                          task.dueAt <= data.now ||
+                          task.forfeitedAt
+                        )
                           open({ type: 'detail', task });
-                        else if (task.target === 1 && task.dueAt >= data.now)
+                        else if (task.target === 1 && task.dueAt > data.now)
                           void run('report', { units: 1 }, task.id);
                         else open({ type: 'report', task });
                       }}
@@ -526,7 +528,9 @@ export function PlanScreen() {
                           ? '＋'
                           : task.status === 'excepted'
                             ? '—'
-                            : ''}
+                            : planTaskState(task, Date.parse(data.now)) === 'missed'
+                              ? '×'
+                              : ''}
                     </button>
                     <button
                       className="plan-task-body"
@@ -830,6 +834,7 @@ export function PlanScreen() {
               {activePanel.type === 'report' && (
                 <Report
                   task={data.tasks.find((t) => t.id === activePanel.task.id) ?? activePanel.task}
+                  now={data.now}
                   save={save}
                   onError={setError}
                 />
@@ -1276,15 +1281,6 @@ function TaskEditor({
           }}
         />
       )}
-      <Field label="Напрям">
-        <select value={area} onChange={(e) => setArea(e.target.value)}>
-          {Object.entries(PLAN_AREAS).map(([key, label]) => (
-            <option key={key} value={key}>
-              {label}
-            </option>
-          ))}
-        </select>
-      </Field>
       <Field label="Що хочу зробити">
         <input
           required
@@ -1292,7 +1288,6 @@ function TaskEditor({
           value={title}
           onChange={(e) => setTitle(e.target.value)}
           placeholder="Наприклад, попрактикувати SQL"
-          autoFocus
         />
       </Field>
       <Field
@@ -1307,52 +1302,68 @@ function TaskEditor({
           placeholder="Розв’язано 5 задач самостійно"
         />
       </Field>
-      <div className="plan-form-row">
-        <Field label="Обсяг">
-          <input
-            type="number"
-            required
-            min={1}
-            max={100000000}
-            step={1}
-            value={target}
-            onChange={(e) => setTarget(Number(e.target.value))}
-          />
-        </Field>
-        <Field label="Одиниця">
-          <input
-            maxLength={24}
-            value={unit}
-            onChange={(e) => setUnit(e.target.value)}
-            placeholder="задач / грн / крок"
-          />
-        </Field>
-      </div>
-      <Field label="Як фіксується результат">
-        <select
-          value={source}
-          onChange={(e) => {
-            setSource(e.target.value as typeof source);
-            if (e.target.value) {
-              setUnit('грн');
-              setSensitive(false);
-              if (target === 1) setTarget(3500);
-              setArea('work');
-            }
-          }}
-        >
-          <option value="">Вручну: позначка або число</option>
-          <option value="net">З таксі · каса після комісії</option>
-          <option value="gross">З таксі · каса до комісії</option>
-        </select>
-      </Field>
-      {source && (
+      <details className="plan-editor-options" open={target > 1 || Boolean(source) || undefined}>
+        <summary>Обсяг, джерело результату й напрям</summary>
         <p className="plan-muted">
-          Ціль — у цілих гривнях. Після прийняття прогрес надходитиме із записів таксі цього дня; XP
-          і завершення рахуються автоматично. Уточнення фінансового запису уточнить результат. Для
-          одного проміжку — одна пов’язана обіцянка.
+          Для звичайної задачі достатньо позначки «Виконав». Числовий обсяг потрібен для кількох
+          одиниць або фінансової цілі.
         </p>
-      )}
+        <Field label="Напрям">
+          <select value={area} onChange={(e) => setArea(e.target.value)}>
+            {Object.entries(PLAN_AREAS).map(([key, label]) => (
+              <option key={key} value={key}>
+                {label}
+              </option>
+            ))}
+          </select>
+        </Field>
+        <div className="plan-form-row">
+          <Field label="Обсяг">
+            <input
+              type="number"
+              required
+              min={1}
+              max={100000000}
+              step={1}
+              value={target}
+              onChange={(e) => setTarget(Number(e.target.value))}
+            />
+          </Field>
+          <Field label="Одиниця">
+            <input
+              maxLength={24}
+              value={unit}
+              onChange={(e) => setUnit(e.target.value)}
+              placeholder="задач / грн / крок"
+            />
+          </Field>
+        </div>
+        <Field label="Як фіксується результат">
+          <select
+            value={source}
+            onChange={(e) => {
+              setSource(e.target.value as typeof source);
+              if (e.target.value) {
+                setUnit('грн');
+                setSensitive(false);
+                if (target === 1) setTarget(3500);
+                setArea('work');
+              }
+            }}
+          >
+            <option value="">Вручну: позначка або число</option>
+            <option value="net">З таксі · каса після комісії</option>
+            <option value="gross">З таксі · каса до комісії</option>
+          </select>
+        </Field>
+        {source && (
+          <p className="plan-muted">
+            Ціль — у цілих гривнях. Після прийняття прогрес надходитиме із записів таксі цього дня;
+            XP і завершення рахуються автоматично. Уточнення фінансового запису уточнить результат.
+            Для одного проміжку — одна пов’язана обіцянка.
+          </p>
+        )}
+      </details>
       <Field label="Строк">
         <select value={deadline} onChange={(e) => setDeadline(e.target.value as typeof deadline)}>
           <option value="day">До кінця мого дня · {data.settings.dayBoundary}</option>
@@ -1405,98 +1416,108 @@ function TaskEditor({
         />
         Сам час — частина результату («встати до…»)
       </label>
-      <div className="plan-score">
-        <div className="plan-form-row">
-          <Field label="Зусилля">
-            <select
-              value={effort}
-              onChange={(e) => {
-                setEffort(Number(e.target.value));
-              }}
-            >
-              <option value={0}>Малі</option>
-              <option value={1}>Звичайні</option>
-              <option value={2}>Значні</option>
-            </select>
-          </Field>
-          <Field label="Внесок">
-            <select
-              value={contribution}
-              onChange={(e) => {
-                setContribution(Number(e.target.value));
-              }}
-            >
-              <option value={0}>Необхідна дія</option>
-              <option value={1}>Крок до цілі</option>
-            </select>
-          </Field>
-        </div>
-        <Field label="Особистий виклик">
-          <select
-            value={challenge}
-            onChange={(e) => {
-              setChallenge(Number(e.target.value));
-            }}
-          >
-            <option value={0}>Звична складність</option>
-            <option value={1}>Відкладання або новизна</option>
-            <option value={2}>Складний результат</option>
-          </select>
-        </Field>
-        <label className="plan-toggle">
-          <input
-            type="checkbox"
-            checked={routine}
-            onChange={(e) => {
-              setRoutine(e.target.checked);
-            }}
-          />
-          Звична повторювана дія
-        </label>
-        <p className="plan-muted">
-          Рекомендація: {recommendation.xp} XP · {recommendation.title}. {recommendation.detail}
-        </p>
-        {xpOverride != null && xpOverride !== recommendation.xp && (
-          <div className="plan-xp-choice">
-            <p>
-              Твій вибір: {xp} XP · {XP_CATEGORIES.find((category) => category.xp === xp)?.title}.
-              Саме ця оцінка збережеться.
-            </p>
-            {!initial?.fromTaskId && (
-              <button type="button" onClick={() => setXpOverride(null)}>
-                Застосувати рекомендацію · {recommendation.xp} XP
-              </button>
-            )}
+      <details className="plan-editor-options">
+        <summary>
+          Оцінка та навантаження · +{xp} XP / ризик −
+          {Math.ceil((xp * data.settings.penaltyPercent) / 100)} XP
+        </summary>
+        <div className="plan-score">
+          <div className="plan-form-row">
+            <Field label="Зусилля">
+              <select
+                value={effort}
+                onChange={(e) => {
+                  setEffort(Number(e.target.value));
+                }}
+              >
+                <option value={0}>Малі</option>
+                <option value={1}>Звичайні</option>
+                <option value={2}>Значні</option>
+              </select>
+            </Field>
+            <Field label="Внесок">
+              <select
+                value={contribution}
+                onChange={(e) => {
+                  setContribution(Number(e.target.value));
+                }}
+              >
+                <option value={0}>Необхідна дія</option>
+                <option value={1}>Крок до цілі</option>
+              </select>
+            </Field>
           </div>
-        )}
-        <div className="plan-score-result">
-          <span>
-            За результат <strong>+{xp} XP</strong>
-          </span>
-          <span>
-            Ризик <strong>−{Math.ceil((xp * data.settings.penaltyPercent) / 100)} XP</strong>
-          </span>
-        </div>
-        <details>
-          <summary>Уточнити оцінку</summary>
-          <Field label="Обрана категорія XP">
+          <Field label="Особистий виклик">
             <select
-              value={xp}
-              disabled={Boolean(initial?.fromTaskId)}
-              onChange={(e) => setXpOverride(Number(e.target.value))}
+              value={challenge}
+              onChange={(e) => {
+                setChallenge(Number(e.target.value));
+              }}
             >
-              {XP_CATEGORIES.map((category) => (
-                <option key={category.xp} value={category.xp}>
-                  {category.xp} XP · {category.title}
-                </option>
-              ))}
+              <option value={0}>Звична складність</option>
+              <option value={1}>Відкладання або новизна</option>
+              <option value={2}>Складний результат</option>
             </select>
           </Field>
+          <label className="plan-toggle">
+            <input
+              type="checkbox"
+              checked={routine}
+              onChange={(e) => {
+                setRoutine(e.target.checked);
+              }}
+            />
+            Звична повторювана дія
+          </label>
           <p className="plan-muted">
-            Оцінка за результат, не за хвилини. Після прийняття вона фіксується.
+            Рекомендація: {recommendation.xp} XP · {recommendation.title}. {recommendation.detail}
           </p>
-        </details>
-      </div>
+          {xpOverride != null && xpOverride !== recommendation.xp && (
+            <div className="plan-xp-choice">
+              <p>
+                Твій вибір: {xp} XP · {XP_CATEGORIES.find((category) => category.xp === xp)?.title}.
+                Саме ця оцінка збережеться.
+              </p>
+              {!initial?.fromTaskId && (
+                <button type="button" onClick={() => setXpOverride(null)}>
+                  Застосувати рекомендацію · {recommendation.xp} XP
+                </button>
+              )}
+            </div>
+          )}
+          <div className="plan-score-result">
+            <span>
+              За результат <strong>+{xp} XP</strong>
+            </span>
+            <span>
+              Ризик <strong>−{Math.ceil((xp * data.settings.penaltyPercent) / 100)} XP</strong>
+            </span>
+          </div>
+          <details>
+            <summary>Уточнити оцінку</summary>
+            <Field label="Обрана категорія XP">
+              <select
+                value={xp}
+                disabled={Boolean(initial?.fromTaskId)}
+                onChange={(e) => setXpOverride(Number(e.target.value))}
+              >
+                {XP_CATEGORIES.map((category) => (
+                  <option key={category.xp} value={category.xp}>
+                    {category.xp} XP · {category.title}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            <p className="plan-muted">
+              Оцінка за результат, не за хвилини. Після прийняття вона фіксується.
+            </p>
+          </details>
+        </div>
+      </details>
+      <p className="plan-muted">
+        Після строку без підтвердженого виконання задача автоматично стане «Не виконано вчасно». Час
+        на внесення звіту не подовжує виконання.
+      </p>
       <details
         ref={timingDetails}
         open={Boolean(
@@ -1719,67 +1740,116 @@ function Settings({ data, save }: { data: PlanWorkspace; save: Run }) {
 
 function Report({
   task,
+  now,
   save,
   onError,
 }: {
   task: PlanTask;
+  now: string;
   save: Run;
   onError: (s: string) => void;
 }) {
   const [units, setUnits] = useState(task.facts.units),
     [earlier, setEarlier] = useState(false),
-    [actual, setActual] = useState(localValue(new Date().toISOString()));
+    [actual, setActual] = useState(localValue(now)),
+    [note, setNote] = useState(task.outcomeNote ?? ''),
+    [binary, setBinary] = useState<'done' | 'not-done'>(
+      task.facts.done || task.dueAt > now ? 'done' : 'not-done',
+    );
+  const simple = task.target === 1;
   return (
     <form
       className="plan-form"
       onSubmit={(e) => {
         e.preventDefault();
         try {
-          void save(
-            'report',
-            { units, ...(earlier ? { actualAt: localIso(actual) } : {}) },
-            task.id,
-          );
+          if (simple && binary === 'not-done') {
+            void save(
+              task.status === 'excepted' ? 'task-note' : 'forfeit',
+              { reason: note || 'Не виконав.' },
+              task.id,
+            );
+          } else
+            void save(
+              'report',
+              { units: simple ? 1 : units, ...(earlier ? { actualAt: localIso(actual) } : {}) },
+              task.id,
+            );
         } catch (error) {
           onError((error as Error).message);
         }
       }}
     >
       <FormTitle sub={task.criterion}>{task.title}</FormTitle>
-      <Field
-        label={`Фактично зроблено загалом із ${task.target} (${task.unit})`}
-        hint="Внеси загальний результат, а не приріст. Повторний запис не подвоює XP."
-      >
-        <input
-          type="number"
-          min={0}
-          max={task.target}
-          step={1}
-          required
-          value={units}
-          onChange={(e) => setUnits(Number(e.target.value))}
-        />
-      </Field>
-      <label className="plan-toggle">
-        <input type="checkbox" checked={earlier} onChange={(e) => setEarlier(e.target.checked)} />
-        Цей результат був раніше, записую зараз
-      </label>
-      {earlier && (
-        <Field label="Справжній час виконання · Київ">
+      {simple ? (
+        <div className="plan-result-options" role="group" aria-label="Результат задачі">
+          <button type="button" aria-pressed={binary === 'done'} onClick={() => setBinary('done')}>
+            ✓ Виконав
+          </button>
+          <button
+            type="button"
+            aria-pressed={binary === 'not-done'}
+            onClick={() => setBinary('not-done')}
+          >
+            × Не виконав
+          </button>
+        </div>
+      ) : (
+        <Field
+          label={`Фактично зроблено загалом із ${task.target} (${task.unit})`}
+          hint="Внеси загальний результат, а не приріст. Повторний запис не подвоює XP."
+        >
           <input
-            type="datetime-local"
+            type="number"
+            min={0}
+            max={task.target}
+            step={1}
             required
-            value={actual}
-            onChange={(e) => setActual(e.target.value)}
+            value={units}
+            onChange={(e) => setUnits(Number(e.target.value))}
           />
         </Field>
       )}
+      {simple && binary === 'not-done' ? (
+        <Field
+          label="Що сталося? · необов’язково"
+          hint="Це пояснення, не зовнішній виняток. Воно не переносить строк і не скасовує наслідків."
+        >
+          <textarea value={note} maxLength={500} onChange={(e) => setNote(e.target.value)} />
+        </Field>
+      ) : (
+        <>
+          <label className="plan-toggle">
+            <input
+              type="checkbox"
+              checked={earlier}
+              onChange={(e) => setEarlier(e.target.checked)}
+            />
+            Цей результат був раніше, записую зараз
+          </label>
+          {earlier && (
+            <Field label="Справжній час виконання · Київ">
+              <input
+                type="datetime-local"
+                required
+                value={actual}
+                onChange={(e) => setActual(e.target.value)}
+              />
+            </Field>
+          )}
+        </>
+      )}
       <p className="plan-muted">
-        Строк: {when(task.dueAt)}. За зроблену частину отримаєш XP. Незаповнений залишок до строку
-        не штрафується. {task.timeSensitive ? 'У цій задачі своєчасність є умовою результату.' : ''}
+        Строк: {when(task.dueAt)}.{' '}
+        {task.dueAt <= now
+          ? 'Строк уже минув. Пояснення можна додати без запису нульового результату.'
+          : 'До строку можна оновлювати результат.'}{' '}
+        {task.timeSensitive
+          ? 'Тут важливо виконати дію вчасно. Пізніше виконання не зараховується як вчасне.'
+          : ''}
       </p>
       <button className="plan-primary" type="submit">
-        Зберегти факт
+        {simple ? 'Зберегти результат' : 'Зберегти факт'}
       </button>
     </form>
   );
@@ -1801,11 +1871,27 @@ function TaskDetail({
   onError: (s: string) => void;
 }) {
   const [reason, setReason] = useState(''),
-    [moving, setMoving] = useState('');
+    [moving, setMoving] = useState(''),
+    [note, setNote] = useState(task.outcomeNote ?? ''),
+    [critical, setCritical] = useState(false),
+    [newDue, setNewDue] = useState('');
+  const missed = planTaskState(task, Date.parse(data.now)) === 'missed';
   return (
     <div className="plan-form">
       <FormTitle sub={task.criterion}>{task.title}</FormTitle>
       <TaskStatus task={task} now={data.now} />
+      {missed && (
+        <p className="plan-deadline-notice" role="status">
+          Строк минув, вчасне виконання не підтверджено. Стан змінено автоматично — вводити 0 не
+          потрібно. Якщо зробив вчасно, але не записав, уточни справжній час.
+        </p>
+      )}
+      {task.status === 'excepted' && (
+        <p className="plan-muted">
+          Задача не виконана; зараз для неї знято наслідок через виняток. Звичайне пояснення
+          невиконання не повинно оформлятися як виняток.
+        </p>
+      )}
       <dl className="plan-facts">
         <dt>Крайній строк</dt>
         <dd>{when(task.dueAt)}</dd>
@@ -1838,6 +1924,18 @@ function TaskDetail({
         </p>
       )}
       {task.exceptionReason && <p>Виняток: {task.exceptionReason}</p>}
+      {task.outcomeNote && <p>Пояснення: {task.outcomeNote}</p>}
+      {task.lastReport && task.lastReport.observedUnits > task.lastReport.units && (
+        <p className="plan-muted">
+          Записано пізніше виконання: {task.lastReport.observedUnits} {task.unit}. Умову вчасності
+          не виконано.
+        </p>
+      )}
+      {task.deadlineChanges?.map((change) => (
+        <p className="plan-muted" key={change.at}>
+          Перенесено з {when(change.from)} на {when(change.to)}. Причина: {change.reason}
+        </p>
+      ))}
       {task.status === 'draft' ? (
         <button className="plan-primary" onClick={() => open({ type: 'task', task })}>
           Редагувати чернетку
@@ -1861,10 +1959,12 @@ function TaskDetail({
               </div>
             ) : (
               <button className="plan-primary" onClick={() => open({ type: 'report', task })}>
-                {task.facts.done ? 'Уточнити факт' : 'Внести результат'}
+                {task.facts.done || missed || task.status === 'excepted'
+                  ? 'Уточнити результат'
+                  : 'Внести результат'}
               </button>
             )}
-            {!task.facts.done && !task.forfeitedAt && task.status === 'accepted' && (
+            {!task.facts.done && !task.forfeitedAt && task.status === 'accepted' && !missed && (
               <>
                 <button onClick={() => void run('start', {}, task.id)}>Почав виконання</button>
                 <button onClick={() => void run('focus-start', {}, task.id)}>
@@ -1886,7 +1986,7 @@ function TaskDetail({
                   Скасувати останню позначку
                 </button>
               )}
-            {!task.calendar && !task.facts.done && task.status === 'accepted' && (
+            {!task.calendar && !task.facts.done && task.status === 'accepted' && !missed && (
               <details>
                 <summary>Змінити початок</summary>
                 <form
@@ -1918,16 +2018,46 @@ function TaskDetail({
                 Підготувати залишок на завтра
               </button>
             )}
-            {!task.facts.done && !task.forfeitedAt && task.status === 'accepted' && (
-              <details>
-                <summary>Не виконав або зовнішня перешкода</summary>
-                <p className="plan-muted">
-                  «Сьогодні не зроблю» фіксує погоджений наслідок зараз. Зовнішній виняток потребує
-                  чесної причини; він зберігається в історії.
-                </p>
-                <button className="plan-danger" onClick={() => void save('forfeit', {}, task.id)}>
-                  Сьогодні не зроблю · врахувати −{task.facts.risk} XP
+            {!task.facts.done && (
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  void save('task-note', { reason: note }, task.id);
+                }}
+              >
+                <Field
+                  label="Пояснення невиконання"
+                  hint="Наприклад: проспав, не розрахував час. Пояснення не скасовує наслідків."
+                >
+                  <textarea
+                    value={note}
+                    maxLength={500}
+                    onChange={(e) => setNote(e.target.value)}
+                  />
+                </Field>
+                <button type="submit" disabled={!note.trim()}>
+                  Зберегти пояснення
                 </button>
+              </form>
+            )}
+            {task.status === 'excepted' && (
+              <button
+                className="plan-secondary"
+                onClick={() =>
+                  void save('exception-revoke', { reason: task.exceptionReason }, task.id)
+                }
+              >
+                Це пояснення, а не виняток · відновити умови
+              </button>
+            )}
+            {!task.facts.done && task.status === 'accepted' && (
+              <details>
+                <summary>Виняткова обставина або перенесення</summary>
+                <p className="plan-muted">
+                  Для хвороби чи непередбачуваної зовнішньої перешкоди. «Проспав» або «не встиг» —
+                  звичайне пояснення вище. Виняток знімає наслідок, а перенесення змінює строк;
+                  причина залишається в історії.
+                </p>
                 <Field label="Причина зовнішнього винятку">
                   <textarea
                     value={reason}
@@ -1935,12 +2065,54 @@ function TaskDetail({
                     onChange={(e) => setReason(e.target.value)}
                   />
                 </Field>
+                <label className="plan-toggle">
+                  <input
+                    type="checkbox"
+                    checked={critical}
+                    onChange={(e) => setCritical(e.target.checked)}
+                  />
+                  Підтверджую виняткову обставину та зміну умов
+                </label>
                 <button
-                  disabled={!reason.trim()}
+                  disabled={!reason.trim() || !critical}
                   onClick={() => void save('exception', { reason }, task.id)}
                 >
                   Зберегти виняток без нового XP і штрафу
                 </button>
+                {!task.source && !task.calendar && (
+                  <>
+                    <PlanLocalTime
+                      label="Новий крайній строк · Київ"
+                      value={newDue}
+                      onChange={setNewDue}
+                      defaultDate={task.date}
+                    />
+                    <button
+                      disabled={!reason.trim() || !critical || !newDue}
+                      onClick={() => {
+                        try {
+                          void save(
+                            'reschedule',
+                            {
+                              reason,
+                              critical,
+                              dueAt: localIso(newDue),
+                              date:
+                                newDue.slice(11, 16) <= data.settings.dayBoundary
+                                  ? dayPlus(newDue.slice(0, 10), -1)
+                                  : newDue.slice(0, 10),
+                            },
+                            task.id,
+                          );
+                        } catch (e) {
+                          onError((e as Error).message);
+                        }
+                      }}
+                    >
+                      Перенести з цією причиною
+                    </button>
+                  </>
+                )}
               </details>
             )}
           </>

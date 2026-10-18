@@ -273,6 +273,44 @@
 .plan-status.is-done {
   color: var(--color-pos);
 }
+.plan-status.is-missed {
+  color: var(--color-tx);
+  background: var(--color-glass);
+  border-left: 3px solid var(--color-a2);
+  padding: 3px 8px;
+  border-radius: 4px;
+}
+.plan-task.is-missed {
+  border-color: var(--color-a2);
+}
+.plan-deadline-notice {
+  border-left: 3px solid var(--color-a2);
+  padding: 10px 12px;
+  background: var(--color-glass);
+  font-size: 13px;
+}
+.plan-result-options {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+.plan-result-options button {
+  min-width: 0;
+  min-height: 48px;
+  border: 1px solid var(--color-glassb);
+  border-radius: 14px;
+  padding: 12px;
+}
+.plan-result-options button[aria-pressed='true'] {
+  border-color: var(--color-a2);
+  background: var(--color-glass);
+  font-weight: 700;
+}
+.plan-editor-options > summary {
+  padding: 12px 0;
+  cursor: pointer;
+  font-weight: 650;
+}
 .plan-primary {
   display: block;
   width: 100%;

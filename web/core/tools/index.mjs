@@ -78,6 +78,7 @@ export const TOOLS = {
             'move-start',
             'snooze',
             'recommit',
+            'task-note',
             'goal-save',
             'shift-open',
             'shift-close',

@@ -29,6 +29,7 @@ import {
 import { PlanBuilder } from './PlanBuilder.tsx';
 import { SwipeDeck } from './SwipeDeck.tsx';
 import { CategoryArtwork } from './CategoryArtwork.tsx';
+import { RequestDiagnostics } from '../ui/RequestDiagnostics.tsx';
 import { readPendingLeisure, keepPendingLeisure } from './pending-command.ts';
 import { LeisureFeedback, PreviousVisits } from './LeisureFeedback.tsx';
 import './leisure.css';
@@ -351,7 +352,10 @@ export function LeisureScreen() {
       sending.current = true;
       keepPendingLeisure(pending.current.command);
       try {
-        const result = await change.mutateAsync(pending.current.command);
+        const result = await change.mutateAsync({
+          ...pending.current.command,
+          verifyFirst: Boolean(recovery),
+        });
         pending.current = null;
         keepPendingLeisure(null);
         setRecovery(null);
@@ -485,6 +489,9 @@ export function LeisureScreen() {
   const recover = recovery && (
     <div className="leisure-recovery" role="alert">
       <p>Підтвердження не надійшло. Перевіримо ту саму дію, щоб не створити дубль.</p>
+      {change.error instanceof LeisureSaveUncertainError && change.error.diagnostic && (
+        <RequestDiagnostics entry={change.error.diagnostic} />
+      )}
       <Button
         disabled={change.isPending}
         onClick={() => fire(send(recovery.op, recovery.payload, recovery.id).then(close))}
@@ -1005,7 +1012,7 @@ export function LeisureScreen() {
                 <p>Варіант не знайдено. Онови добірку.</p>
               )}
             </fieldset>
-            {change.error && (
+            {change.error && !recovery && (
               <p className="leisure-error" role="alert">
                 {change.error.message}
               </p>

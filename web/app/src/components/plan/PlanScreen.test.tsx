@@ -38,6 +38,65 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 describe('manual plan owner journey', () => {
+  it('changes to missed at the deadline on an already open page and uses a binary result instead of a zero input', async () => {
+    let w = await fetchPlan();
+    await changePlan({
+      op: 'settings',
+      payload: { enabled: true },
+      commandId: crypto.randomUUID(),
+      revision: w.revision,
+    });
+    w = await fetchPlan();
+    const created = await changePlan({
+      op: 'task-save',
+      payload: {
+        date: w.today,
+        title: 'Виїхати вчасно',
+        criterion: 'Виїхати до строку',
+        target: 1,
+        xp: 20,
+        effort: 1,
+        contribution: 0,
+        deadlineKind: 'time',
+        dueAt: new Date(Date.now() + 1800).toISOString(),
+        timeSensitive: true,
+      },
+      commandId: crypto.randomUUID(),
+      revision: w.revision,
+    });
+    w = await fetchPlan();
+    await changePlan({
+      op: 'accept',
+      payload: { date: w.today },
+      commandId: crypto.randomUUID(),
+      revision: w.revision,
+    });
+    const { user } = setup();
+    await screen.findByRole('button', { name: 'Виконати Виїхати вчасно' });
+    await screen.findByText('Не виконано вчасно', {}, { timeout: 4000 });
+    expect(
+      (await fetchPlan()).tasks.find((t) => t.id === created.receipt.id)?.lastReport,
+    ).toBeNull();
+    await user.click(screen.getByRole('button', { name: 'Уточнити Виїхати вчасно' }));
+    expect(screen.getByText(/вводити 0 не потрібно/)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Уточнити результат' }));
+    expect(screen.queryByRole('spinbutton')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '× Не виконав' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+    await user.type(
+      screen.getByLabelText('Що сталося? · необов’язково'),
+      'Прокинувся, але заснув знову.',
+    );
+    await user.click(screen.getByRole('button', { name: 'Зберегти результат' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect((await fetchPlan()).tasks.find((t) => t.id === created.receipt.id)).toMatchObject({
+      status: 'accepted',
+      outcomeNote: 'Прокинувся, але заснув знову.',
+      facts: { done: false, units: 0 },
+    });
+  });
   it('dismisses initial setup after saving rules while disabled and keeps it dismissed after reopening', async () => {
     const first = setup();
     await first.user.click(

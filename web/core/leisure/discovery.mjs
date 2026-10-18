@@ -7,6 +7,10 @@ export const FEEDBACK_REASONS = [
   'place',
   'price',
   'time',
+  'not-now',
+  'this-option',
+  'company',
+  'seen',
   'other',
 ];
 const GENRES = {
@@ -161,6 +165,12 @@ export function leisurePreferenceProfile(items, records, nowMs) {
     weights.set(tag, row);
   };
   for (const record of records) {
+    // These choices describe this occasion/card, never a dislike of its genre.
+    if (
+      record.kind === 'reaction' &&
+      ['time', 'not-now', 'this-option', 'company', 'seen'].includes(record.reasonCode)
+    )
+      continue;
     const reaction =
       record.kind === 'reaction' && ['interested', 'uninterested'].includes(record.verdict);
     const visit = record.kind === 'visit' && ['liked', 'disliked'].includes(record.rating);

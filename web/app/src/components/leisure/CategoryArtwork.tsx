@@ -40,7 +40,6 @@ export function CategoryArtwork({
       ) : (
         <span className="leisure-art-fallback">{categoryLabels[category]}</span>
       )}
-      {variant !== 'thumb' && <small className="leisure-art-credit">Ілюстрація</small>}
     </div>
   );
 }

@@ -203,17 +203,6 @@
   border-radius: 18px;
   margin: 12px 0 18px;
 }
-.leisure-category-art .leisure-art-credit {
-  position: absolute;
-  right: 10px;
-  bottom: 9px;
-  padding: 3px 7px;
-  border-radius: 7px;
-  background: #12131cc9;
-  color: #fff7f1;
-  font-size: 9px;
-  line-height: 1.3;
-}
 .leisure-art-fallback {
   display: grid;
   place-items: center;

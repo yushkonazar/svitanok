@@ -41,8 +41,12 @@ export function TaskAssist({
     [questions, setQuestions] = useState<string[]>([]),
     [done, setDone] = useState(false);
   return (
-    <details className="plan-assist">
+    <details className="plan-assist" open>
       <summary>Допомогти заповнити з мого опису ✧</summary>
+      <p className="plan-muted">
+        Почни з опису — Світанок запропонує результат, час і налаштування. Нижче перевір або виправ.
+        Для незалежних дій із різними строками краще створювати окремі задачі.
+      </p>
       <p className="plan-muted">
         День задачі: {readablePlanDate(date)}. Для іншого дня спочатку зміни дату вище.
       </p>
