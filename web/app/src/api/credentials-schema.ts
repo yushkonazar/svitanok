@@ -10,6 +10,7 @@ export const credentialEntrySchema = z.object({
   version: z.number().int(),
   rotatedAt: z.string().nullable(),
   expiresAt: z.string().nullable(),
+  expiryKind: z.enum(['unknown', 'date', 'non-expiring']).optional(),
   rotateAfterDays: z.number().nullable(),
   legacyRotationAt: z.string().nullable(),
   expiryDaysLeft: z.number().nullable(),
@@ -34,5 +35,5 @@ export type CredentialEntry = z.infer<typeof credentialEntrySchema>;
 export type Credentials = z.infer<typeof credentialsSchema>;
 export type CredentialMetadata = Pick<
   CredentialEntry,
-  'id' | 'version' | 'rotatedAt' | 'expiresAt' | 'rotateAfterDays'
+  'id' | 'version' | 'rotatedAt' | 'expiresAt' | 'rotateAfterDays' | 'expiryKind'
 >;

@@ -75,6 +75,41 @@ export async function readJson(env, key, fallback) {
   }
 }
 
+/** Report reads distinguish an absent key from storage/JSON failures.
+ * @param {Env} env @param {string} key @returns {Promise<KvBlob | null>} */
+export async function readReportJson(env, key) {
+  const raw = await env.BRIEFING.get(key);
+  if (raw == null) return null;
+  let value;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    throw new Error('Дані джерела мають некоректний формат');
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value))
+    throw new Error('Дані джерела мають некоректний формат');
+  return value;
+}
+
+/** Authoritative report read, without writes or fallback after a failed read.
+ * @param {Env} env @param {'state'|'stats'} key @returns {Promise<KvBlob>} */
+export async function readReportState(env, key) {
+  const stub = stateStoreStub(env);
+  if (stub && typeof stub.peek === 'function') {
+    const record = await stub.peek(key);
+    if (record != null) {
+      if (!record.value || typeof record.value !== 'object' || Array.isArray(record.value))
+        throw new Error('Дані джерела мають некоректний формат');
+      return record.value;
+    }
+  }
+  const legacy = (await readReportJson(env, key)) ?? {};
+  // Older DO versions can still supply their canonical value with a verified seed.
+  if (stub && typeof stub.peek !== 'function')
+    return mutableBlob((await stub.read(key, legacy))?.value);
+  return legacy;
+}
+
 /** Налаштування власника (F2). Canonical structured blob живе у
  * StateStoreDO; KV `settings` — compatibility mirror для оркестратора та
  * rollback. Биття legacy-сnapshot -> дефолти.

@@ -9,6 +9,8 @@
 import { kyivDateKey } from '../../kyiv-time.mjs';
 import { weekBounds } from '../tools/weekly.mjs';
 import { instructionHash } from '../instructions.mjs';
+import { evaluateWeeklyReport, usableWeeklyReports } from './weekly-report-quality.mjs';
+import { reportPeriod } from '../report-period.mjs';
 
 /** «звіт зараз» (S-9-5) - той самий профіль за запитом, період = поточний тиждень. */
 export const WEEKLY_NOW_RE = /^звіт\s+зараз[.!]?$/i;
@@ -36,14 +38,18 @@ export async function buildWeeklyReviewInput(env, nowMs) {
   const lines = [
     `period_from: ${from}`,
     `period_to: ${to}`,
+    `as_of: ${new Date(nowMs).toISOString()}`,
+    `time_zone: Europe/Kyiv`,
+    `query_from: ${reportPeriod(from, today, nowMs).from}`,
+    `query_to_exclusive: ${reportPeriod(from, today, nowMs).to}`,
     `today: ${today}`,
     `first_sunday_of_month: ${firstSunday}`,
     '',
     previous
-      ? `Попередній тижневий звіт (${previous.period}), щоб не повторюватись:\n${clip(previous.text, PREVIOUS_REPORT_MAX_CHARS)}`
+      ? `Попередній тижневий звіт (${previous.period}; ${previous.status === 'ready' ? 'готовий' : 'частковий або давній без перевірки повноти'}), щоб не повторюватись:\n${clip(previous.text, PREVIOUS_REPORT_MAX_CHARS)}`
       : 'Попереднього тижневого звіту немає - це перший.',
     '',
-    'Напиши тижневий звіт за інструкцією.',
+    'Прочитай підготовлений сервером пакет: data.read(scope="weekly") без period. Він містить особисті дані, всі фінанси й телеметрію з єдиним часом зрізу. Не підмінюй його старим Mono-запитом. Напиши тижневий звіт за інструкцією й обовʼязково зазнач «станом на» час зрізу.',
   ];
   return { text: lines.join('\n'), periodFrom: from, periodTo: to, firstSunday };
 }
@@ -56,16 +62,13 @@ export async function buildWeeklyReviewInput(env, nowMs) {
  */
 async function readPreviousReport(env, currentFrom) {
   if (!env.DB) return null;
-  const row = /** @type {any} */ (
-    await env.DB.prepare(
-      `SELECT period_from, period_to, text_md FROM reports
-       WHERE kind = 'weekly' AND period_from < ? ORDER BY created_at DESC LIMIT 1`,
-    )
-      .bind(currentFrom)
-      .first()
-  );
+  const row = (await usableWeeklyReports(env, 'period_from < ?', [currentFrom]))[0];
   if (!row) return null;
-  return { period: `${row.period_from} - ${row.period_to}`, text: String(row.text_md ?? '') };
+  return {
+    period: `${row.period_from} - ${row.period_to}`,
+    text: String(row.text_md ?? ''),
+    status: row.status,
+  };
 }
 
 /**
@@ -92,25 +95,37 @@ export async function readRunProfile(env, runId) {
  * @param {Env} env
  * @param {string} text
  * @param {number} nowMs
+ * @param {{runId?:string, failed?:boolean, quality?:any}} [options]
  */
-export async function saveWeeklyReport(env, text, nowMs) {
+export async function saveWeeklyReport(env, text, nowMs, options = {}) {
   if (!env.DB) throw new Error('привʼязки DB немає - звіт не збережено');
-  const today = kyivDateKey(new Date(nowMs));
-  const { from, to } = weekBounds(today);
+  const quality = options.quality ?? (await evaluateWeeklyReport(env, text, nowMs, options));
+  const { periodFrom: from, periodTo: to } = quality;
   const row = /** @type {any} */ (
     await env.DB.prepare('SELECT body_md FROM instructions WHERE name = ?')
       .bind('weekly-review')
       .first()
   );
   const hash = row ? await instructionHash(String(row.body_md ?? '')) : null;
-  const id = crypto.randomUUID();
+  const id = options.runId ? `weekly:${options.runId}` : crypto.randomUUID();
   await env.DB.prepare(
-    `INSERT INTO reports (id, kind, period_from, period_to, text_md, instruction_hash, created_at)
-     VALUES (?, 'weekly', ?, ?, ?, ?, ?)`,
+    `INSERT INTO reports (id, kind, period_from, period_to, text_md, instruction_hash, created_at, status, run_id, as_of, quality_json)
+     VALUES (?, 'weekly', ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING`,
   )
-    .bind(id, from, to, text, hash, new Date(nowMs).toISOString())
+    .bind(
+      id,
+      from,
+      to,
+      text,
+      hash,
+      new Date(nowMs).toISOString(),
+      quality.status,
+      options.runId ?? null,
+      quality.period.asOf,
+      JSON.stringify(quality),
+    )
     .run();
-  return { id, periodFrom: from, periodTo: to, instructionHash: hash };
+  return { id, periodFrom: from, periodTo: to, instructionHash: hash, status: quality.status };
 }
 
 /** @param {string} s @param {number} n */

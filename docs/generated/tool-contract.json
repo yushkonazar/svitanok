@@ -776,7 +776,7 @@
     },
     "runs.query": {
       "args": {
-        "properties": { "period": { "maxLength": 16, "type": "string" } },
+        "properties": { "period": { "maxLength": 32, "type": "string" } },
         "type": "object"
       },
       "tainting": "never",

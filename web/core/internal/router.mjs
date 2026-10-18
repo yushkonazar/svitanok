@@ -24,6 +24,12 @@ import { isTaintActive, proposalNotice } from '../policy/core.mjs';
 import { IMAGE_USD, VIDEO_DEFAULT_SECONDS, videoUsd } from '../adapters/gemini.mjs';
 import { writeMemoryChunks } from '../memory.mjs';
 import { readRunProfile, saveWeeklyReport } from '../brain/weekly-review.mjs';
+import {
+  evaluateWeeklyReport,
+  weeklyRunAnchor,
+  weeklyPacketQuality,
+} from '../brain/weekly-report-quality.mjs';
+import { ToolArgumentError } from '../tool-arguments.mjs';
 import { reportButtons } from '../links.mjs';
 import { NOTHING_RE, saveInboxDigest } from '../inbox/digest.mjs';
 import { sendChainEvent } from '../chains/registry.mjs';
@@ -251,8 +257,31 @@ export async function handleInternal(request, env, nowMs = Date.now(), ctx = und
     /** @type {{ result: unknown }} */
     let out;
     try {
-      out = await tool.run(env, args, nowMs);
+      const anchor = ['data.read', 'finance.query', 'runs.query'].includes(name)
+        ? await weeklyRunAnchor(env, auth.runId, nowMs)
+        : null;
+      const effectiveArgs =
+        anchor &&
+        name === 'finance.query' &&
+        !args.id &&
+        !(Array.isArray(args.flags) && args.flags.length)
+          ? { ...args, view: 'analytics' }
+          : args;
+      out = await tool.run(env, effectiveArgs, anchor?.asOfMs ?? nowMs);
+      if (anchor && name === 'data.read' && args.scope === 'weekly' && env.DB) {
+        let quality;
+        try {
+          quality = weeklyPacketQuality(JSON.parse(String(out.result)));
+        } catch {
+          quality = { missing: ['truncated-data'] };
+        }
+        await env.DB.prepare('UPDATE runs SET weekly_context_json = ? WHERE id = ?')
+          .bind(JSON.stringify(quality), auth.runId)
+          .run();
+      }
     } catch (/** @type {any} */ e) {
+      if (e instanceof ToolArgumentError)
+        return json({ ok: false, error: 'invalid-arguments', tool: name, reason: e.message }, 400);
       // Збій джерела - явний 502 із причиною, не тиха деградація і не 500-стек.
       console.error(`internal: інструмент ${name} впав`, e?.message);
       return json(
@@ -312,7 +341,7 @@ export async function handleInternal(request, env, nowMs = Date.now(), ctx = und
  * @param {Env} env
  * @param {ExecutionContext | undefined} ctx
  * @param {string} runId
- * @param {{ text: string, buttons?: { text: string, callback_data: string }[][], worker?: { name: string, text: string, context?: 'price-search'|'place-search'|'finance-summary'|'trip-plan' } }} body
+ * @param {{ text: string, failed?:boolean, buttons?: { text: string, callback_data: string }[][], worker?: { name: string, text: string, context?: 'price-search'|'place-search'|'finance-summary'|'trip-plan' } }} body
  * @param {number} nowMs
  */
 async function handleDeliver(env, ctx, runId, body, nowMs) {
@@ -354,6 +383,10 @@ async function handleDeliver(env, ctx, runId, body, nowMs) {
   // а не результат для власника: прибираємо чернетку «Беруся…» і не створюємо
   // автоматичний шум. Ручні відповіді власника цим правилом не зачіпаються.
   const profile = await readRunProfile(env, runId).catch(() => null);
+  const weeklyQuality =
+    profile === 'weekly-review'
+      ? await evaluateWeeklyReport(env, body.text, nowMs, { runId, failed: body.failed })
+      : null;
   if (profile === 'inbox-digest' && NOTHING_RE.test(body.text)) {
     if (draftId != null) {
       await dropPendingEdits(env, target.chatId, draftId);
@@ -430,7 +463,34 @@ async function handleDeliver(env, ctx, runId, body, nowMs) {
       ? await readMailItemIds(env, saved.id).catch(() => new Set())
       : new Set();
   const mailHint = mailItems.length ? '✉️ Обери лист нижче, щоб дія стосувалася саме його.' : '';
-  const userText = saved?.name === 'tutor' ? renderTutorWorkerText(body.text) : body.text;
+  const weeklyLabel = weeklyQuality
+    ? `${weeklyQuality.status === 'failed' ? 'Не сформовано' : weeklyQuality.status === 'partial' ? 'Частковий звіт' : 'Готовий звіт'} · станом на ${new Intl.DateTimeFormat('uk-UA', { timeZone: 'Europe/Kyiv', dateStyle: 'short', timeStyle: 'short' }).format(new Date(weeklyQuality.period.asOf))} (Київ)\n\n`
+    : '';
+  const missingLabels = /** @type {Record<string, string>} */ ({
+    stats: 'особиста статистика',
+    state: 'прогрес',
+    archive: 'архів',
+    weeklyArchive: 'тижневий архів',
+    levers: 'закономірності',
+    plans: 'плани',
+    finance: 'фінанси',
+    system: 'телеметрія',
+    'truncated-data': 'скорочена частина даних',
+    'finance-conversion': 'гривневі суми',
+    'finance-classification': 'типи операцій',
+    'finance-comparison': 'база порівняння',
+    'personal-time-coverage': 'час частини відповідей',
+    'system-coverage': 'повнота телеметрії',
+    'prepared-data-not-read': 'підготовлені показники',
+  });
+  const coverageNotice =
+    weeklyQuality?.status === 'partial' && weeklyQuality.missing.length
+      ? `Неповні дані: ${weeklyQuality.missing.map((/** @type {string} */ name) => missingLabels[name] ?? 'джерело').join(', ')}.\n\n`
+      : '';
+  const userText =
+    weeklyLabel +
+    coverageNotice +
+    (saved?.name === 'tutor' ? renderTutorWorkerText(body.text) : body.text);
   const deliverText = [factProposalPrompt ?? userText, notice, shopCard, placeHint, mailHint]
     .filter(Boolean)
     .join('\n\n');
@@ -464,7 +524,7 @@ async function handleDeliver(env, ctx, runId, body, nowMs) {
               saved.text,
             )
           : []),
-    ...(profile === 'weekly-review' ? reportButtons() : []),
+    ...(weeklyQuality && weeklyQuality.status !== 'failed' ? reportButtons() : []),
   ];
   // Незіслані партіали цієї ж чернетки більше не потрібні: інакше черга
   // спершу покаже обірваний шматок і лише потім фінал.
@@ -514,7 +574,13 @@ async function handleDeliver(env, ctx, runId, body, nowMs) {
   let reportId = null;
   if (profile === 'weekly-review') {
     try {
-      reportId = (await saveWeeklyReport(env, body.text, nowMs)).id;
+      reportId = (
+        await saveWeeklyReport(env, body.text, nowMs, {
+          runId,
+          failed: body.failed,
+          quality: weeklyQuality,
+        })
+      ).id;
     } catch (/** @type {any} */ e) {
       console.error('internal: звіт не збережено в reports', e?.message);
     }

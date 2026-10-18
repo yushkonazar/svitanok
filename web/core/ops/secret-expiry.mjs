@@ -75,7 +75,7 @@ export async function secretExpiryTask(env, nowMs = Date.now()) {
       await env.BRIEFING.put(SECRET_EXPIRY_MARKER, today);
       return {
         reminded,
-        unknown: registry.entries.filter((entry) => !entry.expiresAt).length,
+        unknown: registry.entries.filter((entry) => entry.expiryKind === 'unknown').length,
         scopes: 'quiet',
       };
     }
@@ -94,5 +94,9 @@ export async function secretExpiryTask(env, nowMs = Date.now()) {
     scopes = queued ? (audit.missing.length ? 'missing' : 'extra') : 'quiet';
   }
   await env.BRIEFING.put(SECRET_EXPIRY_MARKER, today);
-  return { reminded, unknown: registry.entries.filter((entry) => !entry.expiresAt).length, scopes };
+  return {
+    reminded,
+    unknown: registry.entries.filter((entry) => entry.expiryKind === 'unknown').length,
+    scopes,
+  };
 }

@@ -72,7 +72,15 @@ export function validateCredentialMetadata(body, nowMs) {
     !body ||
     Object.keys(body).some(
       (key) =>
-        !['id', 'version', 'rotatedAt', 'expiresAt', 'rotateAfterDays', 'initData'].includes(key),
+        ![
+          'id',
+          'version',
+          'rotatedAt',
+          'expiresAt',
+          'rotateAfterDays',
+          'expiryKind',
+          'initData',
+        ].includes(key),
     )
   )
     throw new Error('Надсилай лише дати й нагадування, не значення ключів.');
@@ -84,6 +92,13 @@ export function validateCredentialMetadata(body, nowMs) {
     throw new Error('Онови реєстр перед збереженням.');
   const rotatedAt = dayString(body.rotatedAt),
     expiresAt = dayString(body.expiresAt);
+  const expiryKind = body.expiryKind;
+  if (
+    expiryKind !== undefined &&
+    (!['unknown', 'date', 'non-expiring'].includes(expiryKind) ||
+      (expiryKind === 'date' ? !expiresAt : Boolean(expiresAt)))
+  )
+    throw new Error('Уточни строк дії: відома дата, безстроковий або невідомий.');
   if (rotatedAt && kyivInstant(rotatedAt, 0) > nowMs)
     throw new Error('Дата оновлення не може бути в майбутньому.');
   if (rotatedAt && expiresAt && expiresAt < rotatedAt)
@@ -97,7 +112,14 @@ export function validateCredentialMetadata(body, nowMs) {
     throw new Error('Інтервал ротації: від 1 до 3650 днів.');
   if (rotateAfterDays != null && !rotatedAt)
     throw new Error('Для нагадування про ротацію вкажи дату останнього оновлення.');
-  return { id: String(body.id), version: body.version, rotatedAt, expiresAt, rotateAfterDays };
+  return {
+    id: String(body.id),
+    version: body.version,
+    rotatedAt,
+    expiresAt,
+    rotateAfterDays,
+    expiryKind,
+  };
 }
 /** @param {Env} env @param {number} [nowMs] */
 export async function readCredentials(env, nowMs = Date.now()) {
@@ -130,6 +152,11 @@ export async function readCredentials(env, nowMs = Date.now()) {
         /* unknown metadata is not an expiry */
       }
       const expiresAt = row?.expires_at ? String(row.expires_at) : null;
+      const expiryKind = expiresAt
+        ? 'date'
+        : row?.expiry_kind === 'non-expiring'
+          ? 'non-expiring'
+          : 'unknown';
       const rotatedAt = row?.rotated_at ? String(row.rotated_at) : null;
       const rotateAfterDays = row?.rotate_after_days == null ? null : Number(row.rotate_after_days);
       const expiryDaysLeft = expiresAt
@@ -143,6 +170,7 @@ export async function readCredentials(env, nowMs = Date.now()) {
         version: Number(row?.version ?? 0),
         rotatedAt,
         expiresAt,
+        expiryKind,
         rotateAfterDays,
         legacyRotationAt,
         configured:
@@ -160,12 +188,18 @@ export async function saveCredentialMetadata(env, body, nowMs) {
   const value = validateCredentialMetadata(body, nowMs);
   if (!env.DB || !(await credentialStoreAvailable(env)))
     throw new Error('Реєстр поки доступний лише для перегляду.');
+  const old = await env.DB.prepare('SELECT * FROM credential_metadata WHERE id=?')
+    .bind(value.id)
+    .first();
+  const expiryKind =
+    value.expiryKind ??
+    (value.expiresAt ? 'date' : old?.expiry_kind === 'non-expiring' ? 'non-expiring' : 'unknown');
   const result = await env.DB.prepare(
-    `INSERT INTO credential_metadata(id,rotated_at,expires_at,rotate_after_days,version,updated_at)
-    SELECT ?,?,?,?,1,? WHERE (?=0 AND NOT EXISTS(SELECT 1 FROM credential_metadata WHERE id=?))
+    `INSERT INTO credential_metadata(id,rotated_at,expires_at,rotate_after_days,version,updated_at,expiry_kind)
+    SELECT ?,?,?,?,1,?,? WHERE (?=0 AND NOT EXISTS(SELECT 1 FROM credential_metadata WHERE id=?))
       OR EXISTS(SELECT 1 FROM credential_metadata WHERE id=? AND version=?)
     ON CONFLICT(id) DO UPDATE SET rotated_at=excluded.rotated_at,expires_at=excluded.expires_at,
-      rotate_after_days=excluded.rotate_after_days,version=credential_metadata.version+1,updated_at=excluded.updated_at
+      rotate_after_days=excluded.rotate_after_days,version=credential_metadata.version+1,updated_at=excluded.updated_at,expiry_kind=excluded.expiry_kind
     WHERE credential_metadata.version=?`,
   )
     .bind(
@@ -174,6 +208,7 @@ export async function saveCredentialMetadata(env, body, nowMs) {
       value.expiresAt,
       value.rotateAfterDays,
       new Date(nowMs).toISOString(),
+      expiryKind,
       value.version,
       value.id,
       value.id,

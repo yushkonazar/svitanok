@@ -10,6 +10,24 @@ export interface AnalyticsSelection {
   comparison: string;
   previousFrom: string;
   previousTo: string;
+  period?: {
+    from: string;
+    to: string;
+    dateFrom: string;
+    dateTo: string;
+    asOf: string;
+    timeZone: string;
+    complete: boolean;
+  };
+  previousPeriod?: {
+    from: string;
+    to: string;
+    dateFrom: string;
+    dateTo: string;
+    asOf: string;
+    timeZone: string;
+    complete: boolean;
+  };
 }
 export function analyticsPeriod(
   period: string,
@@ -30,10 +48,21 @@ export interface AnalyticsTransaction {
   bankVerifiedByOwner?: boolean;
   duplicateSuspected?: boolean;
   bankAmountChanged?: boolean;
+  bankMissingFromStatement?: boolean;
+  bankCheckedAt?: string | null;
+  bankCheckSource?: string | null;
+  reference?: string | null;
+  principalMinor?: number | null;
+  overpaymentMinor?: number | null;
+  flags?: string[];
   attention?: { status: string } | null;
 }
 export interface ExpenseAnalytics {
   selection: AnalyticsSelection;
+  sourceTotals: {
+    mono: { expenseMinor: number; count: number };
+    manual: { expenseMinor: number; count: number };
+  };
   summary: {
     expenseMinor: number;
     previousExpenseMinor: number;
@@ -75,6 +104,9 @@ export interface ExpenseAnalytics {
   weekdays: { day: number; days: number; amountMinor: number; averageMinor: number }[];
   quality: {
     unclassifiedCount: number;
+    unclassifiedOutflowMinor: number;
+    unclassifiedInflowMinor: number;
+    unclassifiedUnknownCurrencyCount: number;
     unknownCurrencyCount: number;
     pendingCount: number;
     pendingMinor: number;

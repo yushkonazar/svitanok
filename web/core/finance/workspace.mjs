@@ -50,7 +50,11 @@ export function financeTransactionOf(row) {
     bankAmountChanged: Boolean(raw.financeBankAmountChanged),
     bankCheckedAt: typeof raw.bankCheckedAt === 'string' ? raw.bankCheckedAt : null,
     reference: raw.financeReference ?? null,
+    principalMinor: raw.financePrincipalMinor ?? null,
+    overpaymentMinor: raw.financeOverpaymentMinor ?? null,
     personalTaxiType: raw.financePersonalTaxiType ?? null,
+    flags: categoryArray(row.flags_json),
+    bankCheckSource: raw.bankCheckSource ?? null,
     attention: parseFinanceAttention(row.raw_json),
     duplicateSuspected: categoryArray(row.flags_json).includes('duplicate'),
   };
@@ -185,7 +189,7 @@ export async function readFinanceWorkspace(env, nowMs = Date.now(), range, optio
           : new Date(nowMs + 1).toISOString(),
       ),
     db
-      .prepare('SELECT * FROM subscriptions WHERE status = ? ORDER BY next_at LIMIT 100')
+      .prepare('SELECT * FROM subscriptions WHERE status = ? ORDER BY next_at LIMIT 101')
       .bind('active'),
     db
       .prepare(
@@ -418,13 +422,16 @@ export async function readFinanceWorkspace(env, nowMs = Date.now(), range, optio
       interestMethod: r.interest_method == null ? null : String(r.interest_method),
       termMonths: r.term_months == null ? null : Number(r.term_months),
     })),
-    detectedSubscriptions: rows(10).map((r) => ({
-      id: String(r.id),
-      merchant: String(r.merchant),
-      amountMinor: Number(r.amount ?? 0),
-      currency: String(r.currency ?? 'UAH'),
-      nextAt: r.next_at == null ? null : String(r.next_at),
-    })),
+    detectedSubscriptions: rows(10)
+      .slice(0, 100)
+      .map((r) => ({
+        id: String(r.id),
+        merchant: String(r.merchant),
+        amountMinor: Number(r.amount ?? 0),
+        currency: String(r.currency ?? 'UAH'),
+        nextAt: r.next_at == null ? null : String(r.next_at),
+      })),
+    detectedSubscriptionsTruncated: rows(10).length > 100,
   };
 }
 

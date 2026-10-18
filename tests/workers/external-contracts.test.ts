@@ -90,7 +90,7 @@ describe('ізольовані контракти зовнішніх інтег�
     expect(JSON.parse(calls[0]!.body ?? '{}')).toMatchObject({ chat_id: 42 });
   });
 
-  it('приймає дозволену Mono транзакцію через production route та зберігає її в D1', async () => {
+  it('зберігає Mono через production route, мовчить про звичайну покупку й повідомляє про дубль один раз', async () => {
     const calls = fakeExternalFetch();
     const nowMs = Date.now();
     await writeMonoAccounts(
@@ -99,8 +99,7 @@ describe('ізольовані контракти зовнішніх інтег�
       nowMs,
     );
 
-    const ctx = createExecutionContext();
-    const response = await worker.fetch(
+    const makeRequest = (id: string, time: number) =>
       new Request(`https://svitanok.test/api/mono/${env.MONO_WEBHOOK_SECRET}`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -109,8 +108,8 @@ describe('ізольовані контракти зовнішніх інтег�
           data: {
             account: 'workers-account',
             statementItem: {
-              id: 'workers-tx-1',
-              time: Math.floor(nowMs / 1000),
+              id,
+              time,
               description: 'Workers test merchant',
               mcc: 5732,
               amount: -134_000,
@@ -121,18 +120,50 @@ describe('ізольовані контракти зовнішніх інтег�
             },
           },
         }),
-      }),
+      });
+    const ctx = createExecutionContext();
+    const response = await worker.fetch(
+      makeRequest('workers-tx-1', Math.floor(nowMs / 1000) - 120),
       env,
       ctx,
     );
 
     expect(await response.json()).toEqual({ ok: true });
     await waitOnExecutionContext(ctx);
-    const tx = await env.DB.prepare('SELECT id, description FROM transactions WHERE id = ?')
+    const tx = await env.DB.prepare(
+      'SELECT id, description, flags_json, raw_json FROM transactions WHERE id = ?',
+    )
       .bind('workers-tx-1')
-      .first<{ id: string; description: string }>();
-    expect(tx).toEqual({ id: 'workers-tx-1', description: 'Workers test merchant' });
-    expect(calls.some((call) => call.url.includes('/sendMessage'))).toBe(true);
+      .first<{ id: string; description: string; flags_json: string; raw_json: string }>();
+    expect(tx).toMatchObject({ id: 'workers-tx-1', description: 'Workers test merchant' });
+    expect(JSON.parse(tx!.flags_json)).toContain('over_threshold');
+    expect(JSON.parse(tx!.flags_json)).not.toContain('duplicate');
+    expect(JSON.parse(tx!.raw_json)).toMatchObject({ bankCheckSource: 'webhook' });
+    expect(calls).toHaveLength(0);
+
+    const duplicateTime = Math.floor(nowMs / 1000) - 60;
+    const duplicateCtx = createExecutionContext();
+    expect(
+      await (
+        await worker.fetch(makeRequest('workers-tx-2', duplicateTime), env, duplicateCtx)
+      ).json(),
+    ).toEqual({ ok: true });
+    await waitOnExecutionContext(duplicateCtx);
+    const duplicate = await env.DB.prepare('SELECT flags_json FROM transactions WHERE id = ?')
+      .bind('workers-tx-2')
+      .first<{ flags_json: string }>();
+    expect(JSON.parse(duplicate!.flags_json)).toContain('duplicate');
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.url).toContain('/sendMessage');
+    expect(JSON.parse(calls[0]!.body ?? '{}').text).toContain('Два списання');
+
+    const retryCtx = createExecutionContext();
+    await worker.fetch(makeRequest('workers-tx-2', duplicateTime), env, retryCtx);
+    await waitOnExecutionContext(retryCtx);
+    expect(calls).toHaveLength(1);
+    expect(
+      await env.DB.prepare('SELECT COUNT(*) AS count FROM transactions').first<{ count: number }>(),
+    ).toEqual({ count: 2 });
   });
 
   it('не виконує Telegram update повторно після успішної фонової доставки', async () => {

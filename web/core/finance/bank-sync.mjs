@@ -50,6 +50,8 @@ export async function publishBankSync(env, job) {
     done: job.index + (job.accountsDone ? 1 : 0),
     total: job.tasks.length + (job.accountId ? 1 : 0),
     accountId: job.tasks[job.index]?.account.id ?? null,
+    statementAccounts: [...new Set(job.tasks.map((/** @type {any} */ task) => task.account.id))],
+    balancesOnly: Boolean(job.balancesOnly),
     imported: job.imported,
     updated: job.updated,
     requestedAt: job.requestedAt,
@@ -135,26 +137,11 @@ export async function advanceBankSync(ctx, env, job, nowMs) {
         accountCurrency: task.account.currency,
         silent: true,
         versioned: true,
+        checkedAt: job.pageObservedAt ?? new Date(nowMs).toISOString(),
+        checkSource: 'statement',
       });
       if (result.inserted) job.imported++;
       if (result.updated) job.updated++;
-    }
-    if (items.length) {
-      await env.DB.batch(
-        items.map((/** @type {any} */ item) =>
-          database
-            .prepare(
-              "UPDATE transactions SET raw_json=json_patch(COALESCE(raw_json,'{}'),?) WHERE id=?",
-            )
-            .bind(
-              JSON.stringify({
-                bankCheckedAt: new Date(nowMs).toISOString(),
-                bankMissingFromStatement: false,
-              }),
-              item.id,
-            ),
-        ),
-      );
     }
     await ctx.storage.delete(key);
     job.chunk++;
@@ -196,10 +183,11 @@ export async function advanceBankSync(ctx, env, job, nowMs) {
     const end = task.cursor ?? task.toS;
     if (!job.windowStartedAt) job.windowStartedAt = new Date(nowMs).toISOString();
     const items = await statement(env, { account: task.account.id, fromS: task.fromS, toS: end });
+    job.pageObservedAt = new Date(nowMs).toISOString();
     const oldest = items.length ? Math.min(...items.map((i) => i.timeS)) : null;
-    if (items.length >= STATEMENT_PAGE && oldest === end)
+    if (items.length >= STATEMENT_PAGE && (oldest === end || oldest === task.fromS))
       throw new Error(
-        'Виписка містить понад 500 операцій за одну секунду. Банк не дає повністю прочитати цей відрізок.',
+        'Виписка заповнила сторінку на часовій межі. Банк не дає підтвердити повноту цього відрізка.',
       );
     job.nextToS =
       items.length >= STATEMENT_PAGE && oldest != null && oldest > task.fromS ? oldest : null;

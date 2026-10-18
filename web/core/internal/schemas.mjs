@@ -32,6 +32,7 @@ export const DELIVER_SCHEMA = /** @type {InternalSchema} */ ({
   required: ['text'],
   properties: {
     text: { type: 'string', maxLength: 65_536 },
+    failed: { type: 'boolean' },
     buttons: {
       type: 'array',
       items: {

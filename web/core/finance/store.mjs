@@ -129,24 +129,29 @@ export async function readMerchantRules(env) {
  *
  * @param {Env} env
  * @param {{ item: import('../adapters/mono.mjs').MonoStatementItem, account: string,
- *   accountCurrency: string, test?: boolean, silent?: boolean, versioned?:boolean }} input
+ *   accountCurrency: string, test?: boolean, silent?: boolean, versioned?:boolean,
+ *   checkedAt?:string, checkSource?:'statement'|'webhook' }} input
  * @returns {Promise<{ inserted: boolean, updated?: boolean, tx: StoredTx | null }>}
  */
 export async function ingestTransaction(env, input) {
   const { item, account, accountCurrency } = input;
-  const existing = /** @type {{ id: string, raw_json: string | null } | null} */ (
+  const existing = /** @type {KvBlob | null} */ (
     await db(env)
-      .prepare('SELECT id, raw_json FROM transactions WHERE id = ?')
+      .prepare(
+        'SELECT id, raw_json, amount, amount_uah, currency, balance, at FROM transactions WHERE id = ?',
+      )
       .bind(item.id)
       .first()
   );
   if (existing) {
-    const updated = await settleHold(
+    const updated = await refreshExisting(
       env,
       existing,
       item,
       accountCurrency,
       input.versioned ?? false,
+      input.checkedAt,
+      input.checkSource,
     );
     return { inserted: false, updated, tx: null };
   }
@@ -207,7 +212,18 @@ export async function ingestTransaction(env, input) {
     }
   }
 
-  const raw = { ...item, account, ...(input.test ? { test: 1 } : {}) };
+  const raw = {
+    ...item,
+    account,
+    ...(input.test ? { test: 1 } : {}),
+    ...(input.checkedAt
+      ? {
+          bankCheckedAt: input.checkedAt,
+          bankCheckSource: input.checkSource ?? 'statement',
+          bankMissingFromStatement: false,
+        }
+      : {}),
+  };
   const insertion = db(env)
     .prepare(
       `INSERT INTO transactions
@@ -265,11 +281,22 @@ export async function ingestTransaction(env, input) {
  * лишив би в базі суму холду, а вона відрізняється (пальне, готелі, чайові).
  * Прапорці не перераховуємо: власнику вже сказали, а «незвичність» від
  * копійок різниці не міняється.
- * @param {Env} env @param {{ id: string, raw_json: string | null }} existing
+ * Later statements can also correct an already posted amount. A delayed webhook
+ * cannot reopen a settled authorization or overwrite a later statement amount.
+ * @param {Env} env @param {KvBlob} existing
  * @param {import('../adapters/mono.mjs').MonoStatementItem} item @param {string} accountCurrency @param {boolean} versioned
+ * @param {string} [checkedAt] @param {'statement'|'webhook'} [checkSource] @param {number} [attempt]
  */
-async function settleHold(env, existing, item, accountCurrency, versioned) {
-  if (item.hold) return false;
+async function refreshExisting(
+  env,
+  existing,
+  item,
+  accountCurrency,
+  versioned,
+  checkedAt,
+  checkSource = 'statement',
+  attempt = 0,
+) {
   /** @type {any} */
   let raw;
   try {
@@ -277,37 +304,63 @@ async function settleHold(env, existing, item, accountCurrency, versioned) {
   } catch {
     raw = {};
   }
-  if (raw?.hold !== true) return false;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) raw = {};
+  const held = raw?.hold === true || raw?.hold === 1;
+  if (!held && item.hold) return false;
+  if (!held && checkSource === 'webhook') return false;
+  if (checkedAt && raw.bankCheckedAt && Date.parse(checkedAt) < Date.parse(raw.bankCheckedAt))
+    return false;
+  const authoritative = Boolean(checkedAt && checkSource === 'statement');
+  const updateAmounts = (held && !item.hold) || authoritative;
+  if (!updateAmounts && !checkedAt) return false;
   const amountUah = accountCurrency === 'UAH' ? item.amount : null;
+  const at = new Date(item.timeS * 1000).toISOString();
+  const material =
+    (updateAmounts &&
+      (held !== item.hold ||
+        Number(existing.amount) !== item.operationAmount ||
+        existing.amount_uah !== amountUah ||
+        existing.currency !== item.currency ||
+        existing.balance !== item.balance ||
+        existing.at !== at)) ||
+    Boolean(raw.bankMissingFromStatement && (updateAmounts || checkedAt));
+  const patch = {
+    ...(updateAmounts
+      ? {
+          timeS: item.timeS,
+          hold: item.hold,
+          amount: item.amount,
+          operationAmount: item.operationAmount,
+          balance: item.balance,
+          currency: item.currency,
+        }
+      : {}),
+    ...(checkedAt ? { bankCheckedAt: checkedAt, bankCheckSource: checkSource } : {}),
+    ...(updateAmounts || checkedAt ? { bankMissingFromStatement: false } : {}),
+  };
+  const safeRaw = "CASE WHEN json_valid(raw_json) THEN raw_json ELSE '{}' END";
   const updating = db(env)
     .prepare(
-      `UPDATE transactions SET amount = ?, amount_uah = ?, balance = ?, at=?,
-         raw_json = json_set(json_patch(COALESCE(raw_json, '{}'), ?),'$.financeBankAmountChanged',json(CASE WHEN json_extract(raw_json,'$.financeBankVerifiedByOwner')=1 AND json_extract(raw_json,'$.financeConfirmedAmountMinor') IS NOT NULL AND json_extract(raw_json,'$.financeConfirmedAmountMinor')<>? THEN 'true' ELSE 'false' END))
-       WHERE id = ? AND json_extract(raw_json,'$.hold')=1`,
+      `UPDATE transactions SET ${updateAmounts ? 'amount=?,amount_uah=?,currency=?,balance=?,at=?,' : ''}
+         raw_json = ${updateAmounts ? `json_set(json_patch((${safeRaw}), ?),'$.financeBankAmountChanged',json(CASE WHEN json_extract((${safeRaw}),'$.financeBankVerifiedByOwner')=1 AND json_extract((${safeRaw}),'$.financeConfirmedAmountMinor') IS NOT NULL AND json_extract((${safeRaw}),'$.financeConfirmedAmountMinor')<>? THEN 'true' ELSE 'false' END))` : `json_patch((${safeRaw}),?)`}
+       WHERE id = ? AND COALESCE(raw_json,'{}') = ?`,
     )
     .bind(
-      item.operationAmount,
-      amountUah,
-      item.balance,
-      new Date(item.timeS * 1000).toISOString(),
-      JSON.stringify({
-        timeS: item.timeS,
-        hold: false,
-        amount: item.amount,
-        operationAmount: item.operationAmount,
-        balance: item.balance,
-      }),
-      amountUah ?? item.amount,
+      ...(updateAmounts ? [item.operationAmount, amountUah, item.currency, item.balance, at] : []),
+      JSON.stringify(patch),
+      ...(updateAmounts ? [amountUah ?? item.amount] : []),
       item.id,
+      existing.raw_json ?? '{}',
     );
   const useVersion =
-    versioned ||
-    Boolean(
-      await db(env)
-        .prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name='finance_settings'")
-        .bind()
-        .first(),
-    );
+    material &&
+    (versioned ||
+      Boolean(
+        await db(env)
+          .prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name='finance_settings'")
+          .bind()
+          .first(),
+      ));
   const result = useVersion
     ? (
         await db(env).batch([
@@ -318,7 +371,26 @@ async function settleHold(env, existing, item, accountCurrency, versioned) {
         ])
       )[0]
     : await updating.run();
-  return Boolean(result?.meta?.changes);
+  if (!result?.meta?.changes && attempt === 0) {
+    const fresh = await db(env)
+      .prepare(
+        'SELECT id,raw_json,amount,amount_uah,currency,balance,at FROM transactions WHERE id=?',
+      )
+      .bind(item.id)
+      .first();
+    if (fresh)
+      return refreshExisting(
+        env,
+        fresh,
+        item,
+        accountCurrency,
+        versioned,
+        checkedAt,
+        checkSource,
+        1,
+      );
+  }
+  return Boolean(material && result?.meta?.changes);
 }
 
 /**

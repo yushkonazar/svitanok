@@ -99,6 +99,7 @@ it('does not silently enable a 365-day policy; saves only explicit metadata with
       version: 0,
       rotatedAt: null,
       expiresAt: '2026-11-20',
+      expiryKind: 'date',
       rotateAfterDays: null,
     },
     expect.anything(),
@@ -141,6 +142,20 @@ it('requires review after another editor changes the version, without clearing t
   expect(screen.getByLabelText('Строк дії у провайдера')).toHaveValue('2026-11-20');
   expect(screen.getByRole('button', { name: 'Зберегти дати' })).toBeDisabled();
   expect(save).not.toHaveBeenCalled();
+});
+it('records non-expiry only after the owner explicitly selects it, independently of rotation', () => {
+  const entry = { ...value().entries[0]!, expiresAt: '2026-11-20' };
+  const save = vi.fn();
+  render(<CredentialEditor entry={entry} pending={false} onSave={save} onCancel={() => {}} />);
+  fireEvent.click(
+    screen.getByRole('checkbox', { name: 'Провайдер підтвердив, що строк дії не обмежений' }),
+  );
+  expect(screen.getByLabelText('Строк дії у провайдера')).toBeDisabled();
+  expect(screen.getByLabelText('Строк дії у провайдера')).toHaveValue('');
+  fireEvent.click(screen.getByRole('button', { name: 'Зберегти дати' }));
+  expect(save).toHaveBeenCalledWith(
+    expect.objectContaining({ expiresAt: null, expiryKind: 'non-expiring', rotateAfterDays: null }),
+  );
 });
 it('shows an honest read failure and retry instead of an empty healthy inventory', async () => {
   mocks.fetch.mockRejectedValue(new Error('Не вдалося завантажити реєстр доступів.'));

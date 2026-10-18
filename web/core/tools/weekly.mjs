@@ -14,6 +14,7 @@
 import { totalProgress } from '../../roadmap-core.mjs';
 import { addDaysToDateKey } from '../../reminders-core.mjs';
 import { weekStartKey } from '../../stats-core.mjs';
+import { ToolArgumentError } from '../tool-arguments.mjs';
 
 /** Глибина сирих чек-інів у weekly за замовчуванням = вікно моделі
  *  «Індексу дня» (STATS_WINDOWS.checkinDeep). */
@@ -36,10 +37,12 @@ export function parsePeriodDays(raw) {
   if (s === 'тиждень' || s === 'week') return 7;
   if (s === 'місяць' || s === 'month') return 30;
   const m = /^(\d{1,3})\s*([dw])$/.exec(s);
-  if (!m) throw new Error(`period «${String(raw)}»: очікую Nd, Nw, «тиждень» або «місяць»`);
+  if (!m)
+    throw new ToolArgumentError(`period «${String(raw)}»: очікую Nd, Nw, «тиждень» або «місяць»`);
   const n = Number(m[1]);
   const days = m[2] === 'w' ? n * 7 : n;
-  if (days < 1 || days > 366) throw new Error(`period «${String(raw)}»: від 1 дня до 366`);
+  if (days < 1 || days > 366)
+    throw new ToolArgumentError(`period «${String(raw)}»: від 1 дня до 366`);
   return days;
 }
 
@@ -61,10 +64,15 @@ export function weekBounds(todayKey) {
  *   archive?: Record<string, any> | null,
  *   weeklyArchive?: Record<string, any> | null,
  *   levers?: Record<string, any> | null,
- *   plans?: { days: any[], items: any[] } | { error: string } | null,
+ *   plans?: Record<string, any> | null,
  *   todayKey: string,
  *   rawDays?: number | null,
  *   cap: number,
+ *   sources?: Record<string, any>,
+ *   period?: Record<string, any>,
+ *   finance?: Record<string, any> | null,
+ *   system?: Record<string, any> | null,
+ *   personalPeriods?: Record<string, any> | null,
  * }} WeeklyInput
  */
 
@@ -79,6 +87,11 @@ export function buildWeeklyDigest(input) {
   const week = weekBounds(todayKey);
   const doc = {
     scope: 'weekly',
+    sources: input.sources ?? {},
+    period: input.period ?? null,
+    finance: input.finance ? structuredClone(input.finance) : null,
+    system: input.system ?? null,
+    personalPeriods: input.personalPeriods ?? null,
     today: todayKey,
     week,
     windows: agg.windows ?? null,
@@ -133,6 +146,13 @@ export function buildWeeklyDigest(input) {
     archive: buildArchiveBlock(input.archive, input.weeklyArchive),
     levers: input.levers ?? null,
   };
+  if (input.sources?.stats?.status === 'unavailable') {
+    for (const key of ['checkin', 'index', 'habits', 'funnel', 'interests', 'reliability'])
+      /** @type {any} */ (doc)[key] = null;
+    doc.mastery.mock = null;
+  }
+  if (input.sources?.state?.status === 'unavailable')
+    /** @type {any} */ (doc.mastery).roadmap = null;
   return shrinkToCap(doc, input.cap, WEEKLY_LADDER);
 }
 
@@ -191,6 +211,7 @@ function buildArchiveBlock(monthly, weekly) {
  */
 const WEEKLY_LADDER = [
   step('checkin.raw', (d) => dropKey(d.checkin, 'raw')),
+  step('finance.evidence', (d) => shrinkFinanceEvidence(d.finance)),
   step('habits.heatmap', (d) => dropKey(d.habits, 'heatmap')),
   step('archive.weekly', (d) => dropKey(d.archive, 'weekly')),
   step('funnel.list.history', (d) => {
@@ -220,7 +241,38 @@ const WEEKLY_LADDER = [
   step('reliability', (d) => dropKey(d, 'reliability')),
   step('plan', (d) => dropKey(d, 'plan')),
   step('archive', (d) => dropKey(d, 'archive')),
+  step('finance', (d) => dropKey(d, 'finance')),
 ];
+
+/** Totals and the full category distribution survive evidence compaction.
+ * @param {any} finance */
+function shrinkFinanceEvidence(finance) {
+  if (!finance) return false;
+  let changed = false;
+  const trim = (
+    /** @type {any} */ parent,
+    /** @type {string} */ key,
+    /** @type {string} */ flag,
+  ) => {
+    if (!Array.isArray(parent?.[key]) || parent[key].length <= 3) return;
+    parent[key] = parent[key].slice(0, 3);
+    parent[flag] = true;
+    changed = true;
+  };
+  trim(finance.review?.pending, 'operations', 'truncated');
+  trim(finance.review?.unusual, 'operations', 'truncated');
+  for (const repayment of [
+    finance.review?.repayment,
+    ...(finance.comparison?.weeks ?? []).map((/** @type {any} */ w) => w.repayment),
+  ]) {
+    trim(repayment, 'exclusions', 'exclusionsTruncated');
+    trim(repayment, 'unverified', 'unverifiedTruncated');
+  }
+  trim(finance.context?.upcoming, 'payments', 'truncated');
+  trim(finance.context?.overdue, 'payments', 'truncated');
+  trim(finance.context?.detectedSubscriptions, 'items', 'truncated');
+  return changed;
+}
 
 const ARCHIVE_LADDER = [
   step('archive.weekly', (d) => dropKey(d.archive, 'weekly')),
@@ -261,8 +313,15 @@ export function shrinkToCap(doc, cap, ladder) {
     text = JSON.stringify({ ...doc, dropped });
   }
   if (text.length > cap) {
-    const tail = ',"truncated":true}';
-    text = text.slice(0, Math.max(0, cap - tail.length)) + tail;
+    const remaining = {
+      scope: doc.scope,
+      period: doc.period,
+      dropped: [...dropped, 'remaining-data'],
+      truncated: true,
+    };
+    text = JSON.stringify(remaining);
+    if (text.length > cap)
+      text = JSON.stringify({ scope: doc.scope, dropped: ['remaining-data'], truncated: true });
   }
   return { text, dropped };
 }
