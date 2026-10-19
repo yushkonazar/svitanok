@@ -120,7 +120,7 @@ describe('read-only verification and fast mutation acknowledgements', () => {
     expect(await r.json()).toEqual({
       ok: true,
       acknowledged: true,
-      receipt: { message: 'Збережено.' },
+      receipt: { message: 'Вибір збережено.', revision: 1 },
     });
     const count = db.prepare('SELECT COUNT(*) AS n FROM leisure_commands').get()!.n;
     const verified = await handleLeisure(
@@ -131,7 +131,7 @@ describe('read-only verification and fast mutation acknowledgements', () => {
     );
     expect(await verified.json()).toMatchObject({
       ok: true,
-      verification: { found: true, receipt: { message: 'Збережено.' } },
+      verification: { found: true, receipt: { message: 'Вибір збережено.', revision: 1 } },
     });
     expect(db.prepare('SELECT COUNT(*) AS n FROM leisure_commands').get()!.n).toBe(count);
     expect(await inspectLeisureCommand(env, 'not-saved-command')).toEqual({ found: false });
@@ -895,7 +895,7 @@ describe('public source parsing', () => {
     vi.stubGlobal('fetch', fetchMock);
     const receipt = await refreshLeisureCatalog(withMaps, NOW);
     expect(receipt.message).toBe('Добірку оновлено.');
-    expect(maps.search).toHaveBeenCalledTimes(4);
+    expect(maps.search).toHaveBeenCalledTimes(8);
     const workspace = await readLeisureWorkspace(withMaps, NOW);
     expect(workspace.edition.ids).toHaveLength(1);
     expect(workspace.edition.sources.find((s: { id: string }) => s.id === 'places')).toMatchObject({

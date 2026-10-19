@@ -1,4 +1,10 @@
-import { leisureWorkspaceSchema, type LeisureWorkspace, type LeisureCommand } from './leisure.ts';
+import { normalizeLeisureFeedback } from '../../../core/leisure/feedback.mjs';
+import {
+  leisureWorkspaceSchema,
+  toKyivInput,
+  type LeisureWorkspace,
+  type LeisureCommand,
+} from './leisure.ts';
 import { leisurePreferenceProfile, rankLeisureItems } from '../../../core/leisure/discovery.mjs';
 
 let demo: LeisureWorkspace | null = null;
@@ -7,7 +13,7 @@ export function resetLeisureDemo() {
 }
 export function readLeisureDemo(): LeisureWorkspace {
   if (demo) return structuredClone(demo);
-  const today = new Date().toISOString().slice(0, 10),
+  const today = toKyivInput(new Date().toISOString()).slice(0, 10),
     now = new Date().toISOString();
   const base = {
     venueId: null,
@@ -143,16 +149,19 @@ export async function changeLeisureDemo(command: LeisureCommand) {
       : data.saved.filter((v) => v !== item.id);
   if (command.op === 'settings') data.settings = { ...data.settings, ...payload };
   if (command.op === 'reaction' && item) {
+    const prior = data.records.find((r) => r.kind === 'reaction' && r.itemId === item.id);
+    const feedback = normalizeLeisureFeedback(item, payload, prior, Date.now());
     data.records = data.records.filter((r) => !(r.kind === 'reaction' && r.itemId === item.id));
     data.records.push({
       id: `reaction-${item.id}`,
       kind: 'reaction',
-      revision: 1,
+      revision: (prior?.revision ?? 0) + 1,
       itemId: item.id,
       venueId: item.venueId,
       verdict: String(payload.verdict),
-      reasonCode: payload.reasonCode ? String(payload.reasonCode) : null,
-      reason: String(payload.reason ?? ''),
+      ...feedback,
+      reasonCode: feedback.reasonCode,
+      reason: feedback.reason,
       at: new Date().toISOString(),
     });
   }
@@ -217,7 +226,37 @@ export async function changeLeisureDemo(command: LeisureCommand) {
       receipt: { message: 'Демо: календар не перевіряється.', available: false, conflicts: [] },
       workspace: data,
     };
+  if (command.op === 'draft') {
+    const draftId = command.id ?? 'draft-' + command.commandId;
+    data.records = data.records.filter((r) => r.id !== draftId);
+    data.records.push({
+      id: draftId,
+      kind: 'draft',
+      revision: 1,
+      title: String(payload.title),
+      transport: payload.transport as 'car' | 'walk' | 'transit',
+      stops: (
+        payload.stops as Array<{
+          itemId: string;
+          sessionId?: string | null;
+          startAt: string;
+          endAt: string;
+          tickets?: boolean;
+          reservation?: boolean;
+        }>
+      ).map((s) => ({ ...s, tickets: s.tickets === true, reservation: s.reservation === true })),
+    });
+    id = draftId;
+  }
+  if (command.op === 'discard-draft')
+    data.records = data.records.map((r) =>
+      r.kind === 'draft' && r.id === command.id ? { ...r, discarded: true } : r,
+    );
   if (command.op === 'plan') {
+    if (payload.sourceDraftId)
+      data.records = data.records.map((r) =>
+        r.kind === 'draft' && r.id === payload.sourceDraftId ? { ...r, discarded: true } : r,
+      );
     id = command.id ?? `plan-${command.commandId}`;
     const old = data.records.find((r) => r.id === id && r.kind === 'plan');
     const stops = (
@@ -253,6 +292,7 @@ export async function changeLeisureDemo(command: LeisureCommand) {
       startAt: stops[0]!.startAt,
       endAt: stops.at(-1)!.endAt,
       status: 'planned',
+      transport: payload.transport as 'car' | 'walk' | 'transit',
       calendar: payload.calendar !== false,
       calendarState: 'none',
       calendarId: null,

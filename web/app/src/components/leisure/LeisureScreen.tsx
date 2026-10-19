@@ -32,22 +32,43 @@ import { CategoryArtwork } from './CategoryArtwork.tsx';
 import { RequestDiagnostics } from '../ui/RequestDiagnostics.tsx';
 import { readPendingLeisure, keepPendingLeisure } from './pending-command.ts';
 import { LeisureFeedback, PreviousVisits } from './LeisureFeedback.tsx';
+import { LeisureCollection } from './LeisureCollection.tsx';
+import { LeisureHistory } from './LeisureHistory.tsx';
+import { TogetherPlanner } from './TogetherPlanner.tsx';
+import {
+  leisureIdentity,
+  leisureReactionHidden,
+  leisureDecisionIndex,
+} from '../../../../core/leisure/identity.mjs';
+import type { LeisurePlanSeed } from '../../api/leisure.ts';
 import './leisure.css';
 
 type Dialog = {
-  type: 'detail' | 'reject' | 'familiarity' | 'plan' | 'visit' | 'settings' | 'plans' | 'sources';
+  type:
+    | 'detail'
+    | 'interest'
+    | 'together'
+    | 'reject'
+    | 'familiarity'
+    | 'plan'
+    | 'visit'
+    | 'settings'
+    | 'plans'
+    | 'sources';
   itemId?: string;
   planId?: string;
   visitId?: string;
   sessionId?: string;
+  revisit?: boolean;
 };
 type Send = (op: string, payload: Record<string, unknown>, id?: string) => Promise<LeisureReceipt>;
 const CATEGORY_GROUPS = [
   ['all', 'Усе'],
   ['cinema', 'Кіно'],
   ['events', 'Події'],
-  ['food', 'Заклади'],
+  ['places', 'Місця'],
   ['trip', 'Поїздки'],
+  ['podcast', 'Подкасти'],
 ] as const;
 const fire = (promise: Promise<unknown>) => {
   void promise.catch(() => {});
@@ -191,6 +212,10 @@ function priceLabel(item: LeisureItem) {
   return value == null ? 'Ціну не підтверджено' : `Від ${money(value)} за двох`;
 }
 function dateLabel(item: LeisureItem) {
+  if (item.category === 'podcast')
+    return item.publishedAt
+      ? 'Опубліковано ' + leisureDate(item.publishedAt)
+      : 'Слухай, коли зручно';
   if (!item.startDate) return 'Можна обрати день';
   if (
     item.endDate &&
@@ -309,13 +334,12 @@ export function LeisureScreen() {
     [subCategory, setSubCategory] = useState('all'),
     [search, setSearch] = useState(''),
     [searchOpen, setSearchOpen] = useState(false),
-    [shown, setShown] = useState(8),
     [day, setDay] = useState(''),
     [notice, setNotice] = useState(''),
     [genre, setGenre] = useState(''),
-    [bookmarksOnly, setBookmarksOnly] = useState(false),
     [deckRevision, setDeckRevision] = useState(0),
     [undoReaction, setUndoReaction] = useState<string | null>(null);
+  const [planSeed, setPlanSeed] = useState<LeisurePlanSeed | null>(null);
   const [restored] = useState(readPendingLeisure);
   const [recovery, setRecovery] = useState<LeisureCommand | null>(restored);
   const [dialog, setDialog] = useState<Dialog | null>(() =>
@@ -419,33 +443,45 @@ export function LeisureScreen() {
   const pendingReview = plans.filter(
     (p) => p.status === 'planned' && Date.parse(p.endAt) < Date.parse(data.generatedAt),
   );
+  const decisions = leisureDecisionIndex(data.items, [
+    ...(data.discoveryDecisions ?? []).map((r) => ({ ...r, kind: 'discovery' })),
+    ...data.records,
+  ]);
   const hidden = new Set(
-    data.records
-      .filter((r) => r.kind === 'reaction')
-      .filter(
-        (r) =>
-          r.verdict === 'uninterested' ||
-          (r.verdict === 'later' &&
-            r.at &&
-            toKyivInput(r.at).slice(0, 10) >= (data.edition?.week ?? '')),
+    data.items
+      .filter((i) =>
+        leisureReactionHidden(
+          decisions.get(i.identityKey ?? leisureIdentity(i)) ?? {},
+          Date.parse(data.generatedAt),
+        ),
       )
-      .map((r) => r.itemId),
-  );
-  const interested = new Set(
-    data.records.flatMap((r) =>
-      r.kind === 'reaction' && r.verdict === 'interested' ? [r.itemId] : [],
-    ),
+      .map((i) => i.id),
   );
   const decided = new Set([
-    ...hidden,
-    ...interested,
     ...data.saved,
     ...visits.map((v) => v.itemId),
+    ...data.records.flatMap((r) => (r.kind === 'familiarity' && !r.cleared ? [r.itemId] : [])),
     ...plans.filter((p) => p.status === 'planned').flatMap((p) => p.stops.map((s) => s.itemId)),
   ]);
+  const decidedKeys = new Set(
+    data.items.filter((i) => decided.has(i.id)).map((i) => i.identityKey ?? leisureIdentity(i)),
+  );
+  for (const [key, decision] of decisions)
+    if (
+      decision.verdict === 'interested' ||
+      leisureReactionHidden(decision, Date.parse(data.generatedAt))
+    )
+      decidedKeys.add(key);
   const baseIds =
     tab === 'saved'
-      ? [...new Set(bookmarksOnly ? data.saved : [...interested, ...data.saved])]
+      ? [
+          ...new Set([
+            ...data.records.flatMap((r) =>
+              r.kind === 'reaction' && r.verdict !== 'clear' ? [r.itemId] : [],
+            ),
+            ...data.saved,
+          ]),
+        ]
       : tab === 'visited'
         ? [
             ...new Set([
@@ -456,7 +492,11 @@ export function LeisureScreen() {
             ]),
           ]
         : [...(data.edition?.ids ?? []), ...(data.edition?.futureIds ?? [])].filter(
-            (id) => !decided.has(id),
+            (id) =>
+              !decided.has(id) &&
+              !decidedKeys.has(
+                itemById.get(id)?.identityKey ?? leisureIdentity(itemById.get(id) ?? {}),
+              ),
           );
   const candidates = baseIds
     .map((id) => itemById.get(id))
@@ -466,8 +506,10 @@ export function LeisureScreen() {
         (tab !== 'feed' || !hidden.has(i.id)) &&
         (category === 'all' ||
           (category === 'events'
-            ? ['exhibition', 'festival', 'concert', 'show'].includes(i.category)
-            : i.category === category)) &&
+            ? ['exhibition', 'festival', 'concert', 'show', 'meetup'].includes(i.category)
+            : category === 'places'
+              ? ['food', 'place'].includes(i.category)
+              : i.category === category)) &&
         (!genre || i.genre.toLocaleLowerCase('uk').includes(genre.toLocaleLowerCase('uk'))) &&
         (subCategory === 'all' || category !== 'events' || i.category === subCategory) &&
         (!search ||
@@ -530,6 +572,22 @@ export function LeisureScreen() {
           </button>
         </div>
       </div>
+      <button
+        type="button"
+        className="leisure-together-entry"
+        onClick={() => setDialog({ type: 'together' })}
+      >
+        <span className="leisure-together-entry-icon" aria-hidden="true">
+          <Icon kind="route" />
+        </span>
+        <span>
+          <strong>Спланувати час разом</strong>
+          <small>Один день або кілька на вибір</small>
+        </span>
+        <span className="leisure-together-entry-arrow" aria-hidden="true">
+          ↗
+        </span>
+      </button>
       {!inTelegram() && <p className="leisure-demo">Демо: дії не змінюють сервер і календар.</p>}
       {upcoming && (
         <div className="leisure-plan-bar">
@@ -571,8 +629,8 @@ export function LeisureScreen() {
       <div className="leisure-tabs">
         {(
           [
-            ['feed', 'Для вас'],
-            ['saved', 'Цікаве'],
+            ['feed', 'Нове'],
+            ['saved', 'Моє'],
             ['visited', 'Історія'],
           ] as const
         ).map(([id, label]) => (
@@ -582,7 +640,6 @@ export function LeisureScreen() {
             aria-pressed={tab === id}
             onClick={() => {
               setTab(id);
-              setShown(8);
               setSearch('');
               setDay('');
             }}
@@ -609,7 +666,6 @@ export function LeisureScreen() {
                 setCategory(id);
                 setSubCategory('all');
                 setGenre('');
-                setShown(8);
               }}
             >
               {label}
@@ -638,7 +694,6 @@ export function LeisureScreen() {
               value={search}
               onChange={(e) => {
                 setSearch(e.target.value);
-                setShown(8);
               }}
             />
           </label>
@@ -722,99 +777,45 @@ export function LeisureScreen() {
       )}
       {tab === 'feed' ? (
         <SwipeDeck
+          deferLike
           key={[category, subCategory, genre, day, search, deckRevision].join('|')}
           items={candidates}
+          newCount={
+            candidates.filter(
+              (i) =>
+                i.firstDiscoveredAt &&
+                toKyivInput(i.firstDiscoveredAt).slice(0, 10) >= (data.edition?.week ?? '9999'),
+            ).length
+          }
           busy={busy}
           reasons={(id) => data.edition?.rankings.find((r) => r.id === id)?.reasons ?? []}
-          onLike={(item) => send('reaction', { verdict: 'interested' }, item.id)}
+          onLike={async (item) => {
+            setDialog({ type: 'interest', itemId: item.id });
+            return false;
+          }}
           onReject={(item) => setDialog({ type: 'reject', itemId: item.id })}
           onVisit={(item) => setDialog({ type: 'visit', itemId: item.id })}
           onOpen={(item) => setDialog({ type: 'detail', itemId: item.id })}
         />
       ) : tab === 'saved' ? (
-        <>
-          <label className="leisure-check">
-            <input
-              type="checkbox"
-              checked={bookmarksOnly}
-              onChange={(e) => setBookmarksOnly(e.target.checked)}
-            />
-            Лише закладки
-          </label>
-          <div className="leisure-list">
-            {candidates.slice(0, shown).map((item) => (
-              <ItemCard
-                key={item.id}
-                item={item}
-                reasons={data.edition?.rankings.find((r) => r.id === item.id)?.reasons}
-                known={data.knownPlaces[item.id]}
-                saved={data.saved.includes(item.id)}
-                busy={busy}
-                onOpen={() => setDialog({ type: 'detail', itemId: item.id })}
-                onSave={() => fire(send('save', { saved: !data.saved.includes(item.id) }, item.id))}
-              />
-            ))}
-          </div>
-          {!candidates.length && (
-            <div className="leisure-deck-empty">
-              <h3>Тут буде цікаве</h3>
-              <p>
-                Свайпни картку вправо або додай закладку. Це вибір для розгляду — ще не план і не
-                бронювання.
-              </p>
-            </div>
-          )}
-          {candidates.length > shown && (
-            <Button onClick={() => setShown((n) => n + 8)}>
-              Ще варіанти ({candidates.length - shown})
-            </Button>
-          )}
-        </>
+        <LeisureCollection
+          data={data}
+          items={candidates}
+          busy={busy}
+          send={send}
+          onOpen={(item) => setDialog({ type: 'detail', itemId: item.id })}
+          onFeedback={(item) => setDialog({ type: 'interest', itemId: item.id })}
+        />
       ) : (
         <>
-          <div className="leisure-history">
-            {visits
-              .filter((v) => candidates.some((i) => i.id === v.itemId))
-              .slice(0, shown)
-              .map((v) => (
-                <article key={v.id} className="leisure-history-entry">
-                  <div className="leisure-caption">
-                    {categoryLabels[v.category as LeisureItem['category']] ?? v.category}
-                  </div>
-                  <h3>{v.title}</h3>
-                  <p className="leisure-secondary">
-                    {v.visitedOn ? leisureDate(v.visitedOn) : 'Дата невідома'} ·{' '}
-                    {v.rating === 'liked'
-                      ? 'Сподобалось'
-                      : v.rating === 'disliked'
-                        ? 'Не сподобалось'
-                        : v.rating === 'neutral'
-                          ? 'Нормально'
-                          : 'Без оцінки'}
-                  </p>
-                  {v.reason && <p className="leisure-impression">{v.reason}</p>}
-                  <div className="leisure-actions">
-                    <Button
-                      onClick={() => setDialog({ type: 'visit', itemId: v.itemId, visitId: v.id })}
-                    >
-                      Уточнити враження
-                    </Button>
-                    <Button onClick={() => setDialog({ type: 'detail', itemId: v.itemId })}>
-                      Відкрити місце
-                    </Button>
-                  </div>
-                </article>
-              ))}
-          </div>
-          {visits.filter((v) => candidates.some((i) => i.id === v.itemId)).length > shown && (
-            <Button onClick={() => setShown((n) => n + 12)}>Ще відвідування</Button>
-          )}
-          {!visits.length && (
-            <p className="leisure-secondary">
-              Запиши перегляд чи відвідування свайпом униз. Тут залишаться дата, оцінка й текст
-              враження.
-            </p>
-          )}
+          <LeisureHistory
+            data={data}
+            items={candidates}
+            visits={visits}
+            onOpen={(id) => setDialog({ type: 'detail', itemId: id })}
+            onEdit={(v) => setDialog({ type: 'visit', itemId: v.itemId, visitId: v.id })}
+            onReturn={(id) => setDialog({ type: 'interest', itemId: id, revisit: true })}
+          />
           {candidates.some((i) => !visits.some((v) => v.itemId === i.id)) && (
             <details className="leisure-manage">
               <summary>Знайомі місця без окремих відвідувань</summary>
@@ -835,7 +836,7 @@ export function LeisureScreen() {
                 ))}
             </details>
           )}
-          {data.historyTotal > data.records.length && (
+          {data.historyTotal > data.records.filter((r) => r.kind !== 'draft').length && (
             <Button
               onClick={() =>
                 fire(fetchLeisure(true).then((all) => cache.setQueryData(LEISURE_QUERY, all)))
@@ -849,8 +850,9 @@ export function LeisureScreen() {
       <details className="leisure-manage">
         <summary>Добірка й персоналізація</summary>
         <p className="leisure-secondary">
-          Понеділок · 08:00. Кіно доповнюється після публікації розкладу. Без Telegram-розсилки.
-          Показуємо актуальні варіанти на тиждень і події наперед.
+          Понеділок · 08:00. Кіно доповнюється після публікації розкладу. Дайджест новинок можна
+          налаштувати у параметрах дозвілля. Показуємо актуальні варіанти на тиждень і події
+          наперед.
         </p>
         <p>Твоїх оцінок: {data.preferenceProfile?.signals ?? data.edition?.profileSignals ?? 0}</p>
         <p className="leisure-secondary">
@@ -880,19 +882,23 @@ export function LeisureScreen() {
       {dialog && (
         <Sheet
           label={
-            dialog.type === 'detail'
-              ? 'Деталі варіанта'
-              : dialog.type === 'reject'
-                ? 'Що не підходить?'
-                : dialog.type === 'plan'
-                  ? 'План дозвілля'
-                  : dialog.type === 'visit'
-                    ? 'Відвідування й враження'
-                    : dialog.type === 'settings'
-                      ? 'Налаштування дозвілля'
-                      : dialog.type === 'plans'
-                        ? 'Ваші плани'
-                        : 'Джерела добірки'
+            dialog.type === 'interest'
+              ? 'Зберегти інтерес'
+              : dialog.type === 'together'
+                ? 'Спланувати час разом'
+                : dialog.type === 'detail'
+                  ? 'Деталі варіанта'
+                  : dialog.type === 'reject'
+                    ? 'Що не підходить?'
+                    : dialog.type === 'plan'
+                      ? 'План дозвілля'
+                      : dialog.type === 'visit'
+                        ? 'Відвідування й враження'
+                        : dialog.type === 'settings'
+                          ? 'Налаштування дозвілля'
+                          : dialog.type === 'plans'
+                            ? 'Ваші плани'
+                            : 'Джерела добірки'
           }
           onClose={close}
         >
@@ -911,13 +917,33 @@ export function LeisureScreen() {
             </div>
             {recover}
             <fieldset className="leisure-dialog-fields" disabled={!!recovery}>
-              {dialog.type === 'reject' && selectedItem && (
+              {(dialog.type === 'reject' || dialog.type === 'interest') && selectedItem && (
                 <LeisureFeedback
+                  key={dialog.type + selectedItem.id}
+                  positive={dialog.type === 'interest'}
+                  current={data.records.find(
+                    (r): r is Extract<LeisureWorkspace['records'][number], { kind: 'reaction' }> =>
+                      r.kind === 'reaction' && r.itemId === selectedItem.id,
+                  )}
+                  known={!!data.knownPlaces[selectedItem.id]?.familiar}
+                  revisitInitially={dialog.revisit}
+                  onSeen={() => setDialog({ type: 'visit', itemId: selectedItem.id })}
                   item={selectedItem}
                   busy={busy}
                   send={send}
                   done={close}
                   back={close}
+                />
+              )}
+              {dialog.type === 'together' && (
+                <TogetherPlanner
+                  data={data}
+                  busy={busy}
+                  send={send}
+                  onChoose={(seed) => {
+                    setPlanSeed(seed);
+                    setDialog({ type: 'plan' });
+                  }}
                 />
               )}
               {dialog.type === 'detail' && selectedItem && (
@@ -930,6 +956,7 @@ export function LeisureScreen() {
                     setDialog({ type: 'plan', itemId: selectedItem.id, sessionId })
                   }
                   visit={() => setDialog({ type: 'visit', itemId: selectedItem.id })}
+                  interested={() => setDialog({ type: 'interest', itemId: selectedItem.id })}
                   familiar={() => setDialog({ type: 'familiarity', itemId: selectedItem.id })}
                   done={close}
                 />
@@ -946,6 +973,7 @@ export function LeisureScreen() {
               {dialog.type === 'plan' && (
                 <PlanBuilder
                   data={data}
+                  seed={selectedItem || selectedPlan ? undefined : (planSeed ?? undefined)}
                   initialItem={selectedItem ?? undefined}
                   initialSessionId={dialog.sessionId}
                   existing={selectedPlan}
@@ -1032,6 +1060,7 @@ function ItemDetail({
   plan,
   visit,
   familiar,
+  interested,
   done,
 }: {
   item: LeisureItem;
@@ -1041,6 +1070,7 @@ function ItemDetail({
   plan: (sessionId?: string) => void;
   visit: () => void;
   familiar: () => void;
+  interested: () => void;
   done: () => void;
 }) {
   const [rejecting, setRejecting] = useState(false);
@@ -1191,6 +1221,10 @@ function ItemDetail({
             студентська ціна залежить від умов показу.
           </p>
         </>
+      ) : item.category === 'podcast' ? (
+        <Button primary onClick={() => openLink(item.sourceUrl)}>
+          Слухати випуск ↗
+        </Button>
       ) : (
         <Button
           primary
@@ -1217,37 +1251,25 @@ function ItemDetail({
         <summary>Мій досвід і вибір</summary>
         <div className="leisure-actions">
           <Button onClick={visit}>
-            {item.category === 'cinema' ? 'Записати перегляд' : 'Записати відвідування'}
+            {item.category === 'cinema'
+              ? 'Записати перегляд'
+              : item.category === 'podcast'
+                ? 'Записати прослуховування'
+                : 'Записати відвідування'}
           </Button>
-          {item.category !== 'cinema' && <Button onClick={familiar}>Були тут раніше</Button>}
+          {!['cinema', 'podcast'].includes(item.category) && (
+            <Button onClick={familiar}>Були тут раніше</Button>
+          )}
           <Button disabled={busy} onClick={() => setRejecting(true)}>
             Нецікаво
           </Button>
         </div>
         <div className="leisure-actions">
-          <Button
-            disabled={busy}
-            onClick={() =>
-              fire(
-                send(
-                  'reaction',
-                  {
-                    verdict: data.records.some(
-                      (r) =>
-                        r.kind === 'reaction' && r.itemId === item.id && r.verdict === 'interested',
-                    )
-                      ? 'clear'
-                      : 'interested',
-                  },
-                  item.id,
-                ),
-              )
-            }
-          >
+          <Button disabled={busy} onClick={interested}>
             {data.records.some(
               (r) => r.kind === 'reaction' && r.itemId === item.id && r.verdict === 'interested',
             )
-              ? 'Цікаво ✓'
+              ? 'Уточнити інтерес'
               : 'Цікаво'}
           </Button>
         </div>
@@ -1324,11 +1346,17 @@ function VisitForm({
           ? 'Твої враження'
           : item.category === 'cinema'
             ? 'Записати перегляд'
-            : 'Записати відвідування'}
+            : item.category === 'podcast'
+              ? 'Записати прослуховування'
+              : 'Записати відвідування'}
       </h2>
       <h3>{item.title}</h3>
       <label className="leisure-field">
-        {item.category === 'cinema' ? 'Коли дивився? Необов’язково' : 'Коли були? Необов’язково'}
+        {item.category === 'cinema'
+          ? 'Коли дивився? Необов’язково'
+          : item.category === 'podcast'
+            ? 'Коли слухав? Необов’язково'
+            : 'Коли були? Необов’язково'}
         <input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
       </label>
       <p className="leisure-secondary">
@@ -1403,7 +1431,13 @@ function VisitForm({
             .catch((e) => setError(e.message));
         }}
       >
-        {busy ? 'Зберігаю…' : existing ? 'Оновити враження' : 'Зберегти відвідування'}
+        {busy
+          ? 'Зберігаю…'
+          : existing
+            ? 'Оновити враження'
+            : item.category === 'podcast'
+              ? 'Зберегти прослуховування'
+              : 'Зберегти відвідування'}
       </Button>
       {error && (
         <p role="alert" className="leisure-error">
@@ -1432,6 +1466,14 @@ function PlansList({
       {plans.map((p) => (
         <GlassCard key={p.id} className="leisure-plan-detail">
           <h3>{p.title}</h3>
+          {!!p.alerts?.length && (
+            <div className="leisure-notice" role="status">
+              <strong>План потребує перевірки</strong>
+              {p.alerts.map((alert) => (
+                <p key={alert}>{alert}</p>
+              ))}
+            </div>
+          )}
           <p>
             {leisureDate(p.startAt)} · {leisureTime(p.startAt)}–{leisureTime(p.endAt)}
           </p>
@@ -1533,6 +1575,8 @@ function LeisureSettings({
     [cinemas, setCinemas] = useState(data.settings.cinemas),
     [students, setStudents] = useState(data.settings.students),
     [enabled, setEnabled] = useState(data.settings.enabled),
+    [telegram, setTelegram] = useState(data.settings.telegram),
+    [planAlerts, setPlanAlerts] = useState(data.settings.planAlerts),
     [clearConfirmed, setClearConfirmed] = useState(false);
   const toggle = (values: string[], value: string) =>
     values.includes(value) ? values.filter((v) => v !== value) : [...values, value];
@@ -1540,8 +1584,7 @@ function LeisureSettings({
     <>
       <h2>Налаштування дозвілля</h2>
       <p className="leisure-secondary">
-        Львів · машиною · без встановленого бюджету чи радіуса. Понеділок о 08:00, без
-        Telegram-розсилки.
+        Львів · нові місця, події й враження. Оновлення щопонеділка о 08:00 за Києвом.
       </p>
       <h3>Цікаві напрямки</h3>
       <div className="leisure-pills">
@@ -1559,6 +1602,18 @@ function LeisureSettings({
         Обрані напрямки визначають добірку. Особистий рейтинг навчається з «Цікаво», причин
         «Нецікаво» та твоїх відгуків.
       </p>
+      <label className="leisure-check">
+        <input type="checkbox" checked={telegram} onChange={(e) => setTelegram(e.target.checked)} />
+        Щотижневий дайджест новинок у Telegram
+      </label>
+      <label className="leisure-check">
+        <input
+          type="checkbox"
+          checked={planAlerts}
+          onChange={(e) => setPlanAlerts(e.target.checked)}
+        />
+        Повідомляти про важливі зміни погоджених планів
+      </label>
       <h3>Планета кіно</h3>
       <div className="leisure-pills">
         {[
@@ -1587,8 +1642,7 @@ function LeisureSettings({
         Оновлювати добірку автоматично
       </label>
       <p className="leisure-secondary">
-        Понеділок, 08:00 за Києвом. Регулярної Telegram-розсилки немає. Пільги враховуються лише
-        там, де їх підтвердило джерело.
+        Понеділок, 08:00 за Києвом. Пільги враховуються лише там, де їх підтвердило джерело.
       </p>
       <p className="leisure-secondary">
         Зберігаються видані добірки й твої явні збереження, плани, відвідування та відгуки до
@@ -1598,7 +1652,7 @@ function LeisureSettings({
         primary
         disabled={busy || !categories.length || !cinemas.length}
         onClick={() =>
-          void send('settings', { categories, cinemas, students, enabled })
+          void send('settings', { categories, cinemas, students, enabled, telegram, planAlerts })
             .then(done)
             .catch(() => {})
         }

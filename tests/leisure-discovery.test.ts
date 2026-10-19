@@ -405,7 +405,7 @@ describe('full discovery and explicit learning', () => {
     expect(data.records.filter((r) => r.kind === 'plan')).toEqual([]);
     db.close();
   });
-  it('treats not-now as temporary, and never turns it into a genre dislike', async () => {
+  it('keeps manual postponement hidden across weeks without a genre dislike', async () => {
     const a = await item(1),
       b = await item(2);
     const r = {
@@ -426,16 +426,17 @@ describe('full discovery and explicit learning', () => {
       DEFAULT_LEISURE_SETTINGS,
       now + 7 * 86400000,
     );
-    expect(next.ids).toHaveLength(2);
+    expect(next.ids).toEqual([b.id]);
     expect(new Set(next.rankings.map((r) => r.score)).size).toBe(1);
   });
-  it('applies not-this-week in Kyiv time even before UTC Monday starts', async () => {
+  it('returns explicitly snoozed cards on the selected Kyiv date', async () => {
     const a = await item(1),
       early = Date.parse('2026-10-18T21:30:00Z');
     const r = {
       kind: 'reaction',
       itemId: a.id,
       verdict: 'later',
+      snoozeUntil: '2026-10-26T06:00:00Z',
       at: new Date(early).toISOString(),
     };
     expect(selectLeisureEdition([a], [r], [], DEFAULT_LEISURE_SETTINGS, early).ids).toEqual([]);

@@ -1,6 +1,7 @@
 import { rankLeisureItems, leisurePreferenceProfile } from './discovery.mjs';
 import { kyivDateKey } from '../../kyiv-time.mjs';
 import { addDaysToDateKey } from '../../reminders-core.mjs';
+import { leisureIdentity, leisureReactionHidden, leisureDecisionIndex } from './identity.mjs';
 
 export const LEISURE_CATEGORIES = [
   'exhibition',
@@ -10,6 +11,9 @@ export const LEISURE_CATEGORIES = [
   'cinema',
   'food',
   'trip',
+  'place',
+  'meetup',
+  'podcast',
 ];
 export const LEISURE_OPERATIONS = [
   'settings',
@@ -26,6 +30,8 @@ export const LEISURE_OPERATIONS = [
   'journey-check',
   'source-check',
   'clear',
+  'draft',
+  'discard-draft',
 ];
 export const DEFAULT_LEISURE_SETTINGS = {
   enabled: true,
@@ -36,7 +42,8 @@ export const DEFAULT_LEISURE_SETTINGS = {
   cinemas: ['forum-lviv', 'king-cross'],
   students: 2,
   retention: 'until-deleted',
-  telegram: false,
+  telegram: true,
+  planAlerts: true,
 };
 
 export class LeisureError extends Error {
@@ -184,6 +191,13 @@ export async function normalizeLeisureItem(raw, nowMs) {
     studentNote: cleanText(raw.studentNote, 300),
     durationMinutes: Number(raw.durationMinutes) > 0 ? Math.round(raw.durationMinutes) : null,
     genre: cleanText(raw.genre, 120),
+    guid: raw.category === 'podcast' ? cleanText(raw.guid, 500) || null : null,
+    identityKey: leisureIdentity({ ...raw, venueId, durationMinutes: raw.durationMinutes }),
+    medium: raw.category === 'podcast' ? 'online' : 'physical',
+    publishedAt:
+      raw.publishedAt && Number.isFinite(Date.parse(raw.publishedAt))
+        ? new Date(raw.publishedAt).toISOString()
+        : null,
     placeType: cleanText(raw.placeType, 100),
     bookingUrl: httpLink(raw.bookingUrl),
     siteUrl: httpLink(raw.siteUrl),
@@ -215,22 +229,16 @@ export function selectLeisureEdition(items, records, previousIds, settings, nowM
   const week = leisureWeek(nowMs),
     end = addDaysToDateKey(week, 6),
     horizon = addDaysToDateKey(week, 20);
-  const hidden = new Set(
-    records
-      .filter(
-        (r) =>
-          r.kind === 'reaction' &&
-          (r.verdict === 'uninterested' ||
-            (r.verdict === 'later' &&
-              Number.isFinite(Date.parse(r.at ?? '')) &&
-              kyivDateKey(new Date(r.at)) >= week)),
-      )
-      .map((r) => r.itemId),
+  const hiddenIdentities = new Set(
+    [...leisureDecisionIndex(items, records)]
+      .filter(([, r]) => leisureReactionHidden(r, nowMs))
+      .map(([identity]) => identity),
   );
   const eligible = items.filter(
+    // Identity survives listing changes and compaction of old source descriptions.
     (i) =>
       settings.categories.includes(i.category) &&
-      !hidden.has(i.id) &&
+      !hiddenIdentities.has(i.identityKey ?? leisureIdentity(i)) &&
       !['sold-out', 'cancelled', 'postponed'].includes(i.status) &&
       (!i.endDate || i.endDate >= kyivDateKey(new Date(nowMs))) &&
       (!i.endAt || Date.parse(i.endAt) > nowMs || i.category === 'cinema') &&
@@ -241,11 +249,7 @@ export function selectLeisureEdition(items, records, previousIds, settings, nowM
   );
   const dedupe = new Set();
   const unique = eligible.filter((i) => {
-    const key = i.placeId
-      ? `place:${i.placeId}`
-      : i.category === 'cinema'
-        ? `film:${i.title.toLocaleLowerCase('uk')}`
-        : `${i.title.toLocaleLowerCase('uk').replace(/[^\p{L}\p{N}]/gu, '')}|${i.startAt ?? i.startDate ?? ''}|${(i.venue ?? i.address ?? '').toLocaleLowerCase('uk')}`;
+    const key = i.identityKey ?? leisureIdentity(i);
     if (dedupe.has(key)) return false;
     dedupe.add(key);
     return true;
@@ -277,6 +281,8 @@ export function normalizeLeisurePlan(raw) {
     throw new LeisureError('Додай хоча б один пункт до плану.');
   if (raw.calendar != null && typeof raw.calendar !== 'boolean')
     throw new LeisureError('Уточни, чи додати план у календар.');
+  if (raw.transport != null && !['car', 'walk', 'transit'].includes(raw.transport))
+    throw new LeisureError('Обери спосіб пересування.');
   const stops = raw.stops
     .map((/** @type {any} */ s) => {
       const startAt = instant(s.startAt),
@@ -314,6 +320,7 @@ export function normalizeLeisurePlan(raw) {
     throw new LeisureError('Перевір орієнтовний бюджет.');
   return {
     title,
+    transport: ['car', 'walk', 'transit'].includes(raw.transport) ? raw.transport : 'car',
     estimatedBudgetMinor,
     stops,
     startAt: stops[0].startAt,
@@ -321,6 +328,8 @@ export function normalizeLeisurePlan(raw) {
     calendar: raw.calendar !== false,
     conflictConfirmed: raw.conflictConfirmed === true,
     calendarUnavailableConfirmed: raw.calendarUnavailableConfirmed === true,
+    sourceAvailabilityConfirmed: raw.sourceAvailabilityConfirmed === true,
+    sourceDraftId: typeof raw.sourceDraftId === 'string' ? cleanText(raw.sourceDraftId, 200) : null,
     revision: Number(raw.revision ?? 0),
   };
 }

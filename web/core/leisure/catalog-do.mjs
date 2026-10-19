@@ -10,16 +10,8 @@ import {
 } from './store.mjs';
 import { kyivHour } from '../../kyiv-time.mjs';
 import { leisureWeek, normalizeLeisureItem } from './model.mjs';
-const FOOD_QUERIES = [
-  'ресторани Львів',
-  'кав’ярні Львів',
-  'українська кухня Львів',
-  'італійські ресторани Львів',
-  'азійські ресторани Львів',
-  'кафе сніданки Львів',
-  'ресторани тераса Львів',
-  'кав’ярні десерти Львів',
-];
+import { leisureDiscoveryQueries } from './discovery-queries.mjs';
+import { queueLeisureDigest, queueLeisurePlanAlerts } from './notifications.mjs';
 /** Separate alarm invocations keep each batch below the Free external-request limit. */
 export class LeisureCatalogDO extends DurableObject {
   #busy = false;
@@ -46,10 +38,7 @@ export class LeisureCatalogDO extends DurableObject {
       nowMs - Date.parse(job.completedAt) < 3 * 3600000
     )
       return { message: 'Повторна перевірка кіно запланована пізніше.' };
-    const workspace =
-      mode === 'daily'
-        ? await readLeisureWorkspace(/** @type {Env} */ (this.env), nowMs, true)
-        : null;
+    const workspace = await readLeisureWorkspace(/** @type {Env} */ (this.env), nowMs, true);
     const watched = workspace
       ? new Set([
           ...workspace.saved,
@@ -65,15 +54,29 @@ export class LeisureCatalogDO extends DurableObject {
             ...(workspace?.items ?? [])
               .filter(
                 (i) =>
-                  watched.has(i.id) &&
-                  !['food', 'cinema', 'trip'].includes(i.category) &&
+                  (watched.has(i.id) ||
+                    workspace.records.some(
+                      (r) =>
+                        r.kind === 'reaction' &&
+                        r.itemId === i.id &&
+                        r.verdict === 'interested' &&
+                        nowMs - Date.parse(i.checkedAt) >=
+                          (r.interestLevel === 'priority'
+                            ? 86400000
+                            : i.startAt && Date.parse(i.startAt) - nowMs < 3 * 86400000
+                              ? 86400000
+                              : 3 * 86400000),
+                    )) &&
+                  !['food', 'cinema', 'trip', 'place', 'podcast'].includes(i.category) &&
                   (!i.endDate || i.endDate >= new Date(nowMs).toISOString().slice(0, 10)),
               )
               .map((i) => ({ id: `watched-${i.id}`, item: i, offset: 0 })),
           ]
         : [
             ...PUBLIC_LEISURE_SOURCES.map((s) => ({ id: s.id, offset: 0 })),
-            ...FOOD_QUERIES.map((query, index) => ({ id: `places-${index}`, query, offset: 0 })),
+            ...leisureDiscoveryQueries(workspace.settings, workspace.preferenceProfile, nowMs).map(
+              (entry, index) => ({ id: 'places-' + index, ...entry, offset: 0 }),
+            ),
           ];
     const next = {
       active: true,
@@ -145,6 +148,11 @@ export class LeisureCatalogDO extends DurableObject {
         (i) => Date.parse(i.checkedAt) >= Date.parse(job.requestedAt),
       );
       await publishLeisureEdition(env, collected, job.sources, now, job.mode === 'daily');
+      await queueLeisurePlanAlerts(env, now).catch(() => console.warn('leisure.plan-alert-failed'));
+      if (job.mode === 'full')
+        await queueLeisureDigest(env, now).catch((error) =>
+          console.warn('leisure.digest-failed', error instanceof Error ? error.message : 'unknown'),
+        );
       job.active = false;
       job.completedAt = new Date(now).toISOString();
       await this.ctx.storage.put('job', job);
@@ -176,7 +184,7 @@ export class LeisureCatalogDO extends DurableObject {
               normalizeLeisureItem(
                 {
                   title: p.name,
-                  category: 'food',
+                  category: task.category ?? 'food',
                   placeId: p.place_id,
                   placeType: p.place_type,
                   address: p.address,

@@ -81,7 +81,7 @@ describe('leisure mobile interactions', () => {
   it('opens a saved card from its main area while the bookmark button remains a separate action', async () => {
     const { cache, data } = await setup();
     await act(async () => cache.setQueryData(['leisure'], { ...data, saved: [data.items[0]!.id] }));
-    fireEvent.click(screen.getByRole('button', { name: 'Цікаве' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Моє' }));
     fireEvent.click(screen.getByRole('button', { name: `Деталі: ${data.items[0]!.title}` }));
     expect(screen.getByRole('dialog')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Закрити вікно дозвілля' }));
@@ -96,14 +96,22 @@ describe('leisure mobile interactions', () => {
   it('moves a right choice into Interesting and keeps it separate from bookmarks and plans', async () => {
     const { cache, data } = await setup();
     fireEvent.click(screen.getByRole('button', { name: 'Цікаво' }));
+    fireEvent.click(screen.getByRole('button', { name: /Просто цікаво/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Зберегти вибір' }));
     await waitFor(() =>
       expect(screen.queryByRole('heading', { name: data.items[0]!.title })).not.toBeInTheDocument(),
     );
-    fireEvent.click(screen.getByRole('button', { name: 'Цікаве' }));
-    expect(screen.getByRole('heading', { name: data.items[0]!.title })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Моє' }));
+    expect(
+      screen.getByRole('button', { name: 'Деталі: ' + data.items[0]!.title }),
+    ).toBeInTheDocument();
     expect((cache.getQueryData(['leisure']) as LeisureWorkspace).saved).toEqual([]);
-    fireEvent.click(screen.getByLabelText('Лише закладки'));
-    expect(screen.queryByRole('heading', { name: data.items[0]!.title })).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('Показати у колекції'), {
+      target: { value: 'bookmarks' },
+    });
+    expect(
+      screen.queryByRole('button', { name: 'Деталі: ' + data.items[0]!.title }),
+    ).not.toBeInTheDocument();
   });
   it('shows old movie impressions in searchable history and edits the saved review instead of duplicating it', async () => {
     const seed = await fetchLeisure(),
@@ -148,8 +156,10 @@ describe('leisure mobile interactions', () => {
       .mockImplementation(original);
     const first = await setup();
     fireEvent.click(screen.getByRole('button', { name: 'Цікаво' }));
+    fireEvent.click(screen.getByRole('button', { name: /Просто цікаво/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Зберегти вибір' }));
     await screen.findByRole('button', { name: 'Перевірити збереження' });
-    expect(screen.getByRole('button', { name: 'Цікаво' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Зберігаю…' })).toBeDisabled();
     const command = spy.mock.calls[0]![0];
     first.cache.clear();
     // Simulate reopening the screen while session storage retains the pending action.
@@ -172,12 +182,12 @@ describe('leisure mobile interactions', () => {
     expect(screen.getByRole('heading', { name: 'Чому нецікаво?' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Підтвердити й прибрати' })).toBeDisabled();
     expect((cache.getQueryData(['leisure']) as LeisureWorkspace).records).toHaveLength(0);
-    fireEvent.click(screen.getByRole('button', { name: 'Жанр' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Не цікавить тема' }));
     fireEvent.click(screen.getByRole('button', { name: 'Підтвердити й прибрати' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
     expect((cache.getQueryData(['leisure']) as LeisureWorkspace).records[0]).toMatchObject({
       verdict: 'uninterested',
-      reasonCode: 'genre',
+      reasonCode: 'topic',
     });
     fireEvent.click(screen.getByRole('button', { name: 'Скасувати вибір' }));
     await waitFor(() =>
@@ -193,8 +203,8 @@ describe('leisure mobile interactions', () => {
     openFirst();
     const title = screen.getByRole('dialog').querySelector('h2')?.textContent;
     fireEvent.click(screen.getByRole('button', { name: 'Нецікаво' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Не на цей тиждень' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Підтвердити й прибрати' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Відкласти' }));
+    fireEvent.click(screen.getAllByRole('button', { name: 'Відкласти' }).at(-1)!);
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
     expect((cache.getQueryData(['leisure']) as LeisureWorkspace).records[0]).toMatchObject({
       verdict: 'later',
@@ -205,17 +215,23 @@ describe('leisure mobile interactions', () => {
     const { cache } = await setup();
     openFirst();
     fireEvent.click(screen.getByRole('button', { name: 'Цікаво' }));
-    await screen.findByRole('button', { name: 'Цікаво ✓' });
+    fireEvent.click(screen.getByRole('button', { name: /Просто цікаво/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Зберегти вибір' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
     const data = cache.getQueryData(['leisure']) as LeisureWorkspace;
     expect(data.saved).toEqual([]);
     expect(data.records[0]).toMatchObject({ verdict: 'interested' });
     expect(data.records.some((r) => r.kind === 'plan')).toBe(false);
-    fireEvent.click(screen.getByRole('button', { name: 'Цікаво ✓' }));
-    await screen.findByRole('button', { name: 'Цікаво' });
+    fireEvent.click(screen.getByRole('button', { name: 'Моє' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Уточнити інтерес' }));
+    expect(screen.getByRole('button', { name: /Просто цікаво/ })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
   });
   it('records a frequent earlier-place baseline without inventing individual visits', async () => {
     const { cache } = await setup();
-    fireEvent.click(screen.getByRole('button', { name: 'Заклади' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Місця' }));
     openFirst();
     fireEvent.click(screen.getByRole('button', { name: 'Були тут раніше' }));
     fireEvent.click(screen.getByRole('button', { name: 'Були багато разів' }));
@@ -233,7 +249,7 @@ describe('leisure mobile interactions', () => {
   });
   it('uses reservation confirmation for a restaurant without asking about tickets', async () => {
     await setup();
-    fireEvent.click(screen.getByRole('button', { name: 'Заклади' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Місця' }));
     openFirst();
     fireEvent.click(screen.getByRole('button', { name: 'Додати до плану вечора' }));
     fireEvent.click(screen.getByRole('button', { name: 'Далі: час і бронювання' }));
@@ -308,7 +324,7 @@ describe('leisure mobile interactions', () => {
   });
   it('records an unknown-date visit and permits another visit to the same venue', async () => {
     await setup();
-    fireEvent.click(screen.getByRole('button', { name: 'Заклади' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Місця' }));
     openFirst();
     fireEvent.click(screen.getByRole('button', { name: 'Записати відвідування' }));
     fireEvent.change(screen.getByLabelText('Коли були? Необов’язково'), { target: { value: '' } });

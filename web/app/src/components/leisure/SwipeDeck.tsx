@@ -16,6 +16,8 @@ export function SwipeDeck({
   onReject,
   onVisit,
   onOpen,
+  deferLike = false,
+  newCount = 0,
 }: {
   items: LeisureItem[];
   busy: boolean;
@@ -24,6 +26,8 @@ export function SwipeDeck({
   onReject: (item: LeisureItem) => void;
   onVisit: (item: LeisureItem) => void;
   onOpen: (item: LeisureItem) => void;
+  deferLike?: boolean;
+  newCount?: number;
 }) {
   const [anchor] = useState(items[0]?.id);
   const [dismissed, setDismissed] = useState<Set<string>>(new Set());
@@ -41,6 +45,12 @@ export function SwipeDeck({
     if (!item || busy || submitting.current) return;
     setDragging(false);
     gesture.current = null;
+    if (direction === 'right' && deferLike) {
+      setPosition({ x: 0, y: 0 });
+      setHeld(null);
+      void onLike(item);
+      return;
+    }
     if (direction !== 'right') {
       setPosition({ x: 0, y: 0 });
       setHeld(null);
@@ -73,10 +83,10 @@ export function SwipeDeck({
     return (
       <div className="leisure-deck-empty" role="status">
         <span aria-hidden="true">✓</span>
-        <h3>Усі варіанти переглянуто</h3>
+        <h3>Нове переглянуто</h3>
         <p>
-          Перейди в «Цікаве», щоб обрати вихід і скласти план. Або зміни категорію — добірка має й
-          інші напрямки.
+          Перейди в «Моє», щоб обрати вихід і скласти план. Або зміни категорію — добірка має й інші
+          напрямки.
         </p>
       </div>
     );
@@ -94,6 +104,7 @@ export function SwipeDeck({
       <div className="leisure-deck-counter">
         <span>
           Ще {available.length} {available.length === 1 ? 'варіант' : 'варіантів'}
+          {newCount > 0 && <small> · нових цього тижня: {newCount}</small>}
         </span>
         <span>Ліворуч / праворуч / униз</span>
       </div>
@@ -206,7 +217,9 @@ export function SwipeDeck({
                   ? 'НЕЦІКАВО'
                   : item.category === 'cinema'
                     ? 'ВЖЕ ДИВИВСЯ'
-                    : 'ВЖЕ БУЛИ'}
+                    : item.category === 'podcast'
+                      ? 'ВЖЕ СЛУХАВ'
+                      : 'ВЖЕ БУЛИ'}
             </span>
           )}
           <div className="leisure-swipe-copy">
@@ -255,12 +268,24 @@ export function SwipeDeck({
         <button
           type="button"
           className="leisure-deck-choice is-seen"
-          aria-label={item.category === 'cinema' ? 'Вже дивився' : 'Вже були'}
+          aria-label={
+            item.category === 'cinema'
+              ? 'Вже дивився'
+              : item.category === 'podcast'
+                ? 'Вже слухав'
+                : 'Вже були'
+          }
           disabled={busy || saving}
           onClick={() => void choose('down')}
         >
           <span aria-hidden="true">↓</span>
-          <small>{item.category === 'cinema' ? 'Дивився' : 'Були'}</small>
+          <small>
+            {item.category === 'cinema'
+              ? 'Дивився'
+              : item.category === 'podcast'
+                ? 'Слухав'
+                : 'Були'}
+          </small>
         </button>
         <button
           type="button"
