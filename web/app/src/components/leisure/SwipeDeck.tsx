@@ -19,6 +19,8 @@ export function SwipeDeck({
   onOpen,
   deferLike = false,
   newCount = 0,
+  reviewing = false,
+  previousChoice,
 }: {
   items: LeisureItem[];
   busy: boolean;
@@ -29,6 +31,8 @@ export function SwipeDeck({
   onOpen: (item: LeisureItem) => void;
   deferLike?: boolean;
   newCount?: number;
+  reviewing?: boolean;
+  previousChoice?: (id: string) => string;
 }) {
   const [anchor] = useState(items[0]?.id);
   const [dismissed, setDismissed] = useState<Set<string>>(new Set());
@@ -84,10 +88,11 @@ export function SwipeDeck({
     return (
       <div className="leisure-deck-empty" role="status">
         <span aria-hidden="true">✓</span>
-        <h3>Нове переглянуто</h3>
+        <h3>{reviewing ? 'Оцінені картки переглянуто' : 'Нове переглянуто'}</h3>
         <p>
-          Перейди в «Моє», щоб обрати вихід і скласти план. Або зміни категорію — добірка має й інші
-          напрямки.
+          {reviewing
+            ? 'Твої актуальні інтереси й пріоритети збережені в «Моє». Можна повернутися до нових карток.'
+            : 'Перейди в «Моє», щоб обрати вихід і скласти план. Або зміни категорію — добірка має й інші напрямки.'}
         </p>
       </div>
     );
@@ -104,8 +109,9 @@ export function SwipeDeck({
     <div className="leisure-deck">
       <div className="leisure-deck-counter">
         <span>
-          Ще {available.length} {available.length === 1 ? 'варіант' : 'варіантів'}
-          {newCount > 0 && <small> · нових цього тижня: {newCount}</small>}
+          Ще {available.length}{' '}
+          {reviewing ? 'для перегляду' : available.length === 1 ? 'варіант' : 'варіантів'}
+          {!reviewing && newCount > 0 && <small> · нових цього тижня: {newCount}</small>}
         </span>
         <span>Ліворуч / праворуч / униз</span>
       </div>
@@ -211,6 +217,11 @@ export function SwipeDeck({
             }}
           />
           <LeisureMedia item={item} active />
+          {reviewing && (
+            <p className="leisure-previous-choice">
+              Попередній вибір: <strong>{previousChoice?.(item.id) ?? 'Збережено'}</strong>
+            </p>
+          )}
           {direction && (
             <span className={`leisure-swipe-verdict is-${direction}`}>
               {direction === 'right'
@@ -231,7 +242,8 @@ export function SwipeDeck({
             <h3 id={'card-title-' + item.id}>{item.title}</h3>
             <CardFacts item={item} />
             <p className="leisure-swipe-place">
-              {item.venue ?? item.address ?? 'Місце уточнюється у джерелі'}
+              {(item.venue && item.venue !== item.title ? item.venue : item.address) ??
+                'Місце уточнюється у джерелі'}
             </p>
             <p className="leisure-swipe-summary">
               {item.summary || 'Відкрий деталі, щоб перевірити програму й актуальність.'}
@@ -253,9 +265,11 @@ export function SwipeDeck({
                     : `Від ${money(price)} за двох`}
               </b>
             </div>
-            <p className="leisure-swipe-reason">
-              {reasons(item.id)[0] ?? 'Новий варіант для знайомства з твоїми інтересами'}
-            </p>
+            {!reviewing && (
+              <p className="leisure-swipe-reason">
+                {reasons(item.id)[0] ?? 'Новий варіант для знайомства з твоїми інтересами'}
+              </p>
+            )}
           </div>
         </article>
       </section>
@@ -309,7 +323,14 @@ export function SwipeDeck({
         disabled={busy || saving}
         onClick={() => onOpen(item)}
       >
-        Деталі події ↗
+        {item.category === 'cinema'
+          ? 'Деталі фільму'
+          : item.category === 'podcast'
+            ? 'Деталі подкасту'
+            : ['food', 'place', 'trip'].includes(item.category)
+              ? 'Деталі місця'
+              : 'Деталі події'}{' '}
+        ↗
       </button>
       {saving && (
         <p role="status" className="leisure-secondary">

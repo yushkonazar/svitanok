@@ -102,6 +102,7 @@ describe('together planning flow', () => {
     fireEvent.change(screen.getByLabelText('Дата зустрічі'), { target: { value: '2026-10-22' } });
     fireEvent.click(screen.getByRole('button', { name: 'Підібрати варіанти' }));
     await screen.findByText('Виставка і вечір разом');
+    await waitFor(() => expect(screen.getByLabelText('Варіанти проведення часу')).toHaveFocus());
     expect(onChoose).not.toHaveBeenCalled();
     expect(send).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button', { name: 'У чернетки' }));
@@ -132,6 +133,47 @@ describe('together planning flow', () => {
     await screen.findByText('Виставка і вечір разом');
     fireEvent.change(screen.getByLabelText('Маємо час до'), { target: { value: '21:00' } });
     expect(screen.queryByText('Виставка і вечір разом')).not.toBeInTheDocument();
+  });
+  it('returns focus to existing suggestions without requesting them again', async () => {
+    fetchSuggestions.mockResolvedValue(result());
+    const props = { data, busy: false, onChoose: vi.fn(), send: vi.fn() };
+    const view = render(<TogetherPlanner {...props} />);
+    fireEvent.change(screen.getByLabelText('Дата зустрічі'), { target: { value: '2026-10-22' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Підібрати варіанти' }));
+    await screen.findByText('Виставка і вечір разом');
+    await waitFor(() => expect(screen.getByLabelText('Варіанти проведення часу')).toHaveFocus());
+    view.rerender(<TogetherPlanner {...props} active={false} />);
+    screen.getByLabelText('Дата зустрічі').focus();
+    view.rerender(<TogetherPlanner {...props} active />);
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /Виставка і вечір разом/ })).toHaveFocus(),
+    );
+    expect(fetchSuggestions).toHaveBeenCalledTimes(1);
+  });
+  it('validates reversed hours before requesting suggestions', async () => {
+    render(<TogetherPlanner data={data} busy={false} onChoose={() => {}} send={vi.fn()} />);
+    fireEvent.change(screen.getByLabelText('Дата зустрічі'), { target: { value: '2026-10-22' } });
+    fireEvent.change(screen.getByLabelText('Зустрічаємося приблизно'), {
+      target: { value: '21:00' },
+    });
+    fireEvent.change(screen.getByLabelText('Маємо час до'), { target: { value: '20:00' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Підібрати варіанти' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Завершення має бути пізніше початку',
+    );
+    expect(fetchSuggestions).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: 'Підібрати варіанти' })).toBeEnabled();
+  });
+  it('explains a day without matching scenarios instead of displaying an empty result', async () => {
+    const empty = result();
+    empty.days[0]!.plans = [];
+    empty.days[0]!.notes = [];
+    fetchSuggestions.mockResolvedValue(empty);
+    render(<TogetherPlanner data={data} busy={false} onChoose={() => {}} send={vi.fn()} />);
+    fireEvent.change(screen.getByLabelText('Дата зустрічі'), { target: { value: '2026-10-22' } });
+    fireEvent.change(screen.getByLabelText('Маємо час до'), { target: { value: '22:00' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Підібрати варіанти' }));
+    expect(await screen.findByText(/На цей проміжок поки немає варіантів/)).toBeInTheDocument();
   });
   it('supports choosing a day range without adding plans automatically', async () => {
     fetchSuggestions.mockResolvedValue(result());

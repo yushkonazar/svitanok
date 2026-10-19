@@ -229,6 +229,42 @@ describe('leisure mobile interactions', () => {
       'true',
     );
   });
+  it('reviews existing reactions without resetting them and undo restores the previous choice', async () => {
+    const { cache, data } = await setup();
+    const title = data.items[0]!.title;
+    openFirst();
+    fireEvent.click(screen.getByRole('button', { name: 'Цікаво' }));
+    fireEvent.click(screen.getByRole('button', { name: /Просто цікаво/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Зберегти вибір' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    const before = cache.getQueryData<LeisureWorkspace>(['leisure'])!;
+    const previous = before.records.find((r) => r.kind === 'reaction');
+    fireEvent.click(screen.getByRole('button', { name: 'Переглянути оцінені' }));
+    expect(screen.getByRole('heading', { name: title })).toBeInTheDocument();
+    expect(cache.getQueryData<LeisureWorkspace>(['leisure'])!.records).toEqual(before.records);
+    expect(screen.getByText('Попередній вибір:', { exact: false })).toHaveTextContent('Цікаво');
+    fireEvent.click(screen.getByRole('button', { name: 'Нецікаво' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Не цікавить тема' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Підтвердити й прибрати' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(
+      cache.getQueryData<LeisureWorkspace>(['leisure'])!.records.find((r) => r.kind === 'reaction'),
+    ).toMatchObject({ verdict: 'uninterested' });
+    fireEvent.click(screen.getByRole('button', { name: 'Скасувати вибір' }));
+    await waitFor(() =>
+      expect(
+        cache
+          .getQueryData<LeisureWorkspace>(['leisure'])!
+          .records.find((r) => r.kind === 'reaction'),
+      ).toMatchObject({ verdict: 'interested' }),
+    );
+    expect(previous?.kind === 'reaction' && previous.interestLevel).toBe('interested');
+    expect(
+      cache
+        .getQueryData<LeisureWorkspace>(['leisure'])!
+        .records.some((r) => r.kind === 'plan' || r.kind === 'visit'),
+    ).toBe(false);
+  });
   it('records a frequent earlier-place baseline without inventing individual visits', async () => {
     const { cache } = await setup();
     fireEvent.click(screen.getByRole('button', { name: 'Місця' }));

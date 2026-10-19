@@ -75,6 +75,7 @@ export function PlanBuilder({
   busy,
   send,
   done,
+  backToSuggestions,
 }: {
   data: LeisureWorkspace;
   initialItem?: LeisureItem;
@@ -84,6 +85,7 @@ export function PlanBuilder({
   busy: boolean;
   send: Send;
   done: () => void;
+  backToSuggestions?: () => void;
 }) {
   const base = existing ?? seed;
   const [transport, setTransport] = useState(existing?.transport ?? seed?.transport ?? 'car');
@@ -609,6 +611,11 @@ export function PlanBuilder({
           {busy ? 'Зберігаю…' : calendar ? 'Погодити й додати в календар' : 'Погодити план'}
         </Button>
       </div>
+      {backToSuggestions && (
+        <Button disabled={busy || checking} onClick={backToSuggestions}>
+          ← До варіантів виходу
+        </Button>
+      )}
       {stage > 0 && (
         <Button
           disabled={busy || checking}

@@ -345,8 +345,14 @@ export function LeisureScreen() {
     [notice, setNotice] = useState(''),
     [genre, setGenre] = useState(''),
     [deckRevision, setDeckRevision] = useState(0),
-    [undoReaction, setUndoReaction] = useState<string | null>(null);
+    [undoReaction, setUndoReaction] = useState<{
+      id: string;
+      payload: Record<string, unknown>;
+    } | null>(null),
+    [reviewMode, setReviewMode] = useState(false),
+    [reviewed, setReviewed] = useState<Set<string>>(() => new Set());
   const [planSeed, setPlanSeed] = useState<LeisurePlanSeed | null>(null);
+  const [togetherFlow, setTogetherFlow] = useState(false);
   const [restored] = useState(readPendingLeisure);
   const [recovery, setRecovery] = useState<LeisureCommand | null>(restored);
   const [dialog, setDialog] = useState<Dialog | null>(() =>
@@ -382,6 +388,12 @@ export function LeisureScreen() {
         };
       sending.current = true;
       keepPendingLeisure(pending.current.command);
+      const previous =
+        op === 'reaction' && id
+          ? cache
+              .getQueryData<LeisureWorkspace>(['leisure'])
+              ?.records.find((r) => r.kind === 'reaction' && r.itemId === id)
+          : undefined;
       try {
         const result = await change.mutateAsync({
           ...pending.current.command,
@@ -392,7 +404,32 @@ export function LeisureScreen() {
         setRecovery(null);
         setNotice(result.receipt.message);
         if (op === 'reaction') {
-          setUndoReaction(payload.verdict === 'clear' ? null : (id ?? null));
+          setUndoReaction(
+            payload.verdict === 'clear' || !id
+              ? null
+              : {
+                  id,
+                  payload:
+                    previous?.kind === 'reaction'
+                      ? {
+                          verdict: previous.verdict,
+                          interestLevel: previous.interestLevel,
+                          reasonCodes: previous.reasonCodes,
+                          reasonCode: previous.reasonCode,
+                          reason: previous.reason,
+                          revisit: previous.revisit,
+                          snoozeUntil: previous.snoozeUntil,
+                        }
+                      : { verdict: 'clear' },
+                },
+          );
+          if (id)
+            setReviewed((old) => {
+              const next = new Set(old);
+              if (payload.verdict === 'clear') next.delete(id);
+              else next.add(id);
+              return next;
+            });
           if (payload.verdict === 'clear') setDeckRevision((n) => n + 1);
         }
         haptic('success');
@@ -410,11 +447,13 @@ export function LeisureScreen() {
         sending.current = false;
       }
     },
-    [change, recovery],
+    [change, recovery, cache],
   );
   const close = () => {
     if (sending.current) return;
     setDialog(null);
+    setTogetherFlow(false);
+    setPlanSeed(null);
     if (params.has('item') || params.get('action') === 'settings') {
       params.delete('item');
       params.delete('action');
@@ -498,19 +537,28 @@ export function LeisureScreen() {
               ),
             ]),
           ]
-        : [...(data.edition?.ids ?? []), ...(data.edition?.futureIds ?? [])].filter(
-            (id) =>
-              !decided.has(id) &&
-              !decidedKeys.has(
-                itemById.get(id)?.identityKey ?? leisureIdentity(itemById.get(id) ?? {}),
-              ),
-          );
+        : reviewMode
+          ? [
+              ...new Set([
+                ...data.records.flatMap((r) =>
+                  r.kind === 'reaction' && r.verdict !== 'clear' ? [r.itemId] : [],
+                ),
+                ...data.saved,
+              ]),
+            ].filter((id) => !reviewed.has(id))
+          : [...(data.edition?.ids ?? []), ...(data.edition?.futureIds ?? [])].filter(
+              (id) =>
+                !decided.has(id) &&
+                !decidedKeys.has(
+                  itemById.get(id)?.identityKey ?? leisureIdentity(itemById.get(id) ?? {}),
+                ),
+            );
   const candidates = baseIds
     .map((id) => itemById.get(id))
     .filter((i): i is LeisureItem => !!i)
     .filter(
       (i) =>
-        (tab !== 'feed' || !hidden.has(i.id)) &&
+        (tab !== 'feed' || reviewMode || !hidden.has(i.id)) &&
         (category === 'all' ||
           (category === 'events'
             ? ['exhibition', 'festival', 'concert', 'show', 'meetup'].includes(i.category)
@@ -582,7 +630,10 @@ export function LeisureScreen() {
       <button
         type="button"
         className="leisure-together-entry"
-        onClick={() => setDialog({ type: 'together' })}
+        onClick={() => {
+          setTogetherFlow(true);
+          setDialog({ type: 'together' });
+        }}
       >
         <span className="leisure-together-entry-icon" aria-hidden="true">
           <Icon kind="route" />
@@ -647,6 +698,7 @@ export function LeisureScreen() {
             aria-pressed={tab === id}
             onClick={() => {
               setTab(id);
+              setReviewMode(false);
               setSearch('');
               setDay('');
             }}
@@ -656,6 +708,38 @@ export function LeisureScreen() {
           </button>
         ))}
       </div>
+      {tab === 'feed' &&
+        (reviewMode ||
+          data.records.some((r) => r.kind === 'reaction' && r.verdict !== 'clear') ||
+          data.saved.length > 0) && (
+          <div className={`leisure-review-mode${reviewMode ? ' is-active' : ''}`}>
+            {reviewMode && (
+              <div>
+                <strong>Повторний відбір</strong>
+                <p>Попередній вибір зберігається, доки ти не зміниш його на картці.</p>
+              </div>
+            )}
+            <button
+              type="button"
+              className="leisure-text-button"
+              disabled={busy}
+              onClick={() => {
+                setReviewMode(!reviewMode);
+                setReviewed(new Set());
+                setCategory('all');
+                setSubCategory('all');
+                setGenre('');
+                setDay('');
+                setSearch('');
+                setDeckRevision((n) => n + 1);
+                setNotice('');
+                setUndoReaction(null);
+              }}
+            >
+              {reviewMode ? 'До нових карток' : 'Переглянути оцінені'}
+            </button>
+          </div>
+        )}
       {tab !== 'feed' && (
         <p className="leisure-secondary">
           {tab === 'saved'
@@ -769,7 +853,19 @@ export function LeisureScreen() {
               type="button"
               className="leisure-text-button"
               disabled={busy}
-              onClick={() => fire(send('reaction', { verdict: 'clear' }, undoReaction))}
+              onClick={() =>
+                fire(
+                  send('reaction', undoReaction.payload, undoReaction.id).then(() => {
+                    setReviewed((old) => {
+                      const next = new Set(old);
+                      next.delete(undoReaction.id);
+                      return next;
+                    });
+                    setUndoReaction(null);
+                    setDeckRevision((n) => n + 1);
+                  }),
+                )
+              }
             >
               Скасувати вибір
             </button>
@@ -785,7 +881,20 @@ export function LeisureScreen() {
       {tab === 'feed' ? (
         <SwipeDeck
           deferLike
-          key={[category, subCategory, genre, day, search, deckRevision].join('|')}
+          key={[category, subCategory, genre, day, search, deckRevision, reviewMode].join('|')}
+          reviewing={reviewMode}
+          previousChoice={(id) => {
+            const reaction = data.records.find((r) => r.kind === 'reaction' && r.itemId === id);
+            return reaction?.kind === 'reaction'
+              ? reaction.verdict === 'interested'
+                ? reaction.interestLevel === 'priority'
+                  ? 'Насамперед'
+                  : 'Цікаво'
+                : reaction.verdict === 'later'
+                  ? 'Відкладено'
+                  : 'Нецікаво'
+              : 'Збережено';
+          }}
           items={candidates}
           newCount={
             candidates.filter(
@@ -795,7 +904,9 @@ export function LeisureScreen() {
             ).length
           }
           busy={busy}
-          reasons={(id) => data.edition?.rankings.find((r) => r.id === id)?.reasons ?? []}
+          reasons={(id) =>
+            reviewMode ? [] : (data.edition?.rankings.find((r) => r.id === id)?.reasons ?? [])
+          }
           onLike={async (item) => {
             setDialog({ type: 'interest', itemId: item.id });
             return false;
@@ -942,16 +1053,19 @@ export function LeisureScreen() {
                   back={close}
                 />
               )}
-              {dialog.type === 'together' && (
-                <TogetherPlanner
-                  data={data}
-                  busy={busy}
-                  send={send}
-                  onChoose={(seed) => {
-                    setPlanSeed(seed);
-                    setDialog({ type: 'plan' });
-                  }}
-                />
+              {(dialog.type === 'together' || (dialog.type === 'plan' && togetherFlow)) && (
+                <div hidden={dialog.type !== 'together'}>
+                  <TogetherPlanner
+                    active={dialog.type === 'together'}
+                    data={data}
+                    busy={busy}
+                    send={send}
+                    onChoose={(seed) => {
+                      setPlanSeed(seed);
+                      setDialog({ type: 'plan' });
+                    }}
+                  />
+                </div>
               )}
               {dialog.type === 'detail' && selectedItem && (
                 <ItemDetail
@@ -981,6 +1095,14 @@ export function LeisureScreen() {
                 <PlanBuilder
                   data={data}
                   seed={selectedItem || selectedPlan ? undefined : (planSeed ?? undefined)}
+                  backToSuggestions={
+                    togetherFlow
+                      ? () => {
+                          setPlanSeed(null);
+                          setDialog({ type: 'together' });
+                        }
+                      : undefined
+                  }
                   initialItem={selectedItem ?? undefined}
                   initialSessionId={dialog.sessionId}
                   existing={selectedPlan}
