@@ -5,22 +5,59 @@ import { cleanText, httpLink, leisureWeek, normalizeLeisureItem } from './model.
 import { leisureDb, leisureSettings, publishLeisureEdition } from './store.mjs';
 import { parseNuxtData } from './nuxt-data.mjs';
 import { queueLeisureDigest } from './notifications.mjs';
-import { leisureDiscoveryQueries } from './discovery-queries.mjs';
+import {
+  leisureDiscoveryQueries,
+  leisureDiscoveryBounds,
+  leisureDiscoveredCategory,
+} from './discovery-queries.mjs';
 
-const SOURCE_HOSTS = new Set([
-  'concert.ua',
-  'lviv.travel',
-  'jamfactory.ua',
-  'www.lvivart.center',
-  'planetakino.ua',
-  'www.lvivgallery.org.ua',
-  'hromadske.radio',
-]);
+import {
+  SOURCE_HOSTS,
+  decodeHtml,
+  structuredNodes,
+  sourceLinks,
+  sourceText,
+} from './source-html.mjs';
+import {
+  VENUE_LEISURE_SOURCES,
+  collectVenueSource,
+  parsePhilharmonia,
+  parseOrganEvents,
+  parseOperaCalendar,
+  leisureSourceDiagnostics,
+} from './venue-sources.mjs';
+import { collectMultiplex } from './multiplex.mjs';
+export { decodeHtml, structuredNodes, sourceLinks } from './source-html.mjs';
 export const PUBLIC_LEISURE_SOURCES = [
+  ...VENUE_LEISURE_SOURCES,
   {
     id: 'podcasts',
     name: 'Громадське радіо · Книжкова полиця',
     url: 'https://hromadske.radio/podcasts/knyzhkova-polytsia-z-tetianoiu-kurmanovoiu/feed',
+  },
+  {
+    id: 'podcast-leaders',
+    kind: 'podcast',
+    name: 'Радіо Сковорода · Лідерський подкаст',
+    url: 'https://anchor.fm/s/1015506c0/podcast/rss',
+  },
+  {
+    id: 'podcast-art',
+    kind: 'podcast',
+    name: 'Радіо Сковорода · Нотатки з мистецтва',
+    url: 'https://anchor.fm/s/c7eae5a8/podcast/rss',
+  },
+  {
+    id: 'podcast-existence',
+    kind: 'podcast',
+    name: 'Куншт · Екзистенція',
+    url: 'https://anchor.fm/s/ff03bc54/podcast/rss',
+  },
+  {
+    id: 'podcast-truth',
+    kind: 'podcast',
+    name: 'Куншт · Пост правди',
+    url: 'https://anchor.fm/s/107bbbfa4/podcast/rss',
   },
   { id: 'concert', name: 'Concert.ua', url: 'https://concert.ua/uk/catalog/lviv' },
   { id: 'lviv', name: 'Lviv.travel', url: 'https://lviv.travel/ua/events' },
@@ -28,251 +65,40 @@ export const PUBLIC_LEISURE_SOURCES = [
   {
     id: 'art',
     name: 'Муніципальний мистецький центр',
-    url: 'https://www.lvivart.center/wp-json/wp/v2/events?per_page=40',
+    url: 'https://www.lvivart.center/wp-json/wp/v2/events?per_page=40&_embed=wp:featuredmedia',
   },
   { id: 'planeta', name: 'Планета кіно', url: 'https://planetakino.ua/' },
+  {
+    id: 'multiplex',
+    name: 'Multiplex Victoria Gardens',
+    url: 'https://multiplex.ua/cinema/lviv/victoriagardens',
+  },
   {
     id: 'nearby',
     name: 'Lviv.travel · поблизу',
     url: 'https://lviv.travel/ua/around-lviv/place-attractions',
   },
 ];
-/** @param {string} value */
-export function decodeHtml(value) {
-  const codePoint = (/** @type {number} */ n) =>
-    Number.isInteger(n) && n >= 0 && n <= 0x10ffff ? String.fromCodePoint(n) : '';
-  return value
-    .replace(/&amp;/g, '&')
-    .replace(/&quot;/g, '"')
-    .replace(/&#039;|&apos;/g, "'")
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&#(\d+);/g, (_, n) => codePoint(Number(n)))
-    .replace(/&#x([0-9a-f]+);/gi, (_, n) => codePoint(parseInt(n, 16)));
-}
-/** @param {string} html */
-export function structuredNodes(html) {
-  /** @type {any[]} */ const nodes = [];
-  /** @param {any} value */ const visit = (value) => {
-    if (Array.isArray(value)) value.forEach(visit);
-    else if (value && typeof value === 'object') {
-      nodes.push(value);
-      for (const v of Object.values(value)) if (v && typeof v === 'object') visit(v);
-    }
-  };
-  for (const m of html.matchAll(
-    /<script\b[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi,
-  ))
-    try {
-      visit(JSON.parse(decodeHtml(m[1] ?? '')));
-    } catch {
-      /* A malformed block cannot discard the other events. */
-    }
-  return nodes;
-}
-/** @param {string} html @param {string} base @param {(url: URL)=>boolean} accept */
-export function sourceLinks(html, base, accept) {
-  const links = new Set();
-  for (const m of html.matchAll(/href=["']([^"']+)["']/gi))
-    try {
-      const url = new URL(decodeHtml(m[1] ?? ''), base);
-      if (url.protocol === 'https:' && SOURCE_HOSTS.has(url.hostname) && accept(url)) {
-        url.hash = '';
-        links.add(url.href);
-      }
-    } catch {
-      /* Ignore invalid references. */
-    }
-  return [...links];
-}
-/** @param {string} url @returns {Promise<string>} */
-async function sourceText(url) {
-  let target = new URL(url);
-  for (let redirects = 0; redirects < 3; redirects++) {
-    if (
-      !SOURCE_HOSTS.has(target.hostname) ||
-      target.protocol !== 'https:' ||
-      target.username ||
-      target.password
-    )
-      throw new Error('source-not-allowed');
-    const response = await fetch(target.href, {
-      redirect: 'manual',
-      signal: AbortSignal.timeout(12000),
-      headers: {
-        'user-agent': 'Svitanok/0.4 leisure personal catalogue',
-        accept: 'text/html,application/json,application/rss+xml,application/xml',
-      },
-    });
-    if (response.status >= 300 && response.status < 400) {
-      const location = response.headers.get('location');
-      if (!location) throw new Error('source-redirect');
-      target = new URL(location, target);
-      continue;
-    }
-    if (!response.ok) throw new Error(`source-http-${response.status}`);
-    if (Number(response.headers.get('content-length')) > 2_000_000)
-      throw new Error('source-too-large');
-    const reader = response.body?.getReader();
-    if (!reader) throw new Error('source-empty');
-    const chunks = [];
-    let total = 0;
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      total += value.length;
-      if (total > 2_000_000) {
-        await reader.cancel();
-        throw new Error('source-too-large');
-      }
-      chunks.push(value);
-    }
-    const bytes = new Uint8Array(total);
-    let offset = 0;
-    for (const chunk of chunks) {
-      bytes.set(chunk, offset);
-      offset += chunk.length;
-    }
-    return new TextDecoder().decode(bytes);
-  }
-  throw new Error('source-redirect-limit');
-}
-/** @param {any} event @param {string} source @param {string} url */
-export function eventCandidate(event, source, url) {
-  const type = String(event['@type'] ?? '');
-  if (!/Event/.test(type)) return null;
-  const location = event.location,
-    offers = Array.isArray(event.offers) ? event.offers[0] : event.offers;
-  const title = decodeHtml(String(event.name ?? ''));
-  if (/афіша|події цього тижня|розклад подій/i.test(title)) return null;
-  const category = /стендап|stand.?up|шоу|театр|вистав[аи]/i.test(title)
-    ? 'show'
-    : /фестивал|festival|ярмарок/i.test(title)
-      ? 'festival'
-      : /виставк|exhibition/i.test(title)
-        ? 'exhibition'
-        : /лекці|зустріч|майстер.?клас|воркшоп|дискусі/i.test(title)
-          ? 'meetup'
-          : 'concert';
-  const address =
-    typeof location?.address === 'string'
-      ? location.address
-      : [location?.address?.addressLocality, location?.address?.streetAddress]
-          .filter(Boolean)
-          .join(', ');
-  const numeric = offers?.lowPrice ?? offers?.price;
-  const status = /Cancel/i.test(event.eventStatus ?? '')
-    ? 'cancelled'
-    : /Postpone/i.test(event.eventStatus ?? '')
-      ? 'postponed'
-      : /SoldOut|OutOfStock/i.test(offers?.availability ?? '')
-        ? 'sold-out'
-        : 'available';
-  return {
-    title,
-    summary: decodeHtml(String(event.description ?? '')),
-    category,
-    venue: location?.name,
-    address,
-    startDate: event.startDate,
-    endDate: event.endDate,
-    startAt: event.startDate,
-    endAt: event.endDate,
-    priceMin: numeric == null ? null : Number(numeric),
-    priceBasis: 'person',
-    priceNote: 'Опублікована мінімальна ціна квитка; сервісні збори окремо.',
-    source,
-    sourceUrl: httpLink(event.url) ?? url,
-    status,
-    lat: location?.geo?.latitude,
-    lon: location?.geo?.longitude,
-  };
-}
-const MONTHS = ['січ', 'лют', 'бер', 'кві', 'тра', 'чер', 'лип', 'сер', 'вер', 'жов', 'лис', 'гру'];
-/** Explicit years only: publication date is never substituted for an event date.
- * @param {string} text */
-export function sourceDateRange(text) {
-  const calendar = /dates=(\d{4})(\d{2})(\d{2})T\d+\/(\d{4})(\d{2})(\d{2})T\d+/.exec(
-    decodeHtml(text),
-  );
-  if (calendar)
-    return {
-      startDate: `${calendar[1]}-${calendar[2]}-${calendar[3]}`,
-      endDate: `${calendar[4]}-${calendar[5]}-${calendar[6]}`,
-    };
-  const short = /(\d{2})\/(\d{2})\/(\d{2})\s*[―–-]\s*(\d{2})\/(\d{2})\/(\d{2})/.exec(text);
-  if (short)
-    return {
-      startDate: `20${short[3]}-${short[2]}-${short[1]}`,
-      endDate: `20${short[6]}-${short[5]}-${short[4]}`,
-    };
-  const matches = [
-    ...cleanText(text, 15000).matchAll(
-      /(\d{1,2})\s+(січ\S*|лют\S*|бер\S*|кві\S*|тра\S*|чер\S*|лип\S*|сер\S*|вер\S*|жов\S*|лис\S*|гру\S*)\s+(20\d{2})/gi,
-    ),
-  ];
-  if (matches[0]) {
-    const m = matches[0],
-      month = MONTHS.findIndex((x) => (m[2] ?? '').toLowerCase().startsWith(x)) + 1;
-    const key = `${m[3]}-${String(month).padStart(2, '0')}-${(m[1] ?? '').padStart(2, '0')}`;
-    return { startDate: key, endDate: key };
-  }
-  return null;
-}
-/** @param {string} html @param {string} url @param {string} source */
-export function articleCandidate(html, url, source) {
-  const title = decodeHtml(/<h1\b[^>]*>([\s\S]*?)<\/h1>/i.exec(html)?.[1] ?? '');
-  if (/афіша|події цього тижня|розклад подій/i.test(cleanText(title))) return null;
-  const range = sourceDateRange(html);
-  if (!title || !range) return null;
-  const body = decodeHtml(cleanText(html, 20000));
-  const exactPrice =
-    /(?:Стандартний|Вартість квитка|Ціна квитка|Квиток)\s*[—–:-]?\s*(\d+(?:[.,]\d+)?)\s*(?:грн|₴)/i.exec(
-      body,
-    );
-  const student = /(?:Для студентів|Студентам)[^.]{0,90}/i.exec(body)?.[0] ?? '';
-  const explicitFree = /Вхід (?:на виставку )?безкоштовний(?: за умови|[.,])/i.test(body);
-  const address = /Львів,\s*(?:вул\.?|вулиця|площа|пл\.)[^.;]{3,100}/i.exec(body)?.[0] ?? null;
-  return {
-    title,
-    summary: 'Відкрий джерело, щоб переглянути програму та умови відвідування.',
-    category: /виставк/i.test(title)
-      ? 'exhibition'
-      : /кіно|фільм/i.test(title)
-        ? 'cinema'
-        : /концерт|джаз/i.test(title)
-          ? 'concert'
-          : /фестивал|ярмарок/i.test(title)
-            ? 'festival'
-            : /лекці|зустріч|майстер.?клас|воркшоп|дискусі/i.test(title)
-              ? 'meetup'
-              : 'show',
-    ...range,
-    sourceUrl: url,
-    source,
-    address,
-    priceMin: explicitFree
-      ? 0
-      : exactPrice
-        ? Number((exactPrice[1] ?? '').replace(',', '.'))
-        : null,
-    free: explicitFree,
-    priceBasis: 'person',
-    studentNote: student,
-    registration: /попередн[яьої]+\s+реєстрац|попередньої\s+реєстрац/i.test(body),
-  };
-}
+export { eventCandidate, articleCandidate, sourceDateRange } from './publisher-parsers.mjs';
+import { eventCandidate, parsePublisherEvent, publisherMedia } from './publisher-parsers.mjs';
 /** Recheck only an already approved, selected public event page. Never infer cancellation from page chrome.
  * @param {any} item @param {number} nowMs */
 export async function checkLeisureSource(item, nowMs) {
-  if (['food', 'cinema'].includes(item.category)) return { item, verified: false };
-  const html = await sourceText(item.sourceUrl);
-  const nodes = structuredNodes(html)
-    .map((n) => eventCandidate(n, item.source, item.sourceUrl))
-    .filter((n) => n !== null);
-  const same = nodes.find(
-    (n) => n.title.toLocaleLowerCase('uk') === item.title.toLocaleLowerCase('uk'),
+  if (item.category === 'food' || (item.category === 'cinema' && item.source === 'Планета кіно'))
+    return { item, verified: false };
+  const host = new URL(item.sourceUrl).hostname;
+  const html = await sourceText(
+    host === 'opera.lviv.ua' ? 'https://opera.lviv.ua/afisha/month/' : item.sourceUrl,
   );
-  const article = same ?? articleCandidate(html, item.sourceUrl, item.source);
+  const article =
+    host === 'opera.lviv.ua'
+      ? parseOperaCalendar(html, item.source, nowMs).find((i) => i.sourceUrl === item.sourceUrl)
+      : host === 'philharmonia.lviv.ua'
+        ? parsePhilharmonia(html, item.sourceUrl, item.source)
+        : host === 'www.lvivconcert.house'
+          ? (parseOrganEvents(html, item.source).find((i) => i.sourceUrl === item.sourceUrl) ??
+            parsePublisherEvent(html, item.sourceUrl, item.source, item.title))
+          : parsePublisherEvent(html, item.sourceUrl, item.source, item.title);
   if (!article || article.title.toLocaleLowerCase('uk') !== item.title.toLocaleLowerCase('uk'))
     return { item, verified: false };
   const updated = await normalizeLeisureItem({ ...article, category: item.category }, nowMs);
@@ -285,35 +111,48 @@ export async function checkLeisureSource(item, nowMs) {
       sourceUrl: item.sourceUrl,
       venueId: item.venueId,
       placeId: item.placeId,
-      status: same ? updated.status : item.status,
+      status: updated.status,
       checkedAt: new Date(nowMs).toISOString(),
     },
-    verified: Boolean(same),
+    verified:
+      (!!updated.startAt ||
+        !!updated.schedule?.occurrences?.length ||
+        updated.schedule?.kind === 'recurring') &&
+      !updated.qualityWarnings.length &&
+      updated.schedule?.precision === 'exact',
   };
 }
 /** @param {any} source @param {number} nowMs @param {any} settings */
 export async function collectSource(source, nowMs, settings) {
-  if (source.id === 'podcasts')
+  if (source.id === 'podcasts' || source.kind === 'podcast')
     return settings.categories?.includes('podcast') ? collectPodcastFeed(source, nowMs) : [];
   if (source.id === 'planeta') return collectPlaneta(nowMs, settings);
-  if (source.id === 'nearby') return collectNearby(source, nowMs, settings);
+  if (source.id === 'multiplex') return collectMultiplex(nowMs, settings);
+  if (source.id === 'nearby' || source.id === 'attractions')
+    return collectNearby(source, nowMs, settings);
+  if (VENUE_LEISURE_SOURCES.some((s) => s.id === source.id))
+    return collectVenueSource(source, nowMs, settings);
   const html = await sourceText(source.url);
   /** @type {any[]} */ let raw = [];
+  let attempted;
+  let pageFailures = 0;
   const offset = Number(settings.sourceOffset ?? 0),
     limit = Number(settings.sourceBatch ?? 48);
   /** @type {number|null} */ let nextOffset;
   if (source.id === 'art') {
     const data = JSON.parse(html);
     const entries = Array.isArray(data) ? data : [];
+    attempted = entries.slice(offset, offset + limit).length;
     nextOffset = entries.length > offset + limit ? offset + limit : null;
     for (const entry of entries.slice(offset, offset + limit)) {
       const url = httpLink(entry.link);
       if (url && SOURCE_HOSTS.has(new URL(url).hostname)) {
         try {
           const leaf = await sourceText(url);
-          const item = articleCandidate(leaf, url, source.name);
+          const item = parsePublisherEvent(leaf, url, source.name);
           if (item) raw.push(item);
         } catch {
+          pageFailures++;
           /* Other entries remain usable. */
         }
       }
@@ -332,14 +171,13 @@ export async function collectSource(source, nowMs, settings) {
         c.startDate && c.startDate.slice(0, 10) >= today && c.startDate.slice(0, 10) <= horizon,
     );
     nextOffset = filteredCandidates.length > offset + limit ? offset + limit : null;
+    attempted = filteredCandidates.slice(offset, offset + limit).length;
     for (const candidate of filteredCandidates.slice(offset, offset + limit)) {
       if (new URL(candidate.sourceUrl).hostname !== 'concert.ua') continue;
       try {
         const leaf = await sourceText(candidate.sourceUrl);
         const exact =
-          structuredNodes(leaf)
-            .map((n) => eventCandidate(n, source.name, candidate.sourceUrl))
-            .find(Boolean) ?? candidate;
+          parsePublisherEvent(leaf, candidate.sourceUrl, source.name, candidate.title) ?? candidate;
         const contentStart = Math.max(0, leaf.search(/<h1\b/i)),
           contentEnd = leaf.search(/Про Concert.ua/);
         const visible = cleanText(
@@ -350,6 +188,7 @@ export async function collectSource(source, nowMs, settings) {
           exact.status = 'sold-out';
         raw.push(exact);
       } catch {
+        pageFailures++;
         /* A leaf price/status was not verified: do not claim a fresh offer. */
       }
     }
@@ -362,18 +201,14 @@ export async function collectSource(source, nowMs, settings) {
         : u.hostname === 'jamfactory.ua' && /^\/events\/[^/]+\/$/.test(u.pathname),
     );
     nextOffset = links.length > offset + limit ? offset + limit : null;
+    attempted = links.slice(offset, offset + limit).length;
     for (const url of links.slice(offset, offset + limit)) {
       try {
         const leaf = await sourceText(url);
-        const entries = structuredNodes(leaf)
-          .map((n) => eventCandidate(n, source.name, url))
-          .filter(Boolean);
-        if (entries.length) raw.push(...entries);
-        else {
-          const candidate = articleCandidate(leaf, url, source.name);
-          if (candidate) raw.push(candidate);
-        }
+        const candidate = parsePublisherEvent(leaf, url, source.name);
+        if (candidate) raw.push(candidate);
       } catch {
+        pageFailures++;
         /* Keep independent sources usable. */
       }
     }
@@ -386,7 +221,10 @@ export async function collectSource(source, nowMs, settings) {
     } catch {
       /* A malformed date only removes that candidate. */
     }
-  return Object.assign(result, { nextOffset });
+  return Object.assign(result, {
+    nextOffset,
+    diagnostics: leisureSourceDiagnostics(attempted, raw.length, result, nowMs, pageFailures),
+  });
 }
 /** Official nearby-place directory. Availability and admission are not invented.
  * @param {any} source @param {number} nowMs @param {any} [settings] */
@@ -420,7 +258,7 @@ export async function collectNearby(source, nowMs, settings = {}) {
       const item = await normalizeLeisureItem(
         {
           title,
-          category: 'trip',
+          category: source.id === 'attractions' ? 'place' : 'trip',
           venue: title,
           address: addressLink ? decodeHtml(cleanText(addressLink, 250)) : null,
           summary: meta
@@ -429,6 +267,7 @@ export async function collectNearby(source, nowMs, settings = {}) {
           source: source.name,
           sourceUrl: url,
           priceNote: 'Вхід, пальне та інші витрати уточнюються окремо.',
+          media: publisherMedia(leaf, url, source.name),
         },
         nowMs,
       );
@@ -466,19 +305,39 @@ export function publishedFilmGenres(movie) {
 export async function collectPodcastFeed(source, nowMs) {
   const xml = await sourceText(source.url),
     result = [];
+  const channel = xml.split(/<item\b/i)[0] ?? '';
+  const field = (/** @type {string} */ body, /** @type {string} */ name) =>
+    decodeHtml(
+      (
+        new RegExp('<' + name + '(?:\\s[^>]*)?>([\\s\\S]*?)</' + name + '>', 'i').exec(body)?.[1] ??
+        ''
+      ).replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1'),
+    ).trim();
+  const series = field(channel, 'title'),
+    publisher = field(channel, 'itunes:author');
+  const language = field(channel, 'language');
+  const cover = /<itunes:image\b[^>]*href=["']([^"']+)/i.exec(channel)?.[1];
+  const linkHosts = new Set([
+    'hromadske.radio',
+    'anchor.fm',
+    'podcasters.spotify.com',
+    'open.spotify.com',
+    'radioskovoroda.com',
+    'skovoroda.com',
+    'kunsht.com.ua',
+  ]);
   for (const match of [...xml.matchAll(/<item\b[^>]*>([\s\S]*?)<\/item>/gi)].slice(0, 10)) {
-    const body = match[1] ?? '';
-    const field = (/** @type {string} */ name) =>
-      decodeHtml(
-        (
-          new RegExp('<' + name + '(?:\\s[^>]*)?>([\\s\\S]*?)</' + name + '>', 'i').exec(
-            body,
-          )?.[1] ?? ''
-        ).replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1'),
-      ).trim();
-    const link = httpLink(field('link'));
-    if (!link || new URL(link).hostname !== 'hromadske.radio') continue;
-    const duration = field('itunes:duration'),
+    const body = match[1] ?? '',
+      link = httpLink(field(body, 'link'));
+    if (!link || !linkHosts.has(new URL(link).hostname)) continue;
+    const published = Date.parse(field(body, 'pubDate'));
+    if (
+      !Number.isFinite(published) ||
+      published > nowMs + 3600000 ||
+      nowMs - published > 180 * 86400000
+    )
+      continue;
+    const duration = field(body, 'itunes:duration'),
       parts = duration.split(':').map(Number);
     const seconds =
       parts.length === 3
@@ -486,18 +345,33 @@ export async function collectPodcastFeed(source, nowMs) {
         : parts.length === 2
           ? (parts[0] ?? 0) * 60 + (parts[1] ?? 0)
           : Number(duration);
+    const image = /<itunes:image\b[^>]*href=["']([^"']+)/i.exec(body)?.[1] ?? cover;
+    const explicit = field(body, 'itunes:explicit') || field(channel, 'itunes:explicit');
     const normalized = await normalizeLeisureItem(
       {
-        title: field('title'),
+        title: field(body, 'title'),
         category: 'podcast',
-        guid: field('guid') || link,
-        identity: field('guid') || link,
+        guid: field(body, 'guid') || link,
+        identity: field(body, 'guid') || link,
         source: source.name,
         sourceUrl: link,
-        summary: cleanText(field('description'), 300),
+        summary: cleanText(field(body, 'description'), 650),
         durationMinutes: seconds > 0 ? Math.ceil(seconds / 60) : null,
-        publishedAt: field('pubDate'),
+        publishedAt: new Date(published).toISOString(),
         priceNote: 'Умови прослуховування — на платформі видавця.',
+        podcast: {
+          series,
+          publisher,
+          language,
+          explicit: /^(true|yes|explicit)$/i.test(explicit)
+            ? true
+            : /^(false|no|clean)$/i.test(explicit)
+              ? false
+              : null,
+        },
+        media: image
+          ? [{ url: decodeHtml(image), kind: 'cover', credit: publisher || source.name }]
+          : [],
       },
       nowMs,
     );
@@ -509,10 +383,12 @@ export async function collectPodcastFeed(source, nowMs) {
  * @param {number} nowMs @param {any} settings */
 export async function collectPlaneta(nowMs, settings) {
   const today = kyivDateKey(new Date(nowMs)),
-    end = addDaysToDateKey(leisureWeek(nowMs), 6);
+    end = addDaysToDateKey(today, 13);
   /** @type {Map<string,any>} */ const movies = new Map();
   let verifiedPages = 0;
-  for (const selected of settings.cinemas) {
+  for (const selected of settings.cinemas.filter((/** @type {string} */ c) =>
+    ['forum-lviv', 'king-cross'].includes(c),
+  )) {
     const slug = selected === 'forum-lviv' ? 'forum-lviv' : 'king-cross-leopolis',
       cinema = selected === 'forum-lviv' ? 'Forum Lviv' : 'King Cross Leopolis',
       address = selected === 'forum-lviv' ? 'Львів, Під Дубом, 7Б' : 'Сокільники, Стрийська, 30';
@@ -542,6 +418,20 @@ export async function collectPlaneta(nowMs, settings) {
           endDate: movie.offlineRental.end,
           durationMinutes: Math.round(Number(movie.durationInSec) / 60),
           age: movie.ageRestrictions,
+          media: [...(movie.posters?.vertical ?? []), ...(movie.posters?.horizontal ?? [])]
+            .slice(0, 4)
+            .map((/** @type {any} */ p) => ({
+              url: p.url,
+              kind: 'poster',
+              credit: 'Планета кіно',
+            })),
+          film: {
+            originalTitle: movie.originalName,
+            year: Number(movie.year),
+            imdbRating: movie.rating?.imdb?.rating,
+            imdbVotes: movie.rating?.imdb?.voteCount,
+            imdbId: /tt\d{5,12}/.exec(movie.imdbUrl ?? '')?.[0],
+          },
           genre: publishedFilmGenres(movie),
           sessions: [],
           studentNote: (Array.isArray(movie.offlineRental.labels)
@@ -584,7 +474,11 @@ export async function collectPlaneta(nowMs, settings) {
     }
   }
   const result = [];
-  if (!verifiedPages) throw new Error('planeta-schedule-unavailable');
+  if (
+    !verifiedPages &&
+    settings.cinemas.some((/** @type {string} */ c) => ['forum-lviv', 'king-cross'].includes(c))
+  )
+    throw new Error('planeta-schedule-unavailable');
   for (const raw of movies.values()) {
     raw.status = raw.sessions.length ? 'available' : 'schedule-pending';
     if (raw.sessions.length) {
@@ -645,7 +539,17 @@ export async function refreshLeisureCatalog(env, nowMs = Date.now(), cinemaOnly 
       const queries = leisureDiscoveryQueries(settings, null, nowMs);
       const outputs = await Promise.allSettled(
         queries.map((entry) =>
-          placesSearch(env, { query: entry.query, city: settings.city, limit: 8 }, nowMs),
+          placesSearch(
+            env,
+            {
+              query: entry.query,
+              city: settings.city,
+              limit: 20,
+              scope: 'leisure',
+              bounds: leisureDiscoveryBounds(settings.city),
+            },
+            nowMs,
+          ),
         ),
       );
       const fresh = outputs.flatMap((r, index) =>
@@ -673,7 +577,7 @@ export async function refreshLeisureCatalog(env, nowMs = Date.now(), cinemaOnly 
             placeType: place.place_type,
             lat: place.lat,
             lon: place.lon,
-            category: place.leisureCategory,
+            category: leisureDiscoveredCategory(place, place.leisureCategory),
             source: 'Google Places',
             sourceUrl:
               place.maps_uri ??
@@ -725,7 +629,7 @@ export async function leisureCatalogTask(env, nowMs = Date.now()) {
     .bind(week)
     .first();
   const edition = row ? JSON.parse(String(row.data_json)) : null;
-  if (edition && edition.catalogVersion !== 3)
+  if (edition && edition.catalogVersion !== 4)
     return env.LEISURE_CATALOG?.getByName('owner').request('full', nowMs);
   if (edition && settings.telegram && hour >= settings.updateHour)
     await queueLeisureDigest(env, nowMs);

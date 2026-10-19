@@ -2,6 +2,8 @@ import { rankLeisureItems, leisurePreferenceProfile } from './discovery.mjs';
 import { kyivDateKey } from '../../kyiv-time.mjs';
 import { addDaysToDateKey } from '../../reminders-core.mjs';
 import { leisureIdentity, leisureReactionHidden, leisureDecisionIndex } from './identity.mjs';
+import { normalizeLeisureSchedule } from './schedule.mjs';
+import { normalizeContentFacts } from './content-facts.mjs';
 
 export const LEISURE_CATEGORIES = [
   'exhibition',
@@ -176,8 +178,11 @@ export async function normalizeLeisureItem(raw, nowMs) {
     checkedAt: new Date(nowMs).toISOString(),
     price: {
       min: knownPrice ? raw.priceMin : null,
-      max: typeof raw.priceMax === 'number' && raw.priceMax >= raw.priceMin ? raw.priceMax : null,
-      currency: 'UAH',
+      max:
+        knownPrice && Number.isFinite(raw.priceMax) && raw.priceMax >= raw.priceMin
+          ? raw.priceMax
+          : null,
+      currency: /^[A-Z]{3}$/.test(raw.priceCurrency ?? '') ? raw.priceCurrency : 'UAH',
       basis: ['person', 'pair'].includes(raw.priceBasis) ? raw.priceBasis : 'unknown',
       note: cleanText(raw.priceNote, 300),
     },
@@ -187,6 +192,8 @@ export async function normalizeLeisureItem(raw, nowMs) {
       ? raw.status
       : 'available',
     registration: raw.registration === true,
+    schedule: normalizeLeisureSchedule(raw.schedule),
+    ...normalizeContentFacts(raw, sourceUrl, cleanText(raw.source, 70)),
     hours: cleanText(raw.hours, 250),
     studentNote: cleanText(raw.studentNote, 300),
     durationMinutes: Number(raw.durationMinutes) > 0 ? Math.round(raw.durationMinutes) : null,

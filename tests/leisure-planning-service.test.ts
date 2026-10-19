@@ -10,9 +10,9 @@ const calls = vi.hoisted(() => ({
 vi.mock('../web/core/leisure/store.mjs', () => ({ readLeisureWorkspace: calls.workspace }));
 vi.mock('../web/google.mjs', () => ({ readCalendarRange: calls.calendar }));
 vi.mock('../web/core/adapters/maps.mjs', () => ({
-  placeDetails: calls.details,
   routesEta: calls.route,
 }));
+vi.mock('../web/core/leisure/google-details.mjs', () => ({ freshLeisurePlace: calls.details }));
 const now = Date.parse('2026-10-19T08:00:00Z');
 const options = {
   from: '2026-10-20',
@@ -57,12 +57,12 @@ beforeEach(() => {
   vi.clearAllMocks();
   calls.workspace.mockResolvedValue(data());
   calls.calendar.mockResolvedValue([]);
-  calls.details.mockResolvedValue({ place: { periods: [{ open: { day: 0 } }] }, source: 'cache' });
+  calls.details.mockResolvedValue({ periods: [{ open: { day: 0 } }] });
   calls.route.mockResolvedValue({ duration_min: 10, distance_m: 800 });
 });
 afterEach(() => vi.useRealTimers());
 describe('bounded leisure suggestion service', () => {
-  it('reuses a five minute result and invalidates it after a changed decision', async () => {
+  it('bounds paid lookups and keeps live Google-derived results out of persistent KV', async () => {
     const stored = new Map<string, string>();
     const env = workerEnv({
       BRIEFING: {
@@ -72,15 +72,16 @@ describe('bounded leisure suggestion service', () => {
     });
     const first = await suggestLeisure(env, options, now);
     expect(first.days).toHaveLength(3);
-    expect(calls.details.mock.calls.length).toBeLessThanOrEqual(8);
-    expect(calls.route.mock.calls.length).toBeLessThanOrEqual(10);
+    expect(calls.details.mock.calls.length).toBeLessThanOrEqual(3);
+    expect(calls.route.mock.calls.length).toBeLessThanOrEqual(4);
     expect(await suggestLeisure(env, options, now)).toEqual(first);
-    expect(calls.calendar).toHaveBeenCalledTimes(1);
+    expect(calls.calendar).toHaveBeenCalledTimes(2);
+    expect(stored.size).toBe(0);
     const changed = data();
     changed.records[0]!.revision = 2;
     calls.workspace.mockResolvedValue(changed);
     await suggestLeisure(env, options, now);
-    expect(calls.calendar).toHaveBeenCalledTimes(2);
+    expect(calls.calendar).toHaveBeenCalledTimes(3);
   });
   it('retains visible estimates when calendar, hours or route providers fail', async () => {
     calls.calendar.mockRejectedValue(new Error('Unavailable'));

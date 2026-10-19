@@ -20,16 +20,20 @@ const DESC_MAX = 40;
  * «прогноз буде ближче до дати» на кожен випадок.
  * @param {Env} env @param {{ lat: number, lon: number }} at @param {string[]} dateKeys
  * @param {string|null} zone
- * @returns {Promise<{ days: { date: string, min: number, max: number, desc: string }[], reason: 'no-key' | 'failed' | null }>}
+ * @param {{hourly?: boolean}} [options]
+ * @returns {Promise<{ days: { date: string, min: number, max: number, desc: string, pop?: number|null, wind?: number|null, sunset?: number|null }[], hourly?: {at: number,temp: number,pop: number|null,wind: number|null,desc: string}[], alerts?: {start: number,end: number,event: string}[], reason: 'no-key' | 'failed' | null }>}
  */
-export async function forecastForDates(env, at, dateKeys, zone = null) {
+export async function forecastForDates(env, at, dateKeys, zone = null, options = {}) {
   if (!env.WEATHER_API_KEY) return { days: [], reason: 'no-key' };
   const url = new URL(ONECALL);
   url.searchParams.set('lat', String(at.lat));
   url.searchParams.set('lon', String(at.lon));
   url.searchParams.set('units', 'metric');
   url.searchParams.set('lang', 'ua');
-  url.searchParams.set('exclude', 'current,minutely,hourly,alerts');
+  url.searchParams.set(
+    'exclude',
+    options.hourly ? 'current,minutely' : 'current,minutely,hourly,alerts',
+  );
   url.searchParams.set('appid', env.WEATHER_API_KEY);
   let json;
   try {
@@ -41,7 +45,7 @@ export async function forecastForDates(env, at, dateKeys, zone = null) {
     return { days: [], reason: 'failed' };
   }
   const daily = Array.isArray(json?.daily) ? json.daily : [];
-  /** @type {{ date: string, min: number, max: number, desc: string }[]} */
+  /** @type {{ date: string, min: number, max: number, desc: string, pop?: number|null, wind?: number|null, sunset?: number|null }[]} */
   const out = [];
   for (const d of daily) {
     if (!Number.isFinite(Number(d?.dt))) continue;
@@ -58,9 +62,40 @@ export async function forecastForDates(env, at, dateKeys, zone = null) {
       min: Math.round(min),
       max: Math.round(max),
       desc: String(d.weather?.[0]?.description ?? '—').slice(0, DESC_MAX),
+      ...(options.hourly
+        ? {
+            pop: Number.isFinite(d.pop) ? d.pop : null,
+            wind: Number.isFinite(d.wind_speed) ? d.wind_speed : null,
+            sunset: Number.isFinite(d.sunset) ? d.sunset * 1000 : null,
+          }
+        : {}),
     });
   }
-  return { days: out, reason: null };
+  if (!options.hourly) return { days: out, reason: null };
+  const hourly = (Array.isArray(json.hourly) ? json.hourly : [])
+    .slice(0, 48)
+    .filter(
+      (/** @type {any} */ h) =>
+        Number.isFinite(h.dt) &&
+        Number.isFinite(h.temp) &&
+        dateKeys.includes(kyivDateKey(new Date(h.dt * 1000))),
+    )
+    .map((/** @type {any} */ h) => ({
+      at: h.dt * 1000,
+      temp: Math.round(h.temp),
+      pop: Number.isFinite(h.pop) ? h.pop : null,
+      wind: Number.isFinite(h.wind_speed) ? h.wind_speed : null,
+      desc: String(h.weather?.[0]?.description ?? '—').slice(0, DESC_MAX),
+    }));
+  const alerts = (Array.isArray(json.alerts) ? json.alerts : [])
+    .slice(0, 8)
+    .filter((/** @type {any} */ a) => Number.isFinite(a.start) && Number.isFinite(a.end))
+    .map((/** @type {any} */ a) => ({
+      start: a.start * 1000,
+      end: a.end * 1000,
+      event: String(a.event ?? '').slice(0, 140),
+    }));
+  return { days: out, hourly, alerts, reason: null };
 }
 
 /** «12.09: 14…21 °, невеликий дощ». @param {{ date: string, min: number, max: number, desc: string }} f */

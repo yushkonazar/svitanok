@@ -333,6 +333,14 @@ export function rankLeisureItems(items, records, previousIds, settings, nowMs) {
         (item.address ? 2 : 0) +
         (item.startAt || item.sessions?.length ? 2 : 0) +
         (item.price?.min != null ? 1 : 0);
+      if (item.media?.length) score += 1;
+      if (item.schedule?.precision === 'exact') score += 2;
+      if (item.schedule?.precision === 'conflicting') {
+        score -= 12;
+        reasons.push('Розклад у джерелі суперечливий — потрібне уточнення');
+      }
+      if (item.schedule?.kind === 'on-request')
+        reasons.push('Потрібне попереднє узгодження з організатором');
       const exact = feedback.find((r) => r.itemId === item.id);
       if (exact?.verdict === 'interested') {
         score +=

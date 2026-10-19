@@ -30,6 +30,7 @@ const REGION = 'UA';
 /** Text Search: лише поля SKU Pro (id/displayName/formattedAddress/location/googleMapsUri). */
 export const SEARCH_FIELD_MASK =
   'places.id,places.displayName,places.formattedAddress,places.location,places.googleMapsUri,places.primaryType';
+export const DISCOVERY_FIELD_MASK = SEARCH_FIELD_MASK + ',places.businessStatus,places.types';
 /** Place Details: телефон/сайт/години - SKU Enterprise (свідомо, для обраного закладу). */
 export const DETAILS_FIELD_MASK =
   'id,displayName,formattedAddress,location,nationalPhoneNumber,internationalPhoneNumber,websiteUri,regularOpeningHours,googleMapsUri,priceRange';
@@ -46,7 +47,7 @@ const NEAR_RADIUS_M = 15_000;
 
 /**
  * @typedef {{ place_id: string, name: string, address: string | null, lat: number | null,
- *   lon: number | null, maps_uri: string | null, place_type?: string }} PlaceCandidate
+ *   lon: number | null, maps_uri: string | null, place_type?: string, business_status?: string, types?: string[] }} PlaceCandidate
  * @typedef {PlaceCandidate & { phone: string | null, site: string | null,
  *   hours: string[], price_range?: any, periods?: any[], rating_owner: number | null, is_favorite: boolean, visits: number,
  *   fetched_at: string | null }} PlaceDetails
@@ -129,6 +130,10 @@ function candidateOf(p) {
     lon: typeof p.location?.longitude === 'number' ? p.location.longitude : null,
     maps_uri: typeof p.googleMapsUri === 'string' ? p.googleMapsUri : null,
     place_type: typeof p.primaryType === 'string' ? p.primaryType : '',
+    ...(p.businessStatus ? { business_status: String(p.businessStatus) } : {}),
+    ...(Array.isArray(p.types)
+      ? { types: p.types.filter((/** @type {any} */ t) => typeof t === 'string') }
+      : {}),
   };
 }
 
@@ -181,7 +186,7 @@ export async function readPlace(env, placeId) {
  * окремого геокодування. Квота 100 % → лише кеш за назвою (S-1-14), порожній
  * кеш → QuotaExhaustedError.
  * @param {Env} env
- * @param {{ query: string, near?: { lat: number, lon: number } | null, city?: string | null, limit?: number }} input
+ * @param {{ query: string, near?: { lat: number, lon: number } | null, city?: string | null, limit?: number, scope?: 'leisure', bounds?: {south: number,west: number,north: number,east: number} }} input
  * @param {number} nowMs
  * @returns {Promise<{ places: PlaceCandidate[], source: 'api' | 'cache' }>}
  */
@@ -189,7 +194,7 @@ export async function placesSearch(env, input, nowMs) {
   const query = String(input.query ?? '').trim();
   if (!query) throw new Error('places.search: порожній query');
   const limit = Math.min(
-    PLACES_SEARCH_MAX,
+    input.scope === 'leisure' ? 20 : PLACES_SEARCH_MAX,
     Math.max(1, Math.floor(Number(input.limit) || PLACES_SEARCH_MAX)),
   );
   const key = mapsApiKey(env);
@@ -201,7 +206,23 @@ export async function placesSearch(env, input, nowMs) {
   }
   /** @type {Record<string, unknown>} */
   const body = { textQuery, pageSize: limit, languageCode: LANGUAGE, regionCode: REGION };
-  if (input.near && Number.isFinite(input.near.lat) && Number.isFinite(input.near.lon)) {
+  if (
+    input.bounds &&
+    Object.values(input.bounds).every(Number.isFinite) &&
+    input.bounds.south < input.bounds.north &&
+    input.bounds.west < input.bounds.east &&
+    Math.abs(input.bounds.south) <= 90 &&
+    Math.abs(input.bounds.north) <= 90 &&
+    Math.abs(input.bounds.west) <= 180 &&
+    Math.abs(input.bounds.east) <= 180
+  ) {
+    body.locationRestriction = {
+      rectangle: {
+        low: { latitude: input.bounds.south, longitude: input.bounds.west },
+        high: { latitude: input.bounds.north, longitude: input.bounds.east },
+      },
+    };
+  } else if (input.near && Number.isFinite(input.near.lat) && Number.isFinite(input.near.lon)) {
     body.locationBias = {
       circle: {
         center: { latitude: input.near.lat, longitude: input.near.lon },
@@ -216,7 +237,7 @@ export async function placesSearch(env, input, nowMs) {
       headers: {
         'content-type': 'application/json',
         'X-Goog-Api-Key': key,
-        'X-Goog-FieldMask': SEARCH_FIELD_MASK,
+        'X-Goog-FieldMask': input.scope === 'leisure' ? DISCOVERY_FIELD_MASK : SEARCH_FIELD_MASK,
       },
       body: JSON.stringify(body),
     },
@@ -231,7 +252,7 @@ export async function placesSearch(env, input, nowMs) {
     const p = candidateOf(raw);
     if (p && places.length < limit) places.push(p);
   }
-  if (places.length) {
+  if (places.length && input.scope !== 'leisure') {
     const iso = new Date(nowMs).toISOString();
     // Пошук оновлює лише «зовнішні» поля; телефон/сайт/години з details,
     // fetched_at деталей і оцінка/улюблене власника лишаються.

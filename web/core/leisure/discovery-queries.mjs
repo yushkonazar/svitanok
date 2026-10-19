@@ -42,7 +42,7 @@ export function leisureDiscoveryQueries(settings, profile, nowMs) {
     const preferCafe = (profile?.interests ?? []).some(
       (/** @type {any} */ p) => p.feature === 'format:cafe' && p.score > 0,
     );
-    for (let n = 0; n < 4; n++)
+    for (let n = 0; n < 3; n++)
       queries.push({ category: 'food', query: food[(week * 3 + n) % food.length] + ' ' + city });
     queries.push({
       category: 'food',
@@ -55,13 +55,21 @@ export function leisureDiscoveryQueries(settings, profile, nowMs) {
         ' ' +
         city,
     });
+    // Keep one query for active experiences, rather than letting food occupy most discovery.
   }
   if (settings.categories.includes('place')) {
     queries.push({ category: 'place', query: 'музеї ' + city });
     queries.push({
       category: 'place',
       query:
-        (week % 2 ? 'океанаріум та інтерактивні музеї' : 'галереї та цікаві атракції') + ' ' + city,
+        [
+          'океанаріум та інтерактивні музеї',
+          'галереї та цікаві атракції',
+          'ботанічні сади та оранжереї',
+          'історичні музеї',
+        ][week % 4] +
+        ' ' +
+        city,
     });
   }
   if (settings.categories.includes('trip'))
@@ -70,5 +78,41 @@ export function leisureDiscoveryQueries(settings, profile, nowMs) {
       query:
         (week % 2 ? 'парки й ботанічні сади' : 'оглядові майданчики та прогулянки') + ' ' + city,
     });
+  if (settings.categories.includes('place'))
+    queries.push({
+      category: 'place',
+      query:
+        [
+          'керамічні студії для дорослих',
+          'настільні ігри та ігрові простори',
+          'творчі майстерні для двох',
+          'скеледром та активний відпочинок',
+        ][week % 4] +
+        ' ' +
+        city,
+    });
   return queries.slice(0, 8);
+}
+
+/** Stable local bounds eliminate the requester's IP bias. Nearby trips use a separate query.
+ * @param {string} city */
+export function leisureDiscoveryBounds(city) {
+  return /^(?:львів|lviv)$/i.test(String(city).trim())
+    ? { south: 49.72, west: 23.82, north: 49.96, east: 24.2 }
+    : undefined;
+}
+/** @param {any} place @param {string} requested */
+export function leisureDiscoveredCategory(place, requested) {
+  if (place.business_status === 'CLOSED_PERMANENTLY') return null;
+  const type = place.place_type ?? '';
+  const food = /restaurant|cafe|coffee_shop|bakery|bar$|tea_house|food_court/.test(type);
+  if (requested === 'food') return food || !type ? 'food' : null;
+  if (food) return null;
+  if (
+    /lodging|hotel|school|university|hospital|grocery|supermarket|shopping_mall|car_dealer/.test(
+      type,
+    )
+  )
+    return null;
+  return requested;
 }

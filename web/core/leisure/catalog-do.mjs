@@ -10,7 +10,12 @@ import {
 } from './store.mjs';
 import { kyivHour } from '../../kyiv-time.mjs';
 import { leisureWeek, normalizeLeisureItem } from './model.mjs';
-import { leisureDiscoveryQueries } from './discovery-queries.mjs';
+import {
+  leisureDiscoveryQueries,
+  leisureDiscoveryBounds,
+  leisureDiscoveredCategory,
+} from './discovery-queries.mjs';
+import { leisureSourceCoverage, leisureSourceDiagnostics } from './venue-sources.mjs';
 import { queueLeisureDigest, queueLeisurePlanAlerts } from './notifications.mjs';
 /** Separate alarm invocations keep each batch below the Free external-request limit. */
 export class LeisureCatalogDO extends DurableObject {
@@ -51,6 +56,9 @@ export class LeisureCatalogDO extends DurableObject {
       mode === 'daily'
         ? [
             { id: 'planeta', offset: 0 },
+            ...(workspace.settings.cinemas.includes('multiplex-victoria')
+              ? [{ id: 'multiplex', offset: 0 }]
+              : []),
             ...(workspace?.items ?? [])
               .filter(
                 (i) =>
@@ -164,6 +172,8 @@ export class LeisureCatalogDO extends DurableObject {
     const source = PUBLIC_LEISURE_SOURCES.find((s) => s.id === task.id);
     let nextOffset = null,
       count = 0,
+      coverage = leisureSourceCoverage([]),
+      diagnostics = leisureSourceDiagnostics(0, 0, [], now),
       state = 'unavailable',
       errorCode = null;
     try {
@@ -171,10 +181,17 @@ export class LeisureCatalogDO extends DurableObject {
       if (task.item) {
         const result = await checkLeisureSource(task.item, now);
         items = result.item !== task.item ? [result.item] : [];
+        diagnostics = leisureSourceDiagnostics(1, items.length, items, now);
       } else if (task.id.startsWith('places-')) {
         const result = await placesSearch(
           env,
-          { query: task.query, city: settings.city, limit: 8 },
+          {
+            query: task.query,
+            city: settings.city,
+            limit: 20,
+            scope: 'leisure',
+            bounds: leisureDiscoveryBounds(settings.city),
+          },
           now,
         );
         if (result.source !== 'api') throw new Error('places-not-fresh');
@@ -184,7 +201,7 @@ export class LeisureCatalogDO extends DurableObject {
               normalizeLeisureItem(
                 {
                   title: p.name,
-                  category: task.category ?? 'food',
+                  category: leisureDiscoveredCategory(p, task.category ?? 'food'),
                   placeId: p.place_id,
                   placeType: p.place_type,
                   address: p.address,
@@ -203,6 +220,7 @@ export class LeisureCatalogDO extends DurableObject {
             ),
           )
         ).filter(Boolean);
+        diagnostics = leisureSourceDiagnostics(result.places.length, items.length, items, now);
       } else {
         const result = /** @type {any} */ (
           await collectSource(source, now, {
@@ -213,9 +231,12 @@ export class LeisureCatalogDO extends DurableObject {
         );
         items = result;
         nextOffset = result.nextOffset ?? null;
+        diagnostics =
+          result.diagnostics ?? leisureSourceDiagnostics(items.length, items.length, items, now);
       }
       await upsertLeisureItems(env, items);
       count = items.length;
+      coverage = leisureSourceCoverage(items);
       state = count ? 'ok' : 'empty';
     } catch (error) {
       const message = error instanceof Error ? error.message : '';
@@ -245,6 +266,18 @@ export class LeisureCatalogDO extends DurableObject {
       checkedAt: new Date(now).toISOString(),
       errorCode,
       count: count + (prior?.count ?? 0),
+      diagnostics: Object.fromEntries(
+        Object.entries(diagnostics).map(([key, value]) => [
+          key,
+          value + (prior?.diagnostics?.[key] ?? 0),
+        ]),
+      ),
+      coverage: Object.fromEntries(
+        Object.entries(coverage).map(([key, value]) => [
+          key,
+          value + (prior?.coverage?.[key] ?? 0),
+        ]),
+      ),
     };
     job.sources = job.sources.filter((/** @type {any} */ s) => s.id !== task.id);
     job.sources.push(status);

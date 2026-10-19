@@ -1,5 +1,6 @@
 import { kyivDateKey } from '../../kyiv-time.mjs';
 import { leisureOpenDuring } from './planning.mjs';
+import { leisureSlotMatches } from './schedule.mjs';
 /** Read-only comparison. A catalog refresh must never rewrite an approved outing.
  * @param {any} plan @param {any[]} items @param {number} nowMs */
 export function leisurePlanChanges(plan, items, nowMs) {
@@ -26,6 +27,8 @@ export function leisurePlanChanges(plan, items, nowMs) {
     if (['cancelled', 'postponed', 'sold-out'].includes(item.status))
       changes.push(title + ': ' + statuses[item.status]);
     const date = kyivDateKey(new Date(stop.startAt));
+    if (!leisureSlotMatches(item, Date.parse(stop.startAt), Date.parse(stop.endAt)))
+      changes.push(title + ': розклад на обраний час потребує підтвердження');
     if ((item.startDate && date < item.startDate) || (item.endDate && date > item.endDate))
       changes.push(title + ': змінилися дати');
     if (
@@ -70,5 +73,7 @@ export function leisureCatalogChanges(previous, current) {
     );
   if (sessions(previous) !== sessions(current)) changes.push('Оновлено сеанси');
   if (previous.address !== current.address) changes.push('Змінилася адреса');
+  if (JSON.stringify(previous.schedule ?? null) !== JSON.stringify(current.schedule ?? null))
+    changes.push('Оновлено повторення й умови розкладу');
   return changes;
 }

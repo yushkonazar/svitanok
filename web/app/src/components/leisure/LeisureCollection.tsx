@@ -7,7 +7,7 @@ import {
   type LeisureWorkspace,
   type LeisureReceipt,
 } from '../../api/leisure.ts';
-import { CategoryArtwork } from './CategoryArtwork.tsx';
+import { LeisureMedia } from './LeisureMedia.tsx';
 type Props = {
   data: LeisureWorkspace;
   items: LeisureItem[];
@@ -203,10 +203,11 @@ export function LeisureCollection({ data, items, busy, onOpen, onFeedback, send 
                 onClick={() => onOpen(item)}
                 aria-label={'Деталі: ' + item.title}
               >
-                <CategoryArtwork category={item.category} variant="thumb" />
+                <LeisureMedia item={item} variant="thumb" />
                 <span className="leisure-collection-copy">
                   <small>{categoryLabels[item.category]}</small>
                   <strong>{item.title}</strong>
+                  {!!item.media?.length && <small>{item.media[0]?.credit || item.source}</small>}
                   <span>
                     {item.venue ??
                       item.address ??

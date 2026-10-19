@@ -5,7 +5,7 @@ import {
   leisurePlaceIndex,
   leisurePreferenceProfile,
 } from './discovery.mjs';
-import { placeDetails, routesEta } from '../adapters/maps.mjs';
+import { routesEta } from '../adapters/maps.mjs';
 import { readCalendarRange } from '../../google.mjs';
 import { kyivDateKey } from '../../kyiv-time.mjs';
 import {
@@ -18,12 +18,14 @@ import {
   leisureWeek,
   leisureId,
   normalizeLeisurePlan,
-  httpLink,
   selectLeisureEdition,
 } from './model.mjs';
 import { normalizeLeisureFeedback } from './feedback.mjs';
 import { leisureIdentity } from './identity.mjs';
 import { leisureOpenDuring } from './planning.mjs';
+import { leisureSlotMatches } from './schedule.mjs';
+import { leisureFilmKeys } from './content-facts.mjs';
+import { freshLeisurePlace } from './google-details.mjs';
 import { leisurePlanChanges, leisureCatalogChanges } from './availability.mjs';
 
 /** @param {Env} env */
@@ -64,7 +66,16 @@ export async function leisureItems(env) {
   const { results } = await leisureDb(env)
     .prepare('SELECT data_json FROM leisure_items ORDER BY checked_at DESC')
     .all();
-  return results.map((r) => JSON.parse(String(r.data_json)));
+  return results.map((r) => {
+    const item = JSON.parse(String(r.data_json));
+    // Legacy Google details must never masquerade as fresh availability.
+    if (item.placeId) {
+      delete item.placeDetails;
+      item.siteUrl = null;
+      item.hours = '';
+    }
+    return item;
+  });
 }
 /** @param {Env} env @param {any[]} items */
 export async function upsertLeisureItems(env, items) {
@@ -83,9 +94,27 @@ export async function upsertLeisureItems(env, items) {
         status: r.status,
       });
   const identities = new Map(existing.map((i) => [i.identityKey ?? leisureIdentity(i), i]));
+  const films = new Map();
+  const indexFilm = (/** @type {any} */ item) => {
+    for (const key of leisureFilmKeys(item)) {
+      const prior = films.get(key);
+      films.set(
+        key,
+        prior === null || (prior && prior.id !== item.id && key.startsWith('original:'))
+          ? null
+          : item,
+      );
+    }
+  };
+  existing.forEach(indexFilm);
   const canonical = [];
   for (const incoming of items) {
     const i = { ...incoming, identityKey: leisureIdentity(incoming) };
+    if (i.placeId) {
+      delete i.placeDetails;
+      i.siteUrl = null;
+      i.hours = '';
+    }
     const prior = byId.get(i.id),
       newOccurrence =
         prior &&
@@ -95,8 +124,16 @@ export async function upsertLeisureItems(env, items) {
         Date.parse(i.startDate) - Date.parse(prior.startDate) > 180 * 86400000 &&
         prior.status !== 'postponed';
     if (newOccurrence) i.id = await leisureId('item', i.sourceUrl + '|' + i.identityKey);
+    const filmMatch = leisureFilmKeys(i)
+      .map((key) => films.get(key))
+      .find(
+        (item) =>
+          item && !(item.film?.imdbId && i.film?.imdbId && item.film.imdbId !== i.film.imdbId),
+      );
     const match =
-      identities.get(i.identityKey) ?? (!newOccurrence && prior?.sourceUrl ? prior : null);
+      identities.get(i.identityKey) ??
+      filmMatch ??
+      (!newOccurrence && prior?.sourceUrl ? prior : null);
     const row = match
       ? { id: match.id, data_json: JSON.stringify(match) }
       : i.placeId
@@ -108,24 +145,54 @@ export async function upsertLeisureItems(env, items) {
             .first()
         : null;
     const previous = row ? JSON.parse(String(row.data_json)) : null;
+    if (previous?.category === 'cinema' && Array.isArray(i.sessions) && previous.sessions?.length) {
+      const refreshedCinemas = new Set(i.sessions.map((/** @type {any} */ s) => s.cinemaSlug));
+      const retained = previous.sessions.filter(
+        (/** @type {any} */ s) =>
+          !(i.source === 'Планета кіно'
+            ? ['forum-lviv', 'king-cross-leopolis'].includes(s.cinemaSlug)
+            : i.source === 'Multiplex'
+              ? s.cinemaSlug === 'multiplex-victoria'
+              : refreshedCinemas.has(s.cinemaSlug)) &&
+          Date.parse(s.startAt) >= Date.parse(i.checkedAt),
+      );
+      i.sessions = [...i.sessions, ...retained].sort((a, b) => a.startAt.localeCompare(b.startAt));
+      if (i.sessions.length && i.status === 'schedule-pending') i.status = 'available';
+      i.startDate = i.sessions.length ? kyivDateKey(new Date(i.sessions[0].startAt)) : i.startDate;
+      i.endDate = i.sessions.length ? kyivDateKey(new Date(i.sessions.at(-1).startAt)) : i.endDate;
+      if (filmMatch && previous.source !== i.source) {
+        i.source = previous.source;
+        i.sourceUrl = previous.sourceUrl;
+        i.identityKey = previous.identityKey;
+        i.media = previous.media?.length ? previous.media : i.media;
+      }
+    }
+    if (previous?.film && i.film)
+      i.film = Object.fromEntries(
+        Object.entries(i.film).map(([key, value]) => [
+          key,
+          value == null || value === '' ? (previous.film[key] ?? value) : value,
+        ]),
+      );
     const changes = previous ? leisureCatalogChanges(previous, i) : [];
     canonical.push(
       previous
         ? {
             ...i,
             id: String(row?.id ?? i.id),
-            placeDetails: i.placeDetails ?? previous.placeDetails,
+            ...(i.placeId ? {} : { placeDetails: i.placeDetails ?? previous.placeDetails }),
             firstDiscoveredAt: previous.firstDiscoveredAt ?? previous.checkedAt,
             catalogChangedAt: changes.length ? i.checkedAt : (previous.catalogChangedAt ?? null),
             catalogChanges: changes.length ? changes : (previous.catalogChanges ?? []),
             genre: i.genre || previous.genre || '',
-            siteUrl: i.siteUrl ?? previous.siteUrl,
+            siteUrl: i.placeId ? null : (i.siteUrl ?? previous.siteUrl),
             bookingUrl: i.bookingUrl ?? previous.bookingUrl,
           }
         : { ...i, firstDiscoveredAt: i.checkedAt },
     );
     identities.set(i.identityKey ?? leisureIdentity(i), canonical.at(-1));
     byId.set(i.id, canonical.at(-1));
+    indexFilm(canonical.at(-1));
   }
   items = canonical;
   if (!items.length) return;
@@ -294,7 +361,7 @@ export async function publishLeisureEdition(env, items, sources, nowMs, cinemaOn
   );
   const edition = {
     ...selected,
-    catalogVersion: 3,
+    catalogVersion: 4,
     offeredIds: [
       ...new Set([
         ...(current?.offeredIds ?? current?.ids ?? []),
@@ -641,7 +708,7 @@ export async function executeLeisureCommand(env, raw, nowMs = Date.now()) {
     if (
       !Array.isArray(cinemas) ||
       !cinemas.length ||
-      cinemas.some((c) => !['forum-lviv', 'king-cross'].includes(c))
+      cinemas.some((c) => !['forum-lviv', 'king-cross', 'multiplex-victoria'].includes(c))
     )
       throw new LeisureError('Обери кінотеатр.');
     const students = payload.students ?? previous.students;
@@ -764,15 +831,8 @@ export async function executeLeisureCommand(env, raw, nowMs = Date.now()) {
     };
   } else if (op === 'place-check') {
     if (!selectedItem.placeId) throw new LeisureError('Для цього місця ще немає Google Place ID.');
-    const details = await placeDetails(env, selectedItem.placeId, nowMs);
-    const updated = {
-      ...selectedItem,
-      siteUrl: httpLink(details.place.site),
-      hours: details.place.hours.join(' · '),
-      placeDetails: { ...details.place, source: details.source },
-    };
-    await upsertLeisureItems(env, [updated]);
-    return { message: 'Інформацію закладу перевірено.', place: updated.placeDetails };
+    const place = await freshLeisurePlace(env, selectedItem.placeId, nowMs);
+    return { message: 'Інформацію закладу перевірено для цього перегляду.', place };
   } else if (op === 'journey-check') {
     const normalized = normalizeLeisurePlan(payload),
       items = await leisureItems(env),
@@ -938,6 +998,22 @@ export async function executeLeisureCommand(env, raw, nowMs = Date.now()) {
       throw new LeisureError('План уже змінився. Онови його перед редагуванням.', 409);
     const items = await leisureItems(env),
       lookup = new Map(items.map((i) => [i.id, i]));
+    const sourceWarnings = [];
+    let checkedPlaces = 0;
+    for (const stop of normalized.stops) {
+      const candidate = lookup.get(stop.itemId);
+      if (!candidate?.placeId) continue;
+      if (checkedPlaces < 3) {
+        checkedPlaces++;
+        try {
+          candidate.placeDetails = await freshLeisurePlace(env, candidate.placeId, nowMs);
+        } catch {
+          /* Manual confirmation remains explicit. */
+        }
+      }
+      if (leisureOpenDuring(candidate, Date.parse(stop.startAt), Date.parse(stop.endAt)) == null)
+        sourceWarnings.push(candidate.title);
+    }
     for (const stop of normalized.stops) {
       const candidate = lookup.get(stop.itemId);
       if (candidate?.category === 'podcast')
@@ -945,6 +1021,22 @@ export async function executeLeisureCommand(env, raw, nowMs = Date.now()) {
       if (!candidate || ['cancelled', 'sold-out', 'postponed'].includes(candidate.status))
         throw new LeisureError('Один із варіантів недоступний. Перевір склад плану.');
       const hours = leisureOpenDuring(candidate, Date.parse(stop.startAt), Date.parse(stop.endAt));
+      const uncertainSchedule =
+        ['inferred', 'conflicting'].includes(candidate.schedule?.precision) ||
+        ['on-request', 'unverified'].includes(candidate.schedule?.kind) ||
+        candidate.schedule?.confirmationRequired;
+      const manualConfirmation =
+        uncertainSchedule &&
+        (op === 'calendar-check' ||
+          (normalized.sourceAvailabilityConfirmed &&
+            (candidate.schedule?.kind !== 'on-request' || stop.reservation || stop.tickets)));
+      if (
+        !leisureSlotMatches(candidate, Date.parse(stop.startAt), Date.parse(stop.endAt)) &&
+        !manualConfirmation
+      )
+        throw new LeisureError(
+          'Розклад або умови участі не підтверджують цей час. Звір подію з організатором.',
+        );
       if (hours === false)
         throw new LeisureError('Заклад зачинений у вибраний час. Зміни години плану.');
       if (Date.parse(stop.startAt) < nowMs)
@@ -958,7 +1050,11 @@ export async function executeLeisureCommand(env, raw, nowMs = Date.now()) {
         throw new LeisureError(
           'Цей варіант давно не перевірявся. Онови добірку перед плануванням.',
         );
-      if (candidate.endAt && Date.parse(candidate.endAt) <= nowMs)
+      if (
+        candidate.schedule?.kind !== 'recurring' &&
+        candidate.endAt &&
+        Date.parse(candidate.endAt) <= nowMs
+      )
         throw new LeisureError('Ця подія вже завершилася. Можна записати минуле відвідування.');
       const stopDate = kyivDateKey(new Date(stop.startAt));
       if (
@@ -970,7 +1066,10 @@ export async function executeLeisureCommand(env, raw, nowMs = Date.now()) {
       stop.address = candidate.address;
       stop.venueId = candidate.venueId;
       stop.sourceUrl = candidate.sourceUrl;
-      if (candidate.source === 'Планета кіно') {
+      if (
+        candidate.category === 'cinema' &&
+        (['Планета кіно', 'Multiplex'].includes(candidate.source) || candidate.sessions?.length)
+      ) {
         const session = candidate.sessions.find((/** @type {any} */ s) => s.id === stop.sessionId);
         if (!session || Date.parse(session.startAt) !== Date.parse(stop.startAt))
           throw new LeisureError('Обери підтверджений сеанс у кінотеатрі.');
@@ -982,12 +1081,18 @@ export async function executeLeisureCommand(env, raw, nowMs = Date.now()) {
         if (expectedEnd != null && Date.parse(stop.endAt) < expectedEnd)
           throw new LeisureError('У плані потрібно врахувати повну тривалість сеансу.');
         stop.address = session.address;
-        stop.venueId = `planeta:${session.cinemaSlug}`;
+        stop.venueId = `${candidate.source === 'Multiplex' ? 'multiplex' : 'planeta'}:${session.cinemaSlug}`;
         stop.sourceUrl = session.url ?? candidate.sourceUrl;
       }
     }
     const check = await checkLeisureCalendar(env, { ...normalized, calendarId: old?.calendarId });
-    if (op === 'calendar-check') return { message: 'Календар перевірено.', ...check };
+    if (op === 'calendar-check')
+      return { message: 'Календар перевірено.', ...check, sourceWarnings };
+    if (sourceWarnings.length && !normalized.sourceAvailabilityConfirmed)
+      throw new LeisureError(
+        'Не вдалося підтвердити години всіх закладів. Перевір їх самостійно та явно погодь доступність.',
+        409,
+      );
     if (check.conflicts.length && !normalized.conflictConfirmed)
       throw new LeisureError('У календарі є накладка. Перевір її та явно погодь час.', 409);
     if (!check.available && !normalized.calendarUnavailableConfirmed)

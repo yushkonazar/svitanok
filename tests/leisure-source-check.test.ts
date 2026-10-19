@@ -65,7 +65,7 @@ describe('selected source verification', () => {
     );
     await expect(checkLeisureSource(await event(), now)).rejects.toThrow('source-http-503');
   });
-  it('preserves venue identity but replaces refreshed place metadata', async () => {
+  it('preserves venue identity while keeping Google enrichment out of the durable catalog', async () => {
     const d1 = d1FromSqlite(['0039_leisure.sql'], { atomicBatch: true });
     const DB = {
       ...d1.stub,
@@ -93,9 +93,13 @@ describe('selected source verification', () => {
     const data = await readLeisureWorkspace(env, now, true);
     expect(data.items[0]).toMatchObject({
       id: item.id,
-      placeDetails: { hours: ['new'] },
-      siteUrl: 'https://new.example/',
+      siteUrl: null,
     });
+    expect(data.items[0].placeDetails).toBeUndefined();
+    expect(
+      JSON.parse(String(d1.db.prepare('SELECT data_json FROM leisure_items').get()?.data_json))
+        .placeDetails,
+    ).toBeUndefined();
     d1.db.close();
   });
   it('prevents calendar planning after the selected source confirms cancellation', async () => {

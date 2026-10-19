@@ -1,4 +1,5 @@
-import { PlaceInfo } from './PlaceInfo.tsx';
+import { PlaceInfo, ContentInfo } from './PlaceInfo.tsx';
+import { LeisureMedia } from './LeisureMedia.tsx';
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
@@ -209,9 +210,15 @@ function route(plan: LeisurePlan) {
 function priceLabel(item: LeisureItem) {
   const value = pairPrice(item);
   if (value === 0) return 'Безплатно';
-  return value == null ? 'Ціну не підтверджено' : `Від ${money(value)} за двох`;
+  return value == null
+    ? item.placeId && item.category === 'food'
+      ? 'Точна сума залежить від замовлення'
+      : 'Ціну не підтверджено'
+    : `Від ${money(value)} за двох`;
 }
 function dateLabel(item: LeisureItem) {
+  if (item.schedule?.kind === 'on-request') return 'Час за попереднім узгодженням';
+  if (item.schedule?.precision === 'conflicting') return 'Дату потрібно уточнити';
   if (item.category === 'podcast')
     return item.publishedAt
       ? 'Опубліковано ' + leisureDate(item.publishedAt)
@@ -1011,20 +1018,49 @@ export function LeisureScreen() {
                 <>
                   <h2>Джерела й актуальність</h2>
                   <p className="leisure-secondary">
-                    Недоступне джерело не означає, що події скасовано. Відкриття картки не викликає
-                    модель.
+                    Недоступне джерело не означає, що події скасовано. Фото й дані Google
+                    оновлюються під час перегляду; ціни та години залежать від закладу.
                   </p>
                   {data.edition?.sources.map((s) => (
                     <div key={s.id} className="leisure-source">
                       <strong>{s.name}</strong>
                       <p className="leisure-secondary">
                         {s.status === 'ok'
-                          ? `${s.count} підтверджених записів`
+                          ? `${s.count} записів із джерела`
                           : s.status === 'empty'
                             ? 'Не знайдено придатних записів'
                             : 'Не вдалося перевірити'}{' '}
                         · {leisureDate(s.checkedAt)}
                       </p>
+                      {s.coverage && s.count > 0 && (
+                        <div className="leisure-source-coverage">
+                          <span>Фото: {s.coverage.withMedia}</span>
+                          <span>Ціна: {s.coverage.withPrice}</span>
+                          <span>Розклад: {s.coverage.withTime}</span>
+                          {s.coverage.needsCheck > 0 && (
+                            <span>Потребують уточнення: {s.coverage.needsCheck}</span>
+                          )}
+                        </div>
+                      )}
+                      {s.errorCode === 'source-http-403' && (
+                        <p className="leisure-secondary">
+                          Сайт тимчасово обмежив доступ. Зберігаємо попередні дані й перевіряємо
+                          незалежні афіші.
+                        </p>
+                      )}
+                      {s.diagnostics &&
+                        s.diagnostics.unparsed +
+                          s.diagnostics.invalid +
+                          s.diagnostics.pageFailures >
+                          0 && (
+                          <p className="leisure-secondary">
+                            Потребують повторної перевірки:{' '}
+                            {s.diagnostics.unparsed +
+                              s.diagnostics.invalid +
+                              s.diagnostics.pageFailures}{' '}
+                            із {s.diagnostics.attempted} переглянутих анонсів.
+                          </p>
+                        )}
                       <button
                         type="button"
                         className="leisure-text-button"
@@ -1078,16 +1114,26 @@ function ItemDetail({
     [date, setDate] = useState('');
   const sessions = item.sessions.filter(
     (s) =>
-      s.cinemaSlug === (cinema === 'forum-lviv' ? 'forum-lviv' : 'king-cross-leopolis') &&
+      s.cinemaSlug ===
+        (cinema === 'forum-lviv'
+          ? 'forum-lviv'
+          : cinema === 'multiplex-victoria'
+            ? cinema
+            : 'king-cross-leopolis') &&
       (!date || toKyivInput(s.startAt).slice(0, 10) === date) &&
       Date.parse(s.startAt) > Date.parse(data.generatedAt),
   );
-  const branch =
-    item.source === 'Планета кіно'
-      ? item.sessions.find(
-          (s) => s.cinemaSlug === (cinema === 'forum-lviv' ? 'forum-lviv' : 'king-cross-leopolis'),
-        )
-      : null;
+  const branch = item.sessions.length
+    ? item.sessions.find(
+        (s) =>
+          s.cinemaSlug ===
+          (cinema === 'forum-lviv'
+            ? 'forum-lviv'
+            : cinema === 'multiplex-victoria'
+              ? cinema
+              : 'king-cross-leopolis'),
+      )
+    : null;
   if (rejecting)
     return (
       <LeisureFeedback
@@ -1098,12 +1144,10 @@ function ItemDetail({
         back={() => setRejecting(false)}
       />
     );
-  const location = branch
-    ? { ...item, address: branch.address, venue: `Планета кіно · ${branch.cinema}` }
-    : item;
+  const location = branch ? { ...item, address: branch.address, venue: branch.cinema } : item;
   return (
     <>
-      <CategoryArtwork category={item.category} variant="detail" eager />
+      <LeisureMedia item={item} variant="detail" />
       <div className="leisure-caption">{categoryLabels[item.category]}</div>
       <h2 className="leisure-detail-title">{item.title}</h2>
       <p>{item.summary}</p>
@@ -1140,8 +1184,11 @@ function ItemDetail({
           <strong>{priceLabel(item)}</strong>
         </p>
         {item.price.note && <p className="leisure-secondary">{item.price.note}</p>}
-        {item.hours && <p className="leisure-secondary">{item.hours}</p>}
+        {item.hours && !(item.placeId && inTelegram()) && (
+          <p className="leisure-secondary">{item.hours}</p>
+        )}
         <PlaceInfo item={item} now={data.generatedAt} />
+        <ContentInfo item={item} />
         {item.registration && <p>Потрібна попередня реєстрація.</p>}
         {item.studentNote && <p className="leisure-secondary">{item.studentNote}</p>}
         {item.genre && <p className="leisure-secondary">Жанр: {item.genre}</p>}
@@ -1174,16 +1221,21 @@ function ItemDetail({
           </p>
         )}
         {item.durationMinutes && (
-          <p className="leisure-secondary">Тривалість фільму: {item.durationMinutes} хв</p>
+          <p className="leisure-secondary">Тривалість: {item.durationMinutes} хв</p>
         )}
       </GlassCard>
-      {item.category === 'cinema' && item.source === 'Планета кіно' ? (
+      {item.category === 'cinema' &&
+      (item.sessions.length > 0 || ['Планета кіно', 'Multiplex'].includes(item.source)) ? (
         <>
           <h3>Обери сеанс</h3>
           <div className="leisure-pills">
             {data.settings.cinemas.map((c) => (
               <Pill key={c} active={cinema === c} onClick={() => setCinema(c)}>
-                {c === 'forum-lviv' ? 'Forum Lviv' : 'King Cross'}
+                {c === 'forum-lviv'
+                  ? 'Forum Lviv'
+                  : c === 'multiplex-victoria'
+                    ? 'Multiplex'
+                    : 'King Cross'}
               </Pill>
             ))}
           </div>
@@ -1212,13 +1264,13 @@ function ItemDetail({
             ))
           ) : (
             <p className="leisure-notice">
-              На цей вибір сеансів не підтверджено. Новий розклад кінотижня публікується в понеділок
-              увечері; уже доступні покази залишаються в афіші.
+              На цей вибір сеансів не підтверджено. Кінотеатр доповнює розклад поступово; перевір
+              доступні покази у джерелі.
             </p>
           )}
           <p className="leisure-secondary">
-            Купівля та вибір місць — на сторінці фільму в Планеті кіно. Звір дату й час сеансу;
-            студентська ціна залежить від умов показу.
+            Купівля та вибір місць — на сторінці кінотеатру. Звір дату й час сеансу; студентська
+            ціна залежить від умов показу.
           </p>
         </>
       ) : item.category === 'podcast' ? (
@@ -1274,11 +1326,7 @@ function ItemDetail({
           </Button>
         </div>
       </details>
-      {item.placeId && (
-        <Button disabled={busy} onClick={() => fire(send('place-check', {}, item.id))}>
-          Перевірити заклад і бронювання
-        </Button>
-      )}
+
       {item.bookingUrl && <Button onClick={() => openLink(item.bookingUrl!)}>Забронювати</Button>}
       {item.siteUrl && !item.bookingUrl && (
         <Button onClick={() => openLink(item.siteUrl!)}>Сайт закладу</Button>
@@ -1614,11 +1662,12 @@ function LeisureSettings({
         />
         Повідомляти про важливі зміни погоджених планів
       </label>
-      <h3>Планета кіно</h3>
+      <h3>Кінотеатри</h3>
       <div className="leisure-pills">
         {[
           ['forum-lviv', 'Forum Lviv'],
           ['king-cross', 'King Cross'],
+          ['multiplex-victoria', 'Multiplex Victoria Gardens'],
         ].map(([id, label]) => (
           <Pill
             key={id}

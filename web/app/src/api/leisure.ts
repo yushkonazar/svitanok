@@ -16,6 +16,22 @@ const sessionSchema = z.object({
   price: z.number().nullable(),
   url: z.string().nullable(),
 });
+const mediaSchema = z.object({
+  url: z.string(),
+  kind: z.enum(['photo', 'poster', 'cover']),
+  credit: z.string(),
+  alt: z.string().optional(),
+});
+const filmSchema = z.object({
+  originalTitle: z.string(),
+  year: z.number().nullable(),
+  countries: z.string(),
+  language: z.string(),
+  subtitles: z.string(),
+  imdbRating: z.number().nullable(),
+  imdbVotes: z.number().nullable(),
+  imdbId: z.string().nullable(),
+});
 export const leisureItemSchema = z.object({
   id: z.string(),
   venueId: z.string().nullable(),
@@ -70,6 +86,55 @@ export const leisureItemSchema = z.object({
   catalogChanges: z.array(z.string()).optional(),
   medium: z.enum(['online', 'physical']).optional(),
   publishedAt: z.string().nullable().optional(),
+  media: z.array(mediaSchema).optional(),
+  schedule: z
+    .object({
+      kind: z.enum(['once', 'recurring', 'visit', 'on-request', 'unverified']),
+      precision: z.enum(['exact', 'date', 'inferred', 'conflicting']),
+      timeMode: z.enum(['window', 'fixed']).optional(),
+      weekdays: z.array(z.number()),
+      startTime: z.string().nullable(),
+      endTime: z.string().nullable(),
+      validFrom: z.string().nullable(),
+      validThrough: z.string().nullable(),
+      excludedDates: z.array(z.string()),
+      occurrences: z.array(z.object({ startAt: z.string(), endAt: z.string().nullable() })),
+      confirmationRequired: z.boolean(),
+      minParticipants: z.number().nullable(),
+    })
+    .nullable()
+    .optional(),
+  evidence: z
+    .array(
+      z.object({
+        field: z.string(),
+        status: z.enum(['published', 'inferred', 'conflicting', 'unknown']),
+        note: z.string(),
+      }),
+    )
+    .optional(),
+  qualityWarnings: z.array(z.string()).optional(),
+  priceOffers: z
+    .array(
+      z.object({
+        min: z.number(),
+        max: z.number().nullable(),
+        currency: z.string(),
+        eligibility: z.string(),
+        note: z.string(),
+      }),
+    )
+    .optional(),
+  film: filmSchema.nullable().optional(),
+  podcast: z
+    .object({
+      series: z.string(),
+      publisher: z.string(),
+      language: z.string(),
+      explicit: z.boolean().nullable(),
+    })
+    .nullable()
+    .optional(),
 });
 const stopSchema = z.object({
   itemId: z.string(),
@@ -259,6 +324,27 @@ export const leisureWorkspaceSchema = z.object({
           status: z.string(),
           checkedAt: z.string(),
           count: z.number(),
+          errorCode: z.string().nullable().optional(),
+          coverage: z
+            .object({
+              withMedia: z.number(),
+              withPrice: z.number(),
+              withTime: z.number(),
+              needsCheck: z.number(),
+            })
+            .optional(),
+          diagnostics: z
+            .object({
+              attempted: z.number(),
+              parsed: z.number(),
+              accepted: z.number(),
+              upcoming: z.number(),
+              past: z.number(),
+              invalid: z.number(),
+              unparsed: z.number(),
+              pageFailures: z.number(),
+            })
+            .optional(),
         }),
       ),
       cinemaUpdatedAt: z.string().nullable(),
@@ -285,6 +371,7 @@ export const leisureWorkspaceSchema = z.object({
 });
 const receiptSchema = z.object({
   message: z.string(),
+  sourceWarnings: z.array(z.string()).optional(),
   verified: z.boolean().optional(),
   revision: z.number().optional(),
   id: z.string().optional(),
@@ -363,6 +450,7 @@ const suggestionSchema = z.object({
   warnings: z.array(z.string()),
   weather: z.array(z.string()).optional(),
   knownCostMinor: z.number(),
+  costRange: z.object({ min: z.number(), max: z.number().nullable() }).optional(),
   unknownPrices: z.number(),
   transport: z.enum(['walk', 'car', 'transit']),
   confidence: z.enum(['needs-check', 'checked']),
@@ -657,7 +745,7 @@ export function fromKyivInput(value: string) {
 }
 export function pairPrice(item: LeisureItem) {
   const min = item.price.min;
-  if (min == null || item.price.basis === 'unknown') return null;
+  if (min == null || item.price.basis === 'unknown' || item.price.currency !== 'UAH') return null;
   return (Math.round(min * 100) * (item.price.basis === 'person' ? 2 : 1)) / 100;
 }
 export function money(value: number) {

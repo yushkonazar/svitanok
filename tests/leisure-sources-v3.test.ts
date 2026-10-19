@@ -68,7 +68,7 @@ describe('verified discovery metadata', () => {
       b = leisureDiscoveryQueries(DEFAULT_LEISURE_SETTINGS, {}, now + 7 * 86400000);
     expect(a).toHaveLength(8);
     expect(a).not.toEqual(b);
-    expect(a.filter((q) => q.category === 'place')).toHaveLength(2);
+    expect(a.filter((q) => q.category === 'place')).toHaveLength(3);
     expect(leisureFeatures({ category: 'food', placeType: 'italian_restaurant' })).toContain(
       'cuisine:italian',
     );
