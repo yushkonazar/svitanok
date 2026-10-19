@@ -1,5 +1,4 @@
 import { PlaceInfo } from './PlaceInfo.tsx';
-import { leisureOpenDuring } from '../../../../core/leisure/planning.mjs';
 import { useRef, useState, type ButtonHTMLAttributes, type ReactNode } from 'react';
 import { GlassCard } from '../ui/primitives.tsx';
 import { openLink } from '../../telegram.ts';
@@ -300,17 +299,7 @@ export function PlanBuilder({
                     : 'Переглянути джерело'}
               </Button>
             )}
-            {lookup.get(s.itemId)?.placeId && (
-              <Button
-                disabled={busy || checking}
-                onClick={() =>
-                  void send('place-check', {}, s.itemId).catch((e) => setError(e.message))
-                }
-              >
-                Перевірити графік і сайт
-              </Button>
-            )}
-            {lookup.get(s.itemId)?.hours && (
+            {lookup.get(s.itemId)?.hours && !lookup.get(s.itemId)?.placeId && (
               <p className="leisure-secondary">{lookup.get(s.itemId)?.hours}</p>
             )}
             {lookup.get(s.itemId) && (
@@ -493,7 +482,7 @@ export function PlanBuilder({
                 for (const stop of stops) {
                   const item = lookup.get(stop.itemId);
                   const operation = item?.placeId
-                    ? 'place-check'
+                    ? null
                     : item && !['cinema', 'food'].includes(item.category)
                       ? 'source-check'
                       : null;
@@ -502,21 +491,13 @@ export function PlanBuilder({
                       const verification = await send(operation, {}, stop.itemId);
                       if (operation === 'source-check' && verification.verified === false)
                         warnings.push(item?.title ?? 'Варіант');
-                      if (
-                        operation === 'place-check' &&
-                        leisureOpenDuring(
-                          { ...item, placeDetails: verification.place },
-                          Date.parse(fromKyivInput(stop.start)),
-                          Date.parse(fromKyivInput(stop.end)),
-                        ) == null
-                      )
-                        warnings.push(item?.title ?? 'Варіант');
                     } catch {
                       warnings.push(item?.title ?? 'Варіант');
                     }
                 }
                 const route = stops.length > 1 ? await send('journey-check', prepared) : null;
                 const result = await send('calendar-check', prepared, existing?.id);
+                warnings.push(...(result.sourceWarnings ?? []));
                 if (version === checkVersion.current) {
                   setSourceWarnings(warnings);
                   setAllowSources(false);

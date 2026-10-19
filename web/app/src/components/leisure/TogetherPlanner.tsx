@@ -304,11 +304,13 @@ export function TogetherPlanner({ data, busy, onChoose, send }: Props) {
             <div className="leisure-scenario-cost">
               <span>Для двох</span>
               <strong>
-                {plan.knownCostMinor > 0
-                  ? 'Від ' + money(plan.knownCostMinor / 100)
-                  : plan.unknownPrices
-                    ? 'Сума уточнюється'
-                    : 'Вхід безплатний'}
+                {plan.costRange?.max != null && plan.costRange.max > plan.costRange.min
+                  ? money(plan.costRange.min / 100) + '–' + money(plan.costRange.max / 100)
+                  : plan.knownCostMinor > 0
+                    ? 'Від ' + money(plan.knownCostMinor / 100)
+                    : plan.unknownPrices
+                      ? 'Сума уточнюється'
+                      : 'Вхід безплатний'}
               </strong>
               {plan.unknownPrices > 0 && (
                 <small>Без підтвердженої ціни: {plan.unknownPrices}</small>

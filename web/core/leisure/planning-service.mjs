@@ -1,8 +1,9 @@
 import { buildLeisureSuggestions, normalizeLeisureWindow, leisureLegKey } from './planning.mjs';
 import { readLeisureWorkspace } from './store.mjs';
-import { leisureId, LeisureError } from './model.mjs';
+import { LeisureError } from './model.mjs';
 import { readCalendarRange } from '../../google.mjs';
-import { placeDetails, routesEta } from '../adapters/maps.mjs';
+import { routesEta } from '../adapters/maps.mjs';
+import { freshLeisurePlace } from './google-details.mjs';
 import { forecastForDates } from '../adapters/weather.mjs';
 
 /** Bounded, cached read operation. Does not create a plan, calendar event or notification.
@@ -15,15 +16,7 @@ export async function suggestLeisure(env, input, nowMs = Date.now()) {
     throw new LeisureError(error instanceof Error ? error.message : 'Перевір дату й час.');
   }
   const workspace = await readLeisureWorkspace(env, nowMs, true);
-  const version = JSON.stringify([
-    input,
-    workspace.items.map((i) => [i.id, i.checkedAt]),
-    workspace.records.map((r) => [r.id, r.revision]),
-    Math.floor(nowMs / 300000),
-  ]);
-  const cacheKey = 'leisure:suggestions:' + (await leisureId('window', version));
-  const cached = await env.BRIEFING?.get(cacheKey, 'json').catch(() => null);
-  if (cached) return cached;
+  // Live Google details and derived prices stay in this request, never in a KV response cache.
   const deadline = Date.now() + 20000;
   const events = await readCalendarRange(env, window.from, window.to).catch(() => null);
   const facts = {
@@ -45,7 +38,11 @@ export async function suggestLeisure(env, input, nowMs = Date.now()) {
     ),
   );
   const outdoor = workspace.items.filter(
-    (i) => chosen.has(i.id) && i.category === 'trip' && i.lat != null && i.lon != null,
+    (i) =>
+      chosen.has(i.id) &&
+      (i.category === 'trip' || /park|garden|hiking|campground/.test(i.placeType ?? '')) &&
+      i.lat != null &&
+      i.lon != null,
   );
   for (const item of outdoor.slice(0, 1))
     if (Date.now() < deadline) {
@@ -55,17 +52,16 @@ export async function suggestLeisure(env, input, nowMs = Date.now()) {
           (/** @type {string} */ date) => Date.parse(date + 'T12:00Z') <= nowMs + 8 * 86400000,
         );
       if (!dates.length) continue;
-      const forecast = await forecastForDates(env, { lat: item.lat, lon: item.lon }, dates).catch(
-        () => ({ days: [] }),
-      );
-      facts.forecasts.push({ at: { lat: item.lat, lon: item.lon }, days: forecast.days });
+      const forecast = await forecastForDates(env, { lat: item.lat, lon: item.lon }, dates, null, {
+        hourly: true,
+      }).catch(() => ({ days: [] }));
+      facts.forecasts.push({ at: { lat: item.lat, lon: item.lon }, ...forecast });
     }
-  // Details are quota-aware and reuse the adapter's cache. Never scan the whole catalog.
-  for (const item of workspace.items.filter((i) => chosen.has(i.id) && i.placeId).slice(0, 8)) {
+  // Keep the complete request below the Worker's subrequest ceiling, including SQL accounting.
+  for (const item of workspace.items.filter((i) => chosen.has(i.id) && i.placeId).slice(0, 3)) {
     if (Date.now() >= deadline) break;
     try {
-      const detail = await placeDetails(env, item.placeId, nowMs);
-      item.placeDetails = { ...detail.place, source: detail.source };
+      item.placeDetails = await freshLeisurePlace(env, item.placeId, nowMs);
     } catch {
       /* Missing hours remain visibly unverified. */
     }
@@ -78,7 +74,7 @@ export async function suggestLeisure(env, input, nowMs = Date.now()) {
         const a = plan.stops[n - 1],
           b = plan.stops[n],
           key = leisureLegKey(a, b);
-        if (facts.routes[key] || calls >= 10 || Date.now() >= deadline || !a.address || !b.address)
+        if (facts.routes[key] || calls >= 4 || Date.now() >= deadline || !a.address || !b.address)
           continue;
         calls++;
         try {
@@ -107,7 +103,7 @@ export async function suggestLeisure(env, input, nowMs = Date.now()) {
         for (const direction of ['outbound', 'return']) {
           const s = direction === 'outbound' ? plan.stops[0] : plan.stops.at(-1),
             key = day.date + '|' + s.itemId + '|' + direction;
-          if (facts.boundaryRoutes[key] || calls >= 10 || Date.now() >= deadline || !s.address)
+          if (facts.boundaryRoutes[key] || calls >= 4 || Date.now() >= deadline || !s.address)
             continue;
           calls++;
           try {
@@ -134,6 +130,5 @@ export async function suggestLeisure(env, input, nowMs = Date.now()) {
           }
         }
   result = buildLeisureSuggestions(workspace, input, nowMs, facts);
-  await env.BRIEFING?.put(cacheKey, JSON.stringify(result), { expirationTtl: 300 }).catch(() => {});
   return result;
 }

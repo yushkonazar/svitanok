@@ -18,6 +18,7 @@ import { sendSystemAlert } from '../tg/outbox.mjs';
 export const QUOTA_LIMITS = {
   places_text: 5_000,
   places_details: 1_000,
+  places_photos: 1_000,
   routes: 10_000,
   geocoding: 10_000,
   gemini_usd: 10,
@@ -109,6 +110,7 @@ export class QuotaExhaustedError extends Error {
 const QUOTA_USER_TEXT = /** @type {Record<string, string>} */ ({
   places_text: 'Довідник закладів тимчасово недоступний',
   places_details: 'Довідник закладів тимчасово недоступний',
+  places_photos: 'Ліміт фотографій закладів вичерпано',
   routes: 'Маршрути тимчасово недоступні',
   geocoding: 'Геокодування тимчасово недоступне',
 });
@@ -135,6 +137,22 @@ export async function assertQuota(env, key, nowMs = Date.now()) {
 /** Один виклик платного API (+1 до лічильника, алерти 80/100 %). @param {Env} env @param {string} key @param {number} [nowMs] */
 export async function countQuota(env, key, nowMs = Date.now()) {
   await bumpQuota(env, { key, amount: 1, limit: quotaLimitOf(key), nowMs });
+}
+
+/** Reserve before a new on-demand paid attempt. Concurrent requests cannot exceed the ceiling.
+ * Failed attempts still consume the application's allowance. No provider content is stored.
+ * @param {Env} env @param {string} key @param {number} [nowMs] */
+export async function reserveQuota(env, key, nowMs = Date.now()) {
+  if (!env.DB) throw new Error('quota database unavailable');
+  const limit = quotaLimitOf(key);
+  const row = await env.DB.prepare(
+    `INSERT INTO quota_counters(key,period,value,limit_value,updated_at) VALUES(?,?,1,?,?)
+     ON CONFLICT(key,period) DO UPDATE SET value=quota_counters.value+1,limit_value=excluded.limit_value,updated_at=excluded.updated_at
+     WHERE quota_counters.value < excluded.limit_value RETURNING value`,
+  )
+    .bind(key, quotaPeriod(nowMs), limit, new Date(nowMs).toISOString())
+    .first();
+  if (!row) throw new QuotaExhaustedError(key, limit);
 }
 
 /**

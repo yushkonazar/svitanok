@@ -6,7 +6,7 @@ import {
   type LeisureVisit,
   type LeisureWorkspace,
 } from '../../api/leisure.ts';
-import { CategoryArtwork } from './CategoryArtwork.tsx';
+import { LeisureMedia } from './LeisureMedia.tsx';
 export function LeisureHistory({
   data,
   items,
@@ -59,10 +59,13 @@ export function LeisureHistory({
         return (
           <article key={item.id} className="leisure-history-entry">
             <div className="leisure-history-heading">
-              <CategoryArtwork category={item.category} variant="thumb" />
+              <LeisureMedia item={item} variant="thumb" />
               <div>
                 <div className="leisure-caption">{categoryLabels[item.category]}</div>
                 <h3>{item.title}</h3>
+                {!!item.media?.length && (
+                  <p className="leisure-secondary">{item.media[0]?.credit || item.source}</p>
+                )}
                 <p className="leisure-secondary">
                   {known?.frequent ? 'Бували багато разів · ' : ''}
                   {item.category === 'cinema'

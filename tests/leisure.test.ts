@@ -939,7 +939,7 @@ describe('public source parsing', () => {
     );
     const movies = await collectPlaneta(NOW, { cinemas: ['forum-lviv', 'king-cross'] });
     expect(movies).toHaveLength(1);
-    expect(movies[0]!.sessions).toHaveLength(14);
+    expect(movies[0]!.sessions).toHaveLength(28);
     expect(new Set(movies[0]!.sessions.map((s: { cinemaSlug: string }) => s.cinemaSlug))).toEqual(
       new Set(['forum-lviv', 'king-cross-leopolis']),
     );

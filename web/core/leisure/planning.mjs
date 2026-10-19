@@ -1,23 +1,17 @@
+import {
+  leisureLocalInstant,
+  leisureAvailableOn,
+  leisureOccurrencesOn,
+  leisureSlotMatches,
+} from './schedule.mjs';
+import { leisureCostRange } from './content-facts.mjs';
+export { leisureLocalInstant } from './schedule.mjs';
 import { kyivDateKey, kyivClock } from '../../kyiv-time.mjs';
 import { addDaysToDateKey } from '../../reminders-core.mjs';
 import { leisureIdentity, leisureReactionHidden, leisureDecisionIndex } from './identity.mjs';
 
 const MINUTE = 60000,
   DAY = 86400000;
-/** @param {string} date @param {string} clock */
-export function leisureLocalInstant(date, clock) {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(clock))
-    throw new Error('Укажи коректну дату й час.');
-  const nominal = Date.parse(date + 'T' + clock + ':00Z');
-  if (!Number.isFinite(nominal) || new Date(nominal).toISOString().slice(0, 10) !== date)
-    throw new Error('Перевір дату.');
-  const observedDate = kyivDateKey(new Date(nominal)),
-    observedClock = kyivClock(nominal);
-  const result = nominal - (Date.parse(observedDate + 'T' + observedClock + ':00Z') - nominal);
-  if (kyivDateKey(new Date(result)) !== date || kyivClock(result) !== clock)
-    throw new Error('Цього місцевого часу не існує через переведення годинника.');
-  return result;
-}
 /** @param {any} input @param {number} nowMs */
 export function normalizeLeisureWindow(input, nowMs) {
   if (!input || typeof input !== 'object') throw new Error('Обери дату й час для виходу.');
@@ -69,10 +63,36 @@ export function normalizeLeisureWindow(input, nowMs) {
 }
 /** @param {any} item @param {number} startMs @param {number} endMs @returns {boolean|null} */
 export function leisureOpenDuring(item, startMs, endMs) {
+  if (['CLOSED_TEMPORARILY', 'CLOSED_PERMANENTLY'].includes(item.placeDetails?.businessStatus))
+    return false;
+  const date = kyivDateKey(new Date(startMs));
+  const current = item.placeDetails?.currentPeriods;
+  if (Array.isArray(current) && date <= item.placeDetails?.currentHoursThrough) {
+    const dated = current.filter((p) => p.open?.date && p.close?.date);
+    if (dated.length) {
+      return dated.some((p) => {
+        const key = (/** @type {any} */ d) =>
+          `${d.year}-${String(d.month).padStart(2, '0')}-${String(d.day).padStart(2, '0')}`;
+        try {
+          const a = leisureLocalInstant(
+              key(p.open.date),
+              `${String(p.open.hour ?? 0).padStart(2, '0')}:${String(p.open.minute ?? 0).padStart(2, '0')}`,
+            ),
+            b = leisureLocalInstant(
+              key(p.close.date),
+              `${String(p.close.hour ?? 0).padStart(2, '0')}:${String(p.close.minute ?? 0).padStart(2, '0')}`,
+            );
+          // Truncated current periods cannot prove a visit outside their known boundary.
+          return startMs >= a && endMs <= b;
+        } catch {
+          return false;
+        }
+      });
+    }
+  }
   const periods = item.placeDetails?.periods ?? item.openingPeriods;
   if (!Array.isArray(periods) || !periods.length) return null;
-  const date = kyivDateKey(new Date(startMs)),
-    weekday = new Date(date + 'T12:00Z').getUTCDay();
+  const weekday = new Date(date + 'T12:00Z').getUTCDay();
   const start =
     weekday * 1440 +
     Number(kyivClock(startMs).slice(0, 2)) * 60 +
@@ -223,8 +243,7 @@ export function buildLeisureSuggestions(workspace, raw, nowMs, facts = {}) {
         .filter((i) => i.category === 'food')
         .sort((a, b) => value(b) - value(a))
         .slice(0, 24);
-    const onDate = (/** @type {any} */ i) =>
-      (!i.startDate || i.startDate <= day.date) && (!i.endDate || i.endDate >= day.date);
+    const onDate = (/** @type {any} */ i) => leisureAvailableOn(i, day.date);
     const add = (
       /** @type {string} */ title,
       /** @type {any[]} */ stops,
@@ -237,6 +256,8 @@ export function buildLeisureSuggestions(workspace, raw, nowMs, facts = {}) {
         legs = [],
         reasons = [];
       let cost = 0,
+        upperCost = 0,
+        openUpper = false,
         unknown = 0,
         score = 0;
       for (const s of sorted) {
@@ -244,6 +265,7 @@ export function buildLeisureSuggestions(workspace, raw, nowMs, facts = {}) {
           a = Date.parse(s.startAt),
           b = Date.parse(s.endAt);
         if (a < Math.max(day.startAt, nowMs) || b > day.endAt || b <= a) return;
+        if (!leisureSlotMatches(item, a, b)) return;
         if (
           /** @type {any[]} */ (facts.calendarEvents ?? []).some(
             (e) => !e.transparent && e.startMs < b && e.endMs > a,
@@ -257,25 +279,72 @@ export function buildLeisureSuggestions(workspace, raw, nowMs, facts = {}) {
         if (
           !['food', 'place', 'trip', 'cinema'].includes(item.category) &&
           !item.endAt &&
-          !item.durationMinutes
+          !item.durationMinutes &&
+          !leisureOccurrencesOn(item, day.date).some(
+            (o) => o.endAt && a >= o.startAt && b <= o.endAt,
+          )
         )
           warnings.push('Тривалість «' + item.title + '» орієнтовна');
-        if (item.startAt && kyivDateKey(new Date(item.startAt)) !== day.date)
+        if (
+          item.startAt &&
+          item.schedule?.kind !== 'recurring' &&
+          kyivDateKey(new Date(item.startAt)) !== day.date
+        )
           warnings.push('Години «' + item.title + '» саме цього дня потрібно підтвердити');
         if (!reactions.get(item.id) && !saved.has(item.id))
           warnings.push('Додано новий, ще не оцінений варіант');
         score += value(item);
-        if (item.category === 'trip') {
+        if (
+          item.category === 'trip' ||
+          /park|garden|hiking|campground/.test(item.placeType ?? '')
+        ) {
           const area = /** @type {any[]} */ (facts.forecasts ?? []).find(
               (f) => (distance(item, f.at) ?? Infinity) < 30000,
             ),
             forecast = area?.days.find((/** @type {any} */ f) => f.date === day.date);
           if (forecast) {
-            weather.push(forecast.min + '…' + forecast.max + ' °C · ' + forecast.desc);
-            if (/дощ|гроза|злива|сніг|шторм/i.test(forecast.desc)) {
-              warnings.push('Погода може ускладнити прогулянку: ' + forecast.desc);
+            const hours = (area?.hourly ?? []).filter(
+              (/** @type {any} */ h) => h.at < b && h.at + 3600000 > a,
+            );
+            const rain = hours.length
+              ? Math.max(...hours.map((/** @type {any} */ h) => h.pop ?? 0))
+              : forecast.pop;
+            const wind = hours.length
+              ? Math.max(...hours.map((/** @type {any} */ h) => h.wind ?? 0))
+              : forecast.wind;
+            const description = hours.length ? hours[0].desc : forecast.desc;
+            const temps = hours.map((/** @type {any} */ h) => h.temp);
+            weather.push(
+              (hours.length
+                ? Math.min(...temps) + '…' + Math.max(...temps)
+                : forecast.min + '…' + forecast.max) +
+                ' °C · ' +
+                description +
+                (hours.length ? ' · на час прогулянки' : ' · денний прогноз'),
+            );
+            if ((rain ?? 0) >= 0.5 || /дощ|гроза|злива|сніг|шторм/i.test(description)) {
+              warnings.push(
+                'Погода може ускладнити прогулянку: ' +
+                  description +
+                  (rain != null ? ' · імовірність опадів ' + Math.round(rain * 100) + '%' : ''),
+              );
               score -= 15;
             }
+            if (wind >= 10) {
+              warnings.push('Сильний вітер: ' + Math.round(wind) + ' м/с');
+              score -= 10;
+            }
+            if (
+              forecast.sunset &&
+              b > forecast.sunset &&
+              /park|garden|hiking/.test(item.placeType ?? '')
+            )
+              warnings.push('Частина прогулянки припадає на час після заходу сонця');
+            for (const alert of area?.alerts ?? [])
+              if (alert.start < b && alert.end > a) {
+                warnings.push('Попередження погоди: ' + alert.event);
+                score -= 20;
+              }
           } else
             warnings.push(
               Date.parse(day.date + 'T12:00Z') -
@@ -290,18 +359,21 @@ export function buildLeisureSuggestions(workspace, raw, nowMs, facts = {}) {
         const session = /** @type {any[]} */ (item.sessions ?? []).find(
           (v) => v.id === s.sessionId,
         );
-        const price =
-          session?.price != null
-            ? session.price * 2
-            : item.price?.min != null && item.price.basis !== 'unknown'
-              ? item.price.min * (item.price.basis === 'person' ? 2 : 1)
-              : null;
-        if (price == null) unknown++;
-        else cost += Math.round(price * 100);
+        const price = leisureCostRange(item, session);
+        if (price.unknown) unknown++;
+        cost += price.min;
+        if (price.max == null) openUpper = true;
+        else upperCost += price.max;
+        if (price.approximate)
+          warnings.push(
+            'Ціни Google — приблизний орієнтир витрат, сума замовлення може відрізнятися',
+          );
       }
       if (window.budgetMinor != null && cost > window.budgetMinor) return;
       if (unknown && window.budgetMinor != null)
         warnings.push('Частина цін невідома — відповідність бюджету ще не підтверджена');
+      if (window.budgetMinor != null && !unknown && (openUpper || upperCost > window.budgetMinor))
+        warnings.push('Верхня межа витрат може перевищити бюджет — перевір ціни перед вибором');
       if (window.transport !== 'walk')
         warnings.push(
           'Вартість дороги й паркування не врахована' +
@@ -383,6 +455,7 @@ export function buildLeisureSuggestions(workspace, raw, nowMs, facts = {}) {
         warnings: [...new Set(warnings)],
         weather: [...new Set(weather)],
         knownCostMinor: cost,
+        costRange: { min: cost, max: openUpper || unknown ? null : upperCost },
         unknownPrices: unknown,
         transport: window.transport,
         confidence: warnings.length ? 'needs-check' : 'checked',
@@ -445,9 +518,16 @@ export function buildLeisureSuggestions(workspace, raw, nowMs, facts = {}) {
       .sort((a, b) => value(b) - value(a))
       .slice(0, 32);
     for (const item of anchors) {
-      if (item.category === 'cinema') {
+      if (item.category === 'cinema' && item.sessions?.length) {
         for (const session of /** @type {any[]} */ (item.sessions ?? [])
           .filter((s) => kyivDateKey(new Date(s.startAt)) === day.date)
+          .filter(
+            (s) =>
+              !workspace.settings?.cinemas ||
+              workspace.settings.cinemas.includes(
+                s.cinemaSlug === 'king-cross-leopolis' ? 'king-cross' : s.cinemaSlug,
+              ),
+          )
           .slice(0, 24)) {
           const a = Date.parse(session.startAt),
             b = session.endAt
@@ -458,18 +538,22 @@ export function buildLeisureSuggestions(workspace, raw, nowMs, facts = {}) {
           if (Number.isFinite(b) && a >= Math.max(day.startAt, nowMs) && b <= day.endAt)
             withFood(item, stop(item, a, b, session));
         }
-      } else if (
-        item.startAt &&
-        !(item.endDate && item.startDate !== item.endDate && day.date !== item.startDate)
-      ) {
-        const a = Date.parse(item.startAt);
-        if (kyivDateKey(new Date(a)) !== day.date) continue;
-        const b =
-          item.endAt && kyivDateKey(new Date(item.endAt)) === day.date
-            ? Date.parse(item.endAt)
-            : a + (item.durationMinutes ?? (item.category === 'festival' ? 240 : 90)) * MINUTE;
-        withFood(item, stop(item, a, b), item.category === 'festival' && b - a >= span * 0.65);
+      } else if (leisureOccurrencesOn(item, day.date).length) {
+        for (const occurrence of leisureOccurrencesOn(item, day.date)) {
+          const flexible = item.schedule?.timeMode === 'window';
+          const a = flexible
+            ? Math.max(occurrence.startAt, day.startAt, nowMs)
+            : occurrence.startAt;
+          const defaultEnd =
+            a + (item.durationMinutes ?? (item.category === 'festival' ? 240 : 90)) * MINUTE;
+          const b = flexible
+            ? Math.min(occurrence.endAt ?? defaultEnd, defaultEnd, day.endAt)
+            : (occurrence.endAt ?? defaultEnd);
+          if (b - a < 30 * MINUTE) continue;
+          withFood(item, stop(item, a, b), item.category === 'festival' && b - a >= span * 0.65);
+        }
       } else {
+        if (item.category === 'cinema') continue; // No guessed cinema sessions.
         const duration =
           (item.durationMinutes ??
             (item.category === 'festival'

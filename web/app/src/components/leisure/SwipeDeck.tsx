@@ -1,5 +1,6 @@
 import { useRef, useState } from 'react';
-import { CategoryArtwork } from './CategoryArtwork.tsx';
+import { LeisureMedia } from './LeisureMedia.tsx';
+import { CardFacts } from './PlaceInfo.tsx';
 import {
   categoryLabels,
   leisureDate,
@@ -108,99 +109,7 @@ export function SwipeDeck({
         </span>
         <span>Ліворуч / праворуч / униз</span>
       </div>
-      <section
-        className="leisure-swipe-surface"
-        aria-label="Картка дозвілля"
-        aria-haspopup="dialog"
-        aria-disabled={busy || saving}
-        role="button"
-        tabIndex={0}
-        onClick={() => {
-          if (ignoreClick.current) {
-            ignoreClick.current = false;
-            return;
-          }
-          if (!busy && !submitting.current) onOpen(item);
-        }}
-        onKeyDown={(e) => {
-          if (e.target !== e.currentTarget) return;
-          if (e.key === 'Enter' || e.key === ' ') {
-            e.preventDefault();
-            if (!busy && !submitting.current) onOpen(item);
-            return;
-          }
-          const d =
-            e.key === 'ArrowRight'
-              ? 'right'
-              : e.key === 'ArrowLeft'
-                ? 'left'
-                : e.key === 'ArrowDown'
-                  ? 'down'
-                  : null;
-          if (d) {
-            e.preventDefault();
-            void choose(d);
-          }
-        }}
-        onPointerDown={(e) => {
-          if (
-            busy ||
-            submitting.current ||
-            gesture.current ||
-            e.button !== 0 ||
-            (e.pointerType === 'touch' && e.isPrimary === false)
-          )
-            return;
-          ignoreClick.current = false;
-          gesture.current = { id: e.pointerId, x: e.clientX, y: e.clientY, distance: 0 };
-          setHeld(item);
-          setDragging(true);
-          e.currentTarget.setPointerCapture?.(e.pointerId);
-        }}
-        onPointerMove={(e) => {
-          const g = gesture.current;
-          if (!g || g.id !== e.pointerId) return;
-          g.distance = Math.max(g.distance, Math.hypot(e.clientX - g.x, e.clientY - g.y));
-          setPosition({
-            x: Math.max(-450, Math.min(450, e.clientX - g.x)),
-            y: Math.max(-25, Math.min(220, e.clientY - g.y)),
-          });
-        }}
-        onPointerUp={(e) => {
-          const g = gesture.current;
-          if (!g || g.id !== e.pointerId) return;
-          const x = e.clientX - g.x,
-            y = e.clientY - g.y;
-          ignoreClick.current = Math.max(g.distance, Math.hypot(x, y)) > 8;
-          gesture.current = null;
-          setDragging(false);
-          if (Math.abs(x) > 70 && Math.abs(x) > Math.abs(y) * 1.2)
-            void choose(x > 0 ? 'right' : 'left');
-          else if (y > 85 && y > Math.abs(x) * 1.2) void choose('down');
-          else {
-            setPosition({ x: 0, y: 0 });
-            setHeld(null);
-          }
-        }}
-        onPointerCancel={() => {
-          ignoreClick.current = true;
-          gesture.current = null;
-          setDragging(false);
-          if (!submitting.current) {
-            setHeld(null);
-            setPosition({ x: 0, y: 0 });
-          }
-        }}
-        onLostPointerCapture={() => {
-          if (gesture.current) {
-            ignoreClick.current = true;
-            gesture.current = null;
-            setDragging(false);
-            setHeld(null);
-            setPosition({ x: 0, y: 0 });
-          }
-        }}
-      >
+      <section className="leisure-swipe-surface">
         <article
           key={item.id}
           className={`leisure-swipe-card category-${item.category}${dragging ? ' is-dragging' : ''}`}
@@ -208,7 +117,100 @@ export function SwipeDeck({
             transform: `translate3d(${position.x}px, ${position.y}px, 0) rotate(${position.x / 28}deg)`,
           }}
         >
-          <CategoryArtwork category={item.category} eager />
+          <button
+            type="button"
+            className="leisure-card-target"
+            onPointerDown={(e) => {
+              if (
+                busy ||
+                submitting.current ||
+                gesture.current ||
+                e.button !== 0 ||
+                (e.pointerType === 'touch' && e.isPrimary === false)
+              )
+                return;
+              ignoreClick.current = false;
+              gesture.current = { id: e.pointerId, x: e.clientX, y: e.clientY, distance: 0 };
+              setHeld(item);
+              setDragging(true);
+              e.currentTarget.setPointerCapture?.(e.pointerId);
+            }}
+            onPointerMove={(e) => {
+              const g = gesture.current;
+              if (!g || g.id !== e.pointerId) return;
+              g.distance = Math.max(g.distance, Math.hypot(e.clientX - g.x, e.clientY - g.y));
+              setPosition({
+                x: Math.max(-450, Math.min(450, e.clientX - g.x)),
+                y: Math.max(-25, Math.min(220, e.clientY - g.y)),
+              });
+            }}
+            onPointerUp={(e) => {
+              const g = gesture.current;
+              if (!g || g.id !== e.pointerId) return;
+              const x = e.clientX - g.x,
+                y = e.clientY - g.y;
+              ignoreClick.current = Math.max(g.distance, Math.hypot(x, y)) > 8;
+              gesture.current = null;
+              setDragging(false);
+              if (Math.abs(x) > 70 && Math.abs(x) > Math.abs(y) * 1.2)
+                void choose(x > 0 ? 'right' : 'left');
+              else if (y > 85 && y > Math.abs(x) * 1.2) void choose('down');
+              else {
+                setPosition({ x: 0, y: 0 });
+                setHeld(null);
+              }
+            }}
+            onPointerCancel={() => {
+              ignoreClick.current = true;
+              gesture.current = null;
+              setDragging(false);
+              if (!submitting.current) {
+                setHeld(null);
+                setPosition({ x: 0, y: 0 });
+              }
+            }}
+            onLostPointerCapture={() => {
+              if (gesture.current) {
+                ignoreClick.current = true;
+                gesture.current = null;
+                setDragging(false);
+                setHeld(null);
+                setPosition({ x: 0, y: 0 });
+              }
+            }}
+            aria-describedby={'card-title-' + item.id}
+            aria-label="Картка дозвілля"
+            aria-haspopup="dialog"
+            aria-disabled={busy || saving}
+            onClick={() => {
+              if (ignoreClick.current) {
+                ignoreClick.current = false;
+                return;
+              }
+              if (!busy && !submitting.current) onOpen(item);
+            }}
+            onKeyDown={(e) => {
+              if (e.target !== e.currentTarget) return;
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                if (!busy && !submitting.current) onOpen(item);
+                return;
+              }
+              const d =
+                e.key === 'ArrowRight'
+                  ? 'right'
+                  : e.key === 'ArrowLeft'
+                    ? 'left'
+                    : e.key === 'ArrowDown'
+                      ? 'down'
+                      : null;
+              if (d) {
+                e.preventDefault();
+                void choose(d);
+              }
+            }}
+          />
+          <LeisureMedia item={item} active />
           {direction && (
             <span className={`leisure-swipe-verdict is-${direction}`}>
               {direction === 'right'
@@ -226,7 +228,8 @@ export function SwipeDeck({
             <small>
               {categoryLabels[item.category]} {item.genre ? `· ${item.genre}` : ''}
             </small>
-            <h3>{item.title}</h3>
+            <h3 id={'card-title-' + item.id}>{item.title}</h3>
+            <CardFacts item={item} />
             <p className="leisure-swipe-place">
               {item.venue ?? item.address ?? 'Місце уточнюється у джерелі'}
             </p>
@@ -242,7 +245,9 @@ export function SwipeDeck({
               </span>
               <b>
                 {price == null
-                  ? 'Ціна невідома'
+                  ? item.placeId && item.category === 'food'
+                    ? 'Точна сума — за замовленням'
+                    : 'Ціна невідома'
                   : price === 0
                     ? 'Безплатно'
                     : `Від ${money(price)} за двох`}

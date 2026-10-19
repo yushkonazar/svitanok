@@ -7,6 +7,7 @@ import {
 } from './core/leisure/store.mjs';
 import { LeisureError } from './core/leisure/model.mjs';
 import { suggestLeisure } from './core/leisure/planning-service.mjs';
+import { enrichLeisureItem, leisureItemImage } from './core/leisure/enrichment.mjs';
 
 /** @param {Request} request @param {Env} env */
 export async function handleLeisure(request, env) {
@@ -36,6 +37,17 @@ export async function handleLeisure(request, env) {
         verification: await inspectLeisureCommand(env, url.searchParams.get('commandId') ?? ''),
       });
     if (body) {
+      if (body.op === 'enrich' || body.op === 'image') {
+        phase = 'enrichment';
+        if (JSON.stringify(body.payload ?? {}).length > 5000)
+          throw new LeisureError('Параметрів запиту забагато.');
+        if (body.op === 'image') {
+          const response = await leisureItemImage(env, body.payload);
+          response.headers.set('X-Request-Id', requestId);
+          return response;
+        }
+        return reply({ ok: true, enrichment: await enrichLeisureItem(env, body.payload) });
+      }
       if (body.op === 'suggest') {
         if (JSON.stringify(body.payload ?? {}).length > 12000)
           throw new LeisureError('Параметрів підбору забагато.');
