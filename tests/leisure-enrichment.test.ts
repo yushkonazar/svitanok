@@ -156,7 +156,8 @@ describe('on-demand Google content and cost guards', () => {
     expect(image.type).toBe('image/jpeg');
     expect(image.bytes.byteLength).toBe(4);
     expect(String(fetch.mock.calls[0]?.[0])).not.toContain('test-google-key');
-    expect(fetch.mock.calls[1]?.[1]).toMatchObject({ redirect: 'error' });
+    expect(fetch.mock.calls[0]?.[1]).toMatchObject({ redirect: 'manual' });
+    expect(fetch.mock.calls[1]?.[1]).toMatchObject({ redirect: 'manual' });
     expect(fetch.mock.calls[1]?.[1]?.headers).toBeUndefined();
     expect(validPhotoResource('places/other/photos/p', 'place1')).toBe(false);
     expect(validPhotoResource('places/place1/photos/../../admin', 'place1')).toBe(false);

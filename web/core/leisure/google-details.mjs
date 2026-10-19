@@ -27,7 +27,8 @@ async function googleJson(env, path, mask, sku, nowMs) {
   let ok = false;
   try {
     const response = await fetch(API + path, {
-      redirect: 'error',
+      // workerd supports manual/follow only; non-2xx (including redirects) is rejected below.
+      redirect: 'manual',
       signal: AbortSignal.timeout(10000),
       headers: { 'X-Goog-Api-Key': key, ...(mask ? { 'X-Goog-FieldMask': mask } : {}) },
     });
@@ -174,7 +175,7 @@ export async function freshLeisurePhoto(env, placeId, name, nowMs) {
   )
     throw new Error('invalid-photo-response');
   const response = await fetch(target.href, {
-    redirect: 'error',
+    redirect: 'manual',
     signal: AbortSignal.timeout(10000),
   });
   const type = (response.headers.get('content-type') ?? '').split(';')[0];
