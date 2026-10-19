@@ -20,7 +20,18 @@ export const leisureItemSchema = z.object({
   id: z.string(),
   venueId: z.string().nullable(),
   placeId: z.string().nullable(),
-  category: z.enum(['exhibition', 'festival', 'concert', 'show', 'cinema', 'food', 'trip']),
+  category: z.enum([
+    'exhibition',
+    'festival',
+    'concert',
+    'show',
+    'cinema',
+    'food',
+    'trip',
+    'place',
+    'meetup',
+    'podcast',
+  ]),
   title: z.string(),
   summary: z.string(),
   venue: z.string().nullable(),
@@ -53,6 +64,12 @@ export const leisureItemSchema = z.object({
   bookingUrl: z.string().nullable().default(null),
   siteUrl: z.string().nullable().default(null),
   placeDetails: z.record(z.string(), z.unknown()).optional(),
+  identityKey: z.string().optional(),
+  firstDiscoveredAt: z.string().optional(),
+  catalogChangedAt: z.string().nullable().optional(),
+  catalogChanges: z.array(z.string()).optional(),
+  medium: z.enum(['online', 'physical']).optional(),
+  publishedAt: z.string().nullable().optional(),
 });
 const stopSchema = z.object({
   itemId: z.string(),
@@ -80,6 +97,8 @@ export const leisurePlanSchema = z.object({
   calendarState: z.enum(['none', 'pending', 'delete-pending', 'error', 'synced', 'conflict']),
   reason: z.string().optional(),
   estimatedBudgetMinor: z.number().nullable().optional(),
+  transport: z.enum(['walk', 'car', 'transit']).optional(),
+  alerts: z.array(z.string()).optional(),
 });
 const visitSchema = z.object({
   id: z.string(),
@@ -102,6 +121,11 @@ const reactionSchema = z.object({
   itemId: z.string(),
   venueId: z.string().nullable(),
   verdict: z.string(),
+  interestLevel: z.enum(['priority', 'interested']).nullable().optional(),
+  reasonCodes: z.array(z.string()).optional(),
+  revisit: z.boolean().optional(),
+  snoozeUntil: z.string().nullable().optional(),
+  identityKey: z.string().optional(),
   reasonCode: z.string().nullable().default(null),
   reason: z.string().default(''),
   at: z.string().nullable().default(null),
@@ -117,6 +141,30 @@ const familiaritySchema = z.object({
   previousCount: z.number().nullable(),
   trackingSince: z.string(),
   cleared: z.boolean().default(false),
+});
+const draftSchema = z.object({
+  id: z.string(),
+  kind: z.literal('draft'),
+  revision: z.number(),
+  title: z.string(),
+  stops: z.array(
+    z.object({
+      itemId: z.string(),
+      sessionId: z.string().nullable().optional(),
+      startAt: z.string(),
+      endAt: z.string(),
+      tickets: z.boolean(),
+      reservation: z.boolean(),
+      title: z.string().optional(),
+      address: z.string().nullable().optional(),
+      sourceUrl: z.string().nullable().optional(),
+      catalogCheckedAt: z.string().optional(),
+    }),
+  ),
+  transport: z.enum(['walk', 'car', 'transit']).optional(),
+  estimatedBudgetMinor: z.number().nullable().optional(),
+  discarded: z.boolean().optional(),
+  alerts: z.array(z.string()).optional(),
 });
 export const leisureWorkspaceSchema = z.object({
   preferenceProfile: z
@@ -143,7 +191,8 @@ export const leisureWorkspaceSchema = z.object({
     cinemas: z.array(z.string()),
     students: z.number(),
     retention: z.string(),
-    telegram: z.literal(false),
+    telegram: z.boolean(),
+    planAlerts: z.boolean().default(true),
   }),
   items: z.array(leisureItemSchema),
   knownPlaces: z
@@ -165,9 +214,21 @@ export const leisureWorkspaceSchema = z.object({
       visitSchema,
       reactionSchema,
       familiaritySchema,
+      draftSchema,
     ]),
   ),
   saved: z.array(z.string()),
+  discoveryDecisions: z
+    .array(
+      z.object({
+        identityKey: z.string(),
+        itemId: z.string().optional(),
+        verdict: z.string(),
+        snoozeUntil: z.string().nullable(),
+        at: z.string().optional(),
+      }),
+    )
+    .optional(),
   historyLimit: z.number(),
   historyTotal: z.number().default(0),
   editionHistory: z.array(z.record(z.string(), z.unknown())).optional(),
@@ -224,6 +285,8 @@ export const leisureWorkspaceSchema = z.object({
 });
 const receiptSchema = z.object({
   message: z.string(),
+  verified: z.boolean().optional(),
+  revision: z.number().optional(),
   id: z.string().optional(),
   available: z.boolean().optional(),
   place: z.record(z.string(), z.unknown()).optional(),
@@ -263,8 +326,90 @@ export interface LeisureCommand {
   commandId: string;
 }
 export const LEISURE_QUERY = ['leisure'] as const;
+export interface LeisurePlanSeed {
+  title: string;
+  sourceDraftId?: string;
+  alerts?: string[];
+  stops: Array<{
+    itemId: string;
+    sessionId?: string | null;
+    startAt: string;
+    endAt: string;
+    tickets?: boolean;
+    reservation?: boolean;
+    title?: string;
+    address?: string | null;
+    catalogCheckedAt?: string;
+  }>;
+  transport?: 'walk' | 'car' | 'transit';
+  estimatedBudgetMinor?: number | null;
+}
+const suggestionSchema = z.object({
+  id: z.string(),
+  date: z.string(),
+  title: z.string(),
+  stops: z.array(stopSchema),
+  legs: z.array(
+    z.object({
+      from: z.string(),
+      to: z.string(),
+      minutes: z.number(),
+      distanceM: z.number().nullable().optional(),
+      verified: z.boolean(),
+      boundary: z.enum(['outbound', 'return']).optional(),
+    }),
+  ),
+  reasons: z.array(z.string()),
+  warnings: z.array(z.string()),
+  weather: z.array(z.string()).optional(),
+  knownCostMinor: z.number(),
+  unknownPrices: z.number(),
+  transport: z.enum(['walk', 'car', 'transit']),
+  confidence: z.enum(['needs-check', 'checked']),
+  score: z.number(),
+  anchorId: z.string(),
+  alternatives: z.array(z.object({ id: z.string(), title: z.string(), priority: z.boolean() })),
+});
+export const leisureSuggestionsSchema = z.object({
+  generatedAt: z.string(),
+  recommendedDate: z.string().nullable(),
+  recommendedReason: z.string().nullable().optional(),
+  days: z.array(
+    z.object({ date: z.string(), plans: z.array(suggestionSchema), notes: z.array(z.string()) }),
+  ),
+  sources: z.array(z.object({ name: z.string(), status: z.string(), checkedAt: z.string() })),
+  note: z.string(),
+});
+export type LeisureSuggestion = z.infer<typeof suggestionSchema>;
+export type LeisureSuggestions = z.infer<typeof leisureSuggestionsSchema>;
+export async function fetchLeisureSuggestions(
+  payload: Record<string, unknown>,
+  signal?: AbortSignal,
+): Promise<LeisureSuggestions> {
+  if (!inTelegram()) {
+    const [{ readLeisureDemo }, { buildLeisureSuggestions }] = await Promise.all([
+      import('./leisure-demo.ts'),
+      import('../../../core/leisure/planning.mjs'),
+    ]);
+    return leisureSuggestionsSchema.parse(
+      buildLeisureSuggestions(readLeisureDemo(), payload, Date.now(), { calendarAvailable: false }),
+    );
+  }
+  const response = await fetch('/api/leisure', {
+    method: 'POST',
+    headers: { ...headers(), 'content-type': 'application/json' },
+    body: JSON.stringify({ op: 'suggest', payload }),
+    signal: signal ?? AbortSignal.timeout(60000),
+  });
+  session(response);
+  const body = await response.json().catch(() => null);
+  if (!response.ok) throw new Error(body?.error ?? 'Не вдалося підібрати вихід. Спробуй ще раз.');
+  const parsed = leisureSuggestionsSchema.safeParse(body?.suggestions);
+  if (!parsed.success) throw new Error('Формат підбору змінився. Онови застосунок.');
+  return parsed.data;
+}
 const headers = (): Record<string, string> =>
-  inTelegram() && tg ? { 'X-Telegram-Init-Data': tg.initData, 'X-Leisure-Format': '3' } : {};
+  inTelegram() && tg ? { 'X-Telegram-Init-Data': tg.initData, 'X-Leisure-Format': '4' } : {};
 function session(response: Response) {
   if (response.status === 401 || response.status === 403)
     throw new SessionExpiredError(response.status);
@@ -305,7 +450,10 @@ export async function verifyLeisureCommand(command: LeisureCommand) {
   const receipt = receiptSchema.safeParse(verified.receipt);
   return receipt.success ? { receipt: receipt.data, workspace: null } : null;
 }
-export async function changeLeisure(command: LeisureCommand, verifyFirst = false) {
+export async function changeLeisure(
+  command: LeisureCommand,
+  verifyFirst = false,
+): Promise<{ receipt: LeisureReceipt; workspace: LeisureWorkspace | null }> {
   if (!inTelegram()) {
     const { changeLeisureDemo } = await import('./leisure-demo.ts');
     return changeLeisureDemo(command);
@@ -427,11 +575,25 @@ export function useLeisureChange() {
               itemId: command.id!,
               venueId: old.items.find((i) => i.id === command.id)?.venueId ?? null,
               verdict: String(command.payload.verdict),
+              interestLevel:
+                command.payload.verdict === 'interested'
+                  ? command.payload.interestLevel === 'priority'
+                    ? 'priority'
+                    : 'interested'
+                  : null,
+              reasonCodes: Array.isArray(command.payload.reasonCodes)
+                ? command.payload.reasonCodes.map(String)
+                : [],
+              revisit: command.payload.revisit === true,
+              snoozeUntil:
+                typeof command.payload.snoozeUntil === 'string'
+                  ? command.payload.snoozeUntil
+                  : null,
               reasonCode:
                 typeof command.payload.reasonCode === 'string' ? command.payload.reasonCode : null,
               reason: String(command.payload.reason ?? ''),
               at: new Date().toISOString(),
-              revision: 0,
+              revision: result.receipt.revision ?? Number(command.payload.revision ?? 0) + 1,
             });
             return { ...old, records };
           });
@@ -451,6 +613,9 @@ export const categoryLabels: Record<LeisureItem['category'], string> = {
   cinema: 'Кіно',
   food: 'Заклади',
   trip: 'Поїздки',
+  place: 'Місця й музеї',
+  meetup: 'Зустрічі й майстер-класи',
+  podcast: 'Подкасти',
 };
 export function leisureDate(value: string) {
   return new Intl.DateTimeFormat('uk-UA', {

@@ -103,7 +103,7 @@ describe('isolated resumable catalogue batches', () => {
       verified: true,
     });
     await collector.alarm();
-    expect(mocks.check).toHaveBeenCalledWith(item, now);
+    expect(mocks.check).toHaveBeenCalledWith(expect.objectContaining(item), now);
     expect(
       (await readLeisureWorkspace(env, now, true)).items.find((i) => i.id === item.id)?.status,
     ).toBe('cancelled');

@@ -418,7 +418,9 @@
               "place-check",
               "journey-check",
               "source-check",
-              "clear"
+              "clear",
+              "draft",
+              "discard-draft"
             ],
             "type": "string"
           },
@@ -434,7 +436,18 @@
       "args": {
         "properties": {
           "category": {
-            "enum": ["exhibition", "festival", "concert", "show", "cinema", "food", "trip"],
+            "enum": [
+              "exhibition",
+              "festival",
+              "concert",
+              "show",
+              "cinema",
+              "food",
+              "trip",
+              "place",
+              "meetup",
+              "podcast"
+            ],
             "type": "string"
           },
           "id": { "maxLength": 320, "type": "string" },
@@ -443,9 +456,19 @@
           "plan_json": { "maxLength": 20000, "type": "string" },
           "query": { "maxLength": 160, "type": "string" },
           "view": {
-            "enum": ["week", "interested", "saved", "plans", "visits", "places"],
+            "enum": [
+              "week",
+              "interested",
+              "priority",
+              "saved",
+              "plans",
+              "drafts",
+              "visits",
+              "places"
+            ],
             "type": "string"
-          }
+          },
+          "window_json": { "maxLength": 12000, "type": "string" }
         },
         "type": "object"
       },

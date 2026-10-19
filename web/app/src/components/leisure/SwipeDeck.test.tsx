@@ -129,7 +129,7 @@ describe('swipe deck', () => {
         reasons={reasons}
       />,
     );
-    expect(screen.getByRole('status')).toHaveTextContent('Усі варіанти переглянуто');
+    expect(screen.getByRole('status')).toHaveTextContent('Нове переглянуто');
   });
   it('keeps the exact unacknowledged command across a reload and clears it after acknowledgement', () => {
     const command = {

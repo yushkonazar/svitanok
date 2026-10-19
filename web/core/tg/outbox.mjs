@@ -16,6 +16,7 @@ import { renderContextDelivery, recoverContextDeliveries } from '../reminders/co
 import { renderCheckinNotice } from '../checkin/extensions.mjs';
 import { renderPlanNotice } from '../motivation/jobs.mjs';
 import { credentialNoticeCurrent, googleScopeNoticeCurrent } from '../ops/notices.mjs';
+import { leisureDigestCurrent, leisurePlanAlertCurrent } from '../leisure/notifications.mjs';
 import {
   splitMessage,
   nextAttemptAt,
@@ -329,6 +330,15 @@ async function sendRow(env, row, nowMs) {
     return { ok: false, retryAfterSec: null };
   }
   const atMostOnce = payload.delivery_safety === 'at-most-once';
+  if (payload.leisure_digest && !(await leisureDigestCurrent(env, payload.leisure_digest, nowMs)))
+    return { ok: true };
+  delete payload.leisure_digest;
+  if (
+    payload.leisure_plan_alert &&
+    !(await leisurePlanAlertCurrent(env, payload.leisure_plan_alert, nowMs))
+  )
+    return { ok: true };
+  delete payload.leisure_plan_alert;
   if (payload.credential_notice && !(await credentialNoticeCurrent(env, payload.credential_notice)))
     return { ok: true };
   delete payload.credential_notice;

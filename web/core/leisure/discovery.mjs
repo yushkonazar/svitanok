@@ -1,4 +1,5 @@
 // Explicit owner feedback only. Ranking is local, explainable and never an LLM call.
+import { leisureFeedbackScopes } from './feedback.mjs';
 export const FEEDBACK_REASONS = [
   'genre',
   'format',
@@ -65,6 +66,18 @@ export const FEATURE_LABELS = {
   festival: 'фестивалі',
   show: 'шоу й театр',
   trip: 'поїздки',
+  place: 'місця й музеї',
+  meetup: 'зустрічі',
+  podcast: 'подкасти',
+  italian: 'італійська кухня',
+  japanese: 'японська кухня',
+  chinese: 'китайська кухня',
+  ukrainian: 'українська кухня',
+  georgian: 'грузинська кухня',
+  vegetarian: 'вегетаріанське меню',
+  vegan: 'веганське меню',
+  pizza: 'піца',
+  seafood: 'морепродукти',
 };
 const INTERESTS = {
   marvel: /marvel|марвел|людин[аи]-?павук|spider.?man|месник|avengers|залізн[аи]й? люд|iron man/iu,
@@ -103,6 +116,18 @@ export function leisureFeatures(item) {
     if (re.test(text)) features.push(`format:${key}`);
   if (/для дітей|дитяч(?:ий|а|і)|для малюків/i.test(text)) features.push('audience:children');
   const type = String(item.placeType ?? '');
+  for (const cuisine of [
+    'italian',
+    'japanese',
+    'chinese',
+    'ukrainian',
+    'georgian',
+    'vegetarian',
+    'vegan',
+    'pizza',
+    'seafood',
+  ])
+    if (type.includes(cuisine)) features.push('cuisine:' + cuisine);
   if (/cafe|coffee/.test(type)) features.push('format:cafe');
   else if (/bakery/.test(type)) features.push('format:bakery');
   else if (/bar|pub/.test(type)) features.push('format:bar');
@@ -168,6 +193,8 @@ export function leisurePreferenceProfile(items, records, nowMs) {
     // These choices describe this occasion/card, never a dislike of its genre.
     if (
       record.kind === 'reaction' &&
+      record.verdict !== 'interested' &&
+      !record.reasonCodes?.length &&
       ['time', 'not-now', 'this-option', 'company', 'seen'].includes(record.reasonCode)
     )
       continue;
@@ -184,11 +211,17 @@ export function leisurePreferenceProfile(items, records, nowMs) {
     const tags =
       record.features ?? (byId.has(record.itemId) ? leisureFeatures(byId.get(record.itemId)) : []);
     const positive = reaction ? record.verdict === 'interested' : record.rating === 'liked';
-    const reason = record.reasonCode ?? 'other';
+    const scopes = reaction ? leisureFeedbackScopes(record) : null;
     const applicable = positive
-      ? tags.filter((/** @type {string} */ tag) => !tag.startsWith('topic:'))
-      : reaction && ['genre', 'format', 'topic', 'audience', 'place'].includes(reason)
-        ? tags.filter((/** @type {string} */ tag) => tag.startsWith(reason + ':'))
+      ? tags.filter((/** @type {string} */ tag) =>
+          scopes !== null
+            ? scopes.some((scope) => tag.startsWith(scope + ':'))
+            : !tag.startsWith('topic:'),
+        )
+      : reaction && scopes?.length
+        ? tags.filter((/** @type {string} */ tag) =>
+            scopes.some((scope) => tag.startsWith(scope + ':')),
+          )
         : visit
           ? tags.filter((/** @type {string} */ tag) =>
               tag.startsWith(record.category === 'cinema' ? 'genre:' : 'place:'),
@@ -302,12 +335,22 @@ export function rankLeisureItems(items, records, previousIds, settings, nowMs) {
         (item.price?.min != null ? 1 : 0);
       const exact = feedback.find((r) => r.itemId === item.id);
       if (exact?.verdict === 'interested') {
-        score += planned.has(item.id) || visited.has(item.id) ? 3 : 20;
-        reasons.push('Ти позначив цей варіант як цікавий');
+        score +=
+          planned.has(item.id) || visited.has(item.id)
+            ? 3
+            : exact.interestLevel === 'priority'
+              ? 32
+              : 20;
+        reasons.push(
+          exact.interestLevel === 'priority'
+            ? 'Ти хочеш відвідати це насамперед'
+            : 'Ти позначив цей варіант як цікавий',
+        );
       }
       let evidence = 0;
       for (const tag of tags) {
-        const weight = Math.max(-8, Math.min(8, weights.get(tag) ?? 0));
+        const cap = tag.startsWith('category:') ? 1.5 : tag.startsWith('format:') ? 3 : 8;
+        const weight = Math.max(-cap, Math.min(cap, weights.get(tag) ?? 0));
         score += weight;
         evidence += Math.abs(weight);
         if (weight > 0.2 && !tag.startsWith('category:') && !tag.startsWith('topic:')) {
@@ -359,7 +402,8 @@ export function rankLeisureItems(items, records, previousIds, settings, nowMs) {
     const next = ranked.findIndex(
       (r, index) =>
         index > slot &&
-        r.score >= (ranked[slot]?.score ?? r.score) - 4 &&
+        r.score >= (ranked[slot]?.score ?? r.score) - 6 &&
+        !leisureFeatures(byId.get(r.id)).some((tag) => (weights.get(tag) ?? 0) < -2) &&
         !recentCategories.includes(byId.get(r.id)?.category),
     );
     if (next >= 0 && ranked[next]) {

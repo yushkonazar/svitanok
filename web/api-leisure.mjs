@@ -6,6 +6,7 @@ import {
   readLeisureWorkspace,
 } from './core/leisure/store.mjs';
 import { LeisureError } from './core/leisure/model.mjs';
+import { suggestLeisure } from './core/leisure/planning-service.mjs';
 
 /** @param {Request} request @param {Env} env */
 export async function handleLeisure(request, env) {
@@ -35,11 +36,19 @@ export async function handleLeisure(request, env) {
         verification: await inspectLeisureCommand(env, url.searchParams.get('commandId') ?? ''),
       });
     if (body) {
+      if (body.op === 'suggest') {
+        if (JSON.stringify(body.payload ?? {}).length > 12000)
+          throw new LeisureError('Параметрів підбору забагато.');
+        return reply({ ok: true, suggestions: await suggestLeisure(env, body.payload) });
+      }
       receipt = await executeLeisureCommand(env, body);
       acknowledged = true;
       // A reaction needs its receipt and a small client patch; visits/plans keep
       // the full workspace response so newly saved personal history stays visible.
-      if (request.headers.get('X-Leisure-Format') === '3' && body.op === 'reaction')
+      if (
+        ['3', '4'].includes(request.headers.get('X-Leisure-Format') ?? '') &&
+        body.op === 'reaction'
+      )
         return reply({ ok: true, acknowledged, receipt });
     }
     phase = 'workspace';
@@ -48,8 +57,37 @@ export async function handleLeisure(request, env) {
       Date.now(),
       request.method === 'GET' && new URL(request.url).searchParams.get('history') === 'all',
     );
-    if (!['2', '3'].includes(request.headers.get('X-Leisure-Format') ?? ''))
+    const format = request.headers.get('X-Leisure-Format') ?? '';
+    if (!['2', '3', '4'].includes(format))
       workspace.records = workspace.records.filter((r) => r.kind !== 'familiarity');
+    if (format !== '4') {
+      const legacy = new Set([
+        'exhibition',
+        'festival',
+        'concert',
+        'show',
+        'cinema',
+        'food',
+        'trip',
+      ]);
+      workspace.items = workspace.items.filter((i) => legacy.has(i.category));
+      workspace.records = workspace.records.filter((r) => r.kind !== 'draft');
+      workspace.settings = {
+        ...workspace.settings,
+        categories: workspace.settings.categories.filter((/** @type {string} */ c) =>
+          legacy.has(c),
+        ),
+        telegram: false,
+      };
+      const ids = new Set(workspace.items.map((i) => i.id));
+      if (workspace.edition)
+        workspace.edition = {
+          ...workspace.edition,
+          ids: workspace.edition.ids.filter((/** @type {string} */ id) => ids.has(id)),
+          futureIds: workspace.edition.futureIds.filter((/** @type {string} */ id) => ids.has(id)),
+          rankings: workspace.edition.rankings.filter((/** @type {any} */ r) => ids.has(r.id)),
+        };
+    }
     return reply({
       ok: true,
       acknowledged,

@@ -4,6 +4,8 @@ import { addDaysToDateKey } from '../../reminders-core.mjs';
 import { cleanText, httpLink, leisureWeek, normalizeLeisureItem } from './model.mjs';
 import { leisureDb, leisureSettings, publishLeisureEdition } from './store.mjs';
 import { parseNuxtData } from './nuxt-data.mjs';
+import { queueLeisureDigest } from './notifications.mjs';
+import { leisureDiscoveryQueries } from './discovery-queries.mjs';
 
 const SOURCE_HOSTS = new Set([
   'concert.ua',
@@ -12,8 +14,14 @@ const SOURCE_HOSTS = new Set([
   'www.lvivart.center',
   'planetakino.ua',
   'www.lvivgallery.org.ua',
+  'hromadske.radio',
 ]);
 export const PUBLIC_LEISURE_SOURCES = [
+  {
+    id: 'podcasts',
+    name: 'Громадське радіо · Книжкова полиця',
+    url: 'https://hromadske.radio/podcasts/knyzhkova-polytsia-z-tetianoiu-kurmanovoiu/feed',
+  },
   { id: 'concert', name: 'Concert.ua', url: 'https://concert.ua/uk/catalog/lviv' },
   { id: 'lviv', name: 'Lviv.travel', url: 'https://lviv.travel/ua/events' },
   { id: 'jam', name: 'Jam Factory', url: 'https://jamfactory.ua/events/' },
@@ -92,7 +100,7 @@ async function sourceText(url) {
       signal: AbortSignal.timeout(12000),
       headers: {
         'user-agent': 'Svitanok/0.4 leisure personal catalogue',
-        accept: 'text/html,application/json',
+        accept: 'text/html,application/json,application/rss+xml,application/xml',
       },
     });
     if (response.status >= 300 && response.status < 400) {
@@ -142,7 +150,9 @@ export function eventCandidate(event, source, url) {
       ? 'festival'
       : /виставк|exhibition/i.test(title)
         ? 'exhibition'
-        : 'concert';
+        : /лекці|зустріч|майстер.?клас|воркшоп|дискусі/i.test(title)
+          ? 'meetup'
+          : 'concert';
   const address =
     typeof location?.address === 'string'
       ? location.address
@@ -231,7 +241,11 @@ export function articleCandidate(html, url, source) {
         ? 'cinema'
         : /концерт|джаз/i.test(title)
           ? 'concert'
-          : 'show',
+          : /фестивал|ярмарок/i.test(title)
+            ? 'festival'
+            : /лекці|зустріч|майстер.?клас|воркшоп|дискусі/i.test(title)
+              ? 'meetup'
+              : 'show',
     ...range,
     sourceUrl: url,
     source,
@@ -279,6 +293,8 @@ export async function checkLeisureSource(item, nowMs) {
 }
 /** @param {any} source @param {number} nowMs @param {any} settings */
 export async function collectSource(source, nowMs, settings) {
+  if (source.id === 'podcasts')
+    return settings.categories?.includes('podcast') ? collectPodcastFeed(source, nowMs) : [];
   if (source.id === 'planeta') return collectPlaneta(nowMs, settings);
   if (source.id === 'nearby') return collectNearby(source, nowMs, settings);
   const html = await sourceText(source.url);
@@ -425,6 +441,70 @@ export async function collectNearby(source, nowMs, settings = {}) {
     nextOffset: rotated.length > start + limit ? start + limit : null,
   });
 }
+/** Only published genre words, not country labels or mood descriptions.
+ * @param {any} movie */
+export function publishedFilmGenres(movie) {
+  const explicit = [
+    ...(Array.isArray(movie.genres) ? movie.genres : []),
+    ...(Array.isArray(movie.categories)
+      ? movie.categories
+      : Array.isArray(movie.categories?.genres)
+        ? movie.categories.genres
+        : []),
+  ].map((c) => (typeof c === 'string' ? c : c.name));
+  const tags = (Array.isArray(movie.cloudTags) ? movie.cloudTags : []).filter(
+    (/** @type {unknown} */ t) =>
+      typeof t === 'string' &&
+      /бойов|екшн|трилер|комеді|драм|фантаст|фентез|жах|анімац|мульт|документ|романт|мелодрам|пригод|кримін|детектив|історич|мюзикл/i.test(
+        t,
+      ),
+  );
+  return [...new Set([...explicit, ...tags].filter(Boolean))].join(', ');
+}
+/** Public publisher-linked RSS, bounded metadata only; no audio download.
+ * @param {any} source @param {number} nowMs */
+export async function collectPodcastFeed(source, nowMs) {
+  const xml = await sourceText(source.url),
+    result = [];
+  for (const match of [...xml.matchAll(/<item\b[^>]*>([\s\S]*?)<\/item>/gi)].slice(0, 10)) {
+    const body = match[1] ?? '';
+    const field = (/** @type {string} */ name) =>
+      decodeHtml(
+        (
+          new RegExp('<' + name + '(?:\\s[^>]*)?>([\\s\\S]*?)</' + name + '>', 'i').exec(
+            body,
+          )?.[1] ?? ''
+        ).replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1'),
+      ).trim();
+    const link = httpLink(field('link'));
+    if (!link || new URL(link).hostname !== 'hromadske.radio') continue;
+    const duration = field('itunes:duration'),
+      parts = duration.split(':').map(Number);
+    const seconds =
+      parts.length === 3
+        ? (parts[0] ?? 0) * 3600 + (parts[1] ?? 0) * 60 + (parts[2] ?? 0)
+        : parts.length === 2
+          ? (parts[0] ?? 0) * 60 + (parts[1] ?? 0)
+          : Number(duration);
+    const normalized = await normalizeLeisureItem(
+      {
+        title: field('title'),
+        category: 'podcast',
+        guid: field('guid') || link,
+        identity: field('guid') || link,
+        source: source.name,
+        sourceUrl: link,
+        summary: cleanText(field('description'), 300),
+        durationMinutes: seconds > 0 ? Math.ceil(seconds / 60) : null,
+        publishedAt: field('pubDate'),
+        priceNote: 'Умови прослуховування — на платформі видавця.',
+      },
+      nowMs,
+    );
+    if (normalized) result.push(normalized);
+  }
+  return result;
+}
 /** Verified schedule data for the explicitly selected cinema/date. No checkout requests.
  * @param {number} nowMs @param {any} settings */
 export async function collectPlaneta(nowMs, settings) {
@@ -462,15 +542,7 @@ export async function collectPlaneta(nowMs, settings) {
           endDate: movie.offlineRental.end,
           durationMinutes: Math.round(Number(movie.durationInSec) / 60),
           age: movie.ageRestrictions,
-          genre: (Array.isArray(movie.categories)
-            ? movie.categories
-            : Array.isArray(movie.categories?.genres)
-              ? movie.categories.genres
-              : []
-          )
-            .map((/** @type {any} */ c) => (typeof c === 'string' ? c : c.name))
-            .filter(Boolean)
-            .join(', '),
+          genre: publishedFilmGenres(movie),
           sessions: [],
           studentNote: (Array.isArray(movie.offlineRental.labels)
             ? movie.offlineRental.labels
@@ -570,36 +642,26 @@ export async function refreshLeisureCatalog(env, nowMs = Date.now(), cinemaOnly 
   const items = outputs.flatMap((r) => (r.status === 'fulfilled' ? r.value : []));
   if (!cinemaOnly && env.MAPS_API_KEY) {
     try {
-      const foodQueries = [
-        'ресторани Львів',
-        'кав’ярні Львів',
-        'українська кухня Львів',
-        'італійські ресторани Львів',
-        'азійські ресторани Львів',
-        'кафе сніданки Львів',
-        'ресторани тераса Львів',
-        'кав’ярні десерти Львів',
-      ];
-      const weekIndex = Math.floor(Date.parse(`${leisureWeek(nowMs)}T12:00:00Z`) / (7 * 86400000));
+      const queries = leisureDiscoveryQueries(settings, null, nowMs);
       const outputs = await Promise.allSettled(
-        [0, 1, 2, 3].map((offset) =>
-          placesSearch(
-            env,
-            {
-              query: foodQueries[(weekIndex + offset) % foodQueries.length] ?? 'ресторани Львів',
-              city: 'Львів',
-              limit: 8,
-            },
-            nowMs,
-          ),
+        queries.map((entry) =>
+          placesSearch(env, { query: entry.query, city: settings.city, limit: 8 }, nowMs),
         ),
       );
-      const fresh = outputs.flatMap((r) =>
-        r.status === 'fulfilled' && r.value.source === 'api' ? [r.value] : [],
+      const fresh = outputs.flatMap((r, index) =>
+        r.status === 'fulfilled' && r.value.source === 'api'
+          ? [{ ...r.value, leisureCategory: queries[index]?.category ?? 'food' }]
+          : [],
       );
       if (!fresh.length) throw new Error('places-not-fresh');
       const places = {
-        places: [...new Map(fresh.flatMap((r) => r.places).map((p) => [p.place_id, p])).values()],
+        places: [
+          ...new Map(
+            fresh
+              .flatMap((r) => r.places.map((p) => ({ ...p, leisureCategory: r.leisureCategory })))
+              .map((p) => [p.place_id, p]),
+          ).values(),
+        ],
       };
       for (const place of places.places) {
         const item = await normalizeLeisureItem(
@@ -611,7 +673,7 @@ export async function refreshLeisureCatalog(env, nowMs = Date.now(), cinemaOnly 
             placeType: place.place_type,
             lat: place.lat,
             lon: place.lon,
-            category: 'food',
+            category: place.leisureCategory,
             source: 'Google Places',
             sourceUrl:
               place.maps_uri ??
@@ -663,8 +725,10 @@ export async function leisureCatalogTask(env, nowMs = Date.now()) {
     .bind(week)
     .first();
   const edition = row ? JSON.parse(String(row.data_json)) : null;
-  if (edition && edition.catalogVersion !== 2)
+  if (edition && edition.catalogVersion !== 3)
     return env.LEISURE_CATALOG?.getByName('owner').request('full', nowMs);
+  if (edition && settings.telegram && hour >= settings.updateHour)
+    await queueLeisureDigest(env, nowMs);
   if (today === week && hour >= settings.updateHour - 1 && !edition)
     return env.LEISURE_CATALOG?.getByName('owner').request('full', nowMs);
   if (
