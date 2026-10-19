@@ -14,6 +14,8 @@ import {
 import { CategoryArtwork } from './CategoryArtwork.tsx';
 import { isSessionExpired } from '../../api/client.ts';
 import { SessionExpired } from '../ui/SessionExpired.tsx';
+import { defaultTogetherWindow } from './together-window.ts';
+import { normalizeLeisureWindow } from '../../../../core/leisure/window.mjs';
 type Form = {
   mode: 'day' | 'range';
   from: string;
@@ -33,17 +35,20 @@ type Props = {
   busy: boolean;
   onChoose: (seed: LeisurePlanSeed) => void;
   send: (op: string, payload: Record<string, unknown>, id?: string) => Promise<LeisureReceipt>;
+  active?: boolean;
 };
 const FORM_KEY = 'svitanok-leisure-together-v1';
 function initialForm(data: LeisureWorkspace): Form {
   const today = toKyivInput(new Date().toISOString()).slice(0, 10);
   const fallback: Form = {
     mode: 'day',
-    from: today,
-    to: today,
-    startTime: '17:30',
-    endTime: '22:00',
-    transport: data.settings.transport === 'walk' ? 'walk' : 'car',
+    ...defaultTogetherWindow(),
+    transport:
+      data.settings.transport === 'walk'
+        ? 'walk'
+        : ['transit', 'public'].includes(data.settings.transport)
+          ? 'transit'
+          : 'car',
     budget: '',
     pace: 'balanced',
     startLocation: '',
@@ -53,7 +58,19 @@ function initialForm(data: LeisureWorkspace): Form {
   };
   try {
     const saved = JSON.parse(localStorage.getItem(FORM_KEY) ?? 'null');
-    if (saved && saved.from >= today) return { ...fallback, ...saved };
+    if (saved && saved.from >= today) {
+      const candidate = { ...fallback, ...saved };
+      normalizeLeisureWindow(
+        { ...candidate, to: candidate.mode === 'day' ? candidate.from : candidate.to },
+        Date.now(),
+      );
+      if (
+        candidate.from === today &&
+        candidate.startTime < toKyivInput(new Date().toISOString()).slice(11, 16)
+      )
+        return { ...candidate, ...defaultTogetherWindow(), perDay: {} };
+      return candidate;
+    }
   } catch {
     /* optional draft */
   }
@@ -62,12 +79,18 @@ function initialForm(data: LeisureWorkspace): Form {
 function seed(plan: LeisureSuggestion): LeisurePlanSeed {
   return { title: plan.title, stops: plan.stops, transport: plan.transport };
 }
+function scenarioPrice(plan: LeisureSuggestion) {
+  if (plan.costRange?.max != null && plan.costRange.max > plan.costRange.min)
+    return money(plan.costRange.min / 100) + '–' + money(plan.costRange.max / 100);
+  if (plan.knownCostMinor > 0) return 'Від ' + money(plan.knownCostMinor / 100);
+  return plan.unknownPrices ? 'Сума уточнюється' : 'Вхід безплатний';
+}
 function weekday(date: string) {
   return new Intl.DateTimeFormat('uk-UA', { weekday: 'long', timeZone: 'Europe/Kyiv' }).format(
     new Date(date + 'T12:00:00Z'),
   );
 }
-export function TogetherPlanner({ data, busy, onChoose, send }: Props) {
+export function TogetherPlanner({ data, busy, onChoose, send, active = true }: Props) {
   const [form, setForm] = useState(() => initialForm(data)),
     [result, setResult] = useState<LeisureSuggestions | null>(null),
     [loading, setLoading] = useState(false),
@@ -79,6 +102,8 @@ export function TogetherPlanner({ data, busy, onChoose, send }: Props) {
   const controller = useRef<AbortController | null>(null),
     version = useRef(0),
     resultHeading = useRef<HTMLDivElement>(null);
+  const revealResults = useRef(false);
+  const wasActive = useRef(active);
   const [drafting, setDrafting] = useState<string | null>(null);
   const [savedDrafts, setSavedDrafts] = useState<Record<string, string>>({});
   useEffect(() => {
@@ -89,6 +114,27 @@ export function TogetherPlanner({ data, busy, onChoose, send }: Props) {
     }
   }, [form]);
   useEffect(() => () => controller.current?.abort(), []);
+  useEffect(() => {
+    const returning = active && !wasActive.current;
+    wasActive.current = active;
+    if (!active || !result || (!revealResults.current && !returning)) return;
+    revealResults.current = false;
+    const frame = requestAnimationFrame(() => {
+      const element = returning
+        ? (resultHeading.current?.querySelector<HTMLElement>('.leisure-scenario.is-open') ??
+          resultHeading.current)
+        : resultHeading.current;
+      if (returning) element?.querySelector('button')?.focus({ preventScroll: true });
+      else element?.focus({ preventScroll: true });
+      element?.scrollIntoView?.({
+        block: 'start',
+        behavior: window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+          ? 'auto'
+          : 'smooth',
+      });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [result, active]);
   const edit = (patch: Partial<Form>) => {
     version.current++;
     controller.current?.abort();
@@ -102,11 +148,13 @@ export function TogetherPlanner({ data, busy, onChoose, send }: Props) {
     const budget = form.budget.trim() ? Number(form.budget.replace(',', '.')) : null;
     if (budget != null && (!Number.isFinite(budget) || budget < 0))
       throw new Error('Перевір бюджет на двох.');
-    return {
+    const value = {
       ...form,
       to: form.mode === 'day' ? form.from : form.to,
       budgetMinor: budget == null ? null : Math.round(budget * 100),
     };
+    normalizeLeisureWindow(value, Date.parse(data.generatedAt));
+    return value;
   };
   const generate = async (preferredFoodId?: string, original?: LeisureSuggestion) => {
     const anchorId = original?.anchorId,
@@ -174,19 +222,12 @@ export function TogetherPlanner({ data, busy, onChoose, send }: Props) {
           return next;
         });
       } else {
+        revealResults.current = true;
         setResult(response);
         setSavedDrafts({});
       }
       setExpanded(original?.id ?? chosen?.id ?? '');
       if (!preferredFoodId) setExpandedDay(form.mode === 'day' ? form.from : null);
-      requestAnimationFrame(() =>
-        resultHeading.current?.scrollIntoView?.({
-          block: 'nearest',
-          behavior: window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
-            ? 'auto'
-            : 'smooth',
-        }),
-      );
     } catch (e) {
       if (current === version.current && !abort.signal.aborted)
         setError(e instanceof Error ? e : new Error('Не вдалося підібрати вихід.'));
@@ -261,6 +302,16 @@ export function TogetherPlanner({ data, busy, onChoose, send }: Props) {
               {leisureTime(plan.stops[0]!.startAt)}–{leisureTime(plan.stops.at(-1)!.endAt)} ·{' '}
               {plan.stops.length === 1 ? 'одна активність' : plan.stops.length + ' зупинки'}
             </em>
+            {compact && (
+              <>
+                <small className="leisure-scenario-preview">
+                  {plan.stops.map((stop) => stop.title).join(' → ')}
+                </small>
+                <small className="leisure-scenario-compact-cost">
+                  {scenarioPrice(plan)} · для двох
+                </small>
+              </>
+            )}
           </span>
           <span className="leisure-scenario-chevron" aria-hidden="true">
             ⌄
@@ -303,15 +354,7 @@ export function TogetherPlanner({ data, busy, onChoose, send }: Props) {
             <p className="leisure-scenario-reason">{plan.reasons.slice(0, 2).join(' · ')}</p>
             <div className="leisure-scenario-cost">
               <span>Для двох</span>
-              <strong>
-                {plan.costRange?.max != null && plan.costRange.max > plan.costRange.min
-                  ? money(plan.costRange.min / 100) + '–' + money(plan.costRange.max / 100)
-                  : plan.knownCostMinor > 0
-                    ? 'Від ' + money(plan.knownCostMinor / 100)
-                    : plan.unknownPrices
-                      ? 'Сума уточнюється'
-                      : 'Вхід безплатний'}
-              </strong>
+              <strong>{scenarioPrice(plan)}</strong>
               {plan.unknownPrices > 0 && (
                 <small>Без підтвердженої ціни: {plan.unknownPrices}</small>
               )}
@@ -368,7 +411,7 @@ export function TogetherPlanner({ data, busy, onChoose, send }: Props) {
               <button
                 type="button"
                 className="leisure-button"
-                disabled={busy || !!drafting || !!savedDrafts[plan.id]}
+                disabled={busy || loading || !!drafting || !!savedDrafts[plan.id]}
                 onClick={() => void saveDraft(plan)}
               >
                 {drafting === plan.id
@@ -614,7 +657,13 @@ export function TogetherPlanner({ data, busy, onChoose, send }: Props) {
         </div>
       )}
       {result && (
-        <div className="leisure-suggestion-results" ref={resultHeading} aria-busy={loading}>
+        <div
+          className="leisure-suggestion-results"
+          ref={resultHeading}
+          tabIndex={-1}
+          aria-label="Варіанти проведення часу"
+          aria-busy={loading}
+        >
           <div className="leisure-result-heading">
             <p className="leisure-eyebrow">
               {form.mode === 'range' ? 'Обираємо день' : 'Ваші можливості'}
@@ -642,6 +691,12 @@ export function TogetherPlanner({ data, busy, onChoose, send }: Props) {
                   {note}
                 </p>
               ))}
+              {day.plans.length === 0 && (
+                <p className="leisure-day-empty">
+                  На цей проміжок поки немає варіантів. Спробуй інші години або дозволь нові місця у
+                  побажаннях до виходу.
+                </p>
+              )}
               {(form.mode === 'day' || expandedDay === day.date
                 ? day.plans
                 : day.plans.slice(0, 1)

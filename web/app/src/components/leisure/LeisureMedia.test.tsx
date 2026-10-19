@@ -84,6 +84,57 @@ function setup() {
   return { item, client, calls, fetch };
 }
 describe('actual leisure images and facts', () => {
+  it('shares the same photo between the active card and its open details, then collects it', async () => {
+    const { item, client, calls } = setup();
+    const view = render(
+      <QueryClientProvider client={client}>
+        <LeisureMedia item={item} active />
+        <LeisureMedia item={item} variant="detail" />
+      </QueryClientProvider>,
+    );
+    expect(screen.getAllByText('Завантажуємо фото…')).toHaveLength(2);
+    await waitFor(() =>
+      expect(screen.getAllByAltText(`Фото місця «${item.title}»`)).toHaveLength(2),
+    );
+    expect(calls.filter((call) => call.op === 'enrich')).toHaveLength(1);
+    expect(calls.filter((call) => call.op === 'image')).toHaveLength(1);
+    view.rerender(
+      <QueryClientProvider client={client}>
+        <LeisureMedia item={item} active />
+      </QueryClientProvider>,
+    );
+    expect(calls.filter((call) => call.op === 'image')).toHaveLength(1);
+    view.unmount();
+    await waitFor(() =>
+      expect(client.getQueryCache().findAll({ queryKey: ['leisure-image'] })).toHaveLength(0),
+    );
+    expect(revoke).toHaveBeenCalledTimes(2);
+  });
+  it('shows a failed photo and lets the user retry without reopening the card', async () => {
+    const { item, client, fetch, calls } = setup();
+    const original = fetch.getMockImplementation()!;
+    let failed = false;
+    fetch.mockImplementation((url: string, init: RequestInit) => {
+      const body = JSON.parse(String(init.body));
+      if (body.op === 'image' && !failed) {
+        failed = true;
+        calls.push(body);
+        return Promise.resolve(new Response('Unavailable', { status: 503 }));
+      }
+      return original(url, init);
+    });
+    render(
+      <QueryClientProvider client={client}>
+        <LeisureMedia item={item} variant="detail" />
+      </QueryClientProvider>,
+    );
+    expect(await screen.findByText('Фото зараз недоступне')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Повторити' }));
+    const photo = await screen.findByAltText(`Фото місця «${item.title}»`);
+    fireEvent.load(photo);
+    expect(screen.queryByText('Фото зараз недоступне')).not.toBeInTheDocument();
+    expect(calls.filter((call) => call.op === 'image')).toHaveLength(2);
+  });
   it('shares a live details request, displays authors, loads one photo at a time and revokes object URLs', async () => {
     const { item, client, calls } = setup();
     const view = render(
@@ -105,6 +156,7 @@ describe('actual leisure images and facts', () => {
     expect(screen.getByText(/Приблизно на двох: 600/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Наступне фото' }));
     await waitFor(() => expect(calls.filter((c) => c.op === 'image')).toHaveLength(2));
+    await waitFor(() => expect(create).toHaveBeenCalledTimes(2));
     expect(revoke).toHaveBeenCalledWith('blob:private-photo');
     view.unmount();
     expect(revoke).toHaveBeenCalledTimes(2);

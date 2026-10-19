@@ -1,8 +1,8 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { CategoryArtwork } from './CategoryArtwork.tsx';
 import type { LeisureItem } from '../../api/leisure.ts';
 import {
-  fetchLeisureImage,
+  useLeisureImage,
   leisureLiveAvailable,
   useLeisureEnrichment,
 } from '../../api/leisure-enrichment.ts';
@@ -20,11 +20,20 @@ function Photo({
   authors: Array<{ name: string; url: string | null }>;
   variant: 'cover' | 'detail' | 'thumb';
 }) {
-  const [loaded, setLoaded] = useState(false);
-  const [url, setUrl] = useState('');
-  const [failed, setFailed] = useState(false);
+  const [loadedBlob, setLoadedBlob] = useState<Blob | null>(null);
+  const [failedBlob, setFailedBlob] = useState<Blob | null>(null);
   const [visible, setVisible] = useState(variant !== 'thumb');
   const ref = useRef<HTMLElement>(null);
+  const image = useLeisureImage(item, index, photo, visible);
+  const photoRef = useCallback(
+    (node: HTMLImageElement | null) => {
+      if (!node || !image.data) return;
+      const objectUrl = URL.createObjectURL(image.data);
+      node.src = objectUrl;
+      return () => URL.revokeObjectURL(objectUrl);
+    },
+    [image.data],
+  );
   useEffect(() => {
     if (visible || !ref.current || !('IntersectionObserver' in window)) return;
     const observer = new IntersectionObserver(
@@ -39,51 +48,40 @@ function Photo({
     observer.observe(ref.current);
     return () => observer.disconnect();
   }, [visible]);
-  useEffect(() => {
-    if (!visible || !leisureLiveAvailable() || (!photo && !item.media?.[index])) return;
-    const controller = new AbortController();
-    let objectUrl = '';
-    const timer = setTimeout(
-      () => {
-        void fetchLeisureImage(item.id, index, photo, controller.signal)
-          .then((blob) => {
-            if (controller.signal.aborted) return;
-            objectUrl = URL.createObjectURL(blob);
-            setUrl(objectUrl);
-          })
-          .catch(() => {
-            if (!controller.signal.aborted) setFailed(true);
-          });
-      },
-      variant === 'cover' ? 200 : 0,
-    );
-    return () => {
-      clearTimeout(timer);
-      controller.abort();
-      if (objectUrl) URL.revokeObjectURL(objectUrl);
-    };
-  }, [item.id, item.media, index, photo, visible, variant]);
+  const loaded = !!image.data && loadedBlob === image.data;
+  const unavailable = image.isError || (!!image.data && failedBlob === image.data);
   return (
     <figure
       ref={ref}
-      className={`leisure-media is-${variant}${loaded && !failed ? ' has-photo' : ''}`}
+      className={`leisure-media is-${variant}${loaded && !unavailable ? ' has-photo' : ''}`}
+      aria-busy={visible && leisureLiveAvailable() && !loaded && !unavailable}
     >
       <CategoryArtwork category={item.category} variant={variant} eager={variant !== 'thumb'} />
-      {url && !failed && (
+      {image.data && !unavailable && (
         <img
+          ref={photoRef}
           className="leisure-real-photo"
-          src={url}
           alt={
             item.media?.[index]?.alt ||
             (photo ? `Фото місця «${item.title}»` : `Афіша «${item.title}»`)
           }
           draggable={false}
           decoding="async"
-          onLoad={() => setLoaded(true)}
-          onError={() => setFailed(true)}
+          onLoad={() => {
+            setLoadedBlob(image.data);
+            setFailedBlob(null);
+          }}
+          onError={() => setFailedBlob(image.data)}
         />
       )}
-      {loaded && !failed && (
+      {visible && leisureLiveAvailable() && !loaded && !unavailable && variant !== 'thumb' && (
+        <span className="leisure-media-state is-loading" role="status">
+          {image.fetchStatus === 'paused'
+            ? 'Фото завантажиться після відновлення зв’язку'
+            : 'Завантажуємо фото…'}
+        </span>
+      )}
+      {loaded && !unavailable && (
         <figcaption
           className={variant === 'thumb' && !photo ? 'leisure-media-credit-compact' : undefined}
           onClick={(e) => e.stopPropagation()}
@@ -109,8 +107,22 @@ function Photo({
           )}
         </figcaption>
       )}
-      {failed && variant === 'detail' && (
-        <span className="leisure-media-state">Фото зараз недоступне</span>
+      {unavailable && variant !== 'thumb' && (
+        <span
+          className="leisure-media-state"
+          onClick={(e) => e.stopPropagation()}
+          onPointerDown={(e) => e.stopPropagation()}
+        >
+          Фото зараз недоступне
+          <button
+            type="button"
+            onClick={() => {
+              void image.refetch();
+            }}
+          >
+            Повторити
+          </button>
+        </span>
       )}
     </figure>
   );
@@ -138,7 +150,14 @@ function LiveMedia({
 }) {
   const live = useLeisureEnrichment(item);
   return (
-    <MediaGallery item={item} variant={variant} active photos={live.data?.place?.photos ?? []} />
+    <MediaGallery
+      item={item}
+      variant={variant}
+      active
+      photos={live.data?.place?.photos ?? []}
+      state={live.isPending ? 'loading' : live.isError ? 'unavailable' : undefined}
+      onRetry={() => void live.refetch()}
+    />
   );
 }
 function MediaGallery({
@@ -146,22 +165,48 @@ function MediaGallery({
   variant,
   active,
   photos,
+  state,
+  onRetry,
 }: {
   item: LeisureItem;
   variant: 'cover' | 'thumb' | 'detail';
   active: boolean;
   photos: Array<{ name: string; authors: Array<{ name: string; url: string | null }> }>;
+  state?: 'loading' | 'unavailable';
+  onRetry?: () => void;
 }) {
   const [index, setIndex] = useState(0);
   const count = item.placeId ? photos.length : (item.media?.length ?? 0);
   const selected = Math.min(index, Math.max(0, count - 1));
   if (!count)
     return (
-      <CategoryArtwork
-        category={item.category}
-        variant={variant}
-        eager={active || variant === 'detail'}
-      />
+      <div className={`leisure-media is-${variant}`} aria-busy={state === 'loading'}>
+        <CategoryArtwork
+          category={item.category}
+          variant={variant}
+          eager={active || variant === 'detail'}
+        />
+        {state && variant !== 'thumb' && (
+          <span
+            className={`leisure-media-state${state === 'loading' ? ' is-loading' : ''}`}
+            role="status"
+          >
+            {state === 'loading' ? 'Завантажуємо фото…' : 'Фото зараз недоступне'}
+            {state === 'unavailable' && onRetry && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onRetry();
+                }}
+                onPointerDown={(e) => e.stopPropagation()}
+              >
+                Повторити
+              </button>
+            )}
+          </span>
+        )}
+      </div>
     );
   return (
     <div className={`leisure-gallery is-${variant}`}>

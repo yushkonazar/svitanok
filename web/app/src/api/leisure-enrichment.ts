@@ -110,4 +110,24 @@ export async function fetchLeisureImage(
   const response = await read('image', { itemId, index, ...(photo ? { photo } : {}) }, signal);
   return response.blob();
 }
+/** Share only while the photo is on screen (for example a card and its open details).
+ * The last observer leaving cancels the request and immediately collects its Blob. */
+export function useLeisureImage(
+  item: LeisureItem,
+  index: number,
+  photo: string | undefined,
+  visible: boolean,
+) {
+  const source = photo ?? item.media?.[index]?.url ?? '';
+  return useQuery({
+    queryKey: ['leisure-image', item.id, index, source],
+    enabled: visible && inTelegram() && !!source,
+    queryFn: ({ signal }) => fetchLeisureImage(item.id, index, photo, signal),
+    staleTime: Infinity,
+    gcTime: 0,
+    retry: false,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+  });
+}
 export { inTelegram as leisureLiveAvailable } from '../telegram.ts';
