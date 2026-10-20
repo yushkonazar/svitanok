@@ -1905,8 +1905,8 @@ function TaskDetail({
       )}
       {task.status === 'excepted' && (
         <p className="plan-muted">
-          Задача не виконана; зараз для неї знято наслідок через виняток. Звичайне пояснення
-          невиконання не повинно оформлятися як виняток.
+          {task.facts.done ? 'Виконання зафіксовано' : 'Задача не виконана'}; зараз для неї знято
+          наслідок через виняток. Звичайне пояснення невиконання не повинно оформлятися як виняток.
         </p>
       )}
       <dl className="plan-facts">
@@ -2075,7 +2075,7 @@ function TaskDetail({
                 Це пояснення, а не виняток · відновити умови
               </button>
             )}
-            {!task.facts.done && task.status === 'accepted' && (
+            {(!task.facts.done || late) && task.status === 'accepted' && (
               <details>
                 <summary>Виняткова обставина або перенесення</summary>
                 <p className="plan-muted">
@@ -2104,7 +2104,7 @@ function TaskDetail({
                 >
                   Зберегти виняток без нового XP і штрафу
                 </button>
-                {!task.source && !task.calendar && (
+                {!task.facts.done && !task.source && !task.calendar && (
                   <>
                     <PlanLocalTime
                       label="Новий крайній строк · Київ"

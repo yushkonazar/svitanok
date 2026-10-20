@@ -101,6 +101,11 @@ describe('manual plan owner journey', () => {
     expect(within(detail).getByText(/Факт: 1 \/ 1 дія/)).toBeInTheDocument();
     expect(within(detail).getByText(/Час факту:/)).toBeInTheDocument();
     expect(within(detail).getByLabelText('Пояснення запізнення')).toBeInTheDocument();
+    await user.click(within(detail).getByText('Виняткова обставина або перенесення'));
+    expect(within(detail).getByLabelText('Причина зовнішнього винятку')).toBeInTheDocument();
+    expect(
+      within(detail).queryByRole('button', { name: 'Перенести з цією причиною' }),
+    ).not.toBeInTheDocument();
     await user.click(within(detail).getByRole('button', { name: 'Уточнити результат' }));
     expect(screen.getByRole('button', { name: '✓ Виконав' })).toHaveAttribute(
       'aria-pressed',
