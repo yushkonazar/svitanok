@@ -260,9 +260,19 @@ function resultOf(state, task) {
 function validReports(result) {
   return result.reports.filter((/** @type {any} */ r) => !r.retracted);
 }
+/** Factual work survives a late report being ineligible for a time-sensitive
+ * reward. Derive it from existing reports without rewriting the XP ledger.
+ * @param {any} result */
+export function observedResultUnits(result) {
+  return Math.max(
+    result.units,
+    ...validReports(result).map((/** @type {any} */ r) => r.observedUnits ?? r.units),
+  );
+}
 /** @param {PlanState} state @param {any} task */
 export function taskFacts(state, task) {
   const result = resultOf(state, task);
+  const units = observedResultUnits(result);
   const onTime = Math.max(
     task.baseline ?? 0,
     ...validReports(result)
@@ -275,13 +285,30 @@ export function taskFacts(state, task) {
       ? Math.ceil((task.penaltyXp * remaining) / result.target)
       : 0;
   return {
-    units: result.units,
+    units,
+    eligibleUnits: result.units,
     target: result.target,
     credited: result.credited,
     onTimeUnits: onTime,
     risk,
-    done: result.units >= result.target,
+    done: units >= result.target,
   };
+}
+/** Report prompts ask for an unknown outcome, not for earning eligibility.
+ * A partial/zero fact submitted after the deadline is already an answer.
+ * Earlier progress still needs a final update; undo restores that need.
+ * @param {PlanState} state @param {any} task @param {number} nowMs */
+export function taskNeedsReport(state, task, nowMs) {
+  return (
+    task.status === 'accepted' &&
+    !task.forfeitedAt &&
+    !task.settledAt &&
+    Date.parse(task.dueAt) <= nowMs &&
+    !taskFacts(state, task).done &&
+    !validReports(resultOf(state, task)).some(
+      (/** @type {any} */ r) => r.recordedAt >= task.dueAt && r.recordedAt >= task.acceptedAt,
+    )
+  );
 }
 /** @param {PlanState} state */
 export function planWallet(state) {
@@ -328,7 +355,22 @@ export function planView(state, nowMs, events = []) {
     rewards: planRecords(state, 'reward'),
     coupons: planRecords(state, 'coupon'),
     shifts: planRecords(state, 'shift'),
-    events,
+    events: events.map((event) => {
+      if (!['earned', 'report-reversed'].includes(event.kind)) return event;
+      const task = state.records[event.taskId];
+      const result = task && state.records[task.resultId];
+      const report = result?.reports?.find((/** @type {any} */ r) => r.id === event.reportId);
+      if (!report) return event;
+      return {
+        ...event,
+        actualAt: report.actualAt,
+        observedUnits: report.observedUnits ?? report.units,
+        eligibleUnits: report.units,
+        reportTarget: result.target,
+        reportUnit: task.unit,
+        reportRetracted: Boolean(report.retracted),
+      };
+    }),
     suggestions: REWARD_SUGGESTIONS,
   };
 }
@@ -765,7 +807,7 @@ export function applyPlanCommand(original, command, nowMs) {
     );
     if (!tasks.length) throw new PlanError('Немає чернеток для прийняття. Онови план.', 409);
     for (const t of tasks) {
-      if (resultOf(state, t).units >= t.target)
+      if (taskFacts(state, t).done)
         throw new PlanError(
           `Результат «${t.title}» уже зроблено. Прибери цю чернетку перед прийняттям.`,
         );
@@ -948,7 +990,9 @@ export function applyPlanCommand(original, command, nowMs) {
         ? `+${delta} XP за результат.`
         : op === 'undo-report'
           ? 'Позначку скасовано.'
-          : 'Факт збережено.';
+          : taskFacts(state, task).done && taskFacts(state, task).onTimeUnits < task.target
+            ? 'Виконання збережено: із запізненням. Умови XP за вчасність не змінено.'
+            : 'Факт збережено.';
   } else if (op === 'task-note' || op === 'exception-revoke' || op === 'reschedule') {
     const task = get(state, id, 'task');
     if (!task.acceptedAt || !['accepted', 'excepted'].includes(task.status))

@@ -10,7 +10,7 @@ export async function runMotivationQuery(env, args, nowMs) {
       ...workspace,
       tasks: workspace.tasks.filter((t) => (args.id ? t.id === args.id : t.date === date)),
       events: workspace.events.slice(0, 20),
-      note: 'Ручний план. lifecycle — поточний стан виконання, окремий від status прийняття. missed означає строк минув без підтвердженого вчасного виконання, він не створює вигаданий нульовий звіт. task-note {reason} зберігає пояснення без зміни строку, XP чи винятку. XP рахує ядро. Звіт містить справжній час виконання. Винятки, їх скасування та перенесення — після явного підтвердження в Mini App. /app/#/plan',
+      note: 'Ручний план. lifecycle — стан виконання, status — прийняття. facts.units/done відображають фактично зроблене, eligibleUnits/credited — право на XP та нарахування; onTimeUnits — вчасний обсяг. completed-late означає виконано пізніше строку, навіть без права на XP. Не проси знову внести вже відомий факт. missed не створює вигаданий нульовий звіт. task-note {reason} зберігає пояснення без зміни строку, XP чи винятку. XP рахує ядро. Винятки, їх скасування та перенесення підтверджуються в Mini App. /app/#/plan',
     },
   };
 }

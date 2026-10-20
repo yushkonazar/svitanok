@@ -621,6 +621,38 @@ describe('edge cases that must not silently change a promise', () => {
 });
 
 describe('server reminders revalidate the actual current plan', () => {
+  it('drops an already queued late-result prompt and does not enqueue later reminders after factual completion', async () => {
+    const { env, db, write } = setup();
+    await write('settings', { enabled: true });
+    const made = await write(
+      'task-save',
+      taskPayload({
+        target: 1,
+        timeSensitive: true,
+        deadlineKind: 'time',
+        dueAt: '2026-10-17T10:00:00Z',
+      }),
+    );
+    await write('accept', { date: DATE });
+    const at = Date.parse('2026-10-17T10:05:00Z');
+    await motivationTask(env, at);
+    const notices = () =>
+      db
+        .prepare('SELECT payload_json FROM outbox')
+        .all()
+        .map((row) => JSON.parse(String(row.payload_json)).plan_notice)
+        .filter((n) => n.kind === 'report-day');
+    expect(notices()).toHaveLength(1);
+    const queued = notices()[0];
+    await write('report', { units: 1 }, made.id, at + 60000);
+    expect(await renderPlanNotice(env, queued, at + 60000)).toBeNull();
+    expect(
+      await renderPlanNotice(env, { taskId: made.id, kind: 'report', version: 0 }, at + 60000),
+    ).toBeNull();
+    await motivationTask(env, at + 4 * 3600000);
+    expect(notices()).toHaveLength(1);
+    expect((await readPlanState(env)).records[made.id].settledAt).toBeUndefined();
+  });
   it('groups an overdue report, emits a daily check-in once, and deduplicates every queued notice', async () => {
     const { env, db, write } = setup();
     await write('settings', { enabled: true });
@@ -629,6 +661,13 @@ describe('server reminders revalidate the actual current plan', () => {
         'task-save',
         taskPayload({ deadlineKind: 'time', dueAt: `2026-10-17T${hour}:00:00Z` }),
       );
+    await write(
+      'task-save',
+      taskPayload({
+        deadlineKind: 'time',
+        dueAt: '2026-10-17T18:30:00Z',
+      }),
+    );
     await write('accept', { date: DATE });
     const later = Date.parse('2026-10-17T17:45:00Z');
     await motivationTask(env, later);

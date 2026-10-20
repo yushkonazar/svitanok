@@ -1,5 +1,5 @@
 import { readPlanReportSource } from './store.mjs';
-import { taskFacts } from './model.mjs';
+import { taskFacts, observedResultUnits } from './model.mjs';
 import { planTaskState } from './status.mjs';
 
 /** Current commitments and immutable event dates are separate from the report window.
@@ -60,6 +60,7 @@ export async function readPlanReport(env, period) {
         criterion: t.criterion,
         unit: t.unit,
         units: facts.units,
+        eligibleUnits: facts.eligibleUnits,
         target: facts.target,
         onTimeUnits: facts.onTimeUnits,
         estimateMinutes: t.estimateMinutes ?? null,
@@ -143,7 +144,7 @@ export async function readPlanReport(env, period) {
       acceptedCommitments: accepted.length,
       distinctResults: resultIds.size,
       completedDistinctResults: [...resultIds].filter(
-        (id) => state.records[id].units >= state.records[id].target,
+        (id) => observedResultUnits(state.records[id]) >= state.records[id].target,
       ).length,
       lifecycle,
       manual: selected.filter((t) => t.source === 'manual').length,

@@ -1147,3 +1147,6 @@
     transition: none;
   }
 }
+.plan-event-fact span {
+  display: block;
+}
