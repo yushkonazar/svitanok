@@ -55,6 +55,7 @@ export function taskFacts(
   task: unknown,
 ): {
   units: number;
+  eligibleUnits: number;
   target: number;
   credited: number;
   onTimeUnits: number;
@@ -62,6 +63,8 @@ export function taskFacts(
   done: boolean;
 };
 export function planRecords(state: PlanState, kind: string): any[];
+export function observedResultUnits(result: any): number;
+export function taskNeedsReport(state: PlanState, task: any, nowMs: number): boolean;
 export const PLAN_OPERATIONS: string[];
 export const XP_BANDS: number[];
 export const DEFAULT_PLAN_SETTINGS: PlanState['settings'];

@@ -342,6 +342,40 @@ describe('weekly system report, audit block 3', () => {
     expect(frozen.tasks.find((t) => t.id === pending)?.units).toBe(0);
   });
 
+  it('counts a factual late time-sensitive result in the review without awarding XP or requesting it again', async () => {
+    const s = setup(),
+      p = plan(s);
+    const id = p.act('task-save', '2026-10-12T07:00:00Z', {
+      title: 'Почати практику до строку',
+      date: '2026-10-12',
+      dueAt: '2026-10-12T08:00:00Z',
+      deadlineKind: 'time',
+      timeSensitive: true,
+      criterion: 'Почати одну практику',
+      target: 1,
+      xp: 20,
+      effort: 1,
+      contribution: 0,
+    });
+    p.act('accept', '2026-10-12T07:01:00Z', { date: '2026-10-12' }, id);
+    p.act('report', '2026-10-12T09:00:00Z', { units: 1 }, id);
+    p.save();
+    const before = s.d1.db.prepare('SELECT * FROM motivation_account').all();
+    const r = await readPlanReport(s.env, PERIOD);
+    expect(r.summary).toMatchObject({
+      completedDistinctResults: 1,
+      lifecycle: { 'completed-late': 1, missed: 0 },
+    });
+    expect(r.tasks.find((t) => t.id === id)).toMatchObject({
+      lifecycle: 'completed-late',
+      units: 1,
+      eligibleUnits: 0,
+      onTimeUnits: 0,
+    });
+    expect(s.d1.db.prepare('SELECT * FROM motivation_account').all()).toEqual(before);
+    expect(p.state.experience).toBe(0);
+  });
+
   it('distinguishes unavailable tasks from an empty plan while leaving other data available', async () => {
     const s = setup();
     s.d1.db.exec('DROP TABLE motivation_records');

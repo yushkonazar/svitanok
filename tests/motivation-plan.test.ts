@@ -7,6 +7,7 @@ import {
   planLocalTime,
   personalPlanDate,
   taskScore,
+  taskNeedsReport,
   type PlanState,
 } from '../web/core/motivation/model.mjs';
 import { executePlanCommand, readPlanWorkspace } from '../web/core/motivation/store.mjs';
@@ -64,6 +65,109 @@ function task(state: PlanState, id: string) {
   return state.records[id];
 }
 describe('deadline status, explanations and exceptional rescheduling', () => {
+  it('shows a recorded late time-sensitive result without awarding XP or changing its penalty', () => {
+    const { state, id } = prepared(100, { target: 1, timeSensitive: true });
+    const at = Date.parse(DUE) + 3600000;
+    const first = reduce(state, 'report', { units: 1 }, id, at);
+    const next = reduce(first.state, 'report', { units: 1 }, id, at + 60000);
+    const before = JSON.stringify(next.state);
+    const view = planView(next.state, at + 60000, [...first.events, ...next.events]);
+    expect(view.tasks.find((t) => t.id === id)).toMatchObject({
+      lifecycle: 'completed-late',
+      facts: { units: 1, eligibleUnits: 0, done: true, onTimeUnits: 0, credited: 0, risk: 11 },
+    });
+    expect(taskNeedsReport(next.state, task(next.state, id), at + 60000)).toBe(false);
+    expect(next.state.records[task(next.state, id).resultId].units).toBe(0);
+    expect(next.state.balance).toBe(100);
+    expect(next.state.experience).toBe(0);
+    expect(JSON.stringify(next.state)).toBe(before);
+    const settled = reduce(next.state, '_settle', {}, undefined, AFTER).state;
+    expect(settled.balance).toBe(89);
+    expect(settled.experience).toBe(0);
+    expect(reduce(settled, '_settle', {}, undefined, AFTER + 1).state.balance).toBe(89);
+  });
+  it('retains a prior failure and then shows factual late completion; undo restores the missing outcome', () => {
+    const { state, id } = prepared(100, { target: 1, timeSensitive: true });
+    const at = Date.parse(DUE) + 60000;
+    const failed = reduce(state, 'forfeit', { reason: 'Не встиг' }, id, at).state;
+    const reported = reduce(failed, 'report', { units: 1 }, id, at + 60000);
+    expect(planView(reported.state, at + 60000).tasks[0]).toMatchObject({
+      lifecycle: 'completed-late',
+      forfeitedAt: new Date(at).toISOString(),
+      facts: { units: 1, eligibleUnits: 0, credited: 0, done: true },
+    });
+    expect(reported.state.balance).toBe(failed.balance);
+    const undone = reduce(
+      reported.state,
+      'undo-report',
+      { reportId: reported.receipt.reportId },
+      id,
+      at + 120000,
+    );
+    expect(planView(undone.state, at + 120000).tasks[0]).toMatchObject({
+      lifecycle: 'missed',
+      facts: { units: 0, done: false },
+    });
+    expect(undone.state.balance).toBe(failed.balance);
+  });
+  it('asks for final facts after earlier progress, but does not ask again after a partial or zero final report', () => {
+    for (const units of [0, 3]) {
+      const { state, id } = prepared();
+      const progressed = reduce(state, 'report', { units: 2 }, id).state;
+      const due = Date.parse(DUE);
+      expect(taskNeedsReport(progressed, task(progressed, id), due - 1)).toBe(false);
+      expect(taskNeedsReport(progressed, task(progressed, id), due)).toBe(true);
+      const final = reduce(progressed, 'report', { units }, id, due + 1000);
+      expect(taskNeedsReport(final.state, task(final.state, id), due + 2000)).toBe(false);
+      const undone = reduce(
+        final.state,
+        'undo-report',
+        { reportId: final.receipt.reportId },
+        id,
+        due + 3000,
+      );
+      expect(taskNeedsReport(undone.state, task(undone.state, id), due + 4000)).toBe(true);
+    }
+  });
+  it('restores a pending fact prompt when a late completion is retracted', () => {
+    const { state, id } = prepared(100, { target: 1, timeSensitive: true });
+    const at = Date.parse(DUE) + 60000;
+    const reported = reduce(state, 'report', { units: 1 }, id, at);
+    const undone = reduce(
+      reported.state,
+      'undo-report',
+      { reportId: reported.receipt.reportId },
+      id,
+      at + 1,
+    );
+    expect(taskNeedsReport(undone.state, task(undone.state, id), at + 1)).toBe(true);
+    expect(planView(undone.state, at + 1).tasks[0].facts.done).toBe(false);
+  });
+  it('projects existing zero-XP journal entries with their actual fact and recording times, without rewriting them', () => {
+    const { state, id } = prepared(100, { target: 1, timeSensitive: true });
+    const actualAt = new Date(Date.parse(DUE) + 60000).toISOString();
+    const recordedAt = Date.parse(DUE) + 3600000;
+    const reported = reduce(state, 'report', { units: 1, actualAt }, id, recordedAt);
+    const before = JSON.stringify(reported);
+    const journal = planView(reported.state, recordedAt, reported.events).events[0];
+    expect(journal).toMatchObject({
+      kind: 'earned',
+      delta: 0,
+      observedUnits: 1,
+      eligibleUnits: 0,
+      reportTarget: 1,
+      actualAt,
+      at: new Date(recordedAt).toISOString(),
+      reportRetracted: false,
+    });
+    expect(JSON.stringify(reported)).toBe(before);
+    // Older records without observedUnits still retain their known result.
+    const savedReport = reported.state.records[task(reported.state, id).resultId].reports[0];
+    delete savedReport.observedUnits;
+    savedReport.units = 1;
+    reported.state.records[task(reported.state, id).resultId].units = 1;
+    expect(planView(reported.state, recordedAt).tasks[0].facts.units).toBe(1);
+  });
   it('marks missed immediately at due time without fabricating a report or waiting for settlement', () => {
     const { state, id } = prepared(100, { target: 1, timeSensitive: true });
     expect(planView(state, Date.parse(DUE) - 1).tasks.find((t) => t.id === id).lifecycle).not.toBe(
@@ -349,7 +453,10 @@ describe('strict personal plan rules', () => {
     state = reduce(state, 'report', { units: 1 }, id, Date.parse('2026-10-16T11:00:00Z')).state;
     expect(state.experience).toBe(0);
     expect(task(state, id).status).toBe('accepted');
-    expect(planView(state, NOW).tasks[0].facts.done).toBe(false);
+    expect(planView(state, Date.parse('2026-10-16T11:00:00Z')).tasks[0]).toMatchObject({
+      lifecycle: 'completed-late',
+      facts: { done: true, units: 1, eligibleUnits: 0, credited: 0, onTimeUnits: 0, risk: 11 },
+    });
   });
   it('freezes accepted conditions, allows moving start and keeps genuine exceptions audited', () => {
     let { state } = prepared();

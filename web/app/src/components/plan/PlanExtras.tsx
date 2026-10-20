@@ -10,6 +10,7 @@ import {
 import { planLocalTime } from '../../../../core/motivation/model.mjs';
 import { PLAN_AREAS } from '../../../../core/motivation/scoring.mjs';
 import { readablePlanDate } from './PlanLocalTime.tsx';
+import { PlanEventFact } from './PlanEventFact.tsx';
 
 type Run = (op: string, payload?: Record<string, unknown>, id?: string) => Promise<boolean>;
 const nextDate = (date: string) =>
@@ -356,7 +357,7 @@ export function EarlierHistory({ data }: { data: PlanWorkspace }) {
         <div className="plan-history-row" key={event.id}>
           <div>
             <strong>{event.title}</strong>
-            <small>{new Date(event.at).toLocaleString('uk-UA', { timeZone: 'Europe/Kyiv' })}</small>
+            <PlanEventFact event={event} />
           </div>
           <span>
             {event.delta > 0 ? '+' : ''}

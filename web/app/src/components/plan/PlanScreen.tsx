@@ -48,6 +48,7 @@ import { planTaskState, PLAN_TASK_STATES } from '../../../../core/motivation/sta
 import { parseMoney } from '../../../../core/finance/planning.mjs';
 import './plan.css';
 import { PlanLocalTime, PlanDateInput, readablePlanDate } from './PlanLocalTime.tsx';
+import { PlanEventFact } from './PlanEventFact.tsx';
 import {
   taskEditorIso,
   moveTaskClock,
@@ -204,7 +205,10 @@ export function PlanScreen() {
   } catch {
     /* ignore malformed deep links */
   }
-  const activePanel = panel ?? (deepTask ? { type: 'detail' as const, task: deepTask } : null);
+  const activePanel =
+    panel?.type === 'detail'
+      ? { ...panel, task: data.tasks.find((task) => task.id === panel.task.id) ?? panel.task }
+      : (panel ?? (deepTask ? { type: 'detail' as const, task: deepTask } : null));
   const tasks = data.tasks
       .filter((t) => t.date === date)
       .sort(
@@ -570,7 +574,9 @@ export function PlanScreen() {
                     </button>
                     <div className="plan-task-xp">
                       <strong>
-                        +{Math.max(0, task.xp - (task.fromTaskId ? task.facts.credited : 0))}
+                        {task.facts.done
+                          ? `${task.facts.credited} XP`
+                          : `+${Math.max(0, task.xp - (task.fromTaskId ? task.facts.credited : 0))}`}
                       </strong>
                       <small>
                         {task.status === 'draft'
@@ -1750,8 +1756,8 @@ function Report({
   onError: (s: string) => void;
 }) {
   const [units, setUnits] = useState(task.facts.units),
-    [earlier, setEarlier] = useState(false),
-    [actual, setActual] = useState(localValue(now)),
+    [earlier, setEarlier] = useState(Boolean(task.lastReport)),
+    [actual, setActual] = useState(localValue(task.lastReport?.actualAt ?? now)),
     [note, setNote] = useState(task.outcomeNote ?? ''),
     [binary, setBinary] = useState<'done' | 'not-done'>(
       task.facts.done || task.dueAt > now ? 'done' : 'not-done',
@@ -1772,7 +1778,17 @@ function Report({
           } else
             void save(
               'report',
-              { units: simple ? 1 : units, ...(earlier ? { actualAt: localIso(actual) } : {}) },
+              {
+                units: simple ? 1 : units,
+                ...(earlier
+                  ? {
+                      actualAt:
+                        task.lastReport && actual === localValue(task.lastReport.actualAt)
+                          ? task.lastReport.actualAt
+                          : localIso(actual),
+                    }
+                  : {}),
+              },
               task.id,
             );
         } catch (error) {
@@ -1876,6 +1892,7 @@ function TaskDetail({
     [critical, setCritical] = useState(false),
     [newDue, setNewDue] = useState('');
   const missed = planTaskState(task, Date.parse(data.now)) === 'missed';
+  const late = planTaskState(task, Date.parse(data.now)) === 'completed-late';
   return (
     <div className="plan-form">
       <FormTitle sub={task.criterion}>{task.title}</FormTitle>
@@ -1888,8 +1905,8 @@ function TaskDetail({
       )}
       {task.status === 'excepted' && (
         <p className="plan-muted">
-          Задача не виконана; зараз для неї знято наслідок через виняток. Звичайне пояснення
-          невиконання не повинно оформлятися як виняток.
+          {task.facts.done ? 'Виконання зафіксовано' : 'Задача не виконана'}; зараз для неї знято
+          наслідок через виняток. Звичайне пояснення невиконання не повинно оформлятися як виняток.
         </p>
       )}
       <dl className="plan-facts">
@@ -1905,6 +1922,14 @@ function TaskDetail({
         </dd>
         <dt>Зараховано за результат</dt>
         <dd>{task.facts.credited} XP</dd>
+        {task.lastReport && (
+          <>
+            <dt>Час зазначеного факту</dt>
+            <dd>{when(task.lastReport.actualAt)}</dd>
+            <dt>Час внесення запису</dt>
+            <dd>{when(task.lastReport.recordedAt)}</dd>
+          </>
+        )}
         <dt>{task.settledAt ? 'Списано за цю обіцянку' : 'Поточний ризик'}</dt>
         <dd>{task.settledAt ? (task.penaltyApplied ?? 0) : task.facts.risk} XP</dd>
       </dl>
@@ -2018,7 +2043,7 @@ function TaskDetail({
                 Підготувати залишок на завтра
               </button>
             )}
-            {!task.facts.done && (
+            {(!task.facts.done || late) && (
               <form
                 onSubmit={(e) => {
                   e.preventDefault();
@@ -2026,7 +2051,7 @@ function TaskDetail({
                 }}
               >
                 <Field
-                  label="Пояснення невиконання"
+                  label={late ? 'Пояснення запізнення' : 'Пояснення невиконання'}
                   hint="Наприклад: проспав, не розрахував час. Пояснення не скасовує наслідків."
                 >
                   <textarea
@@ -2050,7 +2075,7 @@ function TaskDetail({
                 Це пояснення, а не виняток · відновити умови
               </button>
             )}
-            {!task.facts.done && task.status === 'accepted' && (
+            {(!task.facts.done || late) && task.status === 'accepted' && (
               <details>
                 <summary>Виняткова обставина або перенесення</summary>
                 <p className="plan-muted">
@@ -2079,7 +2104,7 @@ function TaskDetail({
                 >
                   Зберегти виняток без нового XP і штрафу
                 </button>
-                {!task.source && !task.calendar && (
+                {!task.facts.done && !task.source && !task.calendar && (
                   <>
                     <PlanLocalTime
                       label="Новий крайній строк · Київ"
@@ -2125,7 +2150,7 @@ function TaskDetail({
           <div className="plan-history-row" key={e.id}>
             <div>
               <strong>{eventLabel(e.kind)}</strong>
-              <small>{when(e.at)}</small>
+              <PlanEventFact event={e} />
             </div>
             <span>
               {e.delta > 0 ? '+' : ''}
@@ -2714,7 +2739,7 @@ function Progress({
           <div>
             <strong>{e.title}</strong>
             <p>{eventLabel(e.kind)}</p>
-            <small>{when(e.at)}</small>
+            <PlanEventFact event={e} />
           </div>
           <span className={e.delta > 0 ? 'plan-positive' : e.delta < 0 ? 'plan-negative' : ''}>
             {e.delta > 0 ? '+' : ''}

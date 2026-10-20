@@ -1,5 +1,5 @@
 import { readPlanState, executePlanCommand, updatePlanCalendar } from './store.mjs';
-import { planRecords, taskFacts, currentPlanDate } from './model.mjs';
+import { planRecords, taskFacts, taskNeedsReport, currentPlanDate } from './model.mjs';
 import { assistantHomeTarget } from '../tg/home.mjs';
 import { loadSettings } from '../../kv-store.mjs';
 import { isQuietMinute, parseHhmm } from '../../settings-core.mjs';
@@ -45,8 +45,9 @@ export async function renderPlanNotice(env, notice, nowMs) {
           task.status === 'accepted' &&
           !task.forfeitedAt &&
           !taskFacts(state, task).done &&
-          (notice.kind !== 'report-day' ||
-            (task.dueAt <= new Date(nowMs).toISOString() && !task.settledAt)),
+          (notice.kind === 'report-day'
+            ? taskNeedsReport(state, task, nowMs)
+            : task.dueAt > new Date(nowMs).toISOString()),
       );
       if (!pending.length) return null;
       return {
@@ -73,7 +74,7 @@ export async function renderPlanNotice(env, notice, nowMs) {
     return null;
   if (notice.kind === 'start' && (task.startedAt || task.dueAt <= new Date(nowMs).toISOString()))
     return null;
-  if (notice.kind === 'report' && task.settledAt) return null;
+  if (notice.kind === 'report' && !taskNeedsReport(state, task, nowMs)) return null;
   if (notice.kind === 'deadline' && task.dueAt <= new Date(nowMs).toISOString()) return null;
   if (
     notice.kind === 'focus' &&
@@ -152,21 +153,19 @@ export async function motivationTask(env, nowMs = Date.now()) {
     kyivMinuteOfDay(new Date(nowMs)) >= 1200 &&
     !state.records[`notice-daily-${today}`] &&
     planRecords(state, 'task').some(
-      (task) => task.date === today && task.status === 'accepted' && !taskFacts(state, task).done,
+      (task) =>
+        task.date === today &&
+        task.status === 'accepted' &&
+        !task.forfeitedAt &&
+        task.dueAt > now &&
+        !taskFacts(state, task).done,
     )
   )
     await notice(null, 'daily', `daily-${today}`, today);
   const overdueDates = [
     ...new Set(
       planRecords(state, 'task')
-        .filter(
-          (task) =>
-            task.status === 'accepted' &&
-            !task.settledAt &&
-            !task.forfeitedAt &&
-            task.dueAt <= now &&
-            !taskFacts(state, task).done,
-        )
+        .filter((task) => taskNeedsReport(state, task, nowMs))
         .map((task) => task.date),
     ),
   ];

@@ -6,6 +6,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { PlanScreen } from './PlanScreen.tsx';
 import { resetPlanDemo } from '../../api/plan-demo.ts';
 import { changePlan, fetchPlan, PlanCommandError, readPendingPlanCommand } from '../../api/plan.ts';
+import { emptyPlan, applyPlanCommand, planView } from '../../../../core/motivation/model.mjs';
 const telegram = vi.hoisted(() => ({ live: false }));
 vi.mock('../../telegram.ts', () => ({
   inTelegram: () => telegram.live,
@@ -38,6 +39,89 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 describe('manual plan owner journey', () => {
+  it('shows an existing late time-sensitive fact as completed, keeps zero XP and preserves its exact time when reopened', async () => {
+    const now = Date.now();
+    const due = now - 3600000;
+    const actualAt = new Date(due + 60000 + 12345).toISOString();
+    let state = emptyPlan();
+    state.balance = 100;
+    const events: Record<string, unknown>[] = [];
+    let serial = 0;
+    const act = (
+      op: string,
+      payload: Record<string, unknown>,
+      id: string | undefined,
+      at: number,
+    ) => {
+      const next = applyPlanCommand(
+        state,
+        { op, payload, id, commandId: `late-fixture-${++serial}` },
+        at,
+      );
+      state = next.state;
+      events.unshift(...[...next.events].reverse());
+      return next.receipt.id;
+    };
+    const date = planView(state, now).today;
+    act('settings', { enabled: true }, undefined, due - 3600000);
+    const id = act(
+      'task-save',
+      {
+        date,
+        title: 'Вчасно почати заняття',
+        criterion: 'Почати до визначеного строку',
+        target: 1,
+        unit: 'дія',
+        xp: 20,
+        effort: 1,
+        contribution: 0,
+        timeSensitive: true,
+        deadlineKind: 'time',
+        dueAt: new Date(due).toISOString(),
+      },
+      undefined,
+      due - 3500000,
+    );
+    act('accept', { date }, undefined, due - 3400000);
+    act('forfeit', { reason: 'Не встиг' }, id, due + 1000);
+    act('report', { units: 1, actualAt }, id, now - 1800000);
+    localStorage.setItem('svitanok:plan-demo:v1', JSON.stringify({ state, events }));
+
+    const { user } = setup();
+    expect(await screen.findByText(/1 із 1 результатів/)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Показати виконані · 1' }));
+    const review = screen.getByRole('button', { name: 'Переглянути Вчасно почати заняття' });
+    const card = review.closest('article')!;
+    expect(within(card).getByText('Виконано із запізненням')).toBeInTheDocument();
+    expect(card.querySelector('.plan-task-xp')).toHaveTextContent('0 XP');
+    expect(card.querySelector('.plan-task-xp')).not.toHaveTextContent('+20');
+    await user.click(review);
+    const detail = screen.getByRole('dialog');
+    expect(within(detail).queryByText(/вводити 0 не потрібно/)).not.toBeInTheDocument();
+    expect(within(detail).getByText(/Факт: 1 \/ 1 дія/)).toBeInTheDocument();
+    expect(within(detail).getByText(/Час факту:/)).toBeInTheDocument();
+    expect(within(detail).getByLabelText('Пояснення запізнення')).toBeInTheDocument();
+    await user.click(within(detail).getByText('Виняткова обставина або перенесення'));
+    expect(within(detail).getByLabelText('Причина зовнішнього винятку')).toBeInTheDocument();
+    expect(
+      within(detail).queryByRole('button', { name: 'Перенести з цією причиною' }),
+    ).not.toBeInTheDocument();
+    await user.click(within(detail).getByRole('button', { name: 'Уточнити результат' }));
+    expect(screen.getByRole('button', { name: '✓ Виконав' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+    expect(screen.getByLabelText('Цей результат був раніше, записую зараз')).toBeChecked();
+    await user.click(screen.getByRole('button', { name: 'Зберегти результат' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    const saved = (await fetchPlan()).tasks.find((t) => t.id === id)!;
+    expect(saved).toMatchObject({
+      lifecycle: 'completed-late',
+      facts: { units: 1, eligibleUnits: 0, done: true, credited: 0 },
+      lastReport: { actualAt },
+    });
+    expect((await fetchPlan()).wallet.balance).toBe(94);
+  });
   it('changes to missed at the deadline on an already open page and uses a binary result instead of a zero input', async () => {
     let w = await fetchPlan();
     await changePlan({
