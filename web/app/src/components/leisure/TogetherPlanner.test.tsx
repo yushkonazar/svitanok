@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { TogetherPlanner } from './TogetherPlanner.tsx';
 import {
@@ -15,8 +15,21 @@ vi.mock('../../telegram.ts', () => ({ inTelegram: () => false, tg: null }));
 const fetchSuggestions = vi.mocked(fetchLeisureSuggestions);
 let data: LeisureWorkspace;
 beforeEach(async () => {
+  // Keep the dated scenarios in the future and isolate the optional persisted window.
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(new Date('2026-10-22T09:00:00Z'));
+  const saved = new Map<string, string>();
+  vi.stubGlobal('localStorage', {
+    getItem: (key: string) => saved.get(key) ?? null,
+    setItem: (key: string, value: string) => saved.set(key, value),
+    removeItem: (key: string) => saved.delete(key),
+  });
   fetchSuggestions.mockReset();
   data = await fetchLeisure();
+});
+afterEach(() => {
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
 });
 function result(): LeisureSuggestions {
   const item = data.items[0]!;
