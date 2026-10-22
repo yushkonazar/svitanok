@@ -25,18 +25,20 @@ const rect = (top: number, bottom: number) => ({
   y: top,
   toJSON: () => ({}),
 });
-function Harness() {
+function Harness({ showForm = true }: { showForm?: boolean }) {
   const view = useInputViewport();
   return (
     <>
       <output data-testid="inset">{view.inset}</output>
-      <form data-input-viewport-group>
-        <label>
-          Місто
-          <input defaultValue="Прага" />
-        </label>
-        <button type="button">Далі</button>
-      </form>
+      {showForm && (
+        <form data-input-viewport-group>
+          <label>
+            Місто
+            <input defaultValue="Прага" />
+          </label>
+          <button type="button">Далі</button>
+        </form>
+      )}
       <label>
         Нотатка
         <textarea />
@@ -162,6 +164,19 @@ describe('input visibility with a mobile keyboard', () => {
     act(() => input.blur());
     flush();
     expect(nav()).not.toHaveAttribute('hidden');
+  });
+
+  it('restores navigation if saving replaces the focused form without blur or viewport events', async () => {
+    vi.stubGlobal('visualViewport', undefined);
+    const { rerender } = render(<Harness />);
+    focus();
+    expect(nav()).toHaveAttribute('hidden');
+    await act(async () => {
+      rerender(<Harness showForm={false} />);
+    });
+    flush();
+    expect(nav()).not.toHaveAttribute('hidden');
+    expect(screen.getByTestId('inset')).toHaveTextContent('0');
   });
 
   it('does not treat desktop focus, ordinary desktop resizing, checkboxes or read-only fields as keyboard entry', () => {

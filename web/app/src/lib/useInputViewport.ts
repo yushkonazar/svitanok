@@ -135,6 +135,11 @@ export function useInputViewport() {
     const onResize = () => schedule(true);
     // Panning/scrolling the visible viewport must not pull the user back to the input.
     const onScroll = () => schedule(false);
+    // Removing a focused form does not reliably emit blur (for example after saving a step).
+    const structure = new MutationObserver(() => {
+      if (input && !input.isConnected) schedule(false);
+    });
+    structure.observe(document.body, { childList: true, subtree: true });
     document.addEventListener('focusin', onFocus);
     document.addEventListener('focusout', onBlur);
     window.addEventListener('resize', onResize);
@@ -143,6 +148,7 @@ export function useInputViewport() {
     tg?.onEvent?.('viewportChanged', onResize);
     schedule(true);
     return () => {
+      structure.disconnect();
       cancelAnimationFrame(frame);
       cancelAnimationFrame(revealFrame);
       document.removeEventListener('focusin', onFocus);
