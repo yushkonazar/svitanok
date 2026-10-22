@@ -20,13 +20,15 @@ import {
   normalizeLeisurePlan,
   selectLeisureEdition,
 } from './model.mjs';
-import { normalizeLeisureFeedback } from './feedback.mjs';
+import { normalizeLeisureFeedback, leisureReactionSnapshot } from './feedback.mjs';
 import { leisureIdentity } from './identity.mjs';
 import { leisureOpenDuring } from './planning.mjs';
 import { leisureSlotMatches } from './schedule.mjs';
 import { leisureFilmKeys } from './content-facts.mjs';
 import { freshLeisurePlace } from './google-details.mjs';
 import { leisurePlanChanges, leisureCatalogChanges } from './availability.mjs';
+import { normalizeLeisureSelection, selectLeisureHighlights } from './selection.mjs';
+import { classifiedLeisureItem } from './taxonomy.mjs';
 
 /** @param {Env} env */
 export function leisureDb(env) {
@@ -56,8 +58,16 @@ export async function leisureRecord(env, id) {
 export async function leisureSettings(env) {
   const record = await leisureRecord(env, 'settings');
   const value = { ...DEFAULT_LEISURE_SETTINGS, ...(record?.value ?? {}) };
-  if (record?.value?.categoriesVersion !== 3)
+  if (!record?.value?.categoriesVersion || record.value.categoriesVersion < 3)
     value.categories = [...new Set([...value.categories, 'place', 'meetup', 'podcast'])];
+  if (
+    record?.value?.categoriesVersion !== 4 &&
+    value.categories.some((/** @type {string} */ c) =>
+      ['concert', 'show', 'meetup', 'exhibition', 'festival'].includes(c),
+    )
+  )
+    value.categories = [...new Set([...value.categories, 'event'])];
+  value.selection = normalizeLeisureSelection(value.selection);
   if (record?.value?.notificationVersion !== 1) value.telegram = true;
   return value;
 }
@@ -74,7 +84,7 @@ export async function leisureItems(env) {
       item.siteUrl = null;
       item.hours = '';
     }
-    return item;
+    return classifiedLeisureItem(item);
   });
 }
 /** @param {Env} env @param {any[]} items */
@@ -118,7 +128,7 @@ export async function upsertLeisureItems(env, items) {
     const prior = byId.get(i.id),
       newOccurrence =
         prior &&
-        ['concert', 'festival', 'show', 'exhibition', 'meetup'].includes(i.category) &&
+        ['concert', 'festival', 'show', 'exhibition', 'meetup', 'event'].includes(i.category) &&
         prior.startDate &&
         i.startDate &&
         Date.parse(i.startDate) - Date.parse(prior.startDate) > 180 * 86400000 &&
@@ -220,7 +230,7 @@ export async function upsertLeisureItems(env, items) {
 /** @param {Env} env @param {number} [nowMs] @param {boolean} [allHistory] */
 export async function readLeisureWorkspace(env, nowMs = Date.now(), allHistory = false) {
   const db = leisureDb(env);
-  const [items, settings, rows, editionRow, stats] = await Promise.all([
+  const [rawItems, settings, rows, editionRow, stats] = await Promise.all([
     leisureItems(env),
     leisureSettings(env),
     db
@@ -231,6 +241,9 @@ export async function readLeisureWorkspace(env, nowMs = Date.now(), allHistory =
     db.prepare('SELECT * FROM leisure_editions ORDER BY week DESC LIMIT 1').first(),
     loadStats(env),
   ]);
+  const items = rawItems.map((i) =>
+    classifiedLeisureItem(i, settings.selection.categoryOverrides[i.id]),
+  );
   const learningRecords = rows.results.map(recordOf);
   const allRecords = learningRecords
     .filter((r) => !['profile', 'discovery'].includes(r.kind))
@@ -361,7 +374,18 @@ export async function publishLeisureEdition(env, items, sources, nowMs, cinemaOn
   );
   const edition = {
     ...selected,
-    catalogVersion: 4,
+    catalogVersion: 5,
+    highlightIds: current?.highlightIds?.length
+      ? current.highlightIds
+      : selectLeisureHighlights(
+          selected.rankings
+            .map((r) => allItems.find((i) => i.id === r.id))
+            .filter(Boolean)
+            .map((i) => classifiedLeisureItem(i, settings.selection.categoryOverrides[i.id])),
+          records.results.map(recordOf),
+          settings,
+          nowMs,
+        ).map((i) => i.id),
     offeredIds: [
       ...new Set([
         ...(current?.offeredIds ?? current?.ids ?? []),
@@ -683,7 +707,12 @@ export async function executeLeisureCommand(env, raw, nowMs = Date.now()) {
   const item = id
     ? await db.prepare('SELECT data_json FROM leisure_items WHERE id=?').bind(id).first()
     : null;
-  const selectedItem = item ? JSON.parse(String(item.data_json)) : null;
+  const selectedItem = item
+    ? classifiedLeisureItem(
+        JSON.parse(String(item.data_json)),
+        (await leisureSettings(env)).selection.categoryOverrides[String(id)],
+      )
+    : null;
   if (
     ['save', 'reaction', 'visit', 'familiarity', 'place-check', 'source-check'].includes(op) &&
     !selectedItem
@@ -691,6 +720,12 @@ export async function executeLeisureCommand(env, raw, nowMs = Date.now()) {
     throw new LeisureError('Цього варіанта вже немає. Онови добірку.', 404);
   if (op === 'settings') {
     const previous = await leisureSettings(env);
+    let selection;
+    try {
+      selection = normalizeLeisureSelection(payload.selection, previous.selection);
+    } catch (error) {
+      throw new LeisureError(error instanceof Error ? error.message : 'Перевір уподобання.');
+    }
     if (payload.enabled != null && typeof payload.enabled !== 'boolean')
       throw new LeisureError('Укажи, чи ввімкнено оновлення.');
     if (payload.telegram != null && typeof payload.telegram !== 'boolean')
@@ -723,7 +758,8 @@ export async function executeLeisureCommand(env, raw, nowMs = Date.now()) {
         value: {
           ...previous,
           categories: [...new Set(categories)],
-          categoriesVersion: 3,
+          categoriesVersion: 4,
+          selection,
           notificationVersion: 1,
           cinemas: [...new Set(cinemas)],
           students,
@@ -758,9 +794,19 @@ export async function executeLeisureCommand(env, raw, nowMs = Date.now()) {
       current = await leisureRecord(env, key);
     if (payload.revision != null && payload.revision !== (current?.revision ?? 0))
       throw new LeisureError('Вибір уже змінився. Онови дозвілля.', 409);
+    if (
+      payload.restorePrevious === true &&
+      (!current?.previousChoice ||
+        payload.revision !== current.revision ||
+        current.previousChoice.verdict !== payload.verdict)
+    )
+      throw new LeisureError('Попередній вибір уже змінився. Онови дозвілля.', 409);
     let feedback;
     try {
-      feedback = normalizeLeisureFeedback(selectedItem, payload, current, nowMs);
+      feedback =
+        payload.restorePrevious === true
+          ? current.previousChoice
+          : normalizeLeisureFeedback(selectedItem, payload, current, nowMs);
     } catch (error) {
       throw new LeisureError(error instanceof Error ? error.message : 'Перевір причини вибору.');
     }
@@ -773,6 +819,7 @@ export async function executeLeisureCommand(env, raw, nowMs = Date.now()) {
         venueId: selectedItem.venueId,
         verdict: payload.verdict,
         ...feedback,
+        previousChoice: leisureReactionSnapshot(current),
         category: selectedItem.category,
         identityKey: selectedItem.identityKey ?? leisureIdentity(selectedItem),
         reason: cleanText(feedback.reason, 300),
@@ -927,6 +974,7 @@ export async function executeLeisureCommand(env, raw, nowMs = Date.now()) {
         itemId: id,
         venueId: selectedItem.venueId,
         category: selectedItem.category,
+        eventFormat: selectedItem.eventFormat ?? null,
         title: selectedItem.title,
         visitedOn,
         features: leisureFeatures(selectedItem),

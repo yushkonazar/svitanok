@@ -3,6 +3,7 @@ import { leisureWeek, leisureId } from './model.mjs';
 import { leisureIdentity, leisureReactionHidden } from './identity.mjs';
 import { assistantHomeTarget } from '../tg/home.mjs';
 import { kyivHour, kyivDateKey } from '../../kyiv-time.mjs';
+import { selectLeisureHighlights } from './selection.mjs';
 /** @param {Env} env @param {number} chatId */
 function button(env, chatId) {
   const text = 'Відкрити дозвілля',
@@ -49,11 +50,24 @@ export async function queueLeisureDigest(env, nowMs) {
       .filter((i) => decisions.has(i.id))
       .map((i) => i.identityKey ?? leisureIdentity(i)),
   );
-  const fresh = workspace.items.filter(
-    (i) =>
-      !oldKeys.has(i.identityKey ?? leisureIdentity(i)) &&
-      kyivDateKey(new Date(i.firstDiscoveredAt ?? i.checkedAt)) >= week &&
-      (workspace.edition?.ids.includes(i.id) || workspace.edition?.futureIds.includes(i.id)),
+  const fresh = selectLeisureHighlights(
+    workspace.items.filter(
+      (i) =>
+        (!workspace.edition?.highlightIds?.length ||
+          workspace.edition.highlightIds.includes(i.id)) &&
+        !oldKeys.has(i.identityKey ?? leisureIdentity(i)) &&
+        kyivDateKey(new Date(i.firstDiscoveredAt ?? i.checkedAt)) >= week &&
+        (workspace.edition?.ids.includes(i.id) || workspace.edition?.futureIds.includes(i.id)),
+    ),
+    [
+      ...(workspace.discoveryDecisions ?? []).map((/** @type {any} */ r) => ({
+        ...r,
+        kind: 'discovery',
+      })),
+      ...workspace.records,
+    ],
+    workspace.settings,
+    nowMs,
   );
   if (!fresh.length) return false;
   const counts = /** @type {Record<string,number>} */ ({});
@@ -73,7 +87,7 @@ export async function queueLeisureDigest(env, nowMs) {
     '',
     ...Object.entries(counts).map(([label, n]) => label + ': ' + n),
     '',
-    'Відкрий картки, виділи бажане й сплануй час разом.',
+    'Коротка добірка нових ідей. Заклади доступні окремим каталогом; обери бажане й сплануй час разом.',
   ].join('\n');
   const link = button(env, target.chatId),
     id = 'leisure-digest-' + week;

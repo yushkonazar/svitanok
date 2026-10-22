@@ -17,6 +17,7 @@ export function SwipeDeck({
   onReject,
   onVisit,
   onOpen,
+  onPriority,
   deferLike = false,
   newCount = 0,
   reviewing = false,
@@ -29,6 +30,7 @@ export function SwipeDeck({
   onReject: (item: LeisureItem) => void;
   onVisit: (item: LeisureItem) => void;
   onOpen: (item: LeisureItem) => void;
+  onPriority?: (item: LeisureItem) => void;
   deferLike?: boolean;
   newCount?: number;
   reviewing?: boolean;
@@ -317,6 +319,16 @@ export function SwipeDeck({
           <small>Цікаво</small>
         </button>
       </div>
+      {onPriority && (
+        <button
+          type="button"
+          className="leisure-deck-details"
+          disabled={busy || saving}
+          onClick={() => onPriority(item)}
+        >
+          ☆ Насамперед
+        </button>
+      )}
       <button
         type="button"
         className="leisure-deck-details"

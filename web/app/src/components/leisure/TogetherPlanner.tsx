@@ -552,8 +552,11 @@ export function TogetherPlanner({ data, busy, onChoose, send, active = true }: P
             checked={form.allowNew}
             onChange={(e) => edit({ allowNew: e.target.checked })}
           />
-          Дозволити нові, ще не оцінені варіанти
+          Дозволити нові події й місця поза моїми бажаннями
         </label>
+        <p className="leisure-secondary">
+          Заклади добираються за твоїми вимогами й пріоритетами навіть без попереднього «цікаво».
+        </p>
         {form.mode === 'range' && (
           <details>
             <summary>Інші години для окремих днів</summary>
@@ -651,7 +654,7 @@ export function TogetherPlanner({ data, busy, onChoose, send, active = true }: P
       )}
       {loading && !result && (
         <div className="leisure-suggestion-loading" role="status">
-          <p>Зіставляю твою колекцію, час і доступні події.</p>
+          <p>Перевіряємо твої бажання, якість закладів, час і доступні події.</p>
           <div />
           <div />
         </div>

@@ -8,6 +8,7 @@ import { leisureCostRange } from './content-facts.mjs';
 export { leisureLocalInstant } from './schedule.mjs';
 import { kyivDateKey, kyivClock } from '../../kyiv-time.mjs';
 import { leisureIdentity, leisureReactionHidden, leisureDecisionIndex } from './identity.mjs';
+import { leisureFoodQuality, leisureFormatAvailable } from './selection.mjs';
 
 const MINUTE = 60000,
   DAY = 86400000;
@@ -147,11 +148,24 @@ export function buildLeisureSuggestions(workspace, raw, nowMs, facts = {}) {
   );
   const eligible = items.filter((i) => {
     const reaction = reactions.get(i.id);
+    const explicit = reaction?.verdict === 'interested' || saved.has(i.id);
+    const food =
+      i.category === 'food' &&
+      (i.placeId || i.placeDetails?.rating != null || i.placeDetails?.businessStatus)
+        ? leisureFoodQuality(
+            i,
+            workspace.settings?.selection,
+            explicit && !reaction?.verdict ? { verdict: 'interested' } : reaction,
+            window.transport,
+          )
+        : null;
     return (
       i.category !== 'podcast' &&
       !['cancelled', 'sold-out', 'postponed', 'schedule-pending'].includes(i.status) &&
       !leisureReactionHidden(reaction ?? {}, nowMs) &&
-      (reaction?.verdict === 'interested' || saved.has(i.id) || window.allowNew) &&
+      (explicit || window.allowNew || food?.eligible) &&
+      (!food || food.eligible) &&
+      leisureFormatAvailable(i, records, workspace.settings, nowMs, explicit) &&
       (!visited.has(i.id) || reaction?.revisit || window.includeFamiliar)
     );
   });
@@ -165,7 +179,14 @@ export function buildLeisureSuggestions(workspace, raw, nowMs, facts = {}) {
       ? 45
       : reactions.get(i.id)?.verdict === 'interested'
         ? 20
-        : 0) + Math.min(10, Number(ranking.get(i.id) ?? 0) / 5);
+        : 0) +
+    Math.min(10, Number(ranking.get(i.id) ?? 0) / 5) +
+    (i.category === 'food'
+      ? leisureFoodQuality(i, workspace.settings?.selection, reactions.get(i.id), window.transport)
+          .score /
+          3 -
+        (visited.has(i.id) ? 5 : 0)
+      : 0);
   const route = (/** @type {any} */ a, /** @type {any} */ b) => {
     const exact = facts.routes?.[leisureLegKey(a, b)];
     if (exact?.available)
@@ -226,6 +247,15 @@ export function buildLeisureSuggestions(workspace, raw, nowMs, facts = {}) {
           return;
         const hours = leisureOpenDuring(item, a, b);
         if (hours === false) return;
+        if (item.category === 'food')
+          warnings.push(
+            ...leisureFoodQuality(
+              item,
+              workspace.settings?.selection,
+              reactions.get(item.id),
+              window.transport,
+            ).reasons.map((reason) => item.title + ' · ' + reason),
+          );
         if (['food', 'place', 'trip'].includes(item.category) && hours == null)
           warnings.push('Години «' + item.title + '» потрібно підтвердити');
         if (
@@ -243,7 +273,7 @@ export function buildLeisureSuggestions(workspace, raw, nowMs, facts = {}) {
           kyivDateKey(new Date(item.startAt)) !== day.date
         )
           warnings.push('Години «' + item.title + '» саме цього дня потрібно підтвердити');
-        if (!reactions.get(item.id) && !saved.has(item.id))
+        if (item.category !== 'food' && !reactions.get(item.id) && !saved.has(item.id))
           warnings.push('Додано новий, ще не оцінений варіант');
         score += value(item);
         if (
@@ -308,6 +338,16 @@ export function buildLeisureSuggestions(workspace, raw, nowMs, facts = {}) {
         }
         if (reactions.get(item.id)?.interestLevel === 'priority')
           reasons.push('Твій пріоритет: ' + item.title);
+        else if (
+          item.category === 'food' &&
+          leisureFoodQuality(
+            item,
+            workspace.settings?.selection,
+            reactions.get(item.id),
+            window.transport,
+          ).verified
+        )
+          reasons.push('Заклад відповідає твоїм вимогам: ' + item.title);
         const session = /** @type {any[]} */ (item.sessions ?? []).find(
           (v) => v.id === s.sessionId,
         );
@@ -394,7 +434,14 @@ export function buildLeisureSuggestions(workspace, raw, nowMs, facts = {}) {
       if (sorted.some((s) => s.category === 'trip') && !window.startLocation)
         warnings.push('Укажи місце старту, щоб перевірити дорогу до поїздки й назад');
       score -= warnings.length * 3;
-      if (!reasons.length) reasons.push('Із твоєї колекції цікавого');
+      if (!reasons.length)
+        reasons.push(
+          sorted.some(
+            (s) => reactions.get(s.itemId)?.verdict === 'interested' || saved.has(s.itemId),
+          )
+            ? 'Із твоєї колекції цікавого'
+            : 'Варіант для нового спільного досвіду',
+        );
       if (sorted.length > 1) reasons.push('Послідовні активності з часом на дорогу та паузу');
       const signature = leisureIdentity(lookup.get(anchor)) + '|' + day.date;
       const candidate = {
@@ -540,7 +587,13 @@ export function buildLeisureSuggestions(workspace, raw, nowMs, facts = {}) {
             : 0),
         duration = (window.pace === 'relaxed' ? 120 : 90) * MINUTE;
       if (a + duration <= day.endAt)
-        add('Час разом у бажаному закладі', [stop(food, a, a + duration)], food.id);
+        add(
+          reactions.get(food.id)?.verdict === 'interested'
+            ? 'Час разом у бажаному закладі'
+            : 'Спокійний вечір у закладі',
+          [stop(food, a, a + duration)],
+          food.id,
+        );
     }
     candidates.sort((a, b) => b.score - a.score || a.id.localeCompare(b.id));
     const selected = [],
@@ -550,10 +603,13 @@ export function buildLeisureSuggestions(workspace, raw, nowMs, facts = {}) {
           .length >= 4
           ? 5
           : 3;
+    let cinemaCount = 0;
     for (const c of candidates) {
       const anchor = lookup.get(c.anchorId),
         family = anchor.category === 'food' ? 'quiet-food' : leisureIdentity(anchor);
       if (families.has(family)) continue;
+      if (anchor.category === 'cinema' && cinemaCount >= 3) continue;
+      if (anchor.category === 'cinema') cinemaCount++;
       families.add(family);
       c.alternatives = foods
         .filter((f) => !c.stops.some((/** @type {any} */ s) => s.itemId === f.id))

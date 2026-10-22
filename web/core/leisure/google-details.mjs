@@ -7,10 +7,12 @@ import { kyivDateKey } from '../../kyiv-time.mjs';
 import { addDaysToDateKey } from '../../reminders-core.mjs';
 
 export const LEISURE_GOOGLE_DETAILS_MASK =
-  'id,displayName,formattedAddress,location,googleMapsUri,businessStatus,movedPlaceId,photos,rating,userRatingCount,priceRange,priceLevel,websiteUri,nationalPhoneNumber,internationalPhoneNumber,regularOpeningHours,currentOpeningHours,accessibilityOptions';
+  'id,displayName,formattedAddress,location,googleMapsUri,primaryType,types,businessStatus,movedPlaceId,photos,rating,userRatingCount,priceRange,priceLevel,websiteUri,nationalPhoneNumber,internationalPhoneNumber,regularOpeningHours,currentOpeningHours,accessibilityOptions';
 export const LEISURE_GOOGLE_EXTENDED_MASK =
   LEISURE_GOOGLE_DETAILS_MASK +
   ',outdoorSeating,reservable,parkingOptions,paymentOptions,servesBreakfast,servesBrunch,servesLunch,servesDinner,servesCoffee,servesDessert,servesCocktails,servesVegetarianFood,liveMusic,allowsDogs,goodForGroups,goodForChildren,restroom';
+export const LEISURE_FOOD_SEARCH_MASK =
+  'places.id,places.displayName,places.formattedAddress,places.location,places.googleMapsUri,places.primaryType,places.types,places.businessStatus,places.rating,places.userRatingCount,places.priceRange,places.priceLevel,places.photos';
 const API = 'https://places.googleapis.com/v1/';
 const ID = /^[A-Za-z0-9_-]{1,300}$/;
 const booleans = (/** @type {any} */ value) =>
@@ -19,18 +21,31 @@ const booleans = (/** @type {any} */ value) =>
       ([, v]) => typeof v === 'boolean',
     ),
   );
-/** @param {Env} env @param {string} path @param {string|null} mask @param {string} sku @param {number} nowMs */
-async function googleJson(env, path, mask, sku, nowMs) {
+/** @param {Env} env @param {string} path @param {string|null} mask @param {string} sku @param {number} nowMs @param {any} [body] @param {string} [quotaKey] */
+async function googleJson(
+  env,
+  path,
+  mask,
+  sku,
+  nowMs,
+  body = null,
+  quotaKey = mask ? 'places_details' : 'places_photos',
+) {
   const key = mapsApiKey(env),
     start = Date.now();
-  await reserveQuota(env, mask ? 'places_details' : 'places_photos', nowMs);
+  await reserveQuota(env, quotaKey, nowMs);
   let ok = false;
   try {
     const response = await fetch(API + path, {
       // workerd supports manual/follow only; non-2xx (including redirects) is rejected below.
       redirect: 'manual',
       signal: AbortSignal.timeout(10000),
-      headers: { 'X-Goog-Api-Key': key, ...(mask ? { 'X-Goog-FieldMask': mask } : {}) },
+      ...(body ? { method: 'POST', body: JSON.stringify(body) } : {}),
+      headers: {
+        'X-Goog-Api-Key': key,
+        ...(mask ? { 'X-Goog-FieldMask': mask } : {}),
+        ...(body ? { 'content-type': 'application/json' } : {}),
+      },
     });
     if (!response.ok) throw new Error('google-details-unavailable');
     const value = JSON.parse(new TextDecoder().decode(await boundedBytes(response, 600_000)));
@@ -62,6 +77,11 @@ export async function freshLeisurePlace(env, placeId, nowMs, extended = false) {
     extended ? 'places-details-enterprise-atmosphere' : 'places-details-enterprise',
     nowMs,
   );
+  if (p.id && p.id !== placeId) throw new Error('google-place-mismatch');
+  return normalizeGoogleLeisurePlace(p, placeId, nowMs, extended);
+}
+/** @param {any} p @param {string} placeId @param {number} nowMs @param {boolean} extended */
+export function normalizeGoogleLeisurePlace(p, placeId, nowMs, extended) {
   /** @type {Record<string,boolean>} */ const amenities = {};
   for (const key of [
     'outdoorSeating',
@@ -83,6 +103,10 @@ export async function freshLeisurePlace(env, placeId, nowMs, extended = false) {
     if (typeof p[key] === 'boolean') amenities[key] = p[key];
   return {
     place_id: placeId,
+    primaryType: cleanText(p.primaryType, 100),
+    types: (Array.isArray(p.types) ? p.types : [])
+      .filter((/** @type {any} */ t) => typeof t === 'string')
+      .slice(0, 30),
     name: cleanText(p.displayName?.text, 180),
     address: cleanText(p.formattedAddress, 250) || null,
     lat: Number.isFinite(p.location?.latitude) ? p.location.latitude : null,
@@ -132,6 +156,36 @@ export async function freshLeisurePlace(env, placeId, nowMs, extended = false) {
     provider: 'Google Maps',
     extended,
   };
+}
+/** Live, display-only pool. No search result or score is written to a catalogue/cache.
+ * @param {Env} env @param {string} query @param {string} city @param {number} nowMs @param {boolean} [parking] */
+export async function freshLeisureFoodSearch(env, query, city, nowMs, parking = false) {
+  const response = await googleJson(
+    env,
+    'places:searchText',
+    LEISURE_FOOD_SEARCH_MASK + (parking ? ',places.parkingOptions' : ''),
+    parking ? 'places-textsearch-enterprise-atmosphere' : 'places-textsearch-enterprise',
+    nowMs,
+    /** @type {any} */ ({
+      textQuery: query + ' ' + city,
+      languageCode: 'uk',
+      regionCode: 'UA',
+      pageSize: 20,
+      minRating: 4,
+      rankPreference: 'RELEVANCE',
+      locationRestriction: {
+        rectangle: {
+          low: { latitude: 49.74, longitude: 23.84 },
+          high: { latitude: 49.93, longitude: 24.17 },
+        },
+      },
+    }),
+    'places_text',
+  );
+  return (Array.isArray(response.places) ? response.places : [])
+    .slice(0, 20)
+    .filter((/** @type {any} */ p) => ID.test(p.id ?? ''))
+    .map((/** @type {any} */ p) => normalizeGoogleLeisurePlace(p, p.id, nowMs, parking));
 }
 /** @param {unknown} name @param {string} placeId */
 export function validPhotoResource(name, placeId) {

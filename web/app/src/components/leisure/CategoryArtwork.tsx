@@ -12,6 +12,7 @@ export const categoryArtwork: Record<LeisureItem['category'], string> = {
   place: '/leisure-covers/exhibition-v1.webp',
   meetup: '/leisure-covers/show-v1.webp',
   podcast: '/leisure-covers/concert-v1.webp',
+  event: '/leisure-covers/show-v1.webp',
 };
 
 export function CategoryArtwork({

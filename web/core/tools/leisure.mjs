@@ -3,6 +3,8 @@ import { LeisureError } from '../leisure/model.mjs';
 import { wrapExternal } from './markup.mjs';
 import { suggestLeisure } from '../leisure/planning-service.mjs';
 import { leisureFeedbackChoices } from '../leisure/feedback.mjs';
+import { leisureFoodQuality, selectLeisureHighlights } from '../leisure/selection.mjs';
+import { readLeisureFoodQuality } from '../leisure/food-quality.mjs';
 import {
   leisureIdentity,
   leisureDecisionIndex,
@@ -73,29 +75,40 @@ export async function runLeisureQuery(env, args, nowMs) {
                   (view !== 'priority' || r.interestLevel === 'priority'),
               )
               .map((r) => r.itemId)
-          : view === 'week'
-            ? [...(workspace.edition?.ids ?? []), ...(workspace.edition?.futureIds ?? [])].filter(
-                (id) => {
-                  const i = workspace.items.find((i) => i.id === id),
-                    r = i ? decisions.get(i.identityKey ?? leisureIdentity(i)) : null;
-                  return (
-                    !decided.has(id) &&
-                    !workspace.saved.includes(id) &&
-                    r?.verdict !== 'interested' &&
-                    !leisureReactionHidden(r ?? {}, nowMs)
-                  );
-                },
-              )
-            : workspace.records
-                .filter((r) =>
-                  view === 'places'
-                    ? ['visit', 'familiarity'].includes(r.kind)
-                    : r.kind ===
-                      (view === 'plans' ? 'plan' : view === 'drafts' ? 'draft' : 'visit'),
+          : view === 'week' && args.category === 'food'
+            ? workspace.items
+                .filter(
+                  (i) =>
+                    i.category === 'food' &&
+                    !leisureReactionHidden(
+                      decisions.get(i.identityKey ?? leisureIdentity(i)) ?? {},
+                      nowMs,
+                    ),
                 )
-                .flatMap((r) =>
-                  r.itemId ? [r.itemId] : r.stops.map((/** @type {any} */ s) => s.itemId),
-                ),
+                .map((i) => i.id)
+            : view === 'week'
+              ? [...(workspace.edition?.ids ?? []), ...(workspace.edition?.futureIds ?? [])].filter(
+                  (id) => {
+                    const i = workspace.items.find((i) => i.id === id),
+                      r = i ? decisions.get(i.identityKey ?? leisureIdentity(i)) : null;
+                    return (
+                      !decided.has(id) &&
+                      !workspace.saved.includes(id) &&
+                      r?.verdict !== 'interested' &&
+                      !leisureReactionHidden(r ?? {}, nowMs)
+                    );
+                  },
+                )
+              : workspace.records
+                  .filter((r) =>
+                    view === 'places'
+                      ? ['visit', 'familiarity'].includes(r.kind)
+                      : r.kind ===
+                        (view === 'plans' ? 'plan' : view === 'drafts' ? 'draft' : 'visit'),
+                  )
+                  .flatMap((r) =>
+                    r.itemId ? [r.itemId] : r.stops.map((/** @type {any} */ s) => s.itemId),
+                  ),
   );
   const ranking = new Map(
     (workspace.edition?.rankings ?? []).map((/** @type {any} */ r, /** @type {number} */ n) => [
@@ -103,7 +116,7 @@ export async function runLeisureQuery(env, args, nowMs) {
       n,
     ]),
   );
-  const matches = workspace.items
+  let matches = workspace.items
     .filter(
       (i) =>
         ids.has(i.id) &&
@@ -117,6 +130,44 @@ export async function runLeisureQuery(env, args, nowMs) {
             .includes(query)),
     )
     .sort((a, b) => (ranking.get(a.id) ?? 100000) - (ranking.get(b.id) ?? 100000));
+  let qualityCoverage = null;
+  if (!args.id && view === 'week' && args.category === 'food') {
+    let live = [];
+    let unavailable = false;
+    try {
+      live = (await readLeisureFoodQuality(env, workspace, {}, nowMs)).entries;
+    } catch {
+      unavailable = true;
+    }
+    const places = new Map(live.map((entry) => [entry.itemId, entry.place]));
+    matches = matches
+      .map((i) => ({
+        ...i,
+        foodQuality: leisureFoodQuality(
+          { ...i, placeDetails: places.get(i.id) },
+          workspace.settings.selection,
+          decisions.get(i.identityKey ?? leisureIdentity(i)),
+          workspace.settings.transport,
+        ),
+      }))
+      .filter((i) => i.foodQuality.eligible)
+      .sort((a, b) => b.foodQuality.score - a.foodQuality.score);
+    qualityCoverage = {
+      verified: live.length,
+      total: workspace.items.filter((i) => i.category === 'food').length,
+      unavailable,
+      note: 'Оцінки перевірено для частини каталогу. Неперевірені заклади не оголошуємо найкращими; власний пріоритет може бути винятком.',
+    };
+  } else if (!args.id && view === 'week' && !args.category && !query) {
+    if (workspace.edition?.highlightIds?.length)
+      matches = matches.filter((i) => workspace.edition.highlightIds.includes(i.id));
+    matches = selectLeisureHighlights(
+      matches,
+      [...workspace.discoveryDecisions, ...workspace.records],
+      workspace.settings,
+      nowMs,
+    );
+  }
   const offset = args.id ? 0 : Math.max(0, Math.floor(Number(args.offset ?? 0)));
   const limit = args.id ? 1 : Math.max(1, Math.min(40, Math.floor(Number(args.limit ?? 18))));
   const items = matches.slice(offset, offset + limit).map((i) => ({
@@ -158,6 +209,7 @@ export async function runLeisureQuery(env, args, nowMs) {
         total: matches.length,
         offset,
         nextOffset: offset + limit < matches.length ? offset + limit : null,
+        ...(qualityCoverage ? { qualityCoverage } : {}),
         records: workspace.records
           .filter(
             (r) =>
@@ -188,6 +240,7 @@ export async function runLeisureQuery(env, args, nowMs) {
               'lastSynced',
               'calendarAttempts',
               'calendarRetryAt',
+              'previousChoice',
             ])
               delete safe[key];
             return safe;
@@ -199,7 +252,7 @@ export async function runLeisureQuery(env, args, nowMs) {
           signals: workspace.preferenceProfile.signals,
           interests: workspace.preferenceProfile.interests,
         },
-        note: 'Збереження, плани, відвідування та оцінки — різні стани. Банківська оплата не підтверджує відвідування. Записи календаря — після погодження.',
+        note: 'Заклади добираємо за перевіреною якістю без обов’язкового лайка. Загальна тижнева добірка — до 12 нових ідей. Збереження, плани, відвідування та оцінки — різні стани. Банківська оплата не підтверджує відвідування. Записи календаря — після погодження.',
       }),
     ),
   };

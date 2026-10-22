@@ -4,6 +4,8 @@ import { addDaysToDateKey } from '../../reminders-core.mjs';
 import { leisureIdentity, leisureReactionHidden, leisureDecisionIndex } from './identity.mjs';
 import { normalizeLeisureSchedule } from './schedule.mjs';
 import { normalizeContentFacts } from './content-facts.mjs';
+import { DEFAULT_LEISURE_SELECTION } from './selection.mjs';
+import { classifiedLeisureItem } from './taxonomy.mjs';
 
 export const LEISURE_CATEGORIES = [
   'exhibition',
@@ -16,6 +18,7 @@ export const LEISURE_CATEGORIES = [
   'place',
   'meetup',
   'podcast',
+  'event',
 ];
 export const LEISURE_OPERATIONS = [
   'settings',
@@ -46,6 +49,7 @@ export const DEFAULT_LEISURE_SETTINGS = {
   retention: 'until-deleted',
   telegram: true,
   planAlerts: true,
+  selection: DEFAULT_LEISURE_SELECTION,
 };
 
 export class LeisureError extends Error {
@@ -145,7 +149,7 @@ export async function normalizeLeisureItem(raw, nowMs) {
     Number.isFinite(raw.priceMin) &&
     raw.priceMin >= 0 &&
     (raw.priceMin > 0 || raw.free === true);
-  return {
+  return classifiedLeisureItem({
     id: await leisureId(
       'item',
       raw.placeId ? `place:${raw.placeId}` : (raw.identity ?? sourceUrl.split('#')[0]),
@@ -153,6 +157,9 @@ export async function normalizeLeisureItem(raw, nowMs) {
     venueId,
     placeId: raw.placeId ?? null,
     category: raw.category,
+    eventFormat: raw.eventFormat,
+    publisherCategory: cleanText(raw.publisherCategory, 100),
+    structuredType: cleanText(raw.structuredType, 100),
     title,
     summary: cleanText(raw.summary, 650),
     venue,
@@ -228,7 +235,7 @@ export async function normalizeLeisureItem(raw, nowMs) {
             url: httpLink(s.url),
           }))
       : [],
-  };
+  });
 }
 /** Recency, explicit feedback and diversity, with no fabricated partner preferences.
  * @param {any[]} items @param {any[]} records @param {string[]} previousIds @param {any} settings @param {number} nowMs */

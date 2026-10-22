@@ -5,6 +5,7 @@ const calls = vi.hoisted(() => ({
   workspace: vi.fn(),
   calendar: vi.fn(),
   details: vi.fn(),
+  food: vi.fn(),
   route: vi.fn(),
 }));
 vi.mock('../web/core/leisure/store.mjs', () => ({ readLeisureWorkspace: calls.workspace }));
@@ -12,7 +13,10 @@ vi.mock('../web/google.mjs', () => ({ readCalendarRange: calls.calendar }));
 vi.mock('../web/core/adapters/maps.mjs', () => ({
   routesEta: calls.route,
 }));
-vi.mock('../web/core/leisure/google-details.mjs', () => ({ freshLeisurePlace: calls.details }));
+vi.mock('../web/core/leisure/google-details.mjs', () => ({
+  freshLeisurePlace: calls.details,
+  freshLeisureFoodSearch: calls.food,
+}));
 const now = Date.parse('2026-10-19T08:00:00Z');
 const options = {
   from: '2026-10-20',
@@ -58,6 +62,7 @@ beforeEach(() => {
   calls.workspace.mockResolvedValue(data());
   calls.calendar.mockResolvedValue([]);
   calls.details.mockResolvedValue({ periods: [{ open: { day: 0 } }] });
+  calls.food.mockResolvedValue([]);
   calls.route.mockResolvedValue({ duration_min: 10, distance_m: 800 });
 });
 afterEach(() => vi.useRealTimers());
@@ -72,8 +77,8 @@ describe('bounded leisure suggestion service', () => {
     });
     const first = await suggestLeisure(env, options, now);
     expect(first.days).toHaveLength(3);
-    expect(calls.details.mock.calls.length).toBeLessThanOrEqual(3);
-    expect(calls.route.mock.calls.length).toBeLessThanOrEqual(4);
+    expect(calls.details.mock.calls.length).toBeLessThanOrEqual(2);
+    expect(calls.route.mock.calls.length).toBeLessThanOrEqual(3);
     expect(await suggestLeisure(env, options, now)).toEqual(first);
     expect(calls.calendar).toHaveBeenCalledTimes(2);
     expect(stored.size).toBe(0);
@@ -91,6 +96,37 @@ describe('bounded leisure suggestion service', () => {
     expect(result.days[0].plans.length).toBeGreaterThan(0);
     expect(result.days[0].plans[0].warnings.join(' ')).toContain('Календар');
     expect(result.days[0].plans[0].confidence).toBe('needs-check');
+  });
+  it('keeps a quality-selected restaurant eligible when its required parking is rechecked', async () => {
+    const cafe = data().items[0]!;
+    calls.workspace.mockResolvedValue({
+      ...data(),
+      items: [cafe],
+      records: [],
+      settings: { city: 'Львів', selection: { minFoodRating: 4.4, parking: 'required' } },
+    });
+    const facts = {
+      place_id: cafe.placeId,
+      rating: 4.7,
+      userRatingCount: 400,
+      businessStatus: 'OPERATIONAL',
+      parking: { paidParkingLot: true },
+      periods: [{ open: { day: 0 } }],
+    };
+    calls.food.mockResolvedValue([facts]);
+    calls.details.mockResolvedValue(facts);
+    const result = await suggestLeisure(
+      workerEnv({ MAPS_API_KEY: 'test-key' }),
+      { ...options, transport: 'car' },
+      now,
+    );
+    expect(calls.food).toHaveBeenCalledTimes(1);
+    expect(calls.details).toHaveBeenCalledWith(expect.anything(), cafe.placeId, now, true);
+    expect(
+      result.days[0].plans.some((p: { stops: { itemId: string }[] }) =>
+        p.stops.some((s) => s.itemId === cafe.id),
+      ),
+    ).toBe(true);
   });
   it('stops enriching after the wall clock budget instead of consuming every possible request', async () => {
     calls.details.mockImplementation(async () => {
