@@ -5,7 +5,9 @@ import {
   validPhotoResource,
   LEISURE_GOOGLE_DETAILS_MASK,
   LEISURE_GOOGLE_EXTENDED_MASK,
+  LEISURE_FOOD_SEARCH_MASK,
 } from '../web/core/leisure/google-details.mjs';
+import { readLeisureFoodQuality } from '../web/core/leisure/food-quality.mjs';
 import { enrichLeisureItem, leisureItemImage } from '../web/core/leisure/enrichment.mjs';
 import { reserveQuota, quotaPeriod } from '../web/core/quota/quota.mjs';
 import { d1FromSqlite } from './helpers/d1.js';
@@ -17,7 +19,9 @@ import {
   upsertLeisureItems,
   leisureItems,
   executeLeisureCommand,
+  publishLeisureEdition,
 } from '../web/core/leisure/store.mjs';
+import { runLeisureQuery } from '../web/core/tools/leisure.mjs';
 import { handleLeisure } from '../web/api-leisure.mjs';
 import { leisureOpenDuring, buildLeisureSuggestions } from '../web/core/leisure/planning.mjs';
 import { forecastForDates } from '../web/core/adapters/weather.mjs';
@@ -44,6 +48,8 @@ function setup() {
 }
 const googlePlace = {
   id: 'place1',
+  primaryType: 'japanese_restaurant',
+  types: ['japanese_restaurant', 'restaurant'],
   displayName: { text: 'Кав’ярня' },
   formattedAddress: 'Львів, вулиця 1',
   googleMapsUri: 'https://maps.google.com/?cid=1',
@@ -72,6 +78,165 @@ const googlePlace = {
 };
 const json = (v: unknown) =>
   new Response(JSON.stringify(v), { headers: { 'content-type': 'application/json' } });
+describe('bounded live restaurant quality', () => {
+  const workspace = {
+    items: [{ id: 'item-food', placeId: 'place1', category: 'food' }],
+    settings: { city: 'Львів', selection: { parking: 'any' } },
+  };
+  it('protects quality reads with owner authentication and never writes a command receipt', async () => {
+    const { env, db } = setup();
+    try {
+      const fetch = vi.fn().mockResolvedValue(json({ places: [googlePlace] }));
+      vi.stubGlobal('fetch', fetch);
+      const body = JSON.stringify({ op: 'food-quality', payload: {} });
+      const denied = await handleLeisure(
+        new Request('https://app.test/api/leisure', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body,
+        }),
+        env,
+      );
+      expect([401, 403]).toContain(denied.status);
+      expect(fetch).not.toHaveBeenCalled();
+      const item = await normalizeLeisureItem(
+        {
+          category: 'food',
+          title: 'Кафе',
+          source: 'Google Maps',
+          placeId: 'place1',
+          sourceUrl: 'https://maps.google.com/?cid=1',
+        },
+        now,
+      );
+      await upsertLeisureItems(env, [item]);
+      const init = await buildInitData(42, 'test-token');
+      const response = await handleLeisure(
+        new Request('https://app.test/api/leisure', {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            'X-Telegram-Init-Data': init,
+            'X-Leisure-Format': '5',
+          },
+          body,
+        }),
+        env,
+      );
+      expect(response.status).toBe(200);
+      expect(response.headers.get('cache-control')).toBe('private, no-store');
+      expect(await response.json()).toMatchObject({
+        ok: true,
+        quality: { catalogTotal: 1, entries: [{ itemId: item!.id, place: { rating: 4.6 } }] },
+      });
+      expect(db.prepare('SELECT count(*) AS n FROM leisure_commands').get()).toMatchObject({
+        n: 0,
+      });
+      const invalid = await handleLeisure(
+        new Request('https://app.test/api/leisure', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', 'X-Telegram-Init-Data': init },
+          body: JSON.stringify({ op: 'food-quality', payload: null }),
+        }),
+        env,
+      );
+      expect(invalid.status).toBe(400);
+    } finally {
+      db.close();
+    }
+  });
+  it('lets the chat suggest a qualifying restaurant without an owner like and reports partial catalogue coverage', async () => {
+    const { env, db } = setup();
+    try {
+      const cafe = await normalizeLeisureItem(
+        {
+          category: 'food',
+          title: 'Кафе',
+          source: 'Google Maps',
+          placeId: 'place1',
+          sourceUrl: 'https://maps.google.com/?cid=1',
+        },
+        now,
+      );
+      const unknown = await normalizeLeisureItem(
+        {
+          category: 'food',
+          title: 'Неперевірений',
+          source: 'Google Maps',
+          placeId: 'place2',
+          sourceUrl: 'https://maps.google.com/?cid=2',
+        },
+        now,
+      );
+      await publishLeisureEdition(env, [cafe, unknown], [], now);
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(json({ places: [googlePlace] })));
+      const result = await runLeisureQuery(env, { view: 'week', category: 'food' }, now);
+      expect(result.result).toContain('"rating":4.6');
+      expect(result.result).toContain('"verified":1,"total":2');
+      expect(result.result).not.toContain('Неперевірений');
+      expect(
+        db.prepare("SELECT count(*) AS n FROM leisure_records WHERE kind='reaction'").get(),
+      ).toMatchObject({ n: 0 });
+      expect((await leisureItems(env)).every((i) => !i.placeDetails)).toBe(true);
+    } finally {
+      db.close();
+    }
+  });
+  it('retrieves ratings in search batches without rounding the owner threshold or persisting Google facts', async () => {
+    const { env, db } = setup();
+    const fetch = vi
+      .fn()
+      .mockImplementation(() =>
+        Promise.resolve(
+          json({ places: [googlePlace, { ...googlePlace, id: 'outside-catalogue' }] }),
+        ),
+      );
+    vi.stubGlobal('fetch', fetch);
+    const result = await readLeisureFoodQuality(env, workspace, {}, now);
+    expect(result).toMatchObject({
+      catalogTotal: 1,
+      partial: false,
+      entries: [{ itemId: 'item-food', place: { rating: 4.6, userRatingCount: 123 } }],
+    });
+    expect(fetch).toHaveBeenCalledTimes(3);
+    for (const [url, options] of fetch.mock.calls) {
+      expect(url).toBe('https://places.googleapis.com/v1/places:searchText');
+      expect(JSON.parse(options.body)).toMatchObject({
+        minRating: 4,
+        pageSize: 20,
+        regionCode: 'UA',
+      });
+      expect(new Headers(options.headers).get('X-Goog-FieldMask')).toBe(LEISURE_FOOD_SEARCH_MASK);
+    }
+    expect(db.prepare('SELECT count(*) AS n FROM places').get()).toMatchObject({ n: 0 });
+    expect(db.prepare('SELECT count(*) AS n FROM leisure_items').get()).toMatchObject({ n: 0 });
+    expect(db.prepare('SELECT count(*) AS n FROM leisure_records').get()).toMatchObject({ n: 0 });
+    expect(
+      db
+        .prepare('SELECT value FROM quota_counters WHERE key=? AND period=?')
+        .get('places_text', quotaPeriod(now)),
+    ).toMatchObject({ value: 3 });
+    db.close();
+  });
+  it('keeps partial success honest and bounds manual checks to owned catalogue IDs', async () => {
+    const { env, db } = setup();
+    const fetch = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('source unavailable'))
+      .mockImplementation(() => Promise.resolve(json({ places: [googlePlace] })));
+    vi.stubGlobal('fetch', fetch);
+    expect((await readLeisureFoodQuality(env, workspace, {}, now)).partial).toBe(true);
+    fetch.mockClear();
+    await expect(
+      readLeisureFoodQuality(env, workspace, { ids: ['item-other'] }, now),
+    ).rejects.toThrow('каталогу');
+    await expect(
+      readLeisureFoodQuality(env, workspace, { ids: Array(5).fill('item-food') }, now),
+    ).rejects.toThrow('чотирьох');
+    expect(fetch).not.toHaveBeenCalled();
+    db.close();
+  });
+});
 beforeEach(() => {
   vi.useFakeTimers();
   vi.setSystemTime(now);
@@ -87,6 +252,10 @@ describe('on-demand Google content and cost guards', () => {
     const fetch = vi.fn().mockImplementation(() => Promise.resolve(json(googlePlace)));
     vi.stubGlobal('fetch', fetch);
     const standard = await freshLeisurePlace(env, 'place1', now);
+    expect(standard).toMatchObject({
+      primaryType: 'japanese_restaurant',
+      types: ['japanese_restaurant', 'restaurant'],
+    });
     expect(new Headers(fetch.mock.calls[0]?.[1]?.headers).get('X-Goog-FieldMask')).toBe(
       LEISURE_GOOGLE_DETAILS_MASK,
     );

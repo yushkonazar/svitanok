@@ -66,7 +66,7 @@ const command = (
   commandId = crypto.randomUUID(),
 ) => ({ op, id, payload, commandId });
 describe('durable leisure choices', () => {
-  it('projects legacy clients safely while format four receives new categories and drafts', async () => {
+  it('projects older clients safely while format five receives unclassified events', async () => {
     const { env, db } = setup();
     try {
       const item = await makeItem(),
@@ -74,7 +74,12 @@ describe('durable leisure choices', () => {
           category: 'food',
           sourceUrl: 'https://lviv.travel/ua/events/food',
         });
-      await publishLeisureEdition(env, [item, food], [], now);
+      const unclassified = await makeItem({
+        category: 'concert',
+        title: 'Невідомий вечір',
+        sourceUrl: 'https://example.com/unknown-event',
+      });
+      await publishLeisureEdition(env, [item, food, unclassified], [], now);
       await executeLeisureCommand(
         env,
         command('draft', undefined, {
@@ -84,7 +89,7 @@ describe('durable leisure choices', () => {
         now,
       );
       const init = await buildInitData(42, 'test-token');
-      for (const format of ['3', '4']) {
+      for (const format of ['3', '4', '5']) {
         const response = await handleLeisure(
           new Request('https://app.test/api/leisure?history=all', {
             headers: { 'X-Telegram-Init-Data': init, 'X-Leisure-Format': format },
@@ -99,9 +104,12 @@ describe('durable leisure choices', () => {
           };
         };
         expect(response.status).toBe(200);
-        expect(body.workspace.records.some((r) => r.kind === 'draft')).toBe(format === '4');
-        expect(body.workspace.items.some((i) => i.category === 'place')).toBe(format === '4');
-        expect(body.workspace.settings.telegram).toBe(format === '4');
+        expect(body.workspace.records.some((r) => r.kind === 'draft')).toBe(format !== '3');
+        expect(body.workspace.items.some((i) => i.category === 'place')).toBe(format !== '3');
+        expect(body.workspace.settings.telegram).toBe(format !== '3');
+        expect(body.workspace.items.some((i) => i.category === 'event')).toBe(format === '5');
+        expect(body.workspace.items.some((i) => i.category === 'meetup')).toBe(format === '4');
+        expect(response.headers.get('cache-control')).toBe('private, no-store');
       }
     } finally {
       db.close();
@@ -126,6 +134,36 @@ describe('durable leisure choices', () => {
     }
     if (['food', 'place', 'trip'].includes(category))
       expect(leisureFeedbackChoices(category).some((c) => c.code === 'genre')).toBe(false);
+  });
+  it('keeps the weekly shortlist across repeated catalogue updates instead of refilling it after choices', async () => {
+    const { env, db } = setup();
+    try {
+      const films = await Promise.all(
+        Array.from({ length: 9 }, (_, n) =>
+          makeItem({
+            category: 'cinema',
+            title: 'Фільм ' + n,
+            source: 'Видавець ' + n,
+            sourceUrl: 'https://planetakino.ua/movie/frozen-' + n + '/',
+          }),
+        ),
+      );
+      const first = await publishLeisureEdition(env, films, [], now);
+      expect(first.highlightIds).toHaveLength(3);
+      const firstId = first.highlightIds[0];
+      await executeLeisureCommand(
+        env,
+        command('reaction', firstId, { verdict: 'interested' }),
+        now + 1000,
+      );
+      const second = await publishLeisureEdition(env, films, [], now + 2000);
+      expect(second.highlightIds).toEqual(first.highlightIds);
+      expect((await readLeisureWorkspace(env, now + 2000)).edition.highlightIds).toEqual(
+        first.highlightIds,
+      );
+    } finally {
+      db.close();
+    }
   });
   it('keeps legacy likes, validates category reasons and preserves detail when priority changes', () => {
     const current = {
@@ -301,6 +339,62 @@ describe('durable leisure choices', () => {
       ).rejects.toThrow();
       await executeLeisureCommand(env, command('discard-draft', result.id, { revision: 1 }), now);
       expect((await readLeisureWorkspace(env, now, true)).records[0].discarded).toBe(true);
+    } finally {
+      db.close();
+    }
+  });
+  it('undoes a quick choice exactly after a legacy concert becomes a workshop, and rejects a stale undo', async () => {
+    const { env, db } = setup();
+    try {
+      const item = await makeItem({ category: 'concert', title: 'Гурт' });
+      await upsertLeisureItems(env, [item]);
+      await executeLeisureCommand(
+        env,
+        command('reaction', item.id, {
+          verdict: 'interested',
+          interestLevel: 'priority',
+          reasonCodes: ['artist'],
+          reason: 'Старий вибір',
+        }),
+        now,
+      );
+      await upsertLeisureItems(env, [
+        { ...item, title: 'Серія занять з декоративної кераміки', eventFormat: null },
+      ]);
+      await executeLeisureCommand(
+        env,
+        command('reaction', item.id, {
+          verdict: 'uninterested',
+          reasonCode: 'this-option',
+          revision: 1,
+        }),
+        now + 1000,
+      );
+      const undo = { verdict: 'interested', restorePrevious: true, revision: 2 };
+      await executeLeisureCommand(env, command('reaction', item.id, undo), now + 2000);
+      const workspace = await readLeisureWorkspace(env, now + 2000, true);
+      expect(workspace.items[0]).toMatchObject({
+        id: item.id,
+        category: 'meetup',
+        eventFormat: 'workshop',
+      });
+      expect(workspace.records.find((r) => r.kind === 'reaction')).toMatchObject({
+        revision: 3,
+        verdict: 'interested',
+        interestLevel: 'priority',
+        reasonCodes: ['artist'],
+        reason: 'Старий вибір',
+      });
+      await expect(
+        executeLeisureCommand(env, command('reaction', item.id, undo), now + 3000),
+      ).rejects.toThrow('змінився');
+      await expect(
+        executeLeisureCommand(
+          env,
+          command('reaction', item.id, { verdict: 'uninterested', restorePrevious: true }),
+          now + 3000,
+        ),
+      ).rejects.toThrow('змінився');
     } finally {
       db.close();
     }

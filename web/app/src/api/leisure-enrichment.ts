@@ -6,7 +6,7 @@ import type { LeisureItem } from './leisure.ts';
 
 const link = z.string().nullable();
 const author = z.object({ name: z.string(), url: link });
-const placeSchema = z.object({
+export const placeSchema = z.object({
   name: z.string(),
   address: link,
   maps_uri: link,
@@ -26,6 +26,10 @@ const placeSchema = z.object({
   photos: z.array(z.object({ name: z.string(), authors: z.array(author) })),
   fetched_at: z.string(),
   extended: z.boolean(),
+  primaryType: z.string().optional(),
+  types: z.array(z.string()).optional(),
+  lat: z.number().nullable().optional(),
+  lon: z.number().nullable().optional(),
 });
 const enrichmentSchema = z.object({
   itemId: z.string(),
@@ -56,7 +60,7 @@ async function read(op: string, payload: Record<string, unknown>, signal: AbortS
     headers: {
       'content-type': 'application/json',
       'X-Telegram-Init-Data': tg?.initData ?? '',
-      'X-Leisure-Format': '4',
+      'X-Leisure-Format': '5',
     },
     body: JSON.stringify({ op, payload }),
   });
@@ -131,3 +135,4 @@ export function useLeisureImage(
   });
 }
 export { inTelegram as leisureLiveAvailable } from '../telegram.ts';
+export { read as readLeisureLive };
