@@ -1,6 +1,7 @@
 import { tripLocalParts, tripZone } from './time.mjs';
 
-export const COMPANION_OPS = ['task', 'booking', 'progress', 'party', 'preferences'];
+export const COMPANION_OPS = ['task', 'booking', 'progress', 'party', 'preferences', 'prepare'];
+export const TASK_GROUPS = ['documents', 'bookings', 'packing', 'home', 'return', 'other', 'post'];
 const STATES = ['planned', 'departed', 'arrived', 'returning', 'home'];
 /** @type {Record<string,string>} */
 const STAGE_LABELS = {
@@ -48,10 +49,18 @@ function url(value) {
 }
 
 /** Pure validated mutations shared by assistant and Mini App. No booking or payment occurs.
- * @param {string} op @param {any} input @param {any} travel @param {number} nowMs @returns {{facet:string,value:any}|null} */
-export function companionChange(op, input, travel, nowMs) {
+ * @param {string} op @param {any} input @param {any} travel @param {number} nowMs @param {any} [state] @returns {{facet:string,value:any}|null} */
+export function companionChange(op, input, travel, nowMs, state = {}) {
   if (!COMPANION_OPS.includes(op)) return null;
   const at = new Date(nowMs).toISOString();
+  if (op === 'prepare') {
+    const old = Array.isArray(travel.tasks) ? travel.tasks : [];
+    const existing = new Set(old.map((/** @type {any} */ t) => t.id));
+    const value = [...old, ...suggestedPreparation(state).filter((t) => !existing.has(t.id))];
+    if (value.length > 200)
+      throw new Error('У списку вже забагато справ. Прибери зайві перед доповненням.');
+    return { facet: 'tasks', value };
+  }
   if (op === 'progress') {
     if (!STATES.includes(input.stage))
       throw new Error('Обери етап: план, виїхав, прибув, повертаюся або вдома.');
@@ -108,6 +117,8 @@ export function companionChange(op, input, travel, nowMs) {
   if (!title) throw new Error('Назви справу або бронювання.');
   let record;
   if (op === 'task') {
+    const group = input.group ?? old?.group ?? 'other';
+    if (!TASK_GROUPS.includes(group)) throw new Error('Обери розділ списку.');
     const status = input.status ?? old?.status ?? 'open';
     if (!['open', 'done', 'later', 'not_needed'].includes(status))
       throw new Error('Обери стан справи.');
@@ -116,6 +127,7 @@ export function companionChange(op, input, travel, nowMs) {
       ...old,
       id: recordId,
       title,
+      group,
       status,
       due_at,
       owner: text(input.owner ?? old?.owner, 80),
@@ -167,28 +179,60 @@ export function companionChange(op, input, travel, nowMs) {
 export function suggestedPreparation(state) {
   const a = state.preferences ?? state,
     tasks = [
-      ['documents', 'Перевірити документи, квитки й потрібне страхування'],
-      ['packing', 'Зібрати речі за транспортом і прогнозом'],
-      ['offline', 'Зберегти маршрут, адреси та потрібні контакти офлайн'],
-      ['home', 'Підготувати дім і завершити справи перед від’їздом'],
-      ['return', 'Перевірити зворотну дорогу й час повернення додому'],
+      ['documents', 'Перевірити документи, квитки й потрібне страхування', 'documents'],
+      ['packing', 'Перевірити остаточний список речей і ліміти багажу', 'packing'],
+      ['offline', 'Зберегти маршрут, адреси, квитки й контакти офлайн', 'documents'],
+      ['home', 'Підготувати дім і завершити справи перед від’їздом', 'home'],
+      ['return', 'Перевірити зворотні квитки й час прибуття додому', 'return'],
+      ['pack-clothes', 'Одяг, білизна й шкарпетки на тривалість поїздки', 'packing'],
+      ['pack-shoes', 'Зручне взуття для маршруту', 'packing'],
+      ['pack-weather', 'Верхній одяг і захист від дощу за прогнозом', 'packing'],
+      ['pack-hygiene', 'Засоби гігієни з урахуванням правил багажу', 'packing'],
+      ['pack-medicine', 'Особисті ліки, рецепти й базова аптечка', 'packing'],
+      ['pack-charger', 'Телефон, зарядні пристрої, павербанк і потрібний адаптер', 'packing'],
+      ['pack-money', 'Платіжні картки та резервна готівка', 'packing'],
+      ['pack-daybag', 'Невеликий рюкзак, вода та перекус у дорогу', 'packing'],
+      ['home-keys', 'Ключі, вікна, вода, техніка й доступ довіреної людини', 'home'],
+      ['home-care', 'Рослини, тварини, пошта й побутові платежі', 'home'],
+      ['booking-transport', 'Перевірити стан квитків, імена, місце посадки та час', 'bookings'],
+      ['return-bag', 'Перед виїздом перевірити речі, документи й залишені застави', 'return'],
     ];
   if (a.lodging_needed === 'yes')
-    tasks.push(['lodging', 'Уточнити заселення, багаж, виїзд і умови скасування житла']);
+    tasks.push([
+      'lodging',
+      'Підтвердити адресу, заселення, виїзд, податки й умови скасування житла',
+      'bookings',
+    ]);
   if (state.mode === 'car')
-    tasks.push(['vehicle', 'Перевірити авто, зупинки, пальне/зарядки й парковку']);
+    tasks.push(['vehicle', 'Перевірити авто, зупинки, пальне/зарядки й парковку', 'bookings']);
   if (state.mode === 'plane')
-    tasks.push(['flight', 'Перевірити реєстрацію, багаж, пересадки й трансфери']);
+    tasks.push(['flight', 'Перевірити реєстрацію, багаж, пересадки й трансфери', 'bookings']);
   if (['hike', 'walk'].includes(state.mode))
-    tasks.push(['outdoor', 'Перевірити умови маршруту, денне світло, спорядження й зв’язок']);
+    tasks.push([
+      'outdoor',
+      'Перевірити умови маршруту, денне світло, спорядження й зв’язок',
+      'packing',
+    ]);
   if (a.international || (state.country && !/^(UA|Україна)$/iu.test(state.country)))
     tasks.push(
-      ['border', 'Перевірити актуальні правила в’їзду й транзиту для учасників'],
-      ['connection', 'Підготувати зв’язок, валюту та резервну оплату'],
+      [
+        'border',
+        'Перевірити актуальні правила виїзду, в’їзду й транзиту для кожного учасника',
+        'documents',
+      ],
+      ['connection', 'Підготувати роумінг / eSIM, валюту та резервну оплату', 'packing'],
+      [
+        'passport',
+        'Перевірити чинність паспортів, віз / дозволів і документи дітей, якщо потрібні',
+        'documents',
+      ],
     );
-  return tasks.map(([key, title]) => ({
+  if (a.children_count > 0)
+    tasks.push(['pack-children', 'Дитячі речі, харчування та потрібне спорядження', 'packing']);
+  return tasks.map(([key, title, group]) => ({
     id: `suggest-${key}`,
     title,
+    group,
     status: 'open',
     suggested: true,
   }));
@@ -252,14 +296,38 @@ export function tripDayPlan(state, costs, date, nowMs = Date.parse(`${date}T12:0
 }
 
 /** Portable first-party text; downloaded once and available without network.
- * @param {any} state @param {any} costs */
-export function tripOfflinePack(state, costs) {
+ * @param {any} state @param {any} costs @param {any[]} [planningStages] */
+export function tripOfflinePack(state, costs, planningStages = []) {
   const travel = costs.travel ?? {};
   return [
     `# ${state.to_text ?? state.to ?? 'Подорож'}`,
     `${state.date_from} — ${state.date_to ?? 'повернення ще не визначене'}`,
     `Звідки: ${state.from_city ?? 'ще не визначено'}`,
     `Час: ${state.preferences?.departure_timezone ?? 'не визначено'} → ${state.preferences?.timezone ?? 'не визначено'}`,
+    '',
+    '## Обраний план',
+    ...planningStages.flatMap((stage) => {
+      const d = stage.decision;
+      if (!d) return [];
+      const label =
+        /** @type {Record<string,string>} */ ({
+          transport: 'Дорога',
+          stay: 'Житло',
+          activity: 'Місця',
+        })[stage.kind] ?? stage.kind;
+      return [
+        `### ${label}${stage.resolved ? '' : ' — потребує повторної перевірки'}`,
+        ...(d.mode === 'later'
+          ? ['Рішення відкладено.']
+          : d.mode === 'manual'
+            ? [d.note]
+            : (d.options ?? []).map(
+                (/** @type {any} */ o) =>
+                  `- ${o.title}; ${o.dates ?? ''}; ${o.schedule ?? ''}; ${o.location ?? ''}; ${o.source_url}`,
+              )),
+        'Обраний варіант сам по собі не підтверджує бронювання.',
+      ];
+    }),
     '',
     '## Маршрут',
     ...(travel.itinerary_stale

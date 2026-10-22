@@ -935,7 +935,8 @@
               "booking",
               "progress",
               "party",
-              "preferences"
+              "preferences",
+              "prepare"
             ],
             "type": "string"
           },

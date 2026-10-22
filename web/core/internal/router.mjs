@@ -750,6 +750,29 @@ async function scheduleDrain(env, ctx, nowMs) {
 async function handleRuns(env, ctx, runId, body, nowMs) {
   const steps = body.steps;
   const failed = steps.some((s) => s && s.kind === 'error');
+  let tripRun = null;
+  try {
+    tripRun = env.DB
+      ? await env.DB.prepare('SELECT profile FROM runs WHERE id=?').bind(runId).first()
+      : null;
+  } catch {
+    if (/** @type {any} */ (body.outcome)?.trip_research)
+      return json({ ok: false, error: 'trip-search-storage-unavailable' }, 503);
+  }
+  // Complete before the duplicate-report gate: a retried report repairs a failed CAS/storage write.
+  if (!tripRun && /** @type {any} */ (body.outcome)?.trip_research)
+    return json({ ok: false, error: 'trip-search-run-metadata-unavailable' }, 503);
+  if (tripRun?.profile === 'trip-research') {
+    const out = /** @type {any} */ (body.outcome)?.trip_research;
+    const { finishPlanningSearch } = await import('../trips/planning.mjs');
+    await finishPlanningSearch(
+      env,
+      runId,
+      out?.request_id === runId ? out.output : null,
+      failed || out?.request_id !== runId,
+      nowMs,
+    );
+  }
   const info = await registryFinish(env, runId, {
     finishedMs: nowMs,
     error: failed ? 'brain-error' : null,
@@ -821,7 +844,7 @@ async function handleRuns(env, ctx, runId, body, nowMs) {
 
   // Повтор фінального report може дописати telemetry, але не має вдруге
   // запускати chain event чи наступний запит у thread.
-  if (info?.newlyFinished === false) {
+  if (info?.newlyFinished === false || tripRun?.profile === 'trip-research') {
     return json({
       ok: true,
       steps: steps.length,

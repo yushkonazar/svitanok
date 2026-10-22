@@ -8,6 +8,9 @@ import { runTripExpense, tripExpenseSummary } from './core/tools/trip-expenses.m
 import { runTripOptions, tripResearchView } from './core/trips/options.mjs';
 import { companionView, tripOfflinePack } from './core/trips/companion.mjs';
 import { startTripChain, cancelTripChain } from './core/chains/trip.mjs';
+import { tripPlanningView, changePlanning } from './core/trips/planning.mjs';
+import { dispatchPlanningSearch } from './core/trips/search.mjs';
+import { deleteTravelRecord } from './core/trips/deletion.mjs';
 
 /** Scope comes from authenticated stored records; client cannot nominate a foreign chat.
  * @param {Env} env @param {unknown} chat */
@@ -26,7 +29,7 @@ function context(env, row) {
         threadId: String(row.scope_key).split(':')[1] || null,
       };
   if (!allowedChat(env, target.chatId)) throw new Error('Ця поїздка недоступна.');
-  return target;
+  return { chatId: String(target.chatId), threadId: target.threadId };
 }
 /** @param {Env} env @param {string|null} selectedId @param {number} nowMs */
 export async function readTravelWorkspace(env, selectedId = null, nowMs = Date.now()) {
@@ -93,6 +96,7 @@ export async function readTravelWorkspace(env, selectedId = null, nowMs = Date.n
         kind: 'draft',
         ...brief,
         research: tripResearchView(brief.answers, nowMs),
+        planning: tripPlanningView(brief, nowMs),
       };
   }
   if (trip) {
@@ -107,6 +111,7 @@ export async function readTravelWorkspace(env, selectedId = null, nowMs = Date.n
       status: trip.status,
       chain_status: trip.chain_status,
       brief_id: state.brief_id ?? null,
+      planning: brief ? tripPlanningView({ ...brief, already_started: true }, nowMs) : null,
       answers: {
         ...normalizeTripAnswers(brief?.answers ?? state.preferences),
         to: trip.to_text,
@@ -116,6 +121,10 @@ export async function readTravelWorkspace(env, selectedId = null, nowMs = Date.n
         mode: trip.mode,
         participants: state.participants,
         purpose: state.purpose,
+        support_level:
+          costs.travel?.preferences?.support_level ??
+          brief?.answers.support_level ??
+          state.preferences?.support_level,
       },
       workspace: tripWorkspaceView(costs),
       companion: companionView(state, costs.travel ?? {}, nowMs),
@@ -170,11 +179,14 @@ export async function handleTrips(request, env) {
         .bind(selectedId)
         .first();
       if (!row) throw new Error('Збережений план не знайдено.');
-      context(env, row);
+      const ctx = context(env, row),
+        state = JSON.parse(String(row.state_json));
+      const brief = state.brief_id ? await readTripBrief(env, ctx, nowMs, state.brief_id) : null;
       return new Response(
         tripOfflinePack(
           JSON.parse(String(row.state_json)),
           JSON.parse(String(row.cost_json ?? '{}')),
+          brief ? tripPlanningView({ ...brief, already_started: true }, nowMs).stages : [],
         ),
         {
           headers: {
@@ -189,17 +201,63 @@ export async function handleTrips(request, env) {
       if (JSON.stringify(body).length > 40_000) throw new Error('У запиті забагато даних.');
       const op = String(body.op),
         data = body.data ?? {};
-      if (op === 'brief') {
-        const row = selectedId
+      if (op === 'delete') {
+        if (!selectedId || data.confirm !== true || !['draft', 'trip'].includes(data.kind))
+          throw new Error('Підтвердь видалення вибраної поїздки.');
+        const trip = await env.DB.prepare(
+          "SELECT t.*,c.state_json,c.workflow_id AS chain_workflow_id FROM trips t JOIN chains c ON c.id=t.workflow_id WHERE t.id=? AND c.kind='trip'",
+        )
+          .bind(selectedId)
+          .first();
+        const draft = trip
+          ? null
+          : await env.DB.prepare('SELECT * FROM trip_briefs WHERE id=?').bind(selectedId).first();
+        const row = trip ?? draft;
+        if (row) {
+          const ctx = context(env, row);
+          const kind = trip ? 'trip' : 'draft';
+          if (data.kind !== kind) throw new Error('Тип запису змінився. Онови список.');
+          receipt = await deleteTravelRecord(env, row, kind, body.revision, ctx);
+        } else receipt = { deleted_id: selectedId, already_deleted: true };
+        acknowledged = true;
+        selectedId = null;
+      } else if (op === 'brief') {
+        let row = selectedId
           ? await env.DB.prepare('SELECT * FROM trip_briefs WHERE id=?').bind(selectedId).first()
           : null;
+        if (selectedId && !row) {
+          const trip = await env.DB.prepare(
+            "SELECT t.*,c.state_json FROM trips t JOIN chains c ON c.id=t.workflow_id WHERE t.id=? AND c.kind='trip'",
+          )
+            .bind(selectedId)
+            .first();
+          if (trip) {
+            context(env, trip);
+            const state = JSON.parse(String(trip.state_json));
+            if (state.brief_id)
+              row = await env.DB.prepare('SELECT * FROM trip_briefs WHERE id=?')
+                .bind(state.brief_id)
+                .first();
+          }
+        }
         if (selectedId && !row) throw new Error('Чернетку не знайдено.');
+        if (row?.status === 'started') {
+          const existing = JSON.parse(String(row.answers_json));
+          if (
+            ['to', 'from_city', 'date_from', 'date_to', 'return_type', 'mode'].some(
+              (field) => Object.hasOwn(data, field) && data[field] !== existing[field],
+            )
+          )
+            throw new Error(
+              'Основний маршрут уже створено. Дати змінюй у деталях подорожі через «Перенести дати». Для іншого маршруту створи нову подорож.',
+            );
+        }
         const ctx = row ? context(env, row) : assistantHomeTarget(env);
         if (!ctx) throw new Error('Особистий чат ще не налаштований.');
         const out = await runTripBrief(
           env,
           {
-            ...(selectedId ? { draft_id: String(selectedId) } : { restart: true }),
+            ...(row ? { draft_id: String(row.id) } : { restart: true }),
             answers: data,
             expected_revision: body.revision,
             skip_field: body.skip_field,
@@ -208,8 +266,8 @@ export async function handleTrips(request, env) {
           ctx,
         );
         receipt = out.result;
-        selectedId = receipt.draft_id;
-      } else if (op === 'select' || op === 'start' || op === 'research') {
+        selectedId ??= receipt.draft_id;
+      } else if (op === 'select' || op === 'start' || op === 'research' || op === 'planning') {
         let row = await env.DB.prepare('SELECT * FROM trip_briefs WHERE id=?')
           .bind(selectedId)
           .first();
@@ -231,6 +289,17 @@ export async function handleTrips(request, env) {
         if (!row) throw new Error('Чернетку не знайдено.');
         const ctx = context(env, row),
           a = JSON.parse(String(row.answers_json));
+        if (op === 'planning') {
+          const brief = await readTripBrief(env, ctx, nowMs, String(row.id));
+          receipt = await changePlanning(env, row, brief, data, body.revision, nowMs);
+          acknowledged = true;
+          if (receipt.queued) {
+            const pending = await env.DB.prepare('SELECT * FROM trip_briefs WHERE id=?')
+              .bind(row.id)
+              .first();
+            receipt = await dispatchPlanningSearch(env, pending, ctx, receipt.run_id, nowMs);
+          }
+        }
         if (op === 'select')
           receipt = (
             await runTripOptions(
@@ -247,6 +316,11 @@ export async function handleTrips(request, env) {
           ).result;
         if (op === 'start') {
           if (data.consent !== true) throw new Error('Обери, чи потрібен супровід.');
+          if (
+            a.mode === 'compare' &&
+            !['bus', 'train', 'car', 'plane', 'mixed', 'hike', 'walk'].includes(data.actual_mode)
+          )
+            throw new Error('Обери фактичний транспорт для наступних етапів подорожі.');
           const prior = await env.DB.prepare(
             "SELECT t.id,t.workflow_id FROM trips t JOIN chains c ON c.id=t.workflow_id WHERE t.status='active' AND json_extract(c.state_json,'$.brief_id')=? AND CAST(json_extract(c.state_json,'$.chat_id') AS TEXT)=?",
           )
@@ -257,7 +331,7 @@ export async function handleTrips(request, env) {
             receipt = { trip_id: prior.id, already_started: true };
           } else {
             if (data.support_level != null) {
-              if (!['reminders', 'companion'].includes(data.support_level))
+              if (!['plan', 'reminders', 'companion'].includes(data.support_level))
                 throw new Error('Обери режим супроводу.');
               await runTripBrief(
                 env,
@@ -274,7 +348,11 @@ export async function handleTrips(request, env) {
             receipt = (
               await startTripChain(
                 env,
-                { ...normalizeTripAnswers(a), brief_id: selectedId },
+                {
+                  ...normalizeTripAnswers(a),
+                  ...(a.mode === 'compare' ? { mode: data.actual_mode } : {}),
+                  brief_id: selectedId,
+                },
                 nowMs,
                 ctx,
               )

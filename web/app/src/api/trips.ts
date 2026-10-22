@@ -9,6 +9,7 @@ const task = z.object({
   due_at: z.string().nullable().optional(),
   note: z.string().optional(),
   owner: z.string().optional(),
+  group: z.string().optional(),
 });
 const booking = z.object({
   id: z.string(),
@@ -42,6 +43,8 @@ const option = z.object({
   provider: z.string().optional(),
   source_url: z.string(),
   checked_at: z.string(),
+  location: z.string().optional(),
+  dates: z.string().optional(),
   stale: z.boolean(),
   availability: z.string(),
   tradeoffs: z.string().optional(),
@@ -66,6 +69,46 @@ const research = z.object({
   selections: z.record(z.string(), z.string()).optional(),
   selection_warnings: z.array(z.string()).optional(),
   summary: z.string().optional(),
+});
+const planningQuestion = z.object({
+  field: z.string(),
+  section: z.string(),
+  question: z.string(),
+  type: z.string(),
+  optional: z.boolean().optional(),
+  custom: z.boolean(),
+  hint: z.string().optional(),
+  choices: z.array(
+    z.object({ value: z.union([z.string(), z.number(), z.boolean()]), label: z.string() }),
+  ),
+});
+const planning = z.object({
+  revision: z.number(),
+  brief_revision: z.number(),
+  remaining: z.number(),
+  confirmed: z.boolean(),
+  step: z.string(),
+  question: planningQuestion.nullable(),
+  fields: z.array(planningQuestion),
+  stages: z.array(
+    z.object({
+      kind: z.string(),
+      status: z.string(),
+      summary: z.string(),
+      started_at: z.string().nullable(),
+      options: z.array(option),
+      resolved: z.boolean(),
+      needs_review: z.boolean(),
+      decision: z
+        .object({
+          mode: z.string(),
+          options: z.array(option.omit({ stale: true })),
+          note: z.string(),
+        })
+        .nullable(),
+    }),
+  ),
+  providers: z.array(z.object({ id: z.string(), name: z.string(), status: z.string() })),
 });
 const workspace = z.object({
   revision: z.number(),
@@ -135,6 +178,7 @@ export const travelSchema = z.object({
       revision: z.number().optional(),
       draft_id: z.string().optional(),
       brief_id: z.string().nullable().optional(),
+      planning: planning.nullable().optional(),
       answers: z.record(z.string(), z.unknown()),
       phase: z.string().optional(),
       ready_for_research: z.boolean().optional(),
@@ -163,9 +207,11 @@ export type TravelCommand = {
     | 'select'
     | 'start'
     | 'research'
+    | 'planning'
     | 'workspace'
     | 'expense'
     | 'cancel'
+    | 'delete'
     | 'reschedule'
     | 'weather-consent';
   id?: string;

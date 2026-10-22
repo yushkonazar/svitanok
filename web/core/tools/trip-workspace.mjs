@@ -243,7 +243,7 @@ export async function runTripWorkspace(env, args, nowMs, ctx) {
     const beforeEntries = entries;
     /** @type {string|null} */
     let transactionId = null;
-    const companion = companionChange(args.op, input, travel, nowMs);
+    const companion = companionChange(args.op, input, travel, nowMs, state);
     if (companion) {
       facet = companion.facet;
       value = companion.value;
