@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { inTelegram, tg } from '../telegram.ts';
 import { SessionExpiredError } from './client.ts';
 import { recordRequestDiagnostic, type RequestDiagnostic } from './request-diagnostics.ts';
+import { DEFAULT_LEISURE_SELECTION } from '../../../core/leisure/selection.mjs';
 
 const sessionSchema = z.object({
   id: z.string(),
@@ -47,8 +48,11 @@ export const leisureItemSchema = z.object({
     'place',
     'meetup',
     'podcast',
+    'event',
   ]),
   title: z.string(),
+  eventFormat: z.string().optional(),
+  classificationEvidence: z.string().optional(),
   summary: z.string(),
   venue: z.string().nullable(),
   address: z.string().nullable(),
@@ -172,6 +176,7 @@ const visitSchema = z.object({
   itemId: z.string(),
   venueId: z.string().nullable(),
   category: z.string(),
+  eventFormat: z.string().nullable().optional(),
   title: z.string(),
   visitedOn: z.string().nullable(),
   rating: z.enum(['liked', 'neutral', 'disliked']).nullable(),
@@ -258,6 +263,19 @@ export const leisureWorkspaceSchema = z.object({
     retention: z.string(),
     telegram: z.boolean(),
     planAlerts: z.boolean().default(true),
+    selection: z
+      .object({
+        minFoodRating: z.number(),
+        parking: z.enum(['any', 'preferred', 'required']),
+        weeklyLimit: z.number(),
+        formatFrequency: z.record(z.string(), z.enum(['often', 'sometimes', 'rare', 'manual'])),
+        followedPodcastSeries: z.array(z.string()),
+        categoryOverrides: z.record(
+          z.string(),
+          z.object({ category: z.string(), eventFormat: z.string() }),
+        ),
+      })
+      .default(DEFAULT_LEISURE_SELECTION),
   }),
   items: z.array(leisureItemSchema),
   knownPlaces: z
@@ -313,6 +331,7 @@ export const leisureWorkspaceSchema = z.object({
       until: z.string(),
       ids: z.array(z.string()),
       futureIds: z.array(z.string()),
+      highlightIds: z.array(z.string()).optional(),
       createdAt: z.string(),
       reason: z.string(),
       stale: z.boolean(),
@@ -497,7 +516,7 @@ export async function fetchLeisureSuggestions(
   return parsed.data;
 }
 const headers = (): Record<string, string> =>
-  inTelegram() && tg ? { 'X-Telegram-Init-Data': tg.initData, 'X-Leisure-Format': '4' } : {};
+  inTelegram() && tg ? { 'X-Telegram-Init-Data': tg.initData, 'X-Leisure-Format': '5' } : {};
 function session(response: Response) {
   if (response.status === 401 || response.status === 403)
     throw new SessionExpiredError(response.status);
@@ -704,6 +723,7 @@ export const categoryLabels: Record<LeisureItem['category'], string> = {
   place: 'Місця й музеї',
   meetup: 'Зустрічі й майстер-класи',
   podcast: 'Подкасти',
+  event: 'Інші події',
 };
 export function leisureDate(value: string) {
   return new Intl.DateTimeFormat('uk-UA', {

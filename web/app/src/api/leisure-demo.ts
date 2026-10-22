@@ -1,4 +1,7 @@
-import { normalizeLeisureFeedback } from '../../../core/leisure/feedback.mjs';
+import {
+  normalizeLeisureFeedback,
+  leisureReactionSnapshot,
+} from '../../../core/leisure/feedback.mjs';
 import {
   leisureWorkspaceSchema,
   toKyivInput,
@@ -6,10 +9,14 @@ import {
   type LeisureCommand,
 } from './leisure.ts';
 import { leisurePreferenceProfile, rankLeisureItems } from '../../../core/leisure/discovery.mjs';
+import { normalizeLeisureSelection } from '../../../core/leisure/selection.mjs';
+import { classifiedLeisureItem } from '../../../core/leisure/taxonomy.mjs';
 
 let demo: LeisureWorkspace | null = null;
+const previousChoices = new Map<string, ReturnType<typeof leisureReactionSnapshot>>();
 export function resetLeisureDemo() {
   demo = null;
+  previousChoices.clear();
 }
 export function readLeisureDemo(): LeisureWorkspace {
   if (demo) return structuredClone(demo);
@@ -147,10 +154,23 @@ export async function changeLeisureDemo(command: LeisureCommand) {
     data.saved = payload.saved
       ? [...new Set([...data.saved, item.id])]
       : data.saved.filter((v) => v !== item.id);
-  if (command.op === 'settings') data.settings = { ...data.settings, ...payload };
+  if (command.op === 'settings') {
+    data.settings = {
+      ...data.settings,
+      ...payload,
+      selection: normalizeLeisureSelection(payload.selection, data.settings.selection),
+    };
+    data.items = data.items.map((i) =>
+      classifiedLeisureItem(i, data.settings.selection.categoryOverrides[i.id]),
+    );
+  }
   if (command.op === 'reaction' && item) {
     const prior = data.records.find((r) => r.kind === 'reaction' && r.itemId === item.id);
-    const feedback = normalizeLeisureFeedback(item, payload, prior, Date.now());
+    const feedback =
+      payload.restorePrevious && previousChoices.has(item.id)
+        ? previousChoices.get(item.id)!
+        : normalizeLeisureFeedback(item, payload, prior, Date.now());
+    previousChoices.set(item.id, leisureReactionSnapshot(prior));
     data.records = data.records.filter((r) => !(r.kind === 'reaction' && r.itemId === item.id));
     data.records.push({
       id: `reaction-${item.id}`,
@@ -213,6 +233,7 @@ export async function changeLeisureDemo(command: LeisureCommand) {
       itemId: item.id,
       venueId: item.venueId,
       category: item.category,
+      eventFormat: item.eventFormat ?? null,
       title: item.title,
       visitedOn: payload.visitedOn ? String(payload.visitedOn) : null,
       rating: (payload.rating ?? null) as 'liked' | 'neutral' | 'disliked' | null,

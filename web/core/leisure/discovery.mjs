@@ -63,6 +63,12 @@ export const FEATURE_LABELS = {
   food: 'заклади',
   exhibition: 'виставки',
   concert: 'концерти',
+  opera: 'опера',
+  ballet: 'балет',
+  workshop: 'творчі майстер-класи',
+  lecture: 'лекції',
+  meeting: 'зустрічі',
+  other: 'інші події',
   festival: 'фестивалі',
   show: 'шоу й театр',
   trip: 'поїздки',
@@ -102,6 +108,7 @@ export function explicitLeisureInterests(note) {
 /** Tags describe explicit source words, not a guessed personality or partner preference. @param {any} item */
 export function leisureFeatures(item) {
   const features = [`category:${item.category}`];
+  if (item.eventFormat && item.eventFormat !== 'other') features.push(`format:${item.eventFormat}`);
   for (const [key, re] of Object.entries(GENRES))
     if (re.test(item.genre ?? '')) features.push(`genre:${key}`);
   const text = `${item.title ?? ''} ${item.genre ?? ''}`;
@@ -291,6 +298,9 @@ export function leisurePlaceIndex(records) {
 }
 /** @param {any} item @param {any[]} records @param {Map<string,any>} [index] */
 export function knownLeisurePlace(item, records, index = leisurePlaceIndex(records)) {
+  // Seeing one film or production does not mean seeing every work at that venue.
+  if (!['food', 'place', 'trip'].includes(item.category))
+    index = leisurePlaceIndex(records.filter((r) => r.itemId === item.id));
   return (
     index.get(item.venueId ? `venue:${item.venueId}` : `item:${item.id}`) ?? {
       familiar: false,
@@ -304,7 +314,6 @@ export function knownLeisurePlace(item, records, index = leisurePlaceIndex(recor
 }
 /** The whole verified collection stays browseable; scores change its order. @param {any[]} items @param {any[]} records @param {string[]} previousIds @param {any} settings @param {number} nowMs */
 export function rankLeisureItems(items, records, previousIds, settings, nowMs) {
-  void settings;
   const byId = new Map(items.map((i) => [i.id, i]));
   const knownIndex = leisurePlaceIndex(records);
   const profile = leisurePreferenceProfile(items, records, nowMs);
@@ -334,6 +343,18 @@ export function rankLeisureItems(items, records, previousIds, settings, nowMs) {
         (item.startAt || item.sessions?.length ? 2 : 0) +
         (item.price?.min != null ? 1 : 0);
       if (item.media?.length) score += 1;
+      const frequency =
+        settings?.selection?.formatFrequency?.[item.eventFormat] ??
+        (item.eventFormat === 'opera' ? 'rare' : 'sometimes');
+      if (frequency === 'rare') score -= 4;
+      if (frequency === 'manual') score -= 30;
+      if (
+        item.category === 'podcast' &&
+        settings?.selection?.followedPodcastSeries?.includes(item.podcast?.series)
+      ) {
+        score += 8;
+        reasons.push('Серія, за якою ти стежиш');
+      }
       if (item.schedule?.precision === 'exact') score += 2;
       if (item.schedule?.precision === 'conflicting') {
         score -= 12;

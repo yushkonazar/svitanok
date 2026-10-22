@@ -57,6 +57,29 @@ const cmd = (
   commandId = crypto.randomUUID(),
 ) => ({ op, id, payload, commandId });
 describe('swipe feedback, durable preferences and review safety', () => {
+  it('does not mark another film or production seen because it shares a venue', () => {
+    const records = [
+      { kind: 'visit', itemId: 'watched', venueId: 'same-venue', category: 'cinema' },
+    ];
+    expect(
+      knownLeisurePlace({ id: 'watched', venueId: 'same-venue', category: 'cinema' }, records)
+        .familiar,
+    ).toBe(true);
+    expect(
+      knownLeisurePlace({ id: 'other-film', venueId: 'same-venue', category: 'cinema' }, records)
+        .familiar,
+    ).toBe(false);
+    expect(
+      knownLeisurePlace(
+        { id: 'other-production', venueId: 'same-venue', category: 'show' },
+        records,
+      ).familiar,
+    ).toBe(false);
+    expect(
+      knownLeisurePlace({ id: 'other-listing', venueId: 'same-venue', category: 'food' }, records)
+        .familiar,
+    ).toBe(true);
+  });
   it.each(['time', 'not-now', 'this-option', 'company', 'seen'])(
     'keeps %s feedback neutral for the genre and category',
     async (reasonCode) => {

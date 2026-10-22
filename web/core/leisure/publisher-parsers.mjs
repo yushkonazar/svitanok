@@ -2,21 +2,18 @@ import { cleanText, httpLink } from './model.mjs';
 import { decodeHtml, eventBody, metaContent, structuredNodes } from './source-html.mjs';
 import { leisureMediaUrl } from './content-facts.mjs';
 import { leisureLocalInstant } from './schedule.mjs';
+import { classifyLeisureEvent } from './taxonomy.mjs';
 
 const MONTHS = ['січ', 'лют', 'бер', 'кві', 'тра', 'чер', 'лип', 'сер', 'вер', 'жов', 'лис', 'гру'];
 /** @param {string} title */
 export function eventCategory(title) {
-  return /виставк|exhibition/i.test(title)
-    ? 'exhibition'
-    : /фестивал|festival|ярмарок/i.test(title)
-      ? 'festival'
-      : /лекці|зустріч|майстер.?клас|воркшоп|дискусі|презентаці|читанн/i.test(title)
-        ? 'meetup'
-        : /спецпоказ|кінопоказ|кіно|фільм/i.test(title)
-          ? 'cinema'
-          : /стендап|stand.?up|шоу|театр|вистав[аи]|перформанс|опера|балет/i.test(title)
-            ? 'show'
-            : 'concert';
+  const category = classifyLeisureEvent({ title }).category;
+  if (category !== 'event') return category;
+  return /спецпоказ|кінопоказ|кіноперегляд|перегляд.*фільм|показ.*(?:фільм|стрічк)|^кіно(?:\s|:|$)/i.test(
+    title,
+  )
+    ? 'cinema'
+    : category;
 }
 /** @param {string} text */
 export function sourceDateRange(text) {
@@ -127,6 +124,7 @@ export function eventCandidate(event, source, url) {
   return {
     title,
     summary: decodeHtml(cleanText(event.description, 650)),
+    structuredType: String(event['@type'] ?? ''),
     category: /TheaterEvent|DanceEvent/.test(String(event['@type']))
       ? 'show'
       : eventCategory(title),

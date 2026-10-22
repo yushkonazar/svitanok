@@ -629,7 +629,7 @@ export async function leisureCatalogTask(env, nowMs = Date.now()) {
     .bind(week)
     .first();
   const edition = row ? JSON.parse(String(row.data_json)) : null;
-  if (edition && edition.catalogVersion !== 4)
+  if (edition && edition.catalogVersion !== 5)
     return env.LEISURE_CATALOG?.getByName('owner').request('full', nowMs);
   if (edition && settings.telegram && hour >= settings.updateHour)
     await queueLeisureDigest(env, nowMs);

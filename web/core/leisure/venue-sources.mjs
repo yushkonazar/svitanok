@@ -77,6 +77,7 @@ export function parseOperaCalendar(html, source, nowMs) {
       identity: 'opera-show:' + key,
       sourceUrl: detail?.url || 'https://opera.lviv.ua/afisha/month/',
       category: /салон|концерт/i.test(detail?.format ?? '') ? 'concert' : 'show',
+      publisherCategory: detail?.format ?? '',
       venue: detail?.stage ? source + ' · ' + detail.stage : source,
       schedule: { kind: 'once', precision: 'exact', occurrences: [] },
       startAt: null,

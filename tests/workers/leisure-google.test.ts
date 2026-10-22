@@ -4,7 +4,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { env as runtimeEnv } from 'cloudflare:workers';
 import { applyD1Migrations, reset } from 'cloudflare:test';
 import type { D1Database } from '@cloudflare/workers-types';
-import { freshLeisurePlace, freshLeisurePhoto } from '../../web/core/leisure/google-details.mjs';
+import {
+  freshLeisurePlace,
+  freshLeisurePhoto,
+  freshLeisureFoodSearch,
+  LEISURE_FOOD_SEARCH_MASK,
+} from '../../web/core/leisure/google-details.mjs';
 
 const env = runtimeEnv as Env & {
   DB: D1Database;
@@ -60,6 +65,28 @@ function googleFetch(redirectAt?: 'details' | 'photo-api' | 'photo-cdn') {
 }
 
 describe('Google leisure requests in workerd', () => {
+  it('sends a bounded restaurant search using a native POST request and the search quota', async () => {
+    const requests: Request[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string | Request | URL, init?: RequestInit) => {
+        const request = new Request(input, init);
+        requests.push(request);
+        expect(await request.clone().json()).toMatchObject({ minRating: 4, pageSize: 20 });
+        return Response.json({ places: [{ id: 'place1', rating: 4.7, userRatingCount: 400 }] });
+      }),
+    );
+    const result = await freshLeisureFoodSearch(testEnv, 'ресторани', 'Львів', now);
+    expect(result).toMatchObject([{ place_id: 'place1', rating: 4.7, userRatingCount: 400 }]);
+    expect(requests).toHaveLength(1);
+    expect(requests[0]!.method).toBe('POST');
+    expect(requests[0]!.redirect).toBe('manual');
+    expect(requests[0]!.headers.get('X-Goog-FieldMask')).toBe(LEISURE_FOOD_SEARCH_MASK);
+    expect(
+      await env.DB.prepare("SELECT value FROM quota_counters WHERE key='places_text'").first(),
+    ).toEqual({ value: 1 });
+    expect(await env.DB.prepare('SELECT COUNT(*) AS n FROM places').first()).toEqual({ n: 0 });
+  });
   it('constructs details and photo requests in the production runtime and keeps the key off the CDN', async () => {
     const requests = googleFetch();
     const place = await freshLeisurePlace(testEnv, 'place1', now);

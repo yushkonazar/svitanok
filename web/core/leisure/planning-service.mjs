@@ -5,6 +5,7 @@ import { readCalendarRange } from '../../google.mjs';
 import { routesEta } from '../adapters/maps.mjs';
 import { freshLeisurePlace } from './google-details.mjs';
 import { forecastForDates } from '../adapters/weather.mjs';
+import { readLeisureFoodQuality } from './food-quality.mjs';
 
 /** Bounded, cached read operation. Does not create a plan, calendar event or notification.
  * @param {Env} env @param {any} input @param {number} [nowMs] */
@@ -18,6 +19,17 @@ export async function suggestLeisure(env, input, nowMs = Date.now()) {
   const workspace = await readLeisureWorkspace(env, nowMs, true);
   // Live Google details and derived prices stay in this request, never in a KV response cache.
   const deadline = Date.now() + 20000;
+  if (env.MAPS_API_KEY && workspace.items.some((i) => i.category === 'food' && i.placeId)) {
+    try {
+      const quality = await readLeisureFoodQuality(env, workspace, {}, nowMs, 1);
+      for (const entry of quality.entries) {
+        const item = workspace.items.find((i) => i.id === entry.itemId);
+        if (item) item.placeDetails = entry.place;
+      }
+    } catch {
+      /* Existing explicit wishes remain available with honest unknowns. */
+    }
+  }
   const events = await readCalendarRange(env, window.from, window.to).catch(() => null);
   const facts = {
     calendarAvailable: events !== null,
@@ -58,10 +70,15 @@ export async function suggestLeisure(env, input, nowMs = Date.now()) {
       facts.forecasts.push({ at: { lat: item.lat, lon: item.lon }, ...forecast });
     }
   // Keep the complete request below the Worker's subrequest ceiling, including SQL accounting.
-  for (const item of workspace.items.filter((i) => chosen.has(i.id) && i.placeId).slice(0, 3)) {
+  for (const item of workspace.items.filter((i) => chosen.has(i.id) && i.placeId).slice(0, 2)) {
     if (Date.now() >= deadline) break;
     try {
-      item.placeDetails = await freshLeisurePlace(env, item.placeId, nowMs);
+      item.placeDetails = await freshLeisurePlace(
+        env,
+        item.placeId,
+        nowMs,
+        (workspace.settings?.selection?.parking ?? 'any') !== 'any' && window.transport === 'car',
+      );
     } catch {
       /* Missing hours remain visibly unverified. */
     }
@@ -74,7 +91,7 @@ export async function suggestLeisure(env, input, nowMs = Date.now()) {
         const a = plan.stops[n - 1],
           b = plan.stops[n],
           key = leisureLegKey(a, b);
-        if (facts.routes[key] || calls >= 4 || Date.now() >= deadline || !a.address || !b.address)
+        if (facts.routes[key] || calls >= 3 || Date.now() >= deadline || !a.address || !b.address)
           continue;
         calls++;
         try {
@@ -103,7 +120,7 @@ export async function suggestLeisure(env, input, nowMs = Date.now()) {
         for (const direction of ['outbound', 'return']) {
           const s = direction === 'outbound' ? plan.stops[0] : plan.stops.at(-1),
             key = day.date + '|' + s.itemId + '|' + direction;
-          if (facts.boundaryRoutes[key] || calls >= 4 || Date.now() >= deadline || !s.address)
+          if (facts.boundaryRoutes[key] || calls >= 3 || Date.now() >= deadline || !s.address)
             continue;
           calls++;
           try {

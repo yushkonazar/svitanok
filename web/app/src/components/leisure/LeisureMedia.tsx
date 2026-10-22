@@ -132,11 +132,23 @@ export function LeisureMedia({
   item,
   variant = 'cover',
   active = false,
+  livePhotos,
 }: {
   item: LeisureItem;
   variant?: 'cover' | 'thumb' | 'detail';
   active?: boolean;
+  livePhotos?: Array<{ name: string; authors: Array<{ name: string; url: string | null }> }>;
 }) {
+  if (livePhotos)
+    return (
+      <MediaGallery
+        key={item.id}
+        item={item}
+        variant={variant}
+        active={active}
+        photos={livePhotos}
+      />
+    );
   if (item.placeId && leisureLiveAvailable() && (active || variant === 'detail'))
     return <LiveMedia key={item.id} item={item} variant={variant} />;
   return <MediaGallery key={item.id} item={item} variant={variant} active={active} photos={[]} />;

@@ -8,6 +8,7 @@ import {
 import { LeisureError } from './core/leisure/model.mjs';
 import { suggestLeisure } from './core/leisure/planning-service.mjs';
 import { enrichLeisureItem, leisureItemImage } from './core/leisure/enrichment.mjs';
+import { readLeisureFoodQuality } from './core/leisure/food-quality.mjs';
 
 /** @param {Request} request @param {Env} env */
 export async function handleLeisure(request, env) {
@@ -37,6 +38,15 @@ export async function handleLeisure(request, env) {
         verification: await inspectLeisureCommand(env, url.searchParams.get('commandId') ?? ''),
       });
     if (body) {
+      if (body.op === 'food-quality') {
+        phase = 'enrichment';
+        if (JSON.stringify(body.payload ?? {}).length > 2000)
+          throw new LeisureError('Параметрів запиту забагато.');
+        return reply({
+          ok: true,
+          quality: await readLeisureFoodQuality(env, await readLeisureWorkspace(env), body.payload),
+        });
+      }
       if (body.op === 'enrich' || body.op === 'image') {
         phase = 'enrichment';
         if (JSON.stringify(body.payload ?? {}).length > 5000)
@@ -58,7 +68,7 @@ export async function handleLeisure(request, env) {
       // A reaction needs its receipt and a small client patch; visits/plans keep
       // the full workspace response so newly saved personal history stays visible.
       if (
-        ['3', '4'].includes(request.headers.get('X-Leisure-Format') ?? '') &&
+        ['3', '4', '5'].includes(request.headers.get('X-Leisure-Format') ?? '') &&
         body.op === 'reaction'
       )
         return reply({ ok: true, acknowledged, receipt });
@@ -70,9 +80,20 @@ export async function handleLeisure(request, env) {
       request.method === 'GET' && new URL(request.url).searchParams.get('history') === 'all',
     );
     const format = request.headers.get('X-Leisure-Format') ?? '';
-    if (!['2', '3', '4'].includes(format))
+    if (!['2', '3', '4', '5'].includes(format))
       workspace.records = workspace.records.filter((r) => r.kind !== 'familiarity');
-    if (format !== '4') {
+    if (format === '4') {
+      workspace.items = workspace.items.map((i) =>
+        i.category === 'event' ? { ...i, category: 'meetup' } : i,
+      );
+      workspace.settings = {
+        ...workspace.settings,
+        categories: workspace.settings.categories.filter(
+          (/** @type {string} */ c) => c !== 'event',
+        ),
+      };
+    }
+    if (!['4', '5'].includes(format)) {
       const legacy = new Set([
         'exhibition',
         'festival',

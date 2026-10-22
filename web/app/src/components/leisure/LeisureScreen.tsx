@@ -36,6 +36,12 @@ import { LeisureFeedback, PreviousVisits } from './LeisureFeedback.tsx';
 import { LeisureCollection } from './LeisureCollection.tsx';
 import { LeisureHistory } from './LeisureHistory.tsx';
 import { TogetherPlanner } from './TogetherPlanner.tsx';
+import { RestaurantCatalog } from './RestaurantCatalog.tsx';
+import { CategoryBrowse } from './CategoryBrowse.tsx';
+import { FiniteLeisureDeck } from './FiniteLeisureDeck.tsx';
+import { SelectionSettings, CategoryCorrection } from './SelectionSettings.tsx';
+import { LEISURE_EVENT_CATEGORIES } from '../../../../core/leisure/taxonomy.mjs';
+import { leisureFeedbackChoices } from '../../../../core/leisure/feedback.mjs';
 import {
   leisureIdentity,
   leisureReactionHidden,
@@ -55,7 +61,8 @@ type Dialog = {
     | 'visit'
     | 'settings'
     | 'plans'
-    | 'sources';
+    | 'sources'
+    | 'classification';
   itemId?: string;
   planId?: string;
   visitId?: string;
@@ -65,11 +72,12 @@ type Dialog = {
 type Send = (op: string, payload: Record<string, unknown>, id?: string) => Promise<LeisureReceipt>;
 const CATEGORY_GROUPS = [
   ['all', 'Усе'],
+  ['food', 'Заклади'],
   ['cinema', 'Кіно'],
   ['events', 'Події'],
-  ['places', 'Місця'],
+  ['place', 'Місця'],
   ['trip', 'Поїздки'],
-  ['podcast', 'Подкасти'],
+  ['podcast', 'Послухати'],
 ] as const;
 const fire = (promise: Promise<unknown>) => {
   void promise.catch(() => {});
@@ -409,8 +417,10 @@ export function LeisureScreen() {
               ? null
               : {
                   id,
-                  payload:
-                    previous?.kind === 'reaction'
+                  payload: {
+                    restorePrevious: true,
+                    revision: result.receipt.revision,
+                    ...(previous?.kind === 'reaction'
                       ? {
                           verdict: previous.verdict,
                           interestLevel: previous.interestLevel,
@@ -420,7 +430,8 @@ export function LeisureScreen() {
                           revisit: previous.revisit,
                           snoozeUntil: previous.snoozeUntil,
                         }
-                      : { verdict: 'clear' },
+                      : { verdict: 'clear' }),
+                  },
                 },
           );
           if (id)
@@ -518,6 +529,9 @@ export function LeisureScreen() {
       leisureReactionHidden(decision, Date.parse(data.generatedAt))
     )
       decidedKeys.add(key);
+  const categoryBrowser =
+    ['food', 'cinema', 'place', 'trip', 'podcast'].includes(category) ||
+    (category === 'events' && !['all', 'concert'].includes(subCategory));
   const baseIds =
     tab === 'saved'
       ? [
@@ -537,33 +551,35 @@ export function LeisureScreen() {
               ),
             ]),
           ]
-        : reviewMode
-          ? [
-              ...new Set([
-                ...data.records.flatMap((r) =>
-                  r.kind === 'reaction' && r.verdict !== 'clear' ? [r.itemId] : [],
-                ),
-                ...data.saved,
-              ]),
-            ].filter((id) => !reviewed.has(id))
-          : [...(data.edition?.ids ?? []), ...(data.edition?.futureIds ?? [])].filter(
-              (id) =>
-                !decided.has(id) &&
-                !decidedKeys.has(
-                  itemById.get(id)?.identityKey ?? leisureIdentity(itemById.get(id) ?? {}),
-                ),
-            );
+        : categoryBrowser
+          ? data.items.map((i) => i.id)
+          : reviewMode
+            ? [
+                ...new Set([
+                  ...data.records.flatMap((r) =>
+                    r.kind === 'reaction' && r.verdict !== 'clear' ? [r.itemId] : [],
+                  ),
+                  ...data.saved,
+                ]),
+              ].filter((id) => !reviewed.has(id))
+            : [...(data.edition?.ids ?? []), ...(data.edition?.futureIds ?? [])].filter(
+                (id) =>
+                  !decided.has(id) &&
+                  !decidedKeys.has(
+                    itemById.get(id)?.identityKey ?? leisureIdentity(itemById.get(id) ?? {}),
+                  ),
+              );
   const candidates = baseIds
     .map((id) => itemById.get(id))
     .filter((i): i is LeisureItem => !!i)
     .filter(
       (i) =>
-        (tab !== 'feed' || reviewMode || !hidden.has(i.id)) &&
+        (tab !== 'feed' || categoryBrowser || reviewMode || !hidden.has(i.id)) &&
         (category === 'all' ||
           (category === 'events'
-            ? ['exhibition', 'festival', 'concert', 'show', 'meetup'].includes(i.category)
+            ? LEISURE_EVENT_CATEGORIES.includes(i.category)
             : category === 'places'
-              ? ['food', 'place'].includes(i.category)
+              ? i.category === 'place'
               : i.category === category)) &&
         (!genre || i.genre.toLocaleLowerCase('uk').includes(genre.toLocaleLowerCase('uk'))) &&
         (subCategory === 'all' || category !== 'events' || i.category === subCategory) &&
@@ -583,6 +599,76 @@ export function LeisureScreen() {
   const selectedItem = dialog?.itemId ? itemById.get(dialog.itemId) : null,
     selectedPlan = dialog?.planId ? plans.find((p) => p.id === dialog.planId) : undefined;
   const busy = change.isPending || !!recovery;
+  const choose = (
+    item: LeisureItem,
+    choice: 'interested' | 'priority' | 'uninterested' | 'clear',
+  ) => {
+    const current = data.records.find((r) => r.kind === 'reaction' && r.itemId === item.id);
+    const interested = current?.kind === 'reaction' && current.verdict === 'interested';
+    const priority = interested && current.interestLevel === 'priority';
+    const verdict =
+      choice === 'clear' || (choice === 'interested' && interested && !priority)
+        ? 'clear'
+        : choice === 'uninterested'
+          ? 'uninterested'
+          : 'interested';
+    const allowed = leisureFeedbackChoices(item.category, true).map((c) => c.code);
+    fire(
+      send(
+        'reaction',
+        {
+          verdict,
+          interestLevel:
+            verdict === 'interested'
+              ? choice === 'priority' && !priority
+                ? 'priority'
+                : 'interested'
+              : null,
+          reasonCodes:
+            verdict === 'uninterested'
+              ? ['this-option']
+              : current?.kind === 'reaction'
+                ? (current.reasonCodes ?? []).filter((code) => allowed.includes(code))
+                : [],
+          ...(current?.kind === 'reaction'
+            ? { revision: current.revision, reason: current.reason, revisit: current.revisit }
+            : {}),
+        },
+        item.id,
+      ),
+    );
+  };
+  const browseProps = {
+    data,
+    items: candidates,
+    busy,
+    onOpen: (item: LeisureItem) => setDialog({ type: 'detail', itemId: item.id }),
+    onChoose: choose,
+    onVisit: (item: LeisureItem) =>
+      setDialog({
+        type: ['food', 'place', 'trip'].includes(item.category) ? 'familiarity' : 'visit',
+        itemId: item.id,
+      }),
+    onExplain: (item: LeisureItem) =>
+      setDialog({
+        type:
+          decisions.get(item.identityKey ?? leisureIdentity(item))?.verdict === 'uninterested'
+            ? 'reject'
+            : 'interest',
+        itemId: item.id,
+      }),
+    onFollow: (series: string) =>
+      fire(
+        send('settings', {
+          selection: {
+            followedPodcastSeries: data.settings.selection.followedPodcastSeries.includes(series)
+              ? data.settings.selection.followedPodcastSeries.filter((s) => s !== series)
+              : [...data.settings.selection.followedPodcastSeries, series],
+          },
+        }),
+      ),
+    onCorrect: (item: LeisureItem) => setDialog({ type: 'classification', itemId: item.id }),
+  };
   const recover = recovery && (
     <div className="leisure-recovery" role="alert">
       <p>Підтвердження не надійшло. Перевіримо ту саму дію, щоб не створити дубль.</p>
@@ -709,6 +795,7 @@ export function LeisureScreen() {
         ))}
       </div>
       {tab === 'feed' &&
+        !categoryBrowser &&
         (reviewMode ||
           data.records.some((r) => r.kind === 'reaction' && r.verdict !== 'clear') ||
           data.saved.length > 0) && (
@@ -755,6 +842,8 @@ export function LeisureScreen() {
               active={category === id}
               onClick={() => {
                 setCategory(id);
+                if (['food', 'cinema', 'place', 'trip', 'podcast'].includes(id))
+                  setReviewMode(false);
                 setSubCategory('all');
                 setGenre('');
               }}
@@ -821,18 +910,18 @@ export function LeisureScreen() {
               </select>
             </label>
           )}
-          {category === 'events' && (
-            <div className="leisure-pills">
-              <Pill active={subCategory === 'all'} onClick={() => setSubCategory('all')}>
-                Усі події
-              </Pill>
-              {(['exhibition', 'festival', 'concert', 'show'] as const).map((c) => (
-                <Pill key={c} active={subCategory === c} onClick={() => setSubCategory(c)}>
-                  {categoryLabels[c]}
-                </Pill>
-              ))}
-            </div>
-          )}
+        </div>
+      )}
+      {category === 'events' && (
+        <div className="leisure-pills leisure-event-kinds" aria-label="Формати подій">
+          <Pill active={subCategory === 'all'} onClick={() => setSubCategory('all')}>
+            Коротка добірка
+          </Pill>
+          {(['concert', 'show', 'festival', 'exhibition', 'meetup', 'event'] as const).map((c) => (
+            <Pill key={c} active={subCategory === c} onClick={() => setSubCategory(c)}>
+              {categoryLabels[c]}
+            </Pill>
+          ))}
         </div>
       )}
       {data.edition?.stale && (
@@ -879,42 +968,82 @@ export function LeisureScreen() {
         </p>
       )}
       {tab === 'feed' ? (
-        <SwipeDeck
-          deferLike
-          key={[category, subCategory, genre, day, search, deckRevision, reviewMode].join('|')}
-          reviewing={reviewMode}
-          previousChoice={(id) => {
-            const reaction = data.records.find((r) => r.kind === 'reaction' && r.itemId === id);
-            return reaction?.kind === 'reaction'
-              ? reaction.verdict === 'interested'
-                ? reaction.interestLevel === 'priority'
-                  ? 'Насамперед'
-                  : 'Цікаво'
-                : reaction.verdict === 'later'
-                  ? 'Відкладено'
-                  : 'Нецікаво'
-              : 'Збережено';
-          }}
-          items={candidates}
-          newCount={
-            candidates.filter(
-              (i) =>
-                i.firstDiscoveredAt &&
-                toKyivInput(i.firstDiscoveredAt).slice(0, 10) >= (data.edition?.week ?? '9999'),
-            ).length
-          }
-          busy={busy}
-          reasons={(id) =>
-            reviewMode ? [] : (data.edition?.rankings.find((r) => r.id === id)?.reasons ?? [])
-          }
-          onLike={async (item) => {
-            setDialog({ type: 'interest', itemId: item.id });
-            return false;
-          }}
-          onReject={(item) => setDialog({ type: 'reject', itemId: item.id })}
-          onVisit={(item) => setDialog({ type: 'visit', itemId: item.id })}
-          onOpen={(item) => setDialog({ type: 'detail', itemId: item.id })}
-        />
+        category === 'food' ? (
+          <RestaurantCatalog key={category} {...browseProps} />
+        ) : categoryBrowser ? (
+          <CategoryBrowse
+            key={category + subCategory}
+            {...browseProps}
+            mode={category === 'events' ? subCategory : category}
+          />
+        ) : (
+          <FiniteLeisureDeck
+            key={[data.edition?.week, category, subCategory, genre, day, search, reviewMode].join(
+              '|',
+            )}
+            data={data}
+            items={candidates.filter((i) => i.category !== 'food')}
+            scope={[category, subCategory, genre, day, search].join(':')}
+            reviewing={reviewMode}
+            useWeeklySet={category !== 'events' || subCategory === 'all'}
+          >
+            {(deckItems) => (
+              <SwipeDeck
+                deferLike={reviewMode}
+                key={[category, subCategory, genre, day, search, deckRevision, reviewMode].join(
+                  '|',
+                )}
+                reviewing={reviewMode}
+                previousChoice={(id) => {
+                  const reaction = data.records.find(
+                    (r) => r.kind === 'reaction' && r.itemId === id,
+                  );
+                  return reaction?.kind === 'reaction'
+                    ? reaction.verdict === 'interested'
+                      ? reaction.interestLevel === 'priority'
+                        ? 'Насамперед'
+                        : 'Цікаво'
+                      : reaction.verdict === 'later'
+                        ? 'Відкладено'
+                        : 'Нецікаво'
+                    : 'Збережено';
+                }}
+                items={deckItems}
+                newCount={
+                  deckItems.filter(
+                    (i) =>
+                      i.firstDiscoveredAt &&
+                      toKyivInput(i.firstDiscoveredAt).slice(0, 10) >=
+                        (data.edition?.week ?? '9999'),
+                  ).length
+                }
+                busy={busy}
+                reasons={(id) =>
+                  reviewMode ? [] : (data.edition?.rankings.find((r) => r.id === id)?.reasons ?? [])
+                }
+                onLike={async (item) => {
+                  if (reviewMode) {
+                    setDialog({ type: 'interest', itemId: item.id });
+                    return false;
+                  }
+                  await send(
+                    'reaction',
+                    { verdict: 'interested', interestLevel: 'interested', reasonCodes: [] },
+                    item.id,
+                  );
+                  return true;
+                }}
+                onReject={(item) => {
+                  if (reviewMode) setDialog({ type: 'reject', itemId: item.id });
+                  else choose(item, 'uninterested');
+                }}
+                onPriority={(item) => choose(item, 'priority')}
+                onVisit={browseProps.onVisit}
+                onOpen={(item) => setDialog({ type: 'detail', itemId: item.id })}
+              />
+            )}
+          </FiniteLeisureDeck>
+        )
       ) : tab === 'saved' ? (
         <LeisureCollection
           data={data}
@@ -1016,7 +1145,9 @@ export function LeisureScreen() {
                           ? 'Налаштування дозвілля'
                           : dialog.type === 'plans'
                             ? 'Ваші плани'
-                            : 'Джерела добірки'
+                            : dialog.type === 'classification'
+                              ? 'Уточнити тип події'
+                              : 'Джерела добірки'
           }
           onClose={close}
         >
@@ -1068,19 +1199,34 @@ export function LeisureScreen() {
                 </div>
               )}
               {dialog.type === 'detail' && selectedItem && (
-                <ItemDetail
-                  item={selectedItem}
-                  data={data}
-                  busy={change.isPending}
-                  send={send}
-                  plan={(sessionId) =>
-                    setDialog({ type: 'plan', itemId: selectedItem.id, sessionId })
-                  }
-                  visit={() => setDialog({ type: 'visit', itemId: selectedItem.id })}
-                  interested={() => setDialog({ type: 'interest', itemId: selectedItem.id })}
-                  familiar={() => setDialog({ type: 'familiarity', itemId: selectedItem.id })}
-                  done={close}
-                />
+                <>
+                  <ItemDetail
+                    item={selectedItem}
+                    data={data}
+                    busy={change.isPending}
+                    send={send}
+                    plan={(sessionId) =>
+                      setDialog({ type: 'plan', itemId: selectedItem.id, sessionId })
+                    }
+                    visit={() => setDialog({ type: 'visit', itemId: selectedItem.id })}
+                    interested={() => setDialog({ type: 'interest', itemId: selectedItem.id })}
+                    familiar={() => setDialog({ type: 'familiarity', itemId: selectedItem.id })}
+                    done={close}
+                  />
+                  {selectedItem.eventFormat && (
+                    <button
+                      type="button"
+                      className="leisure-button"
+                      disabled={busy}
+                      onClick={() => setDialog({ type: 'classification', itemId: selectedItem.id })}
+                    >
+                      Уточнити тип події
+                    </button>
+                  )}
+                </>
+              )}
+              {dialog.type === 'classification' && selectedItem && (
+                <CategoryCorrection item={selectedItem} busy={busy} send={send} done={close} />
               )}
               {dialog.type === 'familiarity' && selectedItem && (
                 <PreviousVisits
@@ -1497,9 +1643,7 @@ function VisitForm({
   done: () => void;
 }) {
   const baseRevision = useRef(existing?.revision);
-  const [date, setDate] = useState(
-      existing ? (existing.visitedOn ?? '') : toKyivInput(new Date().toISOString()).slice(0, 10),
-    ),
+  const [date, setDate] = useState(existing?.visitedOn ?? ''),
     [rating, setRating] = useState(existing?.rating ?? ''),
     [reason, setReason] = useState(existing?.reason ?? ''),
     [legacy, setLegacy] = useState(existing?.legacy ?? false),
@@ -1748,6 +1892,7 @@ function LeisureSettings({
     [telegram, setTelegram] = useState(data.settings.telegram),
     [planAlerts, setPlanAlerts] = useState(data.settings.planAlerts),
     [clearConfirmed, setClearConfirmed] = useState(false);
+  const [selection, setSelection] = useState(data.settings.selection);
   const toggle = (values: string[], value: string) =>
     values.includes(value) ? values.filter((v) => v !== value) : [...values, value];
   return (
@@ -1784,6 +1929,7 @@ function LeisureSettings({
         />
         Повідомляти про важливі зміни погоджених планів
       </label>
+      <SelectionSettings value={selection} onChange={setSelection} />
       <h3>Кінотеатри</h3>
       <div className="leisure-pills">
         {[
@@ -1823,7 +1969,15 @@ function LeisureSettings({
         primary
         disabled={busy || !categories.length || !cinemas.length}
         onClick={() =>
-          void send('settings', { categories, cinemas, students, enabled, telegram, planAlerts })
+          void send('settings', {
+            categories,
+            cinemas,
+            students,
+            enabled,
+            telegram,
+            planAlerts,
+            selection,
+          })
             .then(done)
             .catch(() => {})
         }

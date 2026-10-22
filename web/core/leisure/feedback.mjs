@@ -2,6 +2,16 @@
 // codes describe the signal, never an inferred taste of the owner's partner.
 /** @type {Record<string, (string|null)[][]>} */
 const vocabulary = {
+  event: [
+    ['topic', 'Тематика', 'Не цікавить тема', 'topic'],
+    ['format', 'Формат', 'Не підходить формат', 'format'],
+    ['program', 'Програма', 'Не цікава програма', 'topic'],
+    ['atmosphere', 'Атмосфера', 'Ціна', null],
+    ['venue', 'Місце проведення', 'Незручне місце', 'place'],
+    ['novelty', 'Незвичний досвід', 'Незручна дата / час', null],
+    ['together', 'Участь удвох', 'Не для цього виходу', null],
+    ['this-option', 'Саме ця подія', 'Не хочу саме цю подію', null],
+  ],
   food: [
     ['cuisine', 'Кухня / меню', 'Не цікавить кухня', 'cuisine'],
     ['atmosphere', 'Атмосфера', 'Не моя атмосфера', null],
@@ -107,6 +117,7 @@ const vocabulary = {
 // accidentally teach a dislike (e.g. price under "atmosphere").
 /** @type {Record<string, string[]>} */
 const negativeCodes = {
+  event: ['topic', 'format', 'program', 'price', 'location', 'time', 'company', 'this-option'],
   food: ['cuisine', 'atmosphere', 'format', 'price', 'seen', 'location', 'company', 'this-option'],
   place: ['topic', 'format', 'seen', 'location', 'time', 'price', 'company', 'this-option'],
   trip: [
@@ -273,4 +284,17 @@ export function leisureFeedbackScopes(record) {
         .filter((x) => typeof x === 'string'),
     ),
   ];
+}
+/** One owner-choice snapshot for undo; independent of a later category correction.
+ * @param {any} record */
+export function leisureReactionSnapshot(record) {
+  return {
+    verdict: record?.verdict ?? 'clear',
+    interestLevel: record?.interestLevel ?? null,
+    reasonCodes: record?.reasonCodes ?? [],
+    reasonCode: record?.reasonCode ?? null,
+    reason: record?.reason ?? '',
+    revisit: record?.revisit ?? false,
+    snoozeUntil: record?.snoozeUntil ?? null,
+  };
 }
