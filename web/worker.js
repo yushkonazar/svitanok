@@ -85,6 +85,7 @@ import { handleDeletionsRequest } from './api-deletions.mjs';
 import { handleMailAttention } from './api-mail-attention.mjs';
 import { handleFinance } from './api-finance.mjs';
 import { handleLeisure } from './api-leisure.mjs';
+import { handleTrips } from './api-trips.mjs';
 import { handlePlan } from './api-plan.mjs';
 import { handleCredentials } from './api-credentials.mjs';
 import { handleCurrencyHistory } from './api-currency-history.mjs';
@@ -565,6 +566,7 @@ export default {
       return handleMailAttention(request, env);
     }
     if (url.pathname === '/api/leisure') return handleLeisure(request, env);
+    if (url.pathname === '/api/trips') return handleTrips(request, env);
     if (url.pathname === '/api/bookmarks') return handleBookmarks(request, env);
     if (url.pathname === '/api/plan') return handlePlan(request, env);
     if (url.pathname === '/api/finance') {

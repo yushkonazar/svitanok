@@ -32,6 +32,7 @@ describe('SCHEDULER_TASKS — реєстр видів (07 §7)', () => {
       'reminder',
       'plan-calendar-sync',
       'trip-monitor',
+      'trip-companion',
       'run-watchdog',
       'brain-health',
       'brief-dispatch',
@@ -208,7 +209,13 @@ describe('SCHEDULER_TASKS — реєстр видів (07 §7)', () => {
       // на очах у власника (прогін 08.09), а планувальник живе на alarm'ах,
       // тож період цієї задачі ні від кого не залежить.
       expect(def.periodMin, kind).toBe(
-        kind === 'reminder' ? 1 : ['trip-monitor', 'leisure-catalog'].includes(kind) ? 30 : 5,
+        kind === 'reminder'
+          ? 1
+          : kind === 'trip-companion'
+            ? 15
+            : ['trip-monitor', 'leisure-catalog'].includes(kind)
+              ? 30
+              : 5,
       );
       // Десять перенесених задач мають побічні ефекти (Telegram, KV, GitHub) —
       // у shadow вони мусять лише логуватись, інакше кожен ефект подвоївся б.

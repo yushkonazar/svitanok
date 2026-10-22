@@ -38,6 +38,7 @@ export const ACTION_LEVELS = {
   'trip.brief': 'T0',
   'trip.expense': 'T0',
   'trip.workspace': 'T0',
+  'trip.options': 'T0',
   // Гроші (етап 6 PR-2, 07 §4): правило категорії й облік підписок - записи в
   // ВЛАСНУ базу, тож T0 з «↩», як facts.set.
   'finance.rule': 'T0',
@@ -134,6 +135,7 @@ export const TAINT_ESCALATES = Object.freeze([
   'trip.brief',
   'trip.expense',
   'trip.workspace',
+  'trip.options',
   // Після читання листа зовнішній текст не може непомітно сховати частину
   // ранкового briefing-а. У чистому діалозі це локальна T0-перевага з «↩».
   'briefing.feedback',
@@ -179,6 +181,9 @@ export const TAINT_ESCALATES = Object.freeze([
  */
 export function taintEscalates(kind, payload) {
   if (!TAINT_ESCALATES.includes(kind)) return false;
+  // Saving bounded source references cannot alter owner answers, select an offer,
+  // start automation, purchase, or claim a booking. Selection remains protected.
+  if (kind === 'trip.options') return payload?.op !== 'save';
   if (kind === 'plan.review') {
     const carry = payload?.carry;
     return Array.isArray(carry) && carry.length > 0;

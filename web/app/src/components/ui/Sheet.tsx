@@ -217,7 +217,7 @@ export function Sheet({
         onClick={(e) => e.stopPropagation()}
         className="w-full min-w-0 max-h-[90dvh] overflow-x-hidden overflow-y-auto overscroll-contain touch-pan-y px-5 pb-7 pt-2.5 outline-none"
         style={{
-          background: 'var(--color-bg2)',
+          background: 'var(--color-bg2, #1b1e2a)',
           borderTop: '1px solid var(--color-glassb)',
           borderRadius: '26px 26px 0 0',
           animation: 'sheetUp .3s cubic-bezier(.2,.8,.2,1)',

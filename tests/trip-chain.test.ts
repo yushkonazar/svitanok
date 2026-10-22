@@ -231,6 +231,36 @@ function fakeStep(queue: (Record<string, unknown> | null)[], clock: { now: numbe
   return { step, log };
 }
 
+describe('version 3 confirmed return', () => {
+  it.each(['2026-09-12', null])(
+    'keeps support open until home is confirmed, with return date %s',
+    async (dateTo) => {
+      const { env, db } = setup();
+      seedTrip(db, 'v3-trip', { date_to: dateTo });
+      seedChain(db, 'v3-trip', {
+        support_version: 3,
+        date_to: dateTo,
+        preferences: { timezone: 'Europe/Prague', departure_timezone: 'Europe/Kyiv' },
+      });
+      const clock = { now: NOW },
+        base = fakeStep([], clock),
+        f = fakeIo(db, 'v3-trip', clock);
+      const step = stepWithHook(base.step, 'r0-home-check-1', async () => {
+        expect(f.finishes).toHaveLength(0);
+        db.prepare('UPDATE trips SET cost_json=? WHERE id=?').run(
+          JSON.stringify({ travel: { progress: { stage: 'home', confirmed: true } } }),
+          'v3-trip',
+        );
+      });
+      const out = await runTripChain(env, { chainId: 'v3-trip' }, step, f.io);
+      expect(out).toMatchObject({ outcome: 'done', trip_id: 'v3-trip' });
+      expect(f.finishes).toEqual(['done']);
+      expect(f.sent.some((s) => s.text.includes('Ти вдома.'))).toBe(true);
+      expect(base.log.some((s) => s.includes('back-wait'))).toBe(false);
+    },
+  );
+});
+
 describe('мета поїздки (ідея №4)', () => {
   const io = {
     route: async () => ({ distance_m: 250_000, duration_min: 200 }),
@@ -1023,7 +1053,7 @@ describe('старт, перенос і скасування з чату', () =>
       .get(out.result.chain_id) as { state_json: string };
     expect(JSON.parse(chain.state_json)).toMatchObject({
       checklist_key: 'outdoor',
-      support_version: 2,
+      support_version: 3,
       preferences: { interests: 'краєвиди', constraints: 'без бронювань' },
     });
   });

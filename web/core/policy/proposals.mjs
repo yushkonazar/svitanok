@@ -120,7 +120,8 @@ import {
   undoPlanUpdate,
   runPlanReview,
 } from '../tools/plan.mjs';
-import { runTripBrief } from '../tools/trip.mjs';
+import { runTripBrief, tripBriefContext } from '../tools/trip.mjs';
+import { runTripOptions, undoTripOptions } from '../trips/options.mjs';
 import {
   deleteKnowledgeDocument,
   importKnowledgeDocumentFromDrive,
@@ -175,6 +176,10 @@ function driveNoteName(raw) {
  * }>}
  */
 export const EXECUTORS = {
+  'trip.options': {
+    execute: (env, payload, nowMs, ctx) => runTripOptions(env, payload, nowMs, ctx),
+    undo: (env, snapshot) => undoTripOptions(env, snapshot),
+  },
   'leisure.change': { execute: (env, payload, nowMs) => runLeisureChange(env, payload, nowMs) },
   'motivation.change': {
     execute: (env, payload, nowMs) => runMotivationChange(env, payload, nowMs),
@@ -199,12 +204,14 @@ export const EXECUTORS = {
           draft_id: payload.draft_id,
           restart: payload.restart,
           skip_optional: payload.skip_optional,
+          skip_field: payload.skip_field,
+          expected_revision: payload.expected_revision,
           answers: payload.answers,
         },
         nowMs,
         ctx,
       );
-      return { result };
+      return { result: tripBriefContext(result) };
     },
   },
   'knowledge.import': {
@@ -1780,7 +1787,7 @@ export async function resolveProposal(env, input, nowMs) {
     // Контекст після ✅: chatId прогону вже невідомий, лишається тред
     // пропозиції - виконавцям, що щось шлють (експорт), цього досить.
     const { result } = await executor.execute(env, payload, nowMs, {
-      chatId: null,
+      chatId: proposalExecutionContext(row).chat_id ?? null,
       threadId: row.thread_id,
       // The context was persisted when the model requested the action. An
       // approved proposal changes actor, not the original taint provenance.
@@ -1789,7 +1796,16 @@ export async function resolveProposal(env, input, nowMs) {
     return { ok: true, status: 'approved', executed: true, kind: row.kind, payload, result };
   } catch (/** @type {any} */ e) {
     // Клейм уже стоїть (повтор не переграє) - збій виконання кажемо вголос.
-    if (row.kind === 'facts.set' || row.kind === 'facts.delete') {
+    if (
+      [
+        'facts.set',
+        'facts.delete',
+        'trip.brief',
+        'trip.expense',
+        'trip.workspace',
+        'trip.options',
+      ].includes(row.kind)
+    ) {
       await db(env)
         .prepare("UPDATE proposals SET status='failed' WHERE id=? AND status='approved'")
         .bind(row.id)
@@ -2031,12 +2047,13 @@ async function insertRow(env, row) {
 }
 
 /** Trusted metadata that is never accepted from model payload.
- * @param {{ tainted?: boolean, taintedEver?: boolean, internal?: Record<string, unknown> }} action
+ * @param {{ tainted?: boolean, taintedEver?: boolean, chatId?:number|string|null, internal?: Record<string, unknown> }} action
  * @param {'model' | 'owner' | 'trusted_server' | 'undo'} actor
  */
 function executionPolicyContext(action, actor) {
   return {
     actor,
+    ...(action.chatId != null ? { chat_id: String(action.chatId) } : {}),
     tainted: action.tainted === true,
     tainted_ever: action.taintedEver === true,
     ...(typeof action.internal?.consentEventId === 'string'
@@ -2058,6 +2075,9 @@ function proposalExecutionContext(row) {
       return {
         tainted: parsed.tainted === true,
         tainted_ever: parsed.tainted_ever === true,
+        ...(typeof parsed.chat_id === 'string' && /^-?\d{1,32}$/.test(parsed.chat_id)
+          ? { chat_id: parsed.chat_id }
+          : {}),
         ...(typeof parsed.expectedEventId === 'string'
           ? { expectedEventId: parsed.expectedEventId }
           : {}),
@@ -2068,7 +2088,7 @@ function proposalExecutionContext(row) {
     // its ledger calls out the lack of taint context as false rather than
     // inventing provenance.
   }
-  return { tainted: false, tainted_ever: false };
+  return { tainted: false, tainted_ever: false, chat_id: null };
 }
 
 /** Payload для тексту рішення власнику; кривий JSON - null, не помилка. @param {ProposalRow} row */

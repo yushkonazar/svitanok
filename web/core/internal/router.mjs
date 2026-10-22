@@ -277,7 +277,13 @@ export async function handleInternal(request, env, nowMs = Date.now(), ctx = und
         !(Array.isArray(args.flags) && args.flags.length)
           ? { ...args, view: 'analytics' }
           : args;
-      out = await tool.run(env, effectiveArgs, anchor?.asOfMs ?? nowMs);
+      const scopedRun = tool.scoped ? await registryRunInfo(env, auth.runId) : null;
+      out = await tool.run(
+        env,
+        effectiveArgs,
+        anchor?.asOfMs ?? nowMs,
+        scopedRun ? { chatId: scopedRun.chatId, threadId: scopedRun.threadId } : undefined,
+      );
       if (anchor && name === 'data.read' && args.scope === 'weekly' && env.DB) {
         let quality;
         try {

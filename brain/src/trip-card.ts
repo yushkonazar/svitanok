@@ -17,7 +17,7 @@ export function tripBriefCard(result: unknown): { text: string; buttons: Deliver
     !Array.isArray(card.buttons)
   )
     return null;
-  if (!card.buttons.length || card.buttons.length > 5) return null;
+  if (card.buttons.length > 5) return null;
   const buttons: DeliverButtons = [];
   for (const row of card.buttons) {
     if (!Array.isArray(row) || !row.length || row.length > 2) return null;
@@ -36,6 +36,42 @@ export function tripBriefCard(result: unknown): { text: string; buttons: Deliver
       )
         return null;
       clean.push({ text: button.text, callback_data: button.callback_data });
+    }
+    buttons.push(clean);
+  }
+  return { text: card.text, buttons };
+}
+
+export function tripOptionsCard(result: unknown): { text: string; buttons: DeliverButtons } | null {
+  if (!result || typeof result !== 'object') return null;
+  const envelope = result as { draft_id?: unknown; selection_card?: unknown };
+  if (typeof envelope.draft_id !== 'string' || !/^[0-9a-f-]{36}$/i.test(envelope.draft_id))
+    return null;
+  const card = envelope.selection_card as { text?: unknown; buttons?: unknown } | null;
+  if (
+    !card ||
+    typeof card.text !== 'string' ||
+    card.text.length > 2000 ||
+    !Array.isArray(card.buttons) ||
+    card.buttons.length > 5
+  )
+    return null;
+  const buttons: DeliverButtons = [];
+  for (const row of card.buttons) {
+    if (!Array.isArray(row) || row.length > 2 || !row.length) return null;
+    const clean: DeliverButtons[number] = [];
+    for (const b of row) {
+      if (
+        typeof b?.text !== 'string' ||
+        b.text.length > 40 ||
+        !b.text.trim() ||
+        typeof b.callback_data !== 'string' ||
+        b.callback_data.length > 64 ||
+        !b.callback_data.startsWith(`m:to:${envelope.draft_id}:`) ||
+        !/^m:to:[0-9a-f-]{36}:[sp]:\d{1,2}:\d{1,8}$/i.test(b.callback_data)
+      )
+        return null;
+      clean.push({ text: b.text, callback_data: b.callback_data });
     }
     buttons.push(clean);
   }

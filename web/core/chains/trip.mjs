@@ -46,6 +46,7 @@ import {
   packingItems,
 } from '../trips/support.mjs';
 import { tripSlot, tripZone, tripLocalParts } from '../trips/time.mjs';
+import { suggestedPreparation } from '../trips/companion.mjs';
 
 export const CHAIN_KIND = 'trip';
 export const TRIP_MODES = ['car', 'bus', 'train', 'plane', 'mixed', 'walk', 'hike'];
@@ -206,8 +207,9 @@ export async function startTripChain(env, payload, nowMs, ctx) {
   // Дата в минулому прогнала б увесь ланцюг одним залпом (усі блоки, платний
   // Routes і питання про витрати) - краще перепитати рік/місяць.
   const today = kyivDateKey(new Date(nowMs));
+  if (payload.trip_id)
+    return changeTripDates(env, String(payload.trip_id), dateFrom, dateTo, ctx, nowMs);
   if (dateFrom < today) throw new Error(`date_from ${dateFrom} у минулому (сьогодні ${today})`);
-  if (payload.trip_id) return changeTripDates(env, String(payload.trip_id), dateFrom, dateTo);
   const to = String(payload.to ?? '')
     .trim()
     .slice(0, 120);
@@ -309,10 +311,30 @@ export async function startTripChain(env, payload, nowMs, ctx) {
     chat_id: ctx.chatId ?? null,
     thread_id: ctx.threadId == null ? null : String(ctx.threadId),
     awaiting: null,
-    support_version: 2,
+    support_version: 3,
     brief_id: payload.brief_id == null ? null : String(payload.brief_id),
     preferences,
   };
+  const preparation = suggestedPreparation(state).map((task) => ({ ...task, suggested: false }));
+  await db(env)
+    .prepare('UPDATE trips SET cost_json=? WHERE id=?')
+    .bind(
+      JSON.stringify({
+        travel: {
+          revision: 0,
+          tasks: preparation,
+          preferences: {
+            support_level: preferences.support_level ?? 'companion',
+            morning: true,
+            evening: true,
+            paused: false,
+          },
+          progress: { stage: 'planned', confirmed: false },
+        },
+      }),
+      tripId,
+    )
+    .run();
   await db(env)
     .prepare(
       `INSERT INTO chains (id, kind, workflow_id, state_json, status, created_at, updated_at) VALUES (?, ?, ?, ?, 'running', ?, ?)`,
@@ -323,8 +345,14 @@ export async function startTripChain(env, payload, nowMs, ctx) {
     await env.TRIP_CHAIN.create({ id: chainId, params: { chainId } });
   } catch (/** @type {any} */ e) {
     await patchChainState(env, chainId, 'failed', { awaiting: null }, { nowMs });
+    await db(env).prepare("UPDATE trips SET status='failed' WHERE id=?").bind(tripId).run();
     throw new Error(`Workflow поїздки не стартував: ${String(e?.message ?? e)}`, { cause: e });
   }
+  if (payload.brief_id)
+    await db(env)
+      .prepare("UPDATE trip_briefs SET status='started' WHERE id=?")
+      .bind(String(payload.brief_id))
+      .run();
   const left = daysUntil(dateFrom, nowMs);
   // Назва авто - з фактів («Octavia»), а не ключ факту («octavia»); для авто
   // слово способу вже сказане назвою, тож без подвоєння «авто, авто».
@@ -395,24 +423,92 @@ export function likeRef(ref) {
  * живий ланцюг, який перерахує сни. Лише активна поїздка: скасованій або
  * завершеній дати не переписуються.
  * @param {Env} env @param {string} tripId @param {string} dateFrom @param {string | null} dateTo
+ * @param {{chatId?:number|string|null,threadId?:number|string|null}} ctx @param {number} nowMs
  */
-export async function changeTripDates(env, tripId, dateFrom, dateTo) {
+export async function changeTripDates(env, tripId, dateFrom, dateTo, ctx = {}, nowMs = Date.now()) {
   const like = likeRef(tripId);
-  const row = /** @type {{ id: string, to_text: string, workflow_id: string | null } | null} */ (
+  const row = /** @type {any} */ (
     await db(env)
       .prepare(
-        `SELECT id, to_text, workflow_id FROM trips
-           WHERE status = 'active' AND (id = ? OR (? IS NOT NULL AND to_text LIKE ?))
-           ORDER BY date_from LIMIT 1`,
+        `SELECT t.id, t.to_text, t.workflow_id, t.date_from, t.date_to, c.state_json FROM trips t
+           LEFT JOIN chains c ON c.id=t.workflow_id
+           WHERE t.status = 'active' AND (t.id = ? OR (? IS NOT NULL AND t.to_text LIKE ?))
+           ORDER BY t.date_from LIMIT 1`,
       )
       .bind(tripId, like, like)
       .first()
   );
   if (!row) throw new Error(`активної поїздки «${tripId}» немає`);
-  await db(env)
-    .prepare('UPDATE trips SET date_from = ?, date_to = ? WHERE id = ?')
-    .bind(dateFrom, dateTo, row.id)
-    .run();
+  if (
+    !dateKeyOf(dateFrom) ||
+    (dateTo != null && !dateKeyOf(dateTo)) ||
+    (dateTo && dateTo < dateFrom)
+  )
+    throw new Error('Уточни календарні дати поїздки.');
+  if (dateFrom < kyivDateKey(new Date(nowMs)) && dateFrom !== row.date_from)
+    throw new Error('Нову дату виїзду в минулому не зберігаю.');
+  const state = JSON.parse(String(row.state_json ?? '{}'));
+  const { tripScopeKey } = await import('../tools/trip.mjs');
+  if (ctx.chatId != null && tripScopeKey(ctx) !== tripScopeKey(chainTarget(env, state)))
+    throw new Error('Ця поїздка належить іншому чату.');
+  const at = new Date(nowMs).toISOString(),
+    statements = [];
+  // Mutate only date-dependent fields in one transaction, preserving parallel tasks, expenses and owner choices.
+  if (state.brief_id) {
+    const removed = [
+      ...(row.date_from !== dateFrom ? ['$.arrival_date', '$.lodging_from'] : []),
+      ...(row.date_to !== dateTo ? ['$.lodging_to'] : []),
+      ...(dateTo == null ? ['$.date_to'] : []),
+    ];
+    const base = removed.length
+      ? `json_remove(answers_json,${removed.map(() => '?').join(',')})`
+      : 'answers_json';
+    statements.push(
+      db(env)
+        .prepare(
+          `UPDATE trip_briefs SET answers_json=json_set(${base},'$.date_from',?,
+        '$._research.stale',json('true'),'$._meta.revision',COALESCE(json_extract(answers_json,'$._meta.revision'),0)+1,
+        '$._meta.at',?,'$._meta.changed',json('["date_from","date_to"]'),
+        '$._sources.date_from',json_object('kind','owner','at',?),
+        '$._sources.date_to',json_object('kind','owner','at',?)${dateTo == null ? '' : ",'$.date_to',?"}),updated_at=?
+        WHERE id=? AND scope_key=? AND EXISTS(SELECT 1 FROM trips WHERE id=? AND status='active')`,
+        )
+        .bind(
+          ...removed,
+          dateFrom,
+          at,
+          at,
+          at,
+          ...(dateTo == null ? [] : [dateTo]),
+          at,
+          state.brief_id,
+          tripScopeKey(chainTarget(env, state)),
+          row.id,
+        ),
+    );
+  }
+  if (row.workflow_id)
+    statements.push(
+      db(env)
+        .prepare(
+          `UPDATE chains SET state_json=json_set(json_remove(state_json,'$.preferences.arrival_date','$.preferences.lodging_from','$.preferences.lodging_to'),'$.date_from',?,'$.date_to',?,
+      '$.preferences.date_from',?,'$.preferences.date_to',?),updated_at=?
+      WHERE id=? AND status!='cancelled' AND EXISTS(SELECT 1 FROM trips WHERE id=? AND status='active')`,
+        )
+        .bind(dateFrom, dateTo, dateFrom, dateTo, at, row.workflow_id, row.id),
+    );
+  statements.push(
+    db(env)
+      .prepare(
+        `UPDATE trips SET date_from=?,date_to=?,cost_json=json_set(COALESCE(cost_json,'{}'),
+      '$.travel.itinerary_stale',json('true'),'$.travel.revision',COALESCE(json_extract(cost_json,'$.travel.revision'),0)+1)
+      WHERE id=? AND status='active'`,
+      )
+      .bind(dateFrom, dateTo, row.id),
+  );
+  const saved = await db(env).batch(statements);
+  if (Number(saved.at(-1)?.meta?.changes ?? 0) !== 1)
+    throw new Error('Поїздка вже змінилася. Онови план.');
   let delivered = false;
   if (row.workflow_id && env.TRIP_CHAIN) {
     try {
@@ -517,7 +613,7 @@ export async function runTripChain(env, params, step, io) {
       // іншу кількість точок, а з нею - інші імена кроків (мемоїзований крок
       // повернувся б замість нового очікування). Імена далі - з КЛЮЧІВ блоків.
       const departureZone =
-        state.support_version === 2 ? tripZone(state.preferences?.departure_timezone) : null;
+        (state.support_version ?? 0) >= 2 ? tripZone(state.preferences?.departure_timezone) : null;
       const plan = await step.do(`${rk}-plan`, async () =>
         schedule(state.date_from, io.now(), departureZone),
       );
@@ -652,8 +748,67 @@ export async function runTripChain(env, params, step, io) {
       }
 
       // Після повернення (S-5-10): «як пройшло, скільки витратив».
+      if (state.support_version === 3) {
+        if (state.date_to) {
+          const plannedBack =
+            tripSlot(
+              addDaysToDateKey(state.date_to, 1),
+              AFTER_AT,
+              tripZone(state.preferences?.timezone),
+            ) ?? io.now();
+          await await_(`${rk}-return-open`, null);
+          state = await waitWindow(
+            step,
+            io,
+            env,
+            chainId,
+            `${rk}-return-planned`,
+            plannedBack,
+            state,
+          );
+        }
+        await await_(`${rk}-return-confirm`, null);
+        let home = false;
+        for (let i = 0; i < 366; i++) {
+          home = await step.do(`${rk}-home-check-${i}`, async () => {
+            const row = await db(env)
+              .prepare('SELECT cost_json FROM trips WHERE id=?')
+              .bind(state.trip_id)
+              .first();
+            return JSON.parse(String(row?.cost_json ?? '{}')).travel?.progress?.stage === 'home';
+          });
+          if (home) break;
+          if (i === 0 && state.date_to)
+            await step.do(`${rk}-return-question`, () =>
+              io.send(
+                '🧳 За планом поїздка добігає кінця. Ти вже вдома чи ще в дорозі? Можеш відповісти в чаті або позначити етап у Подорожах.',
+                tripSupportButtons(chainId),
+              ),
+            );
+          state = await waitWindow(
+            step,
+            io,
+            env,
+            chainId,
+            `${rk}-home-wait-${i}`,
+            io.now() + 86_400_000,
+            state,
+          );
+        }
+        if (!home)
+          throw new Error('Повернення додому не підтверджено протягом року. План збережено.');
+        await step.do(`${rk}-home-finish`, async () => {
+          await io.finish('done');
+          await patchChainState(env, chainId, 'done', { awaiting: null }, { nowMs: io.now() });
+          await io.send(
+            '🧳 Ти вдома. У Подорожах залишилися журнал, спільні витрати, повернення застав і справи після дороги. Що хочеш завершити зараз?',
+            tripSupportButtons(chainId),
+          );
+        });
+        return { outcome: 'done', trip_id: state.trip_id };
+      }
       const backMs =
-        (state.support_version === 2
+        ((state.support_version ?? 0) >= 2
           ? tripSlot(
               addDaysToDateKey(state.date_to ?? state.date_from, 1),
               AFTER_AT,
@@ -666,7 +821,9 @@ export async function runTripChain(env, params, step, io) {
         await io.send(
           state.date_to
             ? `Як пройшла поїздка «${state.to_text}»? Скільки витратив? (напиши сумою, напр. «3 500»)`
-            : `Як пройшла дорога до «${state.to_text}»? Скільки витратив у дорозі? Дату повернення не припускаю.`,
+            : state.support_version === 3
+              ? `Ти підтвердив повернення додому. Як пройшла поїздка до «${state.to_text}»? Що залишилося завершити: витрати, повернення застав, речі, відпочинок?`
+              : `Як пройшла дорога до «${state.to_text}»? Скільки витратив у дорозі? Дату повернення не припускаю.`,
         );
       });
       const answer = await waitOrNull(step, `${rk}-back-wait`, 'trip', 3 * 86_400_000);
@@ -735,10 +892,15 @@ async function waitWindow(step, io, env, chainId, label, untilMs, state) {
     const ev = await waitOrNull(step, `${label}-${i}`, 'trip', untilMs - io.now());
     if (!ev) return state;
     if (ev.action === 'cancel') throw new Cancelled();
+    if (ev.action === 'home' && state.support_version === 3) return state;
     if (ev.action === 'change-date') {
       const moved = await step.do(`${label}-${i}-date`, async () => {
         const from = String(ev.date_from ?? state.date_from);
-        const to = ev.date_to == null ? state.date_to : String(ev.date_to);
+        const to = Object.hasOwn(ev, 'date_to')
+          ? ev.date_to == null
+            ? null
+            : String(ev.date_to)
+          : state.date_to;
         // Скасований ланцюг переносом дат НЕ оживає: спершу запис під
         // unlessCancelled, і лише по ньому - рядок поїздки й повідомлення.
         const ok = await patchChainState(
@@ -912,17 +1074,26 @@ export function weatherNote(reason, dateFrom) {
 export function productionIo(env, chainId, state) {
   const { chatId, threadId } = chainTarget(env, state);
   const send = (/** @type {string} */ text, /** @type {unknown} */ btns = undefined) =>
-    postChainMessage(
-      env,
-      { chatId, threadId },
-      {
-        kind: 'send',
-        payload: {},
-        buttons: btns,
-        parts: renderMdParts(text),
-        label: `trip-chain ${chainId}`,
-      },
-    );
+    (async () => {
+      const row = await env.DB?.prepare('SELECT cost_json FROM trips WHERE id=?')
+        .bind(state.trip_id)
+        .first();
+      const travel = JSON.parse(String(row?.cost_json ?? '{}')).travel ?? {},
+        prefs = travel.preferences;
+      if (prefs?.paused || prefs?.support_level === 'plan') return;
+      if (travel.progress?.stage === 'home' && !text.startsWith('🧳 Ти вдома.')) return;
+      return postChainMessage(
+        env,
+        { chatId, threadId },
+        {
+          kind: 'send',
+          payload: {},
+          buttons: btns,
+          parts: renderMdParts(text),
+          label: `trip-chain ${chainId}`,
+        },
+      );
+    })();
   return {
     now: () => Date.now(),
     send,
@@ -981,7 +1152,7 @@ export function productionIo(env, chainId, state) {
           env,
           { lat: geo.lat, lon: geo.lon },
           dates,
-          state.support_version === 2 ? tripZone(state.preferences?.timezone) : null,
+          (state.support_version ?? 0) >= 2 ? tripZone(state.preferences?.timezone) : null,
         );
         return { lines: days.map(forecastLine), reason };
       } catch (/** @type {any} */ e) {

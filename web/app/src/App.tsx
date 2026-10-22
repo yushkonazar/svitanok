@@ -35,6 +35,7 @@ const TABS = [
   { id: 'finance', path: '/finance', label: 'Фінанси' },
   { id: 'leisure', path: '/leisure', label: 'Дозвілля' },
   { id: 'plan', path: '/plan', label: 'План' },
+  { id: 'trips', path: '/trips', label: 'Подорожі' },
   { id: 'system', path: '/system', label: 'Система' },
 ] as const;
 
@@ -45,6 +46,9 @@ const SystemScreen = lazy(() =>
 );
 const PlanScreen = lazy(() =>
   import('./components/plan/PlanScreen.tsx').then((module) => ({ default: module.PlanScreen })),
+);
+const TripsScreen = lazy(() =>
+  import('./components/trips/TripsScreen.tsx').then((module) => ({ default: module.TripsScreen })),
 );
 
 const MemoryScreen = lazy(() =>
@@ -132,6 +136,13 @@ function TabIcon({ id, active }: { id: string; active: boolean }) {
       <svg width="18" height="18" viewBox="0 0 24 24" {...common}>
         <rect x="4" y="4" width="16" height="17" rx="3" />
         <path d="M8 2v4M16 2v4M8 12l2 2 5-5M8 18h8" />
+      </svg>
+    );
+  if (id === 'trips')
+    return (
+      <svg width="18" height="18" viewBox="0 0 24 24" {...common}>
+        <rect x="4" y="6" width="16" height="15" rx="3" />
+        <path d="M9 6V3h6v3M8 10v7M16 10v7" />
       </svg>
     );
   if (id === 'leisure')
@@ -488,6 +499,8 @@ export function App() {
                 <LeisureScreen />
               ) : active.id === 'plan' ? (
                 <PlanScreen />
+              ) : active.id === 'trips' ? (
+                <TripsScreen />
               ) : (
                 <StatsScreen />
               )}

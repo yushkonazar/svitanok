@@ -98,6 +98,7 @@ export const ACTION_PHRASE = {
   'trip.brief': { icon: '🧳', done: 'Уточнюю поїздку', ask: 'Уточнити поїздку' },
   'trip.expense': { icon: '💰', done: 'Записав витрату поїздки', ask: 'Записати витрату поїздки' },
   'trip.workspace': { icon: '🧳', done: 'Поїздку оновлено', ask: 'Оновити поїздку' },
+  'trip.options': { icon: '🧳', done: 'Варіанти поїздки збережено', ask: 'Обрати варіант поїздки' },
   'finance.rule': {
     icon: DOMAIN_ICON.money,
     done: 'Запамʼятав правило',

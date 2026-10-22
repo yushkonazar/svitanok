@@ -10,6 +10,7 @@
  *   required?: string[],
  *   properties?: Record<string, InternalSchema>,
  *   items?: InternalSchema,
+ *   maxItems?:number,
  *   maxLength?: number,
  *   minLength?: number,
  *   enum?: readonly string[],
@@ -188,6 +189,8 @@ export function validateAgainst(schema, value, path = '$') {
   }
   if (schema.type === 'array') {
     if (!Array.isArray(value)) return fail('очікується масив');
+    if (schema.maxItems != null && value.length > schema.maxItems)
+      return fail('забагато елементів');
     if (schema.items) {
       for (let i = 0; i < value.length; i += 1) {
         const res = validateAgainst(schema.items, value[i], `${path}[${i}]`);
