@@ -742,6 +742,7 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
           const note = e instanceof Error ? e.message : String(e);
           pushStep({ kind: 'error', name: 'instruction', ms: now() - startedMs, ok: false, note });
           console.error(`run ${req.run_id}: ${note}`);
+          if (profile.name === 'trip-research') return;
           // Тиша тут читалась би як «асистент завис»; deliver - best-effort.
           try {
             await deps.client.deliver(
@@ -914,6 +915,21 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
       // дочекається таймауту і піде резервом (formatDraft / наївний розбір).
       // price-check (етап 5 PR-3) - той самий контракт ланцюга: звіт Дослідника
       // текстом (format chat) → подія worker; ціни парсить ядро.
+      if (profile.name === 'trip-research') {
+        const task: unknown = JSON.parse(req.input.text);
+        if (
+          !task ||
+          typeof task !== 'object' ||
+          !('request_id' in task) ||
+          task.request_id !== req.run_id
+        )
+          throw new Error('invalid-trip-research-task');
+        const output = parseJsonOutput(finalText);
+        if (!output) throw new Error('invalid-trip-research-output');
+        escalateOutcome = { trip_research: { request_id: req.run_id, output } };
+        pushStep({ kind: 'reply', name: 'trip-research', ms: now() - startedMs, ok: true });
+        return;
+      }
       if (profile.name === 'day-planner' || profile.name === 'price-check') {
         const task = parseTaskInput(req.input.text);
         if (!task) {
@@ -1054,6 +1070,7 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
         note: reason,
       });
       console.error(`run ${req.run_id} (${profile.name}): ${reason}`);
+      if (profile.name === 'trip-research') return;
       // Помилка видима (00-README п.6): власник має побачити збій, не тишу.
       try {
         await finishStatuses();

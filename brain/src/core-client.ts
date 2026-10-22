@@ -16,6 +16,7 @@ export type DeliverButtons = Array<Array<{ text: string; callback_data: string }
 export type RunOutcome = {
   escalate?: { text: string; status_message_id?: number };
   chain?: { id: string; event: string; payload: Record<string, unknown> };
+  trip_research?: { request_id: string; output: unknown };
 };
 
 /** Результат працівника до deliver. `context` задає лише доречну картку,
