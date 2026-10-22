@@ -188,6 +188,12 @@ interface Env {
   /** Google Maps Platform (ADR-011, етап 0): один ключ на Places (New),
    *  Routes, Geocoding - `core/adapters/maps.mjs`, квоти в quota_counters. */
   MAPS_API_KEY?: string;
+  MAPS_BROWSER_API_KEY?: string;
+  MAPS_MAP_ID?: string;
+  BOOKING_API_TOKEN?: string;
+  BOOKING_AFFILIATE_ID?: string;
+  BOOKING_BOOKER_COUNTRY?: string;
+  BOOKING_API_ENV?: 'sandbox' | 'production';
   /**
    * Домашні координати власника: JSON-масив `{lat, lon, name}`. Незаданий —
    * `web/weather-geo.mjs` працює на публічному фолбеку.

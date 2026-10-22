@@ -10,9 +10,11 @@ import {
   type TravelCurrent,
 } from '../../api/trips.ts';
 import { isSessionExpired } from '../../api/client.ts';
-import { inTelegram } from '../../telegram.ts';
+import { inTelegram, openLink } from '../../telegram.ts';
 import { SessionExpired } from '../ui/SessionExpired.tsx';
 import { DeleteTripButton } from './DeleteTripButton.tsx';
+import { TripOfferCard } from './TripOfferCard.tsx';
+import { TripMap } from './TripMap.tsx';
 import './trips.css';
 import './journey.css';
 
@@ -63,14 +65,6 @@ const GROUPS: Record<string, string> = {
   home: 'Дім',
   return: 'Повернення',
   other: 'Моє',
-};
-const UNITS: Record<string, string> = {
-  person: 'за людину',
-  group: 'за групу',
-  room_night: 'за номер / ніч',
-  stay: 'за проживання',
-  ticket: 'за квиток',
-  entry: 'за вхід',
 };
 const atext = (c: TravelCurrent, field: string) => String(c.answers[field] ?? '');
 function actualStage(c: TravelCurrent): Lifecycle {
@@ -686,7 +680,9 @@ function Planning({
               stage={stage}
               current={c}
               disabled={disabled}
-              search={() => plan({ action: 'search', kind: stage.kind })}
+              search={(more) =>
+                plan({ action: 'search', kind: stage.kind, ...(more ? { more: true } : {}) })
+              }
               decide={async (mode, ids, note) => {
                 if (await plan({ action: 'decision', kind: stage.kind, mode, ids, note }))
                   setFocus(null);
@@ -841,14 +837,27 @@ function SearchCard({
   stage: SearchStage;
   current: TravelCurrent;
   disabled: boolean;
-  search: () => Promise<boolean>;
+  search: (more?: boolean) => Promise<boolean>;
   decide: (mode: string, ids: string[], note: string) => Promise<void>;
 }) {
   const [ids, setIds] = useState<string[]>([]),
     [manual, setManual] = useState(false),
-    [note, setNote] = useState('');
+    [note, setNote] = useState(''),
+    [view, setView] = useState('list'),
+    [mapChoice, setMapChoice] = useState(''),
+    [mapFocus, setMapFocus] = useState(''),
+    [visible, setVisible] = useState(6);
   const copy = SEARCH[stage.kind],
     running = stage.status === 'running';
+  const mapVersion = JSON.stringify([
+    c.answers.to,
+    c.answers.from_city,
+    stage.options.map((o) => [o.id, o.checked_at, o.stale]),
+  ]);
+  const displayed =
+    view === 'map' && stage.options.some((o) => o.id === mapChoice)
+      ? stage.options.filter((o) => o.id === mapChoice)
+      : stage.options.slice(0, visible);
   const start = async () => {
     await search();
   };
@@ -859,6 +868,30 @@ function SearchCard({
       </p>
       <h2>{copy.title}</h2>
       <p>{copy.description}</p>
+      {!!stage.service_links?.length && (
+        <div className="journey-services">
+          <span>
+            {stage.kind === 'stay' ? 'Перевірити на свої дати:' : 'Перевірити розклад і квитки:'}
+          </span>
+          {stage.service_links.map((link) => (
+            <a
+              key={link.id}
+              href={link.url}
+              target="_blank"
+              rel="noreferrer noopener"
+              onClick={(event) => {
+                event.preventDefault();
+                openLink(link.url);
+              }}
+            >
+              {link.label} ↗
+            </a>
+          ))}
+          {stage.kind === 'transport' && (
+            <small>Дату та пасажирів обери на сайті перевізника.</small>
+          )}
+        </div>
+      )}
       {stage.needs_review && (
         <div className="trips-notice">
           Дані або попередній вибір змінилися. Перевір цей крок за новими умовами.
@@ -918,67 +951,65 @@ function SearchCard({
         </p>
       )}
       {stage.status === 'completed' && stage.summary && (
-        <p className="journey-search-summary">{stage.summary}</p>
+        <details className="journey-search-summary">
+          <summary>Про результати пошуку</summary>
+          <p>{stage.summary}</p>
+        </details>
+      )}
+      <div className="journey-view-switch" aria-label="Вигляд результатів">
+        <button aria-pressed={view === 'list'} onClick={() => setView('list')}>
+          Список
+        </button>
+        <button aria-pressed={view === 'map'} onClick={() => setView('map')}>
+          {stage.kind === 'transport' ? 'Маршрут на мапі' : 'Мапа'}
+        </button>
+      </div>
+      {view === 'map' && (
+        <TripMap
+          key={`${mapVersion}|${mapFocus}`}
+          id={c.id}
+          kind={stage.kind}
+          version={mapVersion}
+          activeId={mapChoice}
+          focusId={mapFocus}
+          onPick={setMapChoice}
+        />
       )}
       <div className="journey-offers">
-        {stage.options.map((o) => (
-          <article className={`journey-offer ${ids.includes(o.id) ? 'is-picked' : ''}`} key={o.id}>
-            <div className="journey-offer-top">
-              <span>{o.provider || 'Знайдено в мережі'}</span>
-              <span>
-                {o.stale
-                  ? 'Потрібна нова перевірка'
-                  : o.availability === 'provider_quote'
-                    ? 'Пропозиція провайдера'
-                    : 'Перевірити наявність'}
-              </span>
-            </div>
-            <h3>{o.title}</h3>
-            <p className="journey-price">
-              {o.price ? `${o.price.amount} ${o.price.currency}` : 'Ціну не підтверджено'}
-              {o.price && (
-                <small>
-                  {UNITS[o.price.unit] ?? o.price.unit} · кількість {o.price.quantity}
-                </small>
-              )}
-            </p>
-            {o.price?.includes && <p className="trips-muted">У ціні: {o.price.includes}</p>}
-            {o.price?.excludes && <p className="trips-muted">Окремо: {o.price.excludes}</p>}
-            {o.dates && <p>{o.dates}</p>}
-            {o.schedule && <p>{o.schedule}</p>}
-            {o.location && <p>{o.location}</p>}
-            {o.tradeoffs && <p>{o.tradeoffs}</p>}
-            {o.cancellation && <p className="trips-muted">Скасування: {o.cancellation}</p>}
-            {o.missing && <p className="trips-muted">Уточнити: {o.missing}</p>}
-            <div className="trips-actions">
-              <a href={o.source_url} target="_blank" rel="noreferrer noopener">
-                Переглянути джерело ↗
-              </a>
-              <button
-                disabled={disabled || o.stale || running}
-                aria-pressed={ids.includes(o.id)}
-                onClick={() =>
-                  stage.kind === 'activity'
-                    ? setIds((old) =>
-                        old.includes(o.id) ? old.filter((id) => id !== o.id) : [...old, o.id],
-                      )
-                    : void decide('selected', [o.id], '')
-                }
-              >
-                {stage.kind === 'activity'
-                  ? ids.includes(o.id)
-                    ? '✓ У плані'
-                    : '＋ До плану'
-                  : 'Обрати й далі →'}
-              </button>
-            </div>
-            <small>
-              Перевірено {new Date(o.checked_at).toLocaleString('uk-UA')}. Вибір зберігає задум;
-              бронювання виконуєш ти.
-            </small>
-          </article>
+        {displayed.map((o) => (
+          <TripOfferCard
+            key={o.id}
+            option={o}
+            selected={ids.includes(o.id)}
+            focused={mapChoice === o.id}
+            disabled={disabled}
+            running={running}
+            onMap={() => {
+              setView('map');
+              setMapChoice(o.id);
+              setMapFocus(o.id);
+            }}
+            onChoose={() =>
+              stage.kind === 'activity'
+                ? setIds((old) =>
+                    old.includes(o.id) ? old.filter((id) => id !== o.id) : [...old, o.id],
+                  )
+                : void decide('selected', [o.id], '')
+            }
+          />
         ))}
       </div>
+      {!!stage.options.length && view === 'list' && (
+        <button
+          className="journey-more"
+          disabled={disabled || running}
+          onClick={() =>
+            visible < stage.options.length ? setVisible((old) => old + 6) : void search(true)
+          }
+        >
+          {visible < stage.options.length ? 'Показати ще варіанти' : 'Знайти ще варіанти'}
+        </button>
+      )}
       {stage.kind === 'activity' && ids.length > 0 && (
         <button
           className="trips-primary journey-wide"
@@ -1180,11 +1211,22 @@ function Preparation({
 }
 
 function Route({ current: c }: { current: TravelCurrent }) {
+  const [showMap, setShowMap] = useState(false);
   const legs = c.workspace?.legs ?? [];
   const selected = c.planning?.stages.find((stage) => stage.kind === 'transport');
   return (
     <article className="trips-card">
       <h3>Збережений маршрут</h3>
+      <button className="journey-text-button" onClick={() => setShowMap((old) => !old)}>
+        {showMap ? 'Згорнути мапу' : 'Показати маршрут на мапі'}
+      </button>
+      {showMap && (
+        <TripMap
+          id={c.id}
+          kind="transport"
+          version={JSON.stringify([c.answers.from_city, c.answers.to])}
+        />
+      )}
       {c.workspace?.itinerary_stale && (
         <p className="trips-notice">Дати змінювалися. Перевір маршрут у деталях.</p>
       )}

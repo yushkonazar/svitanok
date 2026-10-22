@@ -71,8 +71,8 @@ function optionId(identity) {
   return `offer-${hash.toString(16).padStart(16, '0')}`;
 }
 /** Only bounded reference data may enter this quarantine. It cannot set owner facts, book, or start support.
- * @param {any} raw @param {number} nowMs */
-export function normalizeTripOption(raw, nowMs) {
+ * @param {any} raw @param {number} nowMs @param {boolean} [authenticatedQuote] */
+export function normalizeTripOption(raw, nowMs, authenticatedQuote = false) {
   if (!['transport', 'stay', 'activity'].includes(raw.kind))
     throw new Error('Уточни тип пропозиції.');
   const title = text(raw.title, 160),
@@ -111,9 +111,59 @@ export function normalizeTripOption(raw, nowMs) {
       total_confirmed: p.total_confirmed === true,
     };
   }
-  const availability = ['unverified', 'page_observed', 'provider_quote'].includes(raw.availability)
-    ? raw.availability
-    : 'unverified';
+  const availability =
+    raw.availability === 'provider_quote' && !authenticatedQuote
+      ? 'unverified'
+      : ['unverified', 'page_observed', 'provider_quote'].includes(raw.availability)
+        ? raw.availability
+        : 'unverified';
+  const rating =
+    raw.rating &&
+    Number.isFinite(raw.rating.value) &&
+    raw.rating.value > 0 &&
+    [5, 10].includes(raw.rating.scale) &&
+    raw.rating.value <= raw.rating.scale &&
+    Number.isInteger(raw.rating.count) &&
+    raw.rating.count > 0 &&
+    text(raw.rating.source, 50)
+      ? {
+          value: raw.rating.value,
+          scale: raw.rating.scale,
+          count: raw.rating.count,
+          source: text(raw.rating.source, 50),
+        }
+      : null;
+  const coordinates =
+    authenticatedQuote &&
+    Number.isFinite(raw.coordinates?.lat) &&
+    Math.abs(raw.coordinates.lat) <= 90 &&
+    Number.isFinite(raw.coordinates?.lon) &&
+    Math.abs(raw.coordinates.lon) <= 180
+      ? { lat: raw.coordinates.lat, lon: raw.coordinates.lon }
+      : null;
+  const photos =
+    authenticatedQuote && Array.isArray(raw.photos)
+      ? raw.photos
+          .slice(0, 6)
+          .filter((/** @type {any} */ p) => {
+            try {
+              const url = new URL(p.url);
+              return (
+                url.protocol === 'https:' &&
+                !url.username &&
+                !url.password &&
+                /(^|\.)bstatic\.com$/.test(url.hostname)
+              );
+            } catch {
+              return false;
+            }
+          })
+          .map((/** @type {any} */ p) => ({
+            url: String(p.url).slice(0, 1200),
+            alt: title,
+            credit: 'Booking.com',
+          }))
+      : [];
   return {
     ...optionText(raw),
     id,
@@ -122,6 +172,21 @@ export function normalizeTripOption(raw, nowMs) {
     checked_at: new Date(checked).toISOString(),
     availability,
     price,
+    highlights: Array.isArray(raw.highlights)
+      ? raw.highlights
+          .slice(0, 3)
+          .map((/** @type {unknown} */ h) => text(h, 100))
+          .filter(Boolean)
+      : [],
+    duration_minutes:
+      Number.isInteger(raw.duration_minutes) &&
+      raw.duration_minutes > 0 &&
+      raw.duration_minutes <= 100_000
+        ? raw.duration_minutes
+        : null,
+    rating,
+    coordinates,
+    photos,
     status: 'candidate',
   };
 }

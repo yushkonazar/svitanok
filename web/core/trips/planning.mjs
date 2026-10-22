@@ -546,6 +546,8 @@ export async function changePlanning(env, row, brief, data, revision, nowMs) {
         basis: planningStageKey(a, kind),
         status: 'running',
         started_at: new Date(nowMs).toISOString(),
+        more: data.more === true,
+        provider_page: data.more === true ? (p.searches?.[kind]?.next_page ?? null) : null,
       };
       next.active = job;
       next.searches = { ...p.searches, [kind]: job };
@@ -558,8 +560,15 @@ export async function changePlanning(env, row, brief, data, revision, nowMs) {
 }
 
 /** Only a registered trip-research run can deliver data here. Late, superseded and stale results cannot replace the owner's plan.
- * @param {Env} env @param {string} runId @param {any} output @param {boolean} failed @param {number} nowMs */
-export async function finishPlanningSearch(env, runId, output, failed, nowMs) {
+ * @param {Env} env @param {string} runId @param {any} output @param {boolean} failed @param {number} nowMs @param {boolean} [authenticatedQuote] */
+export async function finishPlanningSearch(
+  env,
+  runId,
+  output,
+  failed,
+  nowMs,
+  authenticatedQuote = false,
+) {
   if (!env.DB) throw new Error('Сховище подорожей недоступне.');
   for (let attempt = 0; attempt < 3; attempt++) {
     const row = await env.DB.prepare(
@@ -581,7 +590,7 @@ export async function finishPlanningSearch(env, runId, output, failed, nowMs) {
       status = 'failed';
     if (!failed) {
       try {
-        const normalized = normalizeTripSearchResult(output, job.kind, nowMs);
+        const normalized = normalizeTripSearchResult(output, job.kind, nowMs, authenticatedQuote);
         options = normalized.options.map((/** @type {any} */ o) => ({
           ...o,
           planning_basis: job.basis,
@@ -594,6 +603,10 @@ export async function finishPlanningSearch(env, runId, output, failed, nowMs) {
     }
     const completed = {
       ...job,
+      next_page:
+        authenticatedQuote && typeof output?.next_page === 'string'
+          ? output.next_page.slice(0, 2000)
+          : null,
       status,
       summary:
         status === 'failed'

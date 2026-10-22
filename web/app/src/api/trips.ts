@@ -51,12 +51,23 @@ const option = z.object({
   missing: z.string().optional(),
   cancellation: z.string().optional(),
   schedule: z.string().optional(),
+  highlights: z.array(z.string()).optional(),
+  duration_minutes: z.number().nullable().optional(),
+  rating: z
+    .object({ value: z.number(), scale: z.number(), count: z.number(), source: z.string() })
+    .nullable()
+    .optional(),
+  photos: z.array(z.object({ url: z.string(), alt: z.string(), credit: z.string() })).optional(),
+  service_links: z
+    .array(z.object({ id: z.string(), label: z.string(), url: z.string(), prefilled: z.boolean() }))
+    .optional(),
   price: z
     .object({
       amount: z.number(),
       currency: z.string(),
       unit: z.string(),
       quantity: z.number(),
+      total_confirmed: z.boolean().optional(),
       includes: z.string().optional(),
       excludes: z.string().optional(),
     })
@@ -97,6 +108,11 @@ const planning = z.object({
       summary: z.string(),
       started_at: z.string().nullable(),
       options: z.array(option),
+      service_links: z
+        .array(
+          z.object({ id: z.string(), label: z.string(), url: z.string(), prefilled: z.boolean() }),
+        )
+        .optional(),
       resolved: z.boolean(),
       needs_review: z.boolean(),
       decision: z
@@ -201,6 +217,60 @@ export const travelSchema = z.object({
 });
 export type TravelSnapshot = z.infer<typeof travelSchema>;
 export type TravelCurrent = NonNullable<TravelSnapshot['current']>;
+export type TravelOption = NonNullable<
+  TravelCurrent['planning']
+>['stages'][number]['options'][number];
+const tripMapSchema = z.object({
+  enabled: z.boolean(),
+  external_url: z.string(),
+  message: z.string().optional(),
+  api_key: z.string().optional(),
+  map_id: z.string().optional(),
+  caption: z.string().optional(),
+  center: z.object({ lat: z.number(), lon: z.number() }).optional(),
+  markers: z
+    .array(
+      z.object({
+        id: z.string(),
+        title: z.string(),
+        label: z.string().optional(),
+        lat: z.number(),
+        lon: z.number(),
+        source_url: z.string().nullable().optional(),
+      }),
+    )
+    .optional(),
+  route: z
+    .object({ polyline: z.string().optional(), duration_min: z.number(), distance_m: z.number() })
+    .nullable()
+    .optional(),
+  missing: z.array(z.string()).optional(),
+});
+export type TripMapData = z.infer<typeof tripMapSchema>;
+export async function fetchTripMap(
+  id: string,
+  kind: string,
+  signal?: AbortSignal,
+  focusId?: string,
+): Promise<TripMapData> {
+  if (!inTelegram())
+    return {
+      enabled: false,
+      external_url: 'https://www.google.com/maps/search/?api=1&query=Prague',
+      message: 'Мапа прикладу. Власні поїздки відкрий у Telegram.',
+    };
+  const query = new URLSearchParams({ id, kind, format: 'map' });
+  if (focusId) query.set('focus', focusId);
+  const response = await fetch(`/api/trips?${query}`, {
+    headers: headers(),
+    cache: 'no-store',
+    signal,
+  });
+  throwIfSessionExpired(response);
+  const body = await response.json();
+  if (!response.ok) throw new Error(body.error ?? 'Не вдалося відкрити мапу.');
+  return tripMapSchema.parse(body);
+}
 export type TravelCommand = {
   op:
     | 'brief'

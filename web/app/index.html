@@ -4,14 +4,11 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="color-scheme" content="dark light" />
-    <!-- CSP (E4-final): скрипти лише свої + telegram.org (WebApp SDK); стилі свої
-         + inline (React style-пропси); fetch лише свій origin
-         (/api, /briefing.json); зображення свої + data: + приватні blob:. Без 'unsafe-eval'
-         (прод-бандл Vite його не потребує). frame-ancestors не задаємо через
-         <meta> — щоб Telegram-вебв'ю міг вбудувати апку. -->
+    <!-- Main app keeps third-party scripts/session isolated. Maps JS lives in an
+         opaque-origin sandbox with its own policy; authenticated fetch stays same-origin. -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self' https://telegram.org; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; base-uri 'self'; form-action 'self'"
+      content="default-src 'self'; script-src 'self' https://telegram.org; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://*.bstatic.com; font-src 'self'; connect-src 'self'; frame-src 'self'; base-uri 'self'; form-action 'self'"
     />
     <title>Svitanok</title>
     <!-- Telegram WebApp SDK: initData (авторизація власника), тема, HapticFeedback.
