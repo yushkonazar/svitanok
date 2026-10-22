@@ -80,6 +80,7 @@ export async function tripMonitorTask(env, nowMs = Date.now(), deps = {}) {
         state = JSON.parse(String(row.state_json));
       const travel = costs.travel,
         settings = travel.monitor;
+      if (travel.preferences?.paused || travel.progress?.stage === 'home') continue;
       if (!settings.consent) continue;
       const zone = tripZone(settings.timezone),
         local = tripLocalParts(nowMs, zone);
@@ -168,6 +169,8 @@ export async function tripMonitorTask(env, nowMs = Date.now(), deps = {}) {
         const current = JSON.parse(String(live.cost_json));
         if (
           !current.travel?.monitor?.enabled ||
+          current.travel?.preferences?.paused ||
+          current.travel?.progress?.stage === 'home' ||
           current.travel.monitor_tick?.token !== token ||
           current.travel.monitor.changed_at !== settings.changed_at
         )
@@ -183,6 +186,7 @@ export async function tripMonitorTask(env, nowMs = Date.now(), deps = {}) {
         const queuedAt = new Date(nowMs).toISOString();
         const payload = JSON.stringify({
           text: `🧳 ${String(row.to_text)}\n${signature}\nПеревірено ${local.clock} (${zone}).`,
+          trip_monitor_notice: { trip_id: String(row.id), changed_at: settings.changed_at },
         });
         const batch = await env.DB.batch([
           env.DB.prepare(
@@ -210,4 +214,26 @@ export async function tripMonitorTask(env, nowMs = Date.now(), deps = {}) {
     }
   }
   return { checked, sent };
+}
+/** @param {Env} env @param {any} notice @param {number} nowMs */
+export async function tripMonitorNoticeCurrent(env, notice, nowMs) {
+  if (!env.DB || typeof notice?.trip_id !== 'string') return false;
+  const row = await env.DB.prepare(
+    "SELECT t.cost_json,c.status FROM trips t JOIN chains c ON c.id=t.workflow_id WHERE t.id=? AND t.status='active'",
+  )
+    .bind(notice.trip_id)
+    .first();
+  if (!row || !['running', 'waiting'].includes(String(row.status))) return false;
+  const travel = JSON.parse(String(row.cost_json ?? '{}')).travel ?? {},
+    m = travel.monitor ?? {};
+  if (
+    !m.enabled ||
+    !m.consent ||
+    m.changed_at !== notice.changed_at ||
+    travel.preferences?.paused ||
+    travel.progress?.stage === 'home'
+  )
+    return false;
+  const hour = Number(tripLocalParts(nowMs, tripZone(m.timezone)).clock.slice(0, 2));
+  return hour >= 8 && hour < 22 && (await shouldDeliverProactive(env, 'nudge', nowMs)).deliver;
 }

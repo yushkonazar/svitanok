@@ -1,5 +1,6 @@
 import { chainTarget } from '../chains/state.mjs';
 import { tripInstant, tripZone } from '../trips/time.mjs';
+import { COMPANION_OPS, companionChange, companionView } from '../trips/companion.mjs';
 
 const LIMITS = { legs: 80, places: 120, reviews: 60, history: 20 };
 export const TRIP_WORKSPACE_OPS = [
@@ -7,12 +8,14 @@ export const TRIP_WORKSPACE_OPS = [
   'leg',
   'remove_leg',
   'restore_revision',
+  'confirm_itinerary',
   'place',
   'review',
   'monitor',
   'link_transaction',
   'unlink_transaction',
   'learn',
+  ...COMPANION_OPS,
 ];
 
 /** @param {unknown} value @returns {Record<string,any>} */
@@ -84,6 +87,7 @@ export function normalizedTripLeg(raw) {
     service: text(raw.service, 40),
     source_url: link(raw.source_url),
     note: text(raw.note, 160),
+    party_id: raw.party_id ? key(raw.party_id) : null,
   };
 }
 /** @param {any[]} legs */
@@ -93,7 +97,14 @@ export function itineraryWarnings(legs) {
   for (let i = 0; i < sorted.length; i++) {
     const next = sorted[i];
     for (const prev of sorted.slice(0, i)) {
-      if (next.start_ms < prev.end_ms && !next.parallel && !prev.parallel)
+      if (
+        next.start_ms < prev.end_ms &&
+        !next.parallel &&
+        !prev.parallel &&
+        (!next.party_id || !prev.party_id || next.party_id === prev.party_id) &&
+        ((next.kind === 'stay' && prev.kind === 'stay') ||
+          (next.kind !== 'stay' && prev.kind !== 'stay'))
+      )
         warnings.push(`Накладення: «${prev.title}» і «${next.title}».`);
     }
     const prev = sorted[i - 1];
@@ -146,12 +157,23 @@ export function tripWorkspaceView(raw) {
   const legs = Array.isArray(workspace.legs) ? workspace.legs.slice(0, LIMITS.legs) : [];
   return {
     revision: workspace.revision ?? 0,
+    itinerary_stale: workspace.itinerary_stale === true,
     legs,
-    warnings: itineraryWarnings(legs),
+    warnings: [
+      ...itineraryWarnings(legs),
+      ...(workspace.itinerary_stale
+        ? ['Дати поїздки змінено. Перевір години, квитки й кожен етап маршруту.']
+        : []),
+    ],
     places: Array.isArray(workspace.places) ? workspace.places.slice(0, LIMITS.places) : [],
     reviews: Array.isArray(workspace.reviews) ? workspace.reviews.slice(-LIMITS.reviews) : [],
     monitor: workspace.monitor ?? { enabled: false },
     pattern: workspace.pattern ?? null,
+    tasks: workspace.tasks ?? [],
+    bookings: workspace.bookings ?? [],
+    progress: workspace.progress ?? { stage: 'planned', confirmed: false },
+    party: workspace.party ?? [],
+    preferences: workspace.preferences ?? {},
     history: Array.isArray(workspace.history)
       ? workspace.history
           .slice(-LIMITS.history)
@@ -197,11 +219,20 @@ export async function runTripWorkspace(env, args, nowMs, ctx) {
   const id = String(args.trip_id),
     at = new Date(nowMs).toISOString();
   const input = object(args.data);
-  if (args.op === 'leg' || args.op === 'place') input.id = key(input.id);
+  if (
+    args.op === 'preferences' &&
+    Object.hasOwn(input, 'weather_share_city') &&
+    ctx?.ownerWeatherConsent !== true
+  )
+    throw new Error('Погодну перевірку з передаванням міста можна ввімкнути в розділі Подорожі.');
+  if (['leg', 'place', 'task', 'booking'].includes(args.op)) input.id = key(input.id);
   for (let attempt = 0; attempt < 3; attempt++) {
     const { row, state, costs } = await rowFor(env, id, ctx);
     const travel = object(costs.travel);
-    if (args.op === 'get') return { result: tripWorkspaceView(costs) };
+    if (args.op === 'get')
+      return {
+        result: { ...tripWorkspaceView(costs), companion: companionView(state, travel, nowMs) },
+      };
     if (
       args.expected_revision != null &&
       Number(args.expected_revision) !== Number(travel.revision ?? 0)
@@ -212,7 +243,18 @@ export async function runTripWorkspace(env, args, nowMs, ctx) {
     const beforeEntries = entries;
     /** @type {string|null} */
     let transactionId = null;
-    if (args.op === 'restore_revision') {
+    const companion = companionChange(args.op, input, travel, nowMs);
+    if (companion) {
+      facet = companion.facet;
+      value = companion.value;
+    } else if (args.op === 'confirm_itinerary') {
+      if (input.consent !== true)
+        throw new Error('Підтвердь, що перевірив дати й години кожного етапу.');
+      if (itineraryWarnings(travel.legs ?? []).length)
+        throw new Error('Спершу виправ накладення й запас на пересадки в маршруті.');
+      facet = 'itinerary_stale';
+      value = false;
+    } else if (args.op === 'restore_revision') {
       facet = 'legs';
       const saved = (Array.isArray(travel.versions) ? travel.versions : []).find(
         (/** @type {any} */ v) => v.revision === Number(input.revision),
@@ -414,6 +456,31 @@ export async function runTripWorkspace(env, args, nowMs, ctx) {
       travel: {
         ...travel,
         [facet]: value,
+        ...(facet === 'progress' && value.stage === 'home'
+          ? {
+              tasks: [
+                ...(travel.tasks ?? []),
+                ...[
+                  ['post-refunds', 'Перевірити повернення застав і коштів'],
+                  ['post-settlement', 'Звірити спільні витрати й розрахунки'],
+                  ['post-baggage', 'Розібрати речі й повернути орендоване'],
+                  ['post-home', 'Завершити домашні справи та залишити час на відпочинок'],
+                  ['post-impressions', 'Зберегти враження й побажання на наступну поїздку'],
+                ]
+                  .filter(
+                    ([id]) => !(travel.tasks ?? []).some((/** @type {any} */ t) => t.id === id),
+                  )
+                  .slice(0, Math.max(0, 200 - (travel.tasks ?? []).length))
+                  .map(([id, title]) => ({
+                    id,
+                    title,
+                    status: 'open',
+                    due_at: null,
+                    generated_from: 'home',
+                  })),
+              ],
+            }
+          : {}),
         revision,
         ...(facet === 'legs'
           ? {
@@ -442,7 +509,21 @@ export async function runTripWorkspace(env, args, nowMs, ctx) {
         transactionId,
       )
       .run();
-    if (Number(saved.meta?.changes ?? 0) === 1)
+    if (Number(saved.meta?.changes ?? 0) === 1) {
+      if (
+        args.op === 'progress' &&
+        input.stage === 'home' &&
+        state.support_version === 3 &&
+        env.TRIP_CHAIN
+      ) {
+        try {
+          await (
+            await env.TRIP_CHAIN.get(String(row.workflow_id))
+          ).sendEvent({ type: 'trip', payload: { action: 'home' } });
+        } catch {
+          console.error('trip: home confirmed; workflow wake deferred');
+        }
+      }
       return {
         result: {
           ...(args.op === 'monitor'
@@ -460,6 +541,7 @@ export async function runTripWorkspace(env, args, nowMs, ctx) {
             leg: 'Етап маршруту збережено.',
             remove_leg: 'Етап вилучено.',
             restore_revision: 'Версію маршруту відновлено.',
+            confirm_itinerary: 'Маршрут підтверджено за актуальними датами.',
             place: 'Журнал місць оновлено.',
             review: 'Враження збережено.',
             monitor: input.enabled
@@ -468,6 +550,11 @@ export async function runTripWorkspace(env, args, nowMs, ctx) {
             learn: 'Повторювані вподобання збережено.',
             link_transaction: 'Витрату звірено — без подвійного підрахунку.',
             unlink_transaction: 'Привʼязку витрати знято.',
+            task: 'Справу поїздки оновлено.',
+            booking: 'Запис бронювання оновлено.',
+            progress: 'Етап поїздки збережено.',
+            party: 'Учасників збережено.',
+            preferences: 'Налаштування супроводу збережено.',
           })[String(args.op)],
           ...tripWorkspaceView(next),
         },
@@ -479,6 +566,7 @@ export async function runTripWorkspace(env, args, nowMs, ctx) {
           ...(facet === 'bank' ? { before_entries: beforeEntries, after_entries: entries } : {}),
         },
       };
+    }
   }
   throw new Error(
     'Дані змінилися паралельно або операція вже звірена. Відкрий актуальну поїздку й повтори.',

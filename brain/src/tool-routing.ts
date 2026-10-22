@@ -245,7 +245,14 @@ export function routeChatTools(
   input: string,
   available: readonly string[],
   hasConversationContext = false,
+  hasTripContext = false,
 ): string[] {
+  if (hasTripContext) {
+    const selected = routeChatTools(input, available, hasConversationContext);
+    return available.filter(
+      (tool) => selected.includes(tool) || /^(?:trip_|geo_geocode$|delegate$)/u.test(tool),
+    );
+  }
   const text = input.trim().toLocaleLowerCase('uk-UA');
   if (!text) return hasConversationContext ? [...available] : [];
   // A terse answer usually supplies a missing slot for the preceding question.

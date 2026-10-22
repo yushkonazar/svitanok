@@ -1,5 +1,6 @@
 import { chainTarget } from '../chains/state.mjs';
 import { formatMoney } from '../format.mjs';
+import { tripLedgerFields, tripGroupSummary } from '../trips/ledger.mjs';
 
 export const TRIP_EXPENSE_CATEGORIES = [
   'transport',
@@ -42,6 +43,15 @@ export async function runTripExpense(env, args, nowMs, ctx) {
     !/^[a-zA-Z0-9-]{8,64}$/.test(id)
   )
     throw new Error('Уточни валюту або категорію витрати.');
+  if (Math.abs(amount * 100 - minor) > 0.000001)
+    throw new Error('Сума має містити не більше двох знаків після коми.');
+  if (
+    new Intl.NumberFormat('en', { style: 'currency', currency }).resolvedOptions()
+      .maximumFractionDigits !== 2
+  )
+    throw new Error(
+      'Для цієї валюти потрібна інша точність. Поки облік підтримує валюти з двома десятковими знаками.',
+    );
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const row = await env.DB.prepare(
       `SELECT t.id, t.status, t.cost_json, c.state_json FROM trips t
@@ -69,6 +79,11 @@ export async function runTripExpense(env, args, nowMs, ctx) {
         .trim()
         .slice(0, 160),
       at: new Date(nowMs).toISOString(),
+      ...tripLedgerFields(
+        args,
+        minor,
+        entries.filter((/** @type {any} */ e) => e.id !== id),
+      ),
     };
     const existing = entries.find((/** @type {any} */ value) => value?.id === id);
     if (existing) {
@@ -76,7 +91,21 @@ export async function runTripExpense(env, args, nowMs, ctx) {
         existing.minor !== minor ||
         existing.currency !== currency ||
         existing.category !== category ||
-        existing.note !== entry.note
+        existing.note !== entry.note ||
+        JSON.stringify(
+          tripLedgerFields(
+            { ...args, kind: existing.kind ?? 'expense' },
+            minor,
+            entries.filter((/** @type {any} */ e) => e.id !== id),
+          ),
+        ) !==
+          JSON.stringify({
+            kind: existing.kind ?? 'expense',
+            paid_by: existing.paid_by ?? 'owner',
+            paid_to: existing.paid_to ?? null,
+            refers_to: existing.refers_to ?? null,
+            shares: existing.shares ?? [],
+          })
       )
         throw new Error('Цей ідентифікатор уже має іншу витрату.');
       return { result: { entry_id: id, already_recorded: true, text: 'Ця витрата вже записана.' } };
@@ -113,6 +142,8 @@ export async function undoTripExpense(env, snapshot) {
       .first();
     if (!row) return;
     const costs = costObject(row.cost_json);
+    if ((costs.entries ?? []).some((/** @type {any} */ e) => e.refers_to === snapshot.entry_id))
+      throw new Error('Спочатку скасуй повернення коштів, прив’язане до цього запису.');
     if (
       !Array.isArray(costs.entries) ||
       !costs.entries.some((/** @type {any} */ value) => value?.id === snapshot.entry_id)
@@ -143,11 +174,19 @@ export function tripExpenseSummary(raw) {
     );
     /** @type {Record<string,number>} */
     const totals = {};
-    for (const entry of entries)
-      totals[entry.currency] = (totals[entry.currency] ?? 0) + entry.minor;
+    for (const entry of entries) {
+      const original =
+        entry.kind === 'refund'
+          ? entries.find((/** @type {any} */ e) => e.id === entry.refers_to)
+          : entry;
+      if ((original?.kind ?? 'expense') === 'expense')
+        totals[entry.currency] =
+          (totals[entry.currency] ?? 0) + (entry.kind === 'refund' ? -1 : 1) * entry.minor;
+    }
     return {
       entries: entries.slice(-200),
       totals_minor_by_currency: totals,
+      ...tripGroupSummary(entries),
       complete: false,
       note: 'Лише явно записані витрати. Власний підсумок actual не додається: він може містити ці самі витрати.',
     };
@@ -155,6 +194,8 @@ export function tripExpenseSummary(raw) {
     return {
       entries: [],
       totals_minor_by_currency: {},
+      ...tripGroupSummary([]),
+      unavailable: true,
       complete: false,
       note: 'Запис витрат не вдалося прочитати; це не означає нуль витрат.',
     };

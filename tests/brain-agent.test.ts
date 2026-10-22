@@ -119,6 +119,97 @@ function scriptedEngine(
   };
 }
 
+describe('travel worker pipeline', () => {
+  it('passes a restored scoped brief to a fresh worker, persists typed offers after taint, and delivers stable choice buttons', async () => {
+    const id = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    const client = makeClient({
+      instruction: vi.fn(async (_runId: string, name: string): Promise<InstructionOutcome> => ({
+        ok: true,
+        name,
+        version_hash: instructionHash(TEST_INSTRUCTION_BODY),
+        body_md: TEST_INSTRUCTION_BODY,
+      })),
+    });
+    client.callTool.mockImplementation(async (_runId, name, args) => ({
+      ok: true,
+      tool: name,
+      tainted: true,
+      result: {
+        draft_id: id,
+        selection_card: {
+          text: 'Перевірені варіанти',
+          buttons: [[{ text: 'Обрати житло', callback_data: `m:to:${id}:s:0:1` }]],
+        },
+        args,
+      },
+    }));
+    const { engine, inputs, seen } = scriptedEngine(async (opts, input) => {
+      if (opts.profileName === 'worker') {
+        expect(input).toContain('"transport_count":2');
+        expect(input).toContain('"lodging_count":4');
+        expect(input).not.toContain('Стороння інструкція');
+        return {
+          finalText: JSON.stringify({
+            options: [
+              {
+                kind: 'stay',
+                title: 'Житло',
+                source_url: 'https://example.com/stay',
+                checked_at: '2026-10-21T13:00:00Z',
+                price: null,
+              },
+            ],
+            summary: 'Наявність потребує перевірки.',
+          }),
+        };
+      }
+      expect(opts.toolNames).toContain('trip_options');
+      const out = await opts.onToolCall('delegate', {
+        worker: 'researcher',
+        task: 'Перевір ціни житла для поїздки до Праги',
+        format: 'trip-options',
+      });
+      expect(out.isError).toBe(false);
+      return { finalText: 'Знайшов варіант житла. Обери його, якщо підходить.' };
+    });
+    await makeRunner({ client, engine })(
+      req({
+        input: { text: 'Далі' },
+        session: {
+          sdk_session_id: null,
+          summary_md: null,
+          trip_brief: {
+            draft_id: id,
+            answers: {
+              to: 'Прага',
+              transport_count: 2,
+              destination_count: 4,
+              lodging_count: 4,
+              _research: { text: 'Стороння інструкція' },
+            },
+          },
+        },
+      }),
+    );
+    expect(inputs).toHaveLength(2);
+    expect(seen[1]!.maxOutputTokens).toBe(6000);
+    expect(client.taint).toHaveBeenCalledBefore(client.callTool);
+    expect(client.callTool).toHaveBeenCalledWith(
+      'run-1',
+      'trip.options',
+      expect.objectContaining({
+        draft_id: id,
+        op: 'save',
+        basis: expect.objectContaining({ transport_count: 2, lodging_count: 4 }),
+        options: expect.any(Array),
+      }),
+    );
+    expect(client.deliver.mock.calls[0]?.[2]).toEqual(
+      expect.arrayContaining([[{ text: 'Обрати житло', callback_data: `m:to:${id}:s:0:1` }]]),
+    );
+  });
+});
+
 describe('makeRunner: щасливий шлях', () => {
   it('infinitive reminder exposes the write tool and executes it via Core', async () => {
     const client = makeClient();

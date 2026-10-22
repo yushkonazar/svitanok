@@ -53,6 +53,7 @@ import { quotaCheckTask } from '../ops/quota-check.mjs';
 import { reconcileMemoryProjection } from '../memory.mjs';
 import { reconcileKnowledgeProjection } from '../knowledge-base.mjs';
 import { tripMonitorTask } from '../trips/monitor.mjs';
+import { tripCompanionTask } from '../trips/notices.mjs';
 import { refreshNewsSnapshot } from '../brief/news-snapshot.mjs';
 import { leisureCatalogTask } from '../leisure/catalog.mjs';
 import { reconcileLeisureCalendar } from '../leisure/calendar.mjs';
@@ -111,6 +112,7 @@ export const SCHEDULER_TASKS = {
   },
   'plan-calendar-sync': { periodMin: 5, run: reconcilePlanCalendar },
   'trip-monitor': { periodMin: 30, run: tripMonitorTask },
+  'trip-companion': { periodMin: 15, run: tripCompanionTask },
   'run-watchdog': { periodMin: 5, run: agentRunWatchdog },
   // Обидва мозки під одним канонічним kind: старий хост (agentHostHealthCheck,
   // живе до кінця етапу 2) і handshake нового (checkBrainHandshake - тихий

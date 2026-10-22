@@ -832,8 +832,10 @@
           "answers": { "type": "object" },
           "date_from": { "maxLength": 10, "type": "string" },
           "draft_id": { "maxLength": 64, "type": "string" },
+          "expected_revision": { "minimum": 0, "type": "number" },
           "purpose": { "maxLength": 120, "type": "string" },
           "restart": { "type": "boolean" },
+          "skip_field": { "maxLength": 40, "type": "string" },
           "skip_optional": { "type": "boolean" },
           "to": { "maxLength": 120, "minLength": 1, "type": "string" }
         },
@@ -863,7 +865,12 @@
           },
           "currency": { "maxLength": 3, "minLength": 3, "type": "string" },
           "entry_id": { "maxLength": 64, "minLength": 8, "type": "string" },
+          "kind": { "enum": ["expense", "refund", "deposit", "settlement"], "type": "string" },
           "note": { "maxLength": 160, "type": "string" },
+          "paid_by": { "maxLength": 64, "type": "string" },
+          "paid_to": { "maxLength": 64, "type": "string" },
+          "refers_to": { "maxLength": 64, "type": "string" },
+          "split_with": { "items": { "type": "object" }, "maxItems": 100, "type": "array" },
           "trip_id": { "maxLength": 64, "type": "string" }
         },
         "required": ["trip_id", "amount"],
@@ -871,6 +878,40 @@
       },
       "tainting": "never",
       "execution": { "route": "policy", "kind": "trip.expense" }
+    },
+    "trip.inspect": {
+      "args": {
+        "properties": { "draft_id": { "maxLength": 64, "type": "string" } },
+        "type": "object"
+      },
+      "tainting": "never",
+      "execution": { "route": "core" }
+    },
+    "trip.options": {
+      "args": {
+        "properties": {
+          "basis": { "type": "object" },
+          "draft_id": { "maxLength": 64, "type": "string" },
+          "expected_revision": { "minimum": 0, "type": "number" },
+          "op": { "enum": ["save", "select"], "type": "string" },
+          "option_id": { "maxLength": 64, "type": "string" },
+          "options": { "items": { "type": "object" }, "maxItems": 12, "type": "array" },
+          "summary": { "maxLength": 1000, "type": "string" }
+        },
+        "required": ["draft_id", "op"],
+        "type": "object"
+      },
+      "tainting": "never",
+      "execution": { "route": "policy", "kind": "trip.options" }
+    },
+    "trip.research": {
+      "args": {
+        "properties": { "draft_id": { "maxLength": 64, "type": "string" } },
+        "required": ["draft_id"],
+        "type": "object"
+      },
+      "tainting": "always",
+      "execution": { "route": "core" }
     },
     "trip.workspace": {
       "args": {
@@ -883,12 +924,18 @@
               "leg",
               "remove_leg",
               "restore_revision",
+              "confirm_itinerary",
               "place",
               "review",
               "monitor",
               "link_transaction",
               "unlink_transaction",
-              "learn"
+              "learn",
+              "task",
+              "booking",
+              "progress",
+              "party",
+              "preferences"
             ],
             "type": "string"
           },

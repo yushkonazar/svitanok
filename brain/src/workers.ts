@@ -173,7 +173,12 @@ export function runWorker(
       model: WORKER_MODEL_IDS[def.model],
       profileName: ctx.profileName ?? 'worker',
       openAiModelTier: def.model === 'haiku' ? 'fast' : 'standard',
-      maxOutputTokens: def.model === 'haiku' ? 1_000 : 2_000,
+      maxOutputTokens:
+        def.model === 'haiku'
+          ? 1_000
+          : ['planner', 'researcher'].includes(def.name)
+            ? 6_000
+            : 2_000,
       safetyIdentifier: ctx.safetyIdentifier ?? 'worker',
       maxTurns: workerMaxTurns(def.maxSteps),
       toolNames: def.toolNames,

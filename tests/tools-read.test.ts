@@ -687,6 +687,9 @@ describe('реєстр TOOLS', () => {
       'trip.brief',
       'trip.context',
       'trip.expense',
+      'trip.inspect',
+      'trip.options',
+      'trip.research',
       'trip.workspace',
       'wishes.create',
       'wishes.delete',
@@ -742,6 +745,7 @@ describe('реєстр TOOLS', () => {
       ['subscriptions.update', 'subscriptions.update'],
       ['trip.brief', 'trip.brief'],
       ['trip.expense', 'trip.expense'],
+      ['trip.options', 'trip.options'],
       ['trip.workspace', 'trip.workspace'],
       ['wishes.create', 'wishes.create'],
       ['wishes.delete', 'wishes.delete'],
@@ -772,6 +776,7 @@ describe('реєстр TOOLS', () => {
       'places.search',
       // wishes.import несе назви ігор зі Steam - зовнішній текст, тому
       // роутер позначає тред і на write-шляху (етап 5 PR-5).
+      'trip.research',
       'wishes.import',
     ]);
     // ⚠️ places.menu плямує ЗА АРГУМЕНТАМИ: перший крок читає ВЛАСНУ колекцію

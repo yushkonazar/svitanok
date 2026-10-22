@@ -31,7 +31,8 @@ import { runKnowledgeList, runKnowledgeSearch } from '../knowledge-base.mjs';
 import { inspectKnowledgeDriveFile } from '../adapters/knowledge-drive.mjs';
 import { runFinanceQuery } from './finance.mjs';
 import { runInboxSearch } from './inbox.mjs';
-import { runTripContext } from './trip.mjs';
+import { runTripContext, readTripBrief, tripBriefContext } from './trip.mjs';
+import { runTripOptions } from '../trips/options.mjs';
 import { TRIP_WORKSPACE_OPS } from './trip-workspace.mjs';
 import { runLeisureQuery } from './leisure.mjs';
 import { LEISURE_OPERATIONS } from '../leisure/model.mjs';
@@ -42,7 +43,8 @@ import { runMotivationQuery } from './motivation.mjs';
  *   args: import('../internal/schemas.mjs').InternalSchema,
  *   tainting?: boolean | ((args: any) => boolean),
  *   write?: { kind?: string, kindFrom?: string },
- *   run: (env: Env, args: any, nowMs: number) => Promise<{ result: unknown }>,
+ *   scoped?:boolean,
+ *   run: (env: Env, args: any, nowMs: number, ctx?:any) => Promise<{ result: unknown }>,
  * }} InternalToolDef
  */
 
@@ -389,6 +391,8 @@ export const TOOLS = {
         draft_id: { type: 'string', maxLength: 64 },
         restart: { type: 'boolean' },
         skip_optional: { type: 'boolean' },
+        skip_field: { type: 'string', maxLength: 40 },
+        expected_revision: { type: 'number', minimum: 0 },
         answers: { type: 'object' },
       },
     },
@@ -397,7 +401,44 @@ export const TOOLS = {
       throw new Error('trip.brief виконується через policy, не напряму');
     },
   },
+  'trip.inspect': {
+    args: { type: 'object', properties: { draft_id: { type: 'string', maxLength: 64 } } },
+    scoped: true,
+    run: async (env, args, nowMs, ctx) => ({
+      result: tripBriefContext(await readTripBrief(env, ctx ?? {}, nowMs, args.draft_id)),
+    }),
+  },
+  'trip.research': {
+    args: {
+      type: 'object',
+      required: ['draft_id'],
+      properties: { draft_id: { type: 'string', maxLength: 64 } },
+    },
+    tainting: true,
+    scoped: true,
+    run: (env, args, nowMs, ctx) => runTripOptions(env, { ...args, op: 'get' }, nowMs, ctx),
+  },
+  'trip.options': {
+    args: {
+      type: 'object',
+      required: ['draft_id', 'op'],
+      properties: {
+        draft_id: { type: 'string', maxLength: 64 },
+        op: { type: 'string', enum: ['save', 'select'] },
+        expected_revision: { type: 'number', minimum: 0 },
+        basis: { type: 'object' },
+        summary: { type: 'string', maxLength: 1000 },
+        options: { type: 'array', maxItems: 12, items: { type: 'object' } },
+        option_id: { type: 'string', maxLength: 64 },
+      },
+    },
+    write: { kind: 'trip.options' },
+    run: () => {
+      throw new Error('trip.options виконується через policy');
+    },
+  },
   'trip.context': {
+    scoped: true,
     args: {
       type: 'object',
       properties: {
@@ -405,7 +446,7 @@ export const TOOLS = {
         trip_id: { type: 'string', maxLength: 64 },
       },
     },
-    run: (env, args, nowMs) => runTripContext(env, args, nowMs),
+    run: (env, args, nowMs, ctx) => runTripContext(env, args, nowMs, ctx),
   },
   'trip.expense': {
     args: {
@@ -421,6 +462,11 @@ export const TOOLS = {
         },
         note: { type: 'string', maxLength: 160 },
         entry_id: { type: 'string', minLength: 8, maxLength: 64 },
+        kind: { type: 'string', enum: ['expense', 'refund', 'deposit', 'settlement'] },
+        paid_by: { type: 'string', maxLength: 64 },
+        paid_to: { type: 'string', maxLength: 64 },
+        refers_to: { type: 'string', maxLength: 64 },
+        split_with: { type: 'array', maxItems: 100, items: { type: 'object' } },
       },
     },
     write: { kind: 'trip.expense' },

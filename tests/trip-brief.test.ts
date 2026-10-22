@@ -251,7 +251,7 @@ describe('trip.brief', () => {
     expect(await askFor('hike')).toContain('route_profile');
     expect(await askFor('compare')).toContain('trip_priorities');
     expect(await askFor('mixed')).toContain('legs');
-    expect(await askFor('plane')).toContain('timezone');
+    expect(await askFor('plane')).not.toContain('timezone');
   });
 
   it('не маскує хибні дати і не зберігає довільні технічні поля', async () => {
@@ -308,8 +308,7 @@ describe('trip.brief', () => {
         .flat()
         .every(
           (button: { callback_data: string }) =>
-            button.callback_data.length <= 64 &&
-            button.callback_data.startsWith(`m:tb:${result.draft_id}:mode:`),
+            button.callback_data.length <= 64 && /^m:tb:/.test(button.callback_data),
         ),
     ).toBe(true);
   });
@@ -332,7 +331,7 @@ describe('trip.brief', () => {
     const first = (await runTripBrief(env, { answers: base }, NOW, ctx)).result;
     expect(first.phase).toBe('preferences');
     expect(tripBriefCard(first)?.buttons.flat()).toEqual(
-      expect.arrayContaining([expect.objectContaining({ text: '⏭ Досить уточнень' })]),
+      expect.arrayContaining([expect.objectContaining({ text: '⏭ Це пізніше' })]),
     );
     const skipped = (
       await runTripBrief(

@@ -48,6 +48,23 @@ export async function rememberExchange(env, claims, assistantSummary) {
  * @param {string} text
  */
 export async function rememberAssistantQuestion(env, parsed, text) {
+  // Button-created questions are first-party conversation too. Brain reads
+  // sessions, while legacy assistants read assistantHistory; keep both current.
+  try {
+    if (env.DB && parsed.chatId != null) {
+      const thread = parsed.threadId == null ? 'dm' : String(parsed.threadId);
+      const at = new Date().toISOString();
+      await env.DB.prepare(
+        `INSERT INTO sessions(thread_id,started_at,last_at,tainted,turn_count,transcript_md)
+      VALUES (?,?,?,0,0,?) ON CONFLICT(thread_id) DO UPDATE SET
+      transcript_md=substr(COALESCE(sessions.transcript_md,'')||excluded.transcript_md,-24000),last_at=excluded.last_at`,
+      )
+        .bind(thread, at, at, `\nСвітанок: ${String(text).slice(0, 6000)}\n`)
+        .run();
+    }
+  } catch (error) {
+    console.error('sessions question write failed', error);
+  }
   try {
     await appendAssistantHistory(env, parsed.chatId, parsed.threadId, [
       { role: 'assistant', text },

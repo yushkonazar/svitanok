@@ -330,6 +330,19 @@ async function sendRow(env, row, nowMs) {
     return { ok: false, retryAfterSec: null };
   }
   const atMostOnce = payload.delivery_safety === 'at-most-once';
+  if (payload.trip_notice) {
+    const { renderTripNotice } = await import('../trips/notices.mjs');
+    const notice = await renderTripNotice(env, payload.trip_notice, nowMs, true);
+    if (!notice) return { ok: true };
+    payload = { ...payload, ...notice };
+  }
+  delete payload.trip_notice;
+  if (payload.trip_monitor_notice) {
+    const { tripMonitorNoticeCurrent } = await import('../trips/monitor.mjs');
+    if (!(await tripMonitorNoticeCurrent(env, payload.trip_monitor_notice, nowMs)))
+      return { ok: true };
+  }
+  delete payload.trip_monitor_notice;
   if (payload.leisure_digest && !(await leisureDigestCurrent(env, payload.leisure_digest, nowMs)))
     return { ok: true };
   delete payload.leisure_digest;

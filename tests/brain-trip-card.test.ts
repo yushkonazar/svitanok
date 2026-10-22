@@ -13,10 +13,14 @@ describe('Brain trip card delivery envelope', () => {
   it('accepts a core-produced bounded card without importing Worker runtime files', () => {
     expect(tripBriefCard(valid())).toEqual(valid().question_card);
   });
-  it.each([null, {}, { draft_id: id, question_card: { text: 'x', buttons: [] } }])(
-    'rejects an incomplete envelope %j',
-    (raw) => expect(tripBriefCard(raw)).toBeNull(),
+  it.each([null, {}])('rejects an incomplete envelope %j', (raw) =>
+    expect(tripBriefCard(raw)).toBeNull(),
   );
+  it('accepts a core question even when free text has no finite choices', () => {
+    expect(
+      tripBriefCard({ draft_id: id, question_card: { text: 'Назви дату', buttons: [] } }),
+    ).toEqual({ text: 'Назви дату', buttons: [] });
+  });
   it('rejects foreign draft callbacks and unrelated actions', () => {
     const raw = valid();
     raw.question_card.buttons[0]![0]!.callback_data = 'm:done';

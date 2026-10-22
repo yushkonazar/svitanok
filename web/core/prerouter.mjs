@@ -66,8 +66,17 @@ import { actionPhrase, actionIcon } from './tg/phrase.mjs';
 import { proposalVolume } from './policy/volume.mjs';
 import { LINK_FOLLOWUPS } from './links.mjs';
 import { resolveWaypoint } from './tools/places.mjs';
-import { runTripBrief } from './tools/trip.mjs';
-import { tripBriefCard, tripBriefChoices, tripChoiceFingerprint } from './tools/trip-card.mjs';
+import { runTripBrief, readTripBrief, runTripContext } from './tools/trip.mjs';
+import {
+  tripBriefCard,
+  tripBriefChoices,
+  tripChoiceFingerprint,
+  tripAnswerField,
+  tripBriefEditCard,
+  TRIP_EDIT_FIELDS,
+} from './tools/trip-card.mjs';
+import { runTripOptions, tripOptionsCard, tripResearchView } from './trips/options.mjs';
+import { tripBriefContext } from './tools/trip.mjs';
 import { TRIP_SUPPORT_ACTIONS } from './trips/support.mjs';
 import { chainTarget, readChainState } from './chains/state.mjs';
 import { routesEta } from './adapters/maps.mjs';
@@ -1124,6 +1133,22 @@ async function routeThreadText(env, target, threadKey, text, nowMs, voiceStatus 
     return;
   }
   if (await resolveTutorAnswer(env, target, threadKey, text, nowMs)) return;
+  if (/^(?:далі|продовж(?:уй|ити)?(?: планування(?: поїздки)?)?)\s*[.!]?$/iu.test(text.trim())) {
+    const brief = await readTripBrief(env, target, nowMs).catch(() => null);
+    if (brief) {
+      const research = tripResearchView(brief.answers, nowMs);
+      const card = research.options.length
+        ? tripOptionsCard({ draft_id: brief.draft_id, ...research })
+        : tripBriefCard(brief);
+      if (card) {
+        await reply(env, target, card.text, nowMs, {
+          reply_markup: { inline_keyboard: card.buttons },
+        });
+        await rememberAssistantQuestion(env, target, card.text);
+        return;
+      }
+    }
+  }
 
   // «звіт зараз» (S-9-5) - профіль weekly-review за запитом: той самий шлях
   // (черга, статусник, ретраї), інша інструкція й модель.
@@ -1461,6 +1486,34 @@ export async function startClaimedRun(env, parsed, threadKey, entry, nowMs, reus
   }
 
   const sess = route === 'chat' ? await readSession(env, threadKey, nowMs) : null;
+  const activeTrip =
+    route === 'chat'
+      ? await readTripBrief(env, { chatId: parsed.chatId, threadId: threadKey }, nowMs).catch(
+          () => null,
+        )
+      : null;
+  let tripContext = tripBriefContext(activeTrip);
+  if (route === 'chat' && !tripContext) {
+    const active = await runTripContext(env, {}, nowMs, {
+      chatId: parsed.chatId,
+      threadId: threadKey,
+    }).catch(() => null);
+    if (active?.result.trips.length)
+      tripContext = /** @type {any} */ ({
+        active_trips: active.result.trips.map((trip) => ({
+          trip_id: trip.trip_id,
+          brief_id: trip.brief_id,
+          to: trip.to,
+          from_city: trip.from_city,
+          date_from: trip.date_from,
+          date_to: trip.date_to,
+          mode: trip.mode,
+          preferences: trip.preferences,
+          progress: trip.workspace.progress,
+          location_known: false,
+        })),
+      });
+  }
   const res = await callBrainRun(
     env,
     {
@@ -1472,12 +1525,13 @@ export async function startClaimedRun(env, parsed, threadKey, entry, nowMs, reus
       inputText,
       tainted: sess?.tainted ?? false,
       ...(statusMessageId != null ? { statusMessageId } : {}),
-      ...(sess
+      ...(sess || tripContext
         ? {
             session: {
-              sdk_session_id: sess.sdkSessionId,
-              summary_md: sess.summaryMd,
-              ...(sess.transcriptMd ? { transcript_md: sess.transcriptMd } : {}),
+              sdk_session_id: sess?.sdkSessionId ?? null,
+              summary_md: sess?.summaryMd ?? null,
+              ...(sess?.transcriptMd ? { transcript_md: sess.transcriptMd } : {}),
+              ...(tripContext ? { trip_brief: tripContext } : {}),
             },
           }
         : {}),
@@ -1667,6 +1721,8 @@ export async function handleBrainCallback(env, parsed, nowMs = Date.now(), defer
   if (env.ASSISTANT_V2 !== 'shadow' && env.ASSISTANT_V2 !== 'on') return null;
   const tripChoice = data.match(/^m:tb:([0-9a-f-]{36}):([a-z_]{2,20}):([0-7]):([0-9a-f]{5})$/i);
   if (tripChoice) return tripBriefChoiceToast(env, parsed, tripChoice, nowMs, defer);
+  const tripOption = data.match(/^m:to:([0-9a-f-]{36}):([sp]):(\d{1,2}):(\d{1,8})$/i);
+  if (tripOption) return tripOptionChoiceToast(env, parsed, tripOption, nowMs);
   const tripAction = data.match(
     /^m:ta:([0-9a-f-]{36}):(sights|nature|local|food|road|packing|budget|itinerary|journal)$/i,
   );
@@ -1772,6 +1828,23 @@ export async function handleBrainCallback(env, parsed, nowMs = Date.now(), defer
       return `Напиши слово ${asked.word}`;
     }
     if (res.ok && 'status' in res) {
+      if (res.status === 'approved' && res.kind === 'trip.brief' && res.executed) {
+        const brief = /** @type {any} */ (res.result);
+        const card = brief?.question_card ?? tripBriefCard(brief);
+        if (card) {
+          await replaceCallbackMessage(env, parsed, card.text, {
+            reply_markup: { inline_keyboard: card.buttons },
+          });
+          await rememberAssistantQuestion(env, parsed, card.text);
+          return 'Відповіді збережено';
+        }
+        if (brief?.phase === 'ready') {
+          const work = () => continueTripResearch(env, parsed, brief, nowMs);
+          if (defer) defer(work);
+          else await work();
+          return 'Дані збережено. Підбираю варіанти.';
+        }
+      }
       // Рішення має бути видиме в історії, але не окремим «системним» рядком:
       // замінюємо пропозицію зрозумілим підсумком і прибираємо обидві кнопки.
       // Модель однаково отримає decision digest перед наступним прогоном.
@@ -1946,19 +2019,50 @@ async function tripBriefChoiceToast(env, parsed, match, nowMs, defer) {
   const ctx = { chatId: target.chatId, threadId: target.threadId };
   let current;
   try {
-    current = (await runTripBrief(env, { draft_id: draftId }, nowMs, ctx)).result;
+    current = await readTripBrief(env, ctx, nowMs, draftId);
+    if (!current) return 'Чернетка недоступна або застаріла.';
   } catch {
     return 'Чернетка недоступна або застаріла.';
   }
   const options = tripBriefChoices(current);
   if (fingerprint !== tripChoiceFingerprint(current))
     return 'Цей вибір уже неактуальний. Відкрий актуальне питання.';
+  if (field === 'view') {
+    const card = tripBriefEditCard(current);
+    await replaceCallbackMessage(env, parsed, card.text, {
+      reply_markup: { inline_keyboard: card.buttons },
+    });
+    return 'Дані поїздки';
+  }
+  if (field === 'resume' || field === 'back' || TRIP_EDIT_FIELDS[field]) {
+    const edit =
+      field === 'back' ? current.answers._meta?.history?.at(-1) : TRIP_EDIT_FIELDS[field];
+    const result = edit
+      ? (
+          await runTripBrief(
+            env,
+            { draft_id: draftId, edit_field: edit, expected_revision: current.revision },
+            nowMs,
+            ctx,
+          )
+        ).result
+      : current;
+    const card = tripBriefCard(result);
+    if (card) {
+      await replaceCallbackMessage(env, parsed, card.text, {
+        reply_markup: { inline_keyboard: card.buttons },
+      });
+      await rememberAssistantQuestion(env, target, card.text);
+    }
+    return edit ? 'Можеш змінити відповідь' : 'Продовжуємо';
+  }
+  const answerField = tripAnswerField(field);
   const chosen = options[Number(choiceIndex)];
   const skip = field === 'skip' && current.ask?.[0]?.optional && choiceIndex === '0';
-  if (!skip && (field !== current.ask?.[0]?.field || !chosen || chosen.field !== field))
+  if (!skip && (answerField !== current.ask?.[0]?.field || !chosen || chosen.field !== answerField))
     return 'Цей вибір уже неактуальний.';
   const claimId = `trip:${target.chatId}:${parsed.messageId}`;
-  const actionKey = skip ? `skip:${current.ask?.[0]?.field}` : field;
+  const actionKey = `${fingerprint}:${skip ? `skip:${current.ask?.[0]?.field}` : field}`;
   try {
     if (!(await claimWorkerCardAction(env, claimId, actionKey, nowMs)))
       return 'Цей варіант уже обрано.';
@@ -1972,8 +2076,18 @@ async function tripBriefChoiceToast(env, parsed, match, nowMs, defer) {
         await runTripBrief(
           env,
           skip
-            ? { draft_id: draftId, skip_optional: true }
-            : { draft_id: draftId, answers: { [field]: chosen?.value } },
+            ? {
+                draft_id: draftId,
+                skip_field: current.ask[0].field,
+                expected_revision: current.revision,
+              }
+            : chosen?.value === 'other' && answerField !== 'vehicle_key'
+              ? { draft_id: draftId, free_field: answerField, expected_revision: current.revision }
+              : {
+                  draft_id: draftId,
+                  expected_revision: current.revision,
+                  answers: { [answerField]: chosen?.value },
+                },
           nowMs,
           ctx,
         )
@@ -1998,7 +2112,11 @@ async function tripBriefChoiceToast(env, parsed, match, nowMs, defer) {
         await reply(env, target, next.text, nowMs, {
           reply_markup: { inline_keyboard: next.buttons },
         });
-      await rememberAssistantQuestion(env, target, next.text);
+      await rememberAssistantQuestion(
+        env,
+        target,
+        `Обрано власником: ${chosen?.label ?? 'уточнення пізніше'}.\n${next.text}`,
+      );
       return;
     }
     if (updated.phase !== 'ready') {
@@ -2008,25 +2126,7 @@ async function tripBriefChoiceToast(env, parsed, match, nowMs, defer) {
       await rememberAssistantQuestion(env, target, line);
       return;
     }
-    const status = '🧳 Дані поїздки зібрано. Перевіряю варіанти маршруту й витрати…';
-    const edited = await replaceCallbackMessage(env, parsed, status);
-    const threadKey = target.threadId == null ? THREAD_DM : String(target.threadId);
-    const prompt = [
-      'Продовж саме цей бриф поїздки. Підготуй перевірені варіанти маршруту, витрат і проживання; для свіжих цін та правил використай Дослідника. Не бронюй, не записуй у календар і не запускай супровід без окремого вибору власника.',
-      `Дані брифу: ${JSON.stringify(updated.answers)}.`,
-      `Ідентифікатор чернетки: ${draftId}.`,
-    ].join('\n');
-    await startOrQueueThreadText(
-      env,
-      target,
-      threadKey,
-      prompt,
-      'chat',
-      nowMs,
-      edited ? parsed.messageId : null,
-      edited ? status : null,
-      true,
-    );
+    await continueTripResearch(env, parsed, updated, nowMs);
   };
   if (defer) {
     defer(() =>
@@ -2045,6 +2145,70 @@ async function tripBriefChoiceToast(env, parsed, match, nowMs, defer) {
     }
   }
   return skip ? 'Переходжу до плану' : `Обрано: ${chosen?.label ?? 'варіант'}`;
+}
+
+/** @param {Env} env @param {any} parsed @param {any} brief @param {number} nowMs */
+async function continueTripResearch(env, parsed, brief, nowMs) {
+  const target = { chatId: parsed.chatId, threadId: parsed.threadId ?? null };
+  const status = '🧳 Дані поїздки зібрано. Перевіряю варіанти маршруту й витрати…';
+  const edited = await replaceCallbackMessage(env, parsed, status);
+  const prompt = `Продовж планування цього брифу. Прочитай trip.inspect з draft_id=${brief.draft_id}. Досліднику передай format=trip-options для актуальних варіантів квитків, житла й занять; Планувальнику - узгодження маршруту. Використай точні групи й дати. Збережи джерела через trip.options, поверни вибір кнопками. Не бронюй, не записуй у календар і не запускай супровід без окремого вибору власника.`;
+  await startOrQueueThreadText(
+    env,
+    target,
+    target.threadId == null ? THREAD_DM : String(target.threadId),
+    prompt,
+    'chat',
+    nowMs,
+    edited ? parsed.messageId : null,
+    edited ? status : null,
+    true,
+  );
+}
+
+/** @param {Env} env @param {any} parsed @param {RegExpMatchArray} match @param {number} nowMs */
+async function tripOptionChoiceToast(env, parsed, match, nowMs) {
+  const [, draftId, action, index, revision] = match;
+  if (!draftId || parsed.chatId == null || parsed.messageId == null) return 'Картка недоступна.';
+  const ctx = { chatId: parsed.chatId, threadId: parsed.threadId ?? null };
+  try {
+    const brief = await readTripBrief(env, ctx, nowMs, draftId);
+    if (!brief) return 'Бриф недоступний.';
+    const view = tripResearchView(brief.answers, nowMs);
+    if (Number(view.revision ?? 0) !== Number(revision))
+      return 'Список змінився. Відкрий актуальні варіанти.';
+    let result = { draft_id: draftId, ...view };
+    if (action === 's') {
+      const selected = view.options[Number(index)];
+      if (!selected) return 'Варіант недоступний.';
+      result = (
+        await runTripOptions(
+          env,
+          {
+            draft_id: draftId,
+            op: 'select',
+            option_id: selected.id,
+            expected_revision: Number(revision),
+          },
+          nowMs,
+          ctx,
+        )
+      ).result;
+      await rememberAssistantQuestion(
+        env,
+        ctx,
+        `Власник обрав: ${selected.title}. Бронювання ще не зроблено. Наступне: перевірити інші складники й запропонувати супровід.`,
+      );
+    }
+    const card = tripOptionsCard(result, action === 'p' ? Number(index) : 0);
+    if (card)
+      await replaceCallbackMessage(env, parsed, card.text, {
+        reply_markup: { inline_keyboard: card.buttons },
+      });
+    return action === 's' ? 'Варіант обрано; бронювання ще немає' : 'Інші варіанти';
+  } catch (error) {
+    return error instanceof Error ? error.message.slice(0, 180) : 'Не вдалося зберегти вибір.';
+  }
 }
 
 /** Read-only navigation bound to an exact active trip and delivery destination.
