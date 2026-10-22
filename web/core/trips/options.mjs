@@ -25,10 +25,37 @@ export function tripResearchBasis(answers) {
   return Object.fromEntries(BASIS.map((key) => [key, answers[key] ?? null]));
 }
 /** @param {unknown} value @param {number} max */
-const text = (value, max) =>
-  String(value ?? '')
-    .trim()
+const text = (value, max) => {
+  // Research may return arrays or nested objects despite the text contract.
+  // Keep readable scalar facts, never stringify an arbitrary provider object.
+  const values = Array.isArray(value) ? value.slice(0, 20) : [value];
+  return values
+    .filter(
+      (part) => typeof part === 'string' || (typeof part === 'number' && Number.isFinite(part)),
+    )
+    .map((part) =>
+      String(part)
+        .replace(/\[object Object\]/g, '')
+        .trim(),
+    )
+    .filter(Boolean)
+    .join(' · ')
     .slice(0, max);
+};
+/** Also repairs presentation of older observations without rewriting saved owner data.
+ * @param {any} raw */
+function optionText(raw) {
+  return {
+    title: text(raw.title, 160),
+    provider: text(raw.provider, 100),
+    dates: text(raw.dates, 120),
+    schedule: text(raw.schedule, 300),
+    location: text(raw.location, 160),
+    cancellation: text(raw.cancellation, 300),
+    tradeoffs: text(raw.tradeoffs, 500),
+    missing: text(raw.missing, 400),
+  };
+}
 /** @param {unknown} value */
 function source(value) {
   const u = new URL(String(value));
@@ -88,20 +115,13 @@ export function normalizeTripOption(raw, nowMs) {
     ? raw.availability
     : 'unverified';
   return {
+    ...optionText(raw),
     id,
     kind: raw.kind,
-    title,
-    provider: text(raw.provider, 100),
     source_url: source(raw.source_url),
     checked_at: new Date(checked).toISOString(),
     availability,
     price,
-    dates: text(raw.dates, 120),
-    schedule: text(raw.schedule, 300),
-    location: text(raw.location, 160),
-    cancellation: text(raw.cancellation, 300),
-    tradeoffs: text(raw.tradeoffs, 500),
-    missing: text(raw.missing, 400),
     status: 'candidate',
   };
 }
@@ -146,6 +166,10 @@ export function tripResearchView(answers, nowMs) {
     JSON.stringify(research.basis ?? {}) !== JSON.stringify(tripResearchBasis(answers));
   const options = (research.options ?? []).map((/** @type {any} */ o) => ({
     ...o,
+    ...optionText(o),
+    price: o.price
+      ? { ...o.price, includes: text(o.price.includes, 240), excludes: text(o.price.excludes, 240) }
+      : null,
     stale:
       stale ||
       (o.planning_basis != null && o.planning_basis !== planningStageKey(answers, o.kind)) ||

@@ -600,6 +600,44 @@ describe('structured research, choices and source boundaries', () => {
 });
 
 describe('research collection and Telegram pagination', () => {
+  it('keeps scalar facts and lists readable without coercing provider objects to text', () => {
+    const normalized = normalizeTripOption(
+      offer({
+        dates: { from: '2026-11-13', to: '2026-11-15' },
+        schedule: { outbound: { departure: '18:00' } },
+        location: { address: 'Praha' },
+        tradeoffs: ['Власна кухня.', 'Чотири спальні місця.'],
+        missing: ['Наявність на дати не перевірена.', { internal: 'discard' }],
+        price: { ...offer().price, includes: ['4 людини', '2 ночі'] },
+      }),
+      NOW,
+    );
+    expect(normalized).toMatchObject({
+      dates: '',
+      schedule: '',
+      location: '',
+      tradeoffs: 'Власна кухня. · Чотири спальні місця.',
+      missing: 'Наявність на дати не перевірена.',
+      price: { includes: '4 людини · 2 ночі' },
+    });
+    expect(JSON.stringify(normalized)).not.toContain('[object Object]');
+    expect(() => normalizeTripOption(offer({ title: { name: 'Not a title' } }), NOW)).toThrow();
+  });
+
+  it('hides legacy object placeholders on read without rewriting saved observations', () => {
+    const answers = {
+      ...answer,
+      _research: {
+        basis: tripResearchBasis(answer),
+        options: [offer({ dates: '[object Object]', schedule: '[object Object]' })],
+      },
+    };
+    const before = JSON.stringify(answers);
+    const view = tripResearchView(answers, NOW);
+    expect(view.options[0]).toMatchObject({ dates: '', schedule: '' });
+    expect(JSON.stringify(answers)).toBe(before);
+  });
+
   it('retains transport while researching housing and bounds repeated searches without dropping the owner choice', async () => {
     const { env } = setup();
     const b = (await runTripBrief(env, { answers: answer }, NOW, CTX)).result;

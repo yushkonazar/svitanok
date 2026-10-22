@@ -61,7 +61,10 @@
 .journey-screen input:not([type='checkbox']),
 .journey-screen textarea,
 .journey-input-label select {
+  box-sizing: border-box;
   width: 100%;
+  min-width: 0;
+  max-width: 100%;
   min-height: 48px;
   border: 1px solid var(--color-glassb);
   border-radius: 13px;
@@ -85,6 +88,7 @@
 .journey-screen form label,
 .journey-input-label {
   display: block;
+  min-width: 0;
   color: var(--color-tx2);
   font-size: 12px;
   margin-bottom: 8px;
@@ -237,6 +241,8 @@
 }
 .journey-answer {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
   gap: 9px;
   margin-top: 18px;
 }
