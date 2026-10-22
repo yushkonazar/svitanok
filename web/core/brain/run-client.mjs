@@ -64,7 +64,7 @@ async function signedBrainPost(env, path, runId, rawBody, nowMs) {
  * @param {{
  *   runId: string,
  *   profile: 'chat' | 'quick' | 'summarize' | 'weekly-review' | 'day-planner' | 'price-check'
- *     | 'inbox-digest',
+ *     | 'inbox-digest' | 'trip-research',
  *   threadId: string,
  *   chatId?: number | string | null,
  *   inputText: string,

@@ -12,7 +12,14 @@ import {
 } from './workers.js';
 
 export type ProfileName =
-  'chat' | 'quick' | 'summarize' | 'weekly-review' | 'day-planner' | 'price-check' | 'inbox-digest';
+  | 'chat'
+  | 'quick'
+  | 'summarize'
+  | 'weekly-review'
+  | 'day-planner'
+  | 'price-check'
+  | 'inbox-digest'
+  | 'trip-research';
 
 /** Інструменти Денного за front-matter agents/day-planner.md (07 §5):
  *  calendar.read, data.read, facts.get, routes.eta (описаний з етапу 5). */
@@ -53,6 +60,17 @@ export interface RunProfile {
 }
 
 export const PROFILES: Record<ProfileName, RunProfile> = {
+  'trip-research': {
+    name: 'trip-research',
+    model: WORKER_MODEL_IDS[RESEARCHER_WORKER.model],
+    openAiModelTier: 'advanced',
+    maxOutputTokens: 6_000,
+    toolNames: [],
+    builtinTools: [...RESEARCHER_WORKER.builtinTools],
+    maxToolCalls: 0,
+    maxTurns: workerMaxTurns(RESEARCHER_WORKER.maxSteps),
+    timeoutMs: 8 * 60_000,
+  },
   chat: {
     name: 'chat',
     model: 'claude-sonnet-5',
@@ -162,6 +180,7 @@ export const INSTRUCTION_NAME_BY_PROFILE: Record<Exclude<ProfileName, 'summarize
   'weekly-review': 'weekly-review',
   'day-planner': 'day-planner',
   'price-check': 'researcher',
+  'trip-research': 'researcher',
   'inbox-digest': 'persona',
 };
 
@@ -229,6 +248,7 @@ export function buildSystemPrompt(
     profile.name === 'weekly-review' ||
     profile.name === 'day-planner' ||
     profile.name === 'price-check' ||
+    profile.name === 'trip-research' ||
     profile.name === 'inbox-digest'
   ) {
     return `${opts.instruction}\n\nЗараз у Києві: ${kyiv}.`;

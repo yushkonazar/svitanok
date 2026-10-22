@@ -26,6 +26,7 @@ export const RUN_REQUEST_SCHEMA = z.object({
     'weekly-review',
     'day-planner',
     'price-check',
+    'trip-research',
     'inbox-digest',
   ]),
   thread_id: z.string().min(1).max(64),

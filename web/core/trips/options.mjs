@@ -1,4 +1,5 @@
 import { loadDraft, tripScopeKey } from '../tools/trip.mjs';
+import { planningStageKey } from './planning-basis.mjs';
 
 const BASIS = [
   'to',
@@ -147,6 +148,7 @@ export function tripResearchView(answers, nowMs) {
     ...o,
     stale:
       stale ||
+      (o.planning_basis != null && o.planning_basis !== planningStageKey(answers, o.kind)) ||
       !Number.isFinite(Date.parse(o.checked_at)) ||
       Date.parse(o.checked_at) < nowMs - 24 * 3_600_000,
   }));
