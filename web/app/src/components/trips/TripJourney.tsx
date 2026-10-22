@@ -250,6 +250,7 @@ function DestinationCard({
         Розкажи про задум. Далі разом оберемо дорогу, житло й враження та підготуємо все до виїзду.
       </p>
       <form
+        data-input-viewport-group
         onSubmit={(e) => {
           e.preventDefault();
           if (destination.trim()) void onSubmit(destination.trim());
@@ -760,7 +761,7 @@ function QuestionCard({
         </button>
       )}
       {q.custom && custom && (
-        <form className="journey-answer" onSubmit={onSubmit}>
+        <form className="journey-answer" data-input-viewport-group onSubmit={onSubmit}>
           <label htmlFor={`answer-${q.field}`}>
             {q.choices.length ? 'Свій варіант' : 'Твоя відповідь'}
           </label>

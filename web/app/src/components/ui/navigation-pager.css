@@ -1,3 +1,6 @@
+.renewal-navigation[hidden] {
+  display: none;
+}
 .navigation-pager {
   width: calc(100% - 28px);
   max-width: 452px;

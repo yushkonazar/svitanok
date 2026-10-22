@@ -17,6 +17,8 @@ interface TelegramWebApp {
   initData: string;
   initDataUnsafe?: { start_param?: string };
   colorScheme?: 'light' | 'dark';
+  platform?: string;
+  viewportHeight?: number;
   version?: string;
   isVersionAtLeast?: (v: string) => boolean;
   ready: () => void;
@@ -26,15 +28,14 @@ interface TelegramWebApp {
   // CSS touch-action тут безсилий — жест живе на контейнері вебвʼю, поза сторінкою.
   disableVerticalSwipes?: () => void;
   enableVerticalSwipes?: () => void;
-  // themeChanged — для теми «Авто» (F2): користувач перемкнув тему в самому
-  // Telegram, а Mini App має піти за ним, не чекаючи перезапуску.
+  // themeChanged — для теми «Авто»; viewportChanged — для мобільної клавіатури.
   onEvent?: (
-    event: 'themeChanged' | 'homeScreenAdded' | 'homeScreenChecked',
-    cb: (payload?: { status: HomeScreenStatus }) => void,
+    event: 'themeChanged' | 'homeScreenAdded' | 'homeScreenChecked' | 'viewportChanged',
+    cb: (payload?: { status?: HomeScreenStatus; isStateStable?: boolean }) => void,
   ) => void;
   offEvent?: (
-    event: 'themeChanged' | 'homeScreenAdded' | 'homeScreenChecked',
-    cb: (payload?: { status: HomeScreenStatus }) => void,
+    event: 'themeChanged' | 'homeScreenAdded' | 'homeScreenChecked' | 'viewportChanged',
+    cb: (payload?: { status?: HomeScreenStatus; isStateStable?: boolean }) => void,
   ) => void;
   // Bot API 8.0+: ярлик на домашній екран пристрою — обходить усю навігацію
   // Telegram (menu-кнопка недоступна в групах, reply-клавіатура ненадійна на
