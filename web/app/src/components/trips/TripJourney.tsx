@@ -12,6 +12,7 @@ import {
 import { isSessionExpired } from '../../api/client.ts';
 import { inTelegram } from '../../telegram.ts';
 import { SessionExpired } from '../ui/SessionExpired.tsx';
+import { DeleteTripButton } from './DeleteTripButton.tsx';
 import './trips.css';
 import './journey.css';
 
@@ -175,6 +176,20 @@ export function TripJourney() {
             ))}
           </select>
         </label>
+      )}
+      {current && (
+        <div className="trips-record-actions">
+          <DeleteTripButton
+            key={current.id}
+            current={current}
+            disabled={disabled}
+            onNavigate={(id, message, refreshRequired) => {
+              setParams(id ? { id } : {}, { replace: true });
+              setNotice(message);
+              setUncertain(refreshRequired);
+            }}
+          />
+        </div>
       )}
       {notice && (
         <div

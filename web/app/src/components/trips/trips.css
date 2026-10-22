@@ -71,6 +71,40 @@
   color: var(--color-tx);
   font: inherit;
 }
+.trips-record-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin: -4px 0 14px;
+}
+.trips-screen .trips-delete-button,
+.trips-delete-confirm .trips-delete-button {
+  color: var(--color-neg);
+  border-color: color-mix(in srgb, var(--color-neg) 30%, transparent);
+}
+.trips-delete-confirm {
+  color: var(--color-tx);
+  line-height: 1.6;
+  padding: 12px 0;
+}
+.trips-delete-confirm h2 {
+  font-size: 22px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+.trips-delete-confirm p {
+  margin: 12px 0;
+}
+.trips-delete-confirm button {
+  min-height: 44px;
+  padding: 10px 16px;
+  border: 1px solid var(--color-glassb);
+  border-radius: 12px;
+  background: var(--color-glass);
+  font-weight: 650;
+}
+.trips-delete-confirm button:disabled {
+  opacity: 0.4;
+}
 .trips-hero {
   border: 1px solid var(--color-glassb);
   border-radius: 25px;

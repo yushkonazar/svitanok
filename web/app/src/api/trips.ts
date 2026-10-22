@@ -211,6 +211,7 @@ export type TravelCommand = {
     | 'workspace'
     | 'expense'
     | 'cancel'
+    | 'delete'
     | 'reschedule'
     | 'weather-consent';
   id?: string;

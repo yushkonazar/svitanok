@@ -330,6 +330,11 @@ async function sendRow(env, row, nowMs) {
     return { ok: false, retryAfterSec: null };
   }
   const atMostOnce = payload.delivery_safety === 'at-most-once';
+  if (payload.trip_chain_notice) {
+    const { tripChainNoticeCurrent } = await import('../trips/deletion.mjs');
+    if (!(await tripChainNoticeCurrent(env, payload.trip_chain_notice))) return { ok: true };
+  }
+  delete payload.trip_chain_notice;
   if (payload.trip_notice) {
     const { renderTripNotice } = await import('../trips/notices.mjs');
     const notice = await renderTripNotice(env, payload.trip_notice, nowMs, true);

@@ -10,6 +10,7 @@ import { companionView, tripOfflinePack } from './core/trips/companion.mjs';
 import { startTripChain, cancelTripChain } from './core/chains/trip.mjs';
 import { tripPlanningView, changePlanning } from './core/trips/planning.mjs';
 import { dispatchPlanningSearch } from './core/trips/search.mjs';
+import { deleteTravelRecord } from './core/trips/deletion.mjs';
 
 /** Scope comes from authenticated stored records; client cannot nominate a foreign chat.
  * @param {Env} env @param {unknown} chat */
@@ -28,7 +29,7 @@ function context(env, row) {
         threadId: String(row.scope_key).split(':')[1] || null,
       };
   if (!allowedChat(env, target.chatId)) throw new Error('Ця поїздка недоступна.');
-  return target;
+  return { chatId: String(target.chatId), threadId: target.threadId };
 }
 /** @param {Env} env @param {string|null} selectedId @param {number} nowMs */
 export async function readTravelWorkspace(env, selectedId = null, nowMs = Date.now()) {
@@ -200,7 +201,27 @@ export async function handleTrips(request, env) {
       if (JSON.stringify(body).length > 40_000) throw new Error('У запиті забагато даних.');
       const op = String(body.op),
         data = body.data ?? {};
-      if (op === 'brief') {
+      if (op === 'delete') {
+        if (!selectedId || data.confirm !== true || !['draft', 'trip'].includes(data.kind))
+          throw new Error('Підтвердь видалення вибраної поїздки.');
+        const trip = await env.DB.prepare(
+          "SELECT t.*,c.state_json,c.workflow_id AS chain_workflow_id FROM trips t JOIN chains c ON c.id=t.workflow_id WHERE t.id=? AND c.kind='trip'",
+        )
+          .bind(selectedId)
+          .first();
+        const draft = trip
+          ? null
+          : await env.DB.prepare('SELECT * FROM trip_briefs WHERE id=?').bind(selectedId).first();
+        const row = trip ?? draft;
+        if (row) {
+          const ctx = context(env, row);
+          const kind = trip ? 'trip' : 'draft';
+          if (data.kind !== kind) throw new Error('Тип запису змінився. Онови список.');
+          receipt = await deleteTravelRecord(env, row, kind, body.revision, ctx);
+        } else receipt = { deleted_id: selectedId, already_deleted: true };
+        acknowledged = true;
+        selectedId = null;
+      } else if (op === 'brief') {
         let row = selectedId
           ? await env.DB.prepare('SELECT * FROM trip_briefs WHERE id=?').bind(selectedId).first()
           : null;
