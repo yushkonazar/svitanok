@@ -102,6 +102,11 @@ export const RUNS_SCHEMA = /** @type {InternalSchema} */ ({
     outcome: {
       type: 'object',
       properties: {
+        trip_research: {
+          type: 'object',
+          required: ['request_id', 'output'],
+          properties: { request_id: { type: 'string', maxLength: 64 }, output: { type: 'object' } },
+        },
         escalate: {
           type: 'object',
           required: ['text'],

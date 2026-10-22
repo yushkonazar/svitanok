@@ -458,6 +458,7 @@ export const BRAIN_TOOLS: readonly BrainToolDef[] = [
         'progress',
         'party',
         'preferences',
+        'prepare',
       ]),
       expected_revision: z.number().int().min(0).optional(),
       data: z.record(z.string(), z.unknown()).optional(),

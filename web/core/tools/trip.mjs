@@ -58,6 +58,7 @@ const TEXT_FIELDS = {
   lodging_preference: 160,
   arrival_window: 100,
   citizenship: 120,
+  children_ages: 120,
   documents_status: 160,
   parking_preference: 120,
   flight_transfers: 120,
@@ -222,12 +223,12 @@ async function saveDraft(env, row, scope, answers, nowMs) {
     const changes = await database.batch([
       database
         .prepare(
-          "UPDATE trip_briefs SET answers_json = ?, updated_at = ?,status='draft' WHERE id = ? AND scope_key = ? AND answers_json = ?",
+          "UPDATE trip_briefs SET answers_json = ?, updated_at = ?,status=CASE WHEN status='started' THEN 'started' ELSE 'draft' END WHERE id = ? AND scope_key = ? AND answers_json = ?",
         )
         .bind(serialized, at, row.id, scope, row.answers_json),
       database
         .prepare(
-          "UPDATE trip_briefs SET status='paused' WHERE scope_key=? AND id<>? AND status='draft' AND EXISTS(SELECT 1 FROM trip_briefs current WHERE current.id=? AND current.answers_json=?)",
+          "UPDATE trip_briefs SET status='paused' WHERE scope_key=? AND id<>? AND status='draft' AND EXISTS(SELECT 1 FROM trip_briefs current WHERE current.id=? AND current.answers_json=? AND current.status='draft')",
         )
         .bind(scope, row.id, row.id, serialized),
     ]);
