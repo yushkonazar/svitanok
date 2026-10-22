@@ -226,13 +226,22 @@ export async function startTripChain(env, payload, nowMs, ctx) {
   let country = payload.country == null ? null : String(payload.country).trim().slice(0, 60);
   /** @type {Record<string, any>} */
   let preferences = {};
+  /** @type {{id:string,scope:string,answers:string}|null} */
+  let sourceBrief = null;
   if (payload.brief_id) {
     const { normalizeTripAnswers, tripScopeKey } = await import('../tools/trip.mjs');
+    const scope = tripScopeKey(ctx);
+    if (!scope) throw new Error('Бриф для супроводу потребує особистого чату.');
     const row = await db(env)
       .prepare('SELECT answers_json FROM trip_briefs WHERE id = ? AND scope_key = ? AND status = ?')
-      .bind(String(payload.brief_id), tripScopeKey(ctx), 'draft')
+      .bind(String(payload.brief_id), scope, 'draft')
       .first();
     if (!row) throw new Error('Бриф для супроводу не знайдено в цьому чаті.');
+    sourceBrief = {
+      id: String(payload.brief_id),
+      scope,
+      answers: String(row.answers_json),
+    };
     preferences = normalizeTripAnswers(JSON.parse(String(row.answers_json)));
     if (
       preferences.to !== to ||
@@ -260,34 +269,6 @@ export async function startTripChain(env, payload, nowMs, ctx) {
   const iso = new Date(nowMs).toISOString();
   // Поїздка - це бажання type=trip (07 §1, S-5-5): без цього рядка «покажи
   // бажання» не бачить поїздок, а payload бажання не веде на trips.
-  await db(env)
-    .prepare(
-      `INSERT INTO wishes (id, type, title, payload_json, status, created_at)
-       VALUES (?, 'trip', ?, ?, 'active', ?)`,
-    )
-    .bind(wishId, to, JSON.stringify({ trip_id: tripId, date_from: dateFrom, mode }), iso)
-    .run();
-  await db(env)
-    .prepare(
-      `INSERT INTO trips (id, wish_id, from_city, to_text, country, date_from, date_to, mode, vehicle_key,
-         checklist_key, cost_json, checklist_state_json, workflow_id, status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, 'active')`,
-    )
-    .bind(
-      tripId,
-      wishId,
-      fromCity == null ? null : String(fromCity).trim().slice(0, 60),
-      to,
-      country,
-      dateFrom,
-      dateTo,
-      mode,
-      payload.vehicle_key == null ? null : String(payload.vehicle_key).slice(0, 64),
-      checklistKey,
-      JSON.stringify({ done: [] }),
-      chainId,
-    )
-    .run();
   /** @type {TripState} */
   const state = {
     trip_id: tripId,
@@ -316,43 +297,101 @@ export async function startTripChain(env, payload, nowMs, ctx) {
     preferences,
   };
   const preparation = suggestedPreparation(state).map((task) => ({ ...task, suggested: false }));
-  await db(env)
-    .prepare('UPDATE trips SET cost_json=? WHERE id=?')
-    .bind(
-      JSON.stringify({
-        travel: {
-          revision: 0,
-          tasks: preparation,
-          preferences: {
-            support_level: preferences.support_level ?? 'companion',
-            morning: true,
-            evening: true,
-            paused: false,
-          },
-          progress: { stage: 'planned', confirmed: false },
-        },
-      }),
-      tripId,
-    )
-    .run();
-  await db(env)
-    .prepare(
-      `INSERT INTO chains (id, kind, workflow_id, state_json, status, created_at, updated_at) VALUES (?, ?, ?, ?, 'running', ?, ?)`,
-    )
-    .bind(chainId, CHAIN_KIND, chainId, JSON.stringify(state), iso, iso)
-    .run();
+  const costs = JSON.stringify({
+    travel: {
+      revision: 0,
+      tasks: preparation,
+      preferences: {
+        support_level: preferences.support_level ?? 'companion',
+        morning: true,
+        evening: true,
+        paused: false,
+      },
+      progress: { stage: 'planned', confirmed: false },
+    },
+  });
+  // One transaction claims the exact brief and creates all records. A concurrent deletion
+  // or edit must not leave an orphan trip or recreate a deleted planning draft.
+  const database = db(env);
+  const guard = sourceBrief
+    ? "EXISTS (SELECT 1 FROM trip_briefs WHERE id=? AND scope_key=? AND status='draft' AND answers_json=?)"
+    : '1';
+  const basis = sourceBrief ? [sourceBrief.id, sourceBrief.scope, sourceBrief.answers] : [];
+  const statements = [
+    database
+      .prepare(
+        `INSERT INTO wishes (id,type,title,payload_json,status,created_at)
+       SELECT ?,'trip',?,?,'active',? WHERE ${guard}`,
+      )
+      .bind(
+        wishId,
+        to,
+        JSON.stringify({ trip_id: tripId, date_from: dateFrom, mode }),
+        iso,
+        ...basis,
+      ),
+    database
+      .prepare(
+        `INSERT INTO trips (id,wish_id,from_city,to_text,country,date_from,date_to,mode,vehicle_key,
+        checklist_key,cost_json,checklist_state_json,workflow_id,status)
+       SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,'active' WHERE ${guard}`,
+      )
+      .bind(
+        tripId,
+        wishId,
+        state.from_city == null ? null : String(state.from_city).trim().slice(0, 60),
+        to,
+        country,
+        dateFrom,
+        dateTo,
+        mode,
+        state.vehicle_key == null ? null : String(state.vehicle_key).slice(0, 64),
+        checklistKey,
+        costs,
+        JSON.stringify({ done: [] }),
+        chainId,
+        ...basis,
+      ),
+    database
+      .prepare(
+        `INSERT INTO chains (id,kind,workflow_id,state_json,status,created_at,updated_at)
+       SELECT ?,?,?,?,'running',?,? WHERE ${guard}`,
+      )
+      .bind(chainId, CHAIN_KIND, chainId, JSON.stringify(state), iso, iso, ...basis),
+  ];
+  if (sourceBrief)
+    statements.push(
+      database
+        .prepare(
+          "UPDATE trip_briefs SET status='started' WHERE id=? AND scope_key=? AND status='draft' AND answers_json=?",
+        )
+        .bind(...basis),
+    );
+  const inserted = await database.batch(statements);
+  if (!inserted[0]?.meta?.changes)
+    throw new Error('Бриф змінився або видалений. Онови список подорожей.');
   try {
     await env.TRIP_CHAIN.create({ id: chainId, params: { chainId } });
   } catch (/** @type {any} */ e) {
     await patchChainState(env, chainId, 'failed', { awaiting: null }, { nowMs });
     await db(env).prepare("UPDATE trips SET status='failed' WHERE id=?").bind(tripId).run();
+    if (sourceBrief)
+      await database
+        .prepare(
+          "UPDATE trip_briefs SET status='draft' WHERE id=? AND scope_key=? AND answers_json=? AND status='started'",
+        )
+        .bind(...basis)
+        .run();
     throw new Error(`Workflow поїздки не стартував: ${String(e?.message ?? e)}`, { cause: e });
   }
-  if (payload.brief_id)
-    await db(env)
-      .prepare("UPDATE trip_briefs SET status='started' WHERE id=?")
-      .bind(String(payload.brief_id))
-      .run();
+  if (!(await database.prepare('SELECT id FROM trips WHERE id=?').bind(tripId).first())) {
+    try {
+      await (await env.TRIP_CHAIN.get(chainId)).terminate?.();
+    } catch {
+      /* Deleted rows already block notices and delayed updates. */
+    }
+    throw new Error('Цю поїздку вже видалено. Онови список.');
+  }
   const left = daysUntil(dateFrom, nowMs);
   // Назва авто - з фактів («Octavia»), а не ключ факту («octavia»); для авто
   // слово способу вже сказане назвою, тож без подвоєння «авто, авто».
@@ -1078,6 +1117,7 @@ export function productionIo(env, chainId, state) {
       const row = await env.DB?.prepare('SELECT cost_json FROM trips WHERE id=?')
         .bind(state.trip_id)
         .first();
+      if (!row) return;
       const travel = JSON.parse(String(row?.cost_json ?? '{}')).travel ?? {},
         prefs = travel.preferences;
       if (prefs?.paused || prefs?.support_level === 'plan') return;
@@ -1087,7 +1127,7 @@ export function productionIo(env, chainId, state) {
         { chatId, threadId },
         {
           kind: 'send',
-          payload: {},
+          payload: { trip_chain_notice: { trip_id: state.trip_id, chain_id: chainId } },
           buttons: btns,
           parts: renderMdParts(text),
           label: `trip-chain ${chainId}`,

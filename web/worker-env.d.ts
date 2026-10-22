@@ -247,6 +247,7 @@ interface Env {
     create: (opts: { id?: string; params?: unknown }) => Promise<unknown>;
     get: (id: string) => Promise<{
       sendEvent: (event: { type: string; payload?: unknown }) => Promise<void>;
+      terminate?: () => Promise<void>;
       status?: () => Promise<unknown>;
     }>;
   };
