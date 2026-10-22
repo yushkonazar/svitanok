@@ -15,6 +15,7 @@ import { planPathForStartParam } from '../../core/motivation/links.mjs';
 import { Fog } from './components/ui/Fog.tsx';
 import { SessionExpired } from './components/ui/SessionExpired.tsx';
 import { NavigationPager } from './components/ui/NavigationPager.tsx';
+import { useInputViewport } from './lib/useInputViewport.ts';
 
 // Оболонка дашборда (дизайн v2, Svitanok.dc.html): туман-фон, хедер (лого/дата/
 // тема), скрол-контент, таб-бар-пігулка. Кожен таб = маршрут (deep-link
@@ -208,6 +209,7 @@ export function App() {
   const navigate = useNavigate();
   const { theme, toggle } = useTheme();
   const isDark = theme === 'dark';
+  const inputViewport = useInputViewport();
 
   // Дата в хедері — БРИФІНГУ (generatedAt), не пристрою: якщо крон не спрацював
   // і брифінг учорашній, це має бути видно. Черга спільна (кеш), зайвого fetch
@@ -457,7 +459,12 @@ export function App() {
         {/* CONTENT — зміна маршруту ремоунтить секцію -> fadeUp, як у макеті */}
         <main
           key={full ? full.path : active.id}
-          style={{ animation: 'fadeUp .32s ease-out backwards' }}
+          style={{
+            animation: 'fadeUp .32s ease-out backwards',
+            paddingBottom: inputViewport.editing
+              ? `calc(${inputViewport.inset + 24}px + env(safe-area-inset-bottom))`
+              : undefined,
+          }}
           className={
             full
               ? 'px-5 pb-10 pt-2.5'
@@ -514,7 +521,7 @@ export function App() {
       <NavigationPager
         tabs={TABS}
         activePath={active.path}
-        hidden={!!full}
+        hidden={!!full || inputViewport.editing}
         onNavigate={navigate}
         icon={(id, active) => <TabIcon id={id} active={active} />}
       />
