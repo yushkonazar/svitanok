@@ -1,9 +1,15 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { readRunDashboard } from '../web/core/ops/run-dashboard.mjs';
 import { workerEnv } from './helpers/env.js';
 import { d1FromSqlite } from './helpers/d1.js';
 
 describe('run dashboard', () => {
+  beforeEach(() => {
+    // Keep the fixed September fixtures inside the rolling 30-day window.
+    vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-09-24T12:00:00.000Z'));
+  });
+  afterEach(() => vi.restoreAllMocks());
+
   it('віддає terminal state та агрегати telemetry без thread, note або prompt text', async () => {
     const d1 = d1FromSqlite(['0003_telemetry.sql']);
     d1.db
