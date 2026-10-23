@@ -1,6 +1,12 @@
-// Classic script: opaque-origin sandboxes cannot load same-origin ES modules without CORS.
+// The viewer is deployed on a separate static origin with no app bindings or credentials.
 (() => {
-  const appOrigin = new URL(window.location.href).origin;
+  const ownUrl = new URL(window.location.href);
+  let appOrigin = 'https://svitanok.yushko.dev';
+  if (document.referrer && ['localhost', '127.0.0.1'].includes(ownUrl.hostname)) {
+    const referrer = new URL(document.referrer);
+    if (['localhost', '127.0.0.1'].includes(referrer.hostname) && referrer.port === ownUrl.port)
+      appOrigin = referrer.origin;
+  }
   const pins = new Map();
   let configured = false,
     parentOrigin = '',

@@ -3,7 +3,25 @@ import { useQuery } from '@tanstack/react-query';
 import { fetchTripMap } from '../../api/trips.ts';
 import { openLink } from '../../telegram.ts';
 
-/** Google runs inside an opaque-origin sandbox, without access to the owner's app/session. */
+/** Only our separate static map host may receive a browser key. Never use a same-origin frame. */
+export function trustedMapFrame(value?: string) {
+  try {
+    const url = new URL(value ?? '');
+    if (url.username || url.password || url.origin === window.location.origin) return '';
+    const production = url.href === 'https://maps.svitanok.yushko.dev/travel-map.html';
+    const local =
+      ['localhost', '127.0.0.1'].includes(window.location.hostname) &&
+      ['localhost', '127.0.0.1'].includes(url.hostname) &&
+      url.port === window.location.port &&
+      url.protocol === 'http:' &&
+      url.pathname === '/app/travel-map.html';
+    return production || local ? url.href : '';
+  } catch {
+    return '';
+  }
+}
+
+/** Cross-origin isolation preserves the owner's session while allowing Google's nested frames. */
 export function TripMap({
   id,
   kind,
@@ -28,6 +46,8 @@ export function TripMap({
     staleTime: 10 * 60_000,
     retry: false,
   });
+  const frameUrl = trustedMapFrame(data?.frame_url),
+    frameOrigin = frameUrl ? new URL(frameUrl).origin : '';
   useEffect(() => {
     const deadline = data?.enabled
       ? setTimeout(
@@ -37,7 +57,11 @@ export function TripMap({
         )
       : null;
     const receive = (event: MessageEvent) => {
-      if (event.source !== frame.current?.contentWindow || event.origin !== 'null' || !event.data)
+      if (
+        event.source !== frame.current?.contentWindow ||
+        event.origin !== frameOrigin ||
+        !event.data
+      )
         return;
       if (event.data.type === 'svitanok-map-ready') {
         if (deadline) clearTimeout(deadline);
@@ -56,10 +80,14 @@ export function TripMap({
       window.removeEventListener('message', receive);
       if (deadline) clearTimeout(deadline);
     };
-  }, [data, onPick]);
+  }, [data, onPick, frameOrigin]);
   useEffect(() => {
-    frame.current?.contentWindow?.postMessage({ type: 'svitanok-map-active', id: activeId }, '*');
-  }, [activeId]);
+    if (frameOrigin)
+      frame.current?.contentWindow?.postMessage(
+        { type: 'svitanok-map-active', id: activeId },
+        frameOrigin,
+      );
+  }, [activeId, frameOrigin]);
   if (isPending)
     return (
       <p className="journey-map-note" role="status">
@@ -76,15 +104,15 @@ export function TripMap({
   if (!data) return null;
   return (
     <section className="journey-map" aria-label="Мапа подорожі">
-      {data.enabled && !mapError && (
+      {data.enabled && frameUrl && !mapError && (
         <>
           {!ready && <p role="status">Завантажую Google Maps…</p>}
           <iframe
             ref={frame}
             title="Google Maps"
             className="journey-map-canvas"
-            src="/app/travel-map.html"
-            sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox"
+            src={frameUrl}
+            sandbox="allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox"
             referrerPolicy="strict-origin-when-cross-origin"
             onLoad={() =>
               frame.current?.contentWindow?.postMessage(
@@ -103,13 +131,18 @@ export function TripMap({
                   })),
                   polyline: data.route?.polyline,
                 },
-                '*',
+                frameOrigin,
               )
             }
           />
         </>
       )}
-      <p className="journey-map-note">{mapError || data.message || data.caption}</p>
+      <p className="journey-map-note">
+        {mapError ||
+          (data.enabled && !frameUrl
+            ? 'Адресу вбудованої мапи потрібно налаштувати. Можна відкрити Google Maps.'
+            : data.message || data.caption)}
+      </p>
       {data.route && (
         <p className="journey-map-note">
           ≈ {Math.round(data.route.distance_m / 1000)} км ·{' '}

@@ -226,6 +226,7 @@ const tripMapSchema = z.object({
   message: z.string().optional(),
   api_key: z.string().optional(),
   map_id: z.string().optional(),
+  frame_url: z.string().optional(),
   caption: z.string().optional(),
   center: z.object({ lat: z.number(), lon: z.number() }).optional(),
   markers: z

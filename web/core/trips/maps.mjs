@@ -139,6 +139,7 @@ export async function tripMapData(env, current, kind, nowMs, focusId = null) {
     enabled: true,
     api_key: env.MAPS_BROWSER_API_KEY,
     map_id: env.MAPS_MAP_ID,
+    frame_url: 'https://maps.svitanok.yushko.dev/travel-map.html',
     center: { lat: center.lat, lon: center.lon },
     external_url: external.href,
     markers,

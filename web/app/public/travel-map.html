@@ -3,11 +3,11 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <!-- Sandboxed, opaque origin: third-party Maps code cannot access the parent session.
-         Google's eval/worker requirements apply only to this isolated document. -->
+    <!-- Served by the separate maps origin. Google's eval/worker requirements
+         apply only to this document, which cannot access the parent session. -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'none'; script-src 'self' 'unsafe-eval' https://maps.googleapis.com https://maps.gstatic.com; style-src 'unsafe-inline' https://fonts.googleapis.com; img-src data: blob: https://*.googleapis.com https://*.gstatic.com https://*.google.com https://*.googleusercontent.com; connect-src https://*.googleapis.com https://*.gstatic.com https://*.google.com data: blob:; font-src https://fonts.gstatic.com; worker-src blob:; frame-src https://*.google.com; base-uri 'none'; form-action 'none'"
+      content="default-src 'none'; script-src 'self' 'unsafe-eval' https://maps.googleapis.com https://maps.gstatic.com; style-src 'unsafe-inline' https://fonts.googleapis.com; img-src data: blob: https://*.googleapis.com https://*.gstatic.com https://*.google.com https://*.googleusercontent.com; connect-src https://*.googleapis.com https://*.gstatic.com https://*.google.com data: blob:; font-src https://fonts.gstatic.com; worker-src blob:; frame-src 'self' https://*.google.com; base-uri 'none'; form-action 'none'"
     />
     <title>Мапа подорожі</title>
     <style>
@@ -41,7 +41,7 @@
         color: #fff;
       }
     </style>
-    <script src="/app/travel-map-frame.js" defer></script>
+    <script src="./travel-map-frame.js" defer></script>
   </head>
   <body>
     <div id="map" aria-label="Google Maps"></div>

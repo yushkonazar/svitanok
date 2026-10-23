@@ -8,7 +8,7 @@ function fixture() {
     scripts: { src: string }[] = [];
   const browser = {
     parent,
-    location: { href: 'https://svitanok.yushko.dev/app/travel-map.html' },
+    location: { href: 'https://maps.svitanok.yushko.dev/travel-map.html' },
     addEventListener: (_name: string, listener: typeof receive) => {
       receive = listener;
     },

@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { TripMap } from './TripMap.tsx';
+import { TripMap, trustedMapFrame } from './TripMap.tsx';
 import * as api from '../../api/trips.ts';
 vi.mock('../../api/trips.ts', async (original) => ({
   ...(await original<typeof api>()),
@@ -30,23 +30,31 @@ describe('isolated trip map', () => {
     expect(screen.queryByTitle('Google Maps')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Відкрити Google Maps ↗' })).toBeVisible();
   });
-  it('accepts marker clicks only from its opaque sandbox and only for known points', async () => {
+  it('rejects same-origin and foreign map frame addresses', () => {
+    expect(trustedMapFrame(window.location.origin + '/app/travel-map.html')).toBe('');
+    expect(
+      trustedMapFrame('https://maps.svitanok.yushko.dev.attacker.invalid/travel-map.html'),
+    ).toBe('');
+    expect(trustedMapFrame('https://user:pass@maps.svitanok.yushko.dev/travel-map.html')).toBe('');
+  });
+  it('accepts marker clicks only from its separate host and only for known points', async () => {
     vi.mocked(api.fetchTripMap).mockResolvedValue({
       enabled: true,
       external_url: 'https://www.google.com/maps/',
       api_key: 'fixture-browser-key',
       map_id: 'fixture-map',
+      frame_url: 'https://maps.svitanok.yushko.dev/travel-map.html',
       center: { lat: 50.08, lon: 14.42 },
       markers: [{ id: 'fixture-hotel', title: 'Hotel', lat: 50.08, lon: 14.42 }],
     });
     const onPick = mount();
     const frame = (await screen.findByTitle('Google Maps')) as HTMLIFrameElement;
-    expect(frame.getAttribute('sandbox')).not.toContain('allow-same-origin');
+    expect(new URL(frame.src).origin).not.toBe(window.location.origin);
     expect(frame.src).not.toContain('fixture-browser-key');
     window.dispatchEvent(
       new MessageEvent('message', {
         source: window,
-        origin: 'null',
+        origin: 'https://maps.svitanok.yushko.dev',
         data: { type: 'svitanok-map-pick', id: 'fixture-hotel' },
       }),
     );
@@ -60,7 +68,7 @@ describe('isolated trip map', () => {
     window.dispatchEvent(
       new MessageEvent('message', {
         source: frame.contentWindow,
-        origin: 'null',
+        origin: 'https://maps.svitanok.yushko.dev',
         data: { type: 'svitanok-map-pick', id: 'foreign-point' },
       }),
     );
@@ -68,7 +76,7 @@ describe('isolated trip map', () => {
     window.dispatchEvent(
       new MessageEvent('message', {
         source: frame.contentWindow,
-        origin: 'null',
+        origin: 'https://maps.svitanok.yushko.dev',
         data: { type: 'svitanok-map-pick', id: 'fixture-hotel' },
       }),
     );
