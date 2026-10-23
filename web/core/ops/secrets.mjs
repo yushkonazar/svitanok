@@ -32,6 +32,24 @@ export const SECRETS = [
     note: 'може втратити чинність; дату завершення не вгадуємо',
   },
   { name: 'MAPS_API_KEY', where: 'CF', recommendedRotationDays: 365 },
+  {
+    name: 'MAPS_BROWSER_API_KEY',
+    where: 'CF',
+    recommendedRotationDays: 365,
+    note: 'опційна мапа Mini App; обмеження доменів і Maps JavaScript API',
+  },
+  {
+    name: 'BOOKING_API_TOKEN',
+    where: 'CF',
+    recommendedRotationDays: 365,
+    note: 'опційний партнерський Booking Demand API',
+  },
+  {
+    name: 'BOOKING_AFFILIATE_ID',
+    where: 'CF',
+    recommendedRotationDays: null,
+    note: 'ідентифікатор партнерського підключення Booking',
+  },
   { name: 'WEATHER_API_KEY', where: 'CF + GitHub Secrets', recommendedRotationDays: null },
   {
     name: 'NEWSDATA_API_KEY',

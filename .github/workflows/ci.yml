@@ -61,10 +61,10 @@ jobs:
       - run: npm run test:coverage
       # Node accepts redirect:error; workerd rejects it before sending a request.
       # Use the runtime installed with the Vitest plugin rather than older Wrangler's binary.
-      - name: verify Google leisure requests in Workers runtime
+      - name: verify Google and travel requests in Workers runtime
         env:
           WORKERD_BINARY_PATH: ${{ github.workspace }}/node_modules/@cloudflare/workerd-linux-64/bin/workerd
-        run: npm run test:workers -- tests/workers/leisure-google.test.ts
+        run: npm run test:workers -- tests/workers/leisure-google.test.ts tests/workers/travel-services.test.ts
       # security-review (Anthropic) у CI — СВІДОМО НЕ РОБИМО (рішення власника,
       # 17.07.2026): він потребує платного API-ключа, а проєкт живе на Pro-підписці
       # через claude -p. Це не «колись додамо» — це закрите питання, тож і TODO тут

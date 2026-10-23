@@ -46,6 +46,7 @@ export default defineConfig({
         'src/**/*.ts',
         'web/*.mjs',
         'web/core/**/*.mjs',
+        'web/travel-map/**/*.mjs',
         'web/worker.js',
         'host/*.mjs',
         'brain/src/**/*.ts',

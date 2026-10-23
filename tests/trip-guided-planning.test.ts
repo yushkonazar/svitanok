@@ -494,6 +494,102 @@ describe('search dispatch and authenticated completion', () => {
       'змінився',
     );
   });
+  it('completes a real provider stage without asking the model to certify its quote', async () => {
+    const f = await providerFixture();
+    Object.assign(f.env, {
+      BOOKING_API_TOKEN: 'fixture-token',
+      BOOKING_AFFILIATE_ID: '123',
+      BOOKING_BOOKER_COUNTRY: 'ua',
+      BOOKING_API_ENV: 'production',
+    });
+    await f.change({ action: 'confirm' });
+    await f.change({
+      action: 'decision',
+      kind: 'transport',
+      mode: 'manual',
+      note: 'Квитки вже маю',
+    });
+    const job = await f.change({ action: 'search', kind: 'stay' });
+    const network = vi.fn(async (url: unknown) => {
+      if (String(url).endsWith('/constants'))
+        return Response.json({
+          data: { accommodation_types: [{ id: 201, name: { 'en-gb': 'Apartment' } }] },
+        });
+      if (String(url).endsWith('/search'))
+        return Response.json({
+          data: [
+            {
+              id: 9000,
+              url: 'https://www.booking.com/hotel/cz/fixture.html',
+              currency: { booker: 'EUR' },
+              price: { total: { booker_currency: 300 } },
+            },
+          ],
+          metadata: { next_page: 'next-page' },
+        });
+      if (String(url).endsWith('/details'))
+        return Response.json({ data: [{ id: 9000, name: { 'en-gb': 'Fixture apartment' } }] });
+      throw new Error('Unexpected model call');
+    });
+    vi.stubGlobal('fetch', network);
+    expect(await dispatchPlanningSearch(f.env, f.row(), CTX, job.run_id, NOW)).toMatchObject({
+      completed: true,
+      queued: false,
+    });
+    const stage = (await f.view()).stages.find((s: { kind: string }) => s.kind === 'stay')!;
+    expect(stage).toMatchObject({
+      status: 'completed',
+      options: [
+        {
+          id: 'booking-9000',
+          availability: 'provider_quote',
+          price: { amount: 300, unit: 'stay', total_confirmed: true },
+        },
+      ],
+    });
+    expect(f.answers()._planning.active).toBeNull();
+    expect(f.answers()._planning.searches.stay.next_page).toBe('next-page');
+    expect(f.finish).toHaveBeenCalledOnce();
+  });
+  it('falls back to web research when partner search fails, preserving the lodging brief', async () => {
+    const f = await providerFixture();
+    Object.assign(f.env, {
+      BOOKING_API_TOKEN: 'fixture-token',
+      BOOKING_AFFILIATE_ID: '123',
+      BOOKING_BOOKER_COUNTRY: 'ua',
+      BOOKING_API_ENV: 'production',
+    });
+    await f.change({ action: 'confirm' });
+    await f.change({
+      action: 'decision',
+      kind: 'transport',
+      mode: 'manual',
+      note: 'Квитки вже маю',
+    });
+    const job = await f.change({ action: 'search', kind: 'stay' });
+    let task: Record<string, unknown> = {};
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: unknown, init?: RequestInit) => {
+        if (String(url).includes('demandapi.booking.com'))
+          return new Response('{}', { status: 403 });
+        task = JSON.parse(JSON.parse(String(init?.body)).input.text);
+        return new Response('{}', { status: 202 });
+      }),
+    );
+    expect(await dispatchPlanningSearch(f.env, f.row(), CTX, job.run_id, NOW)).toMatchObject({
+      queued: true,
+    });
+    expect(task).toMatchObject({
+      kind: 'stay',
+      owner_answers: { transport_count: 2, lodging_count: 4, lodging_from: '2026-11-13' },
+    });
+    expect(task.provider_note).toContain('Прямі ціни Booking зараз недоступні');
+    expect(JSON.stringify(task)).not.toContain('fixture-token');
+    expect((await f.view()).stages.find((s: { kind: string }) => s.kind === 'stay')!.status).toBe(
+      'running',
+    );
+  });
   it.each([500, 0])(
     'handles a refused or uncertain worker start (%s) truthfully',
     async (status) => {

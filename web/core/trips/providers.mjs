@@ -15,6 +15,20 @@ export const TRIP_SEARCH_PROVIDERS = [
     documentation: 'https://developers.booking.com/demand/docs/getting-started/prerequisites',
   },
   {
+    id: 'airbnb',
+    name: 'Airbnb',
+    status: 'search_redirect',
+    billing: 'none',
+    documentation: 'https://www.airbnb.com/help/article/3418',
+  },
+  {
+    id: 'infobus',
+    name: 'INFOBUS / BusSystem',
+    status: 'partner_access_required',
+    billing: 'partner_contract',
+    documentation: 'https://bussystem.eu/uk/agents',
+  },
+  {
     id: 'flixbus',
     name: 'FlixBus API',
     status: 'partner_access_required',
@@ -22,6 +36,22 @@ export const TRIP_SEARCH_PROVIDERS = [
     documentation: 'https://www.flixbus.com/company/partners/affiliate-partners',
   },
 ];
+export const TRIP_SEARCH_MAX = 12;
+/** @param {Env} env */
+export function tripSearchProviders(env) {
+  return TRIP_SEARCH_PROVIDERS.map((provider) => ({
+    ...provider,
+    status:
+      provider.id === 'booking' &&
+      env.BOOKING_API_TOKEN &&
+      env.BOOKING_AFFILIATE_ID &&
+      env.BOOKING_BOOKER_COUNTRY
+        ? env.BOOKING_API_ENV === 'production'
+          ? 'available'
+          : 'sandbox'
+        : provider.status,
+  }));
+}
 
 /** Validate the common adapter result before any offer is visible or stored. Web pages cannot
  * claim a live provider quote; only a future authenticated partner adapter can do that.
@@ -30,7 +60,7 @@ export function normalizeTripSearchResult(output, kind, nowMs, authenticatedQuot
   if (
     !output ||
     !Array.isArray(output.options) ||
-    output.options.length > 8 ||
+    output.options.length > TRIP_SEARCH_MAX ||
     output.options.some((/** @type {any} */ o) => !o || o.kind !== kind)
   )
     throw new Error('invalid-search-result');
@@ -44,6 +74,7 @@ export function normalizeTripSearchResult(output, kind, nowMs, authenticatedQuot
             : o.availability,
       },
       nowMs,
+      authenticatedQuote,
     ),
   );
   if (new Set(options.map((/** @type {any} */ o) => o.id)).size !== options.length)

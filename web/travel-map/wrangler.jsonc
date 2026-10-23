@@ -1,0 +1,14 @@
+{
+  "name": "svitanok-travel-map",
+  "compatibility_date": "2026-10-23",
+  "main": "worker.mjs",
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": [{ "pattern": "maps.svitanok.yushko.dev", "custom_domain": true }],
+  "assets": {
+    "directory": "../app/public",
+    "binding": "ASSETS",
+    "run_worker_first": true,
+    "html_handling": "none",
+  },
+}

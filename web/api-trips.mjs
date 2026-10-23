@@ -11,6 +11,9 @@ import { startTripChain, cancelTripChain } from './core/chains/trip.mjs';
 import { tripPlanningView, changePlanning } from './core/trips/planning.mjs';
 import { dispatchPlanningSearch } from './core/trips/search.mjs';
 import { deleteTravelRecord } from './core/trips/deletion.mjs';
+import { tripServiceLinks } from './core/trips/links.mjs';
+import { tripSearchProviders } from './core/trips/providers.mjs';
+import { tripMapData } from './core/trips/maps.mjs';
 
 /** Scope comes from authenticated stored records; client cannot nominate a foreign chat.
  * @param {Env} env @param {unknown} chat */
@@ -132,6 +135,17 @@ export async function readTravelWorkspace(env, selectedId = null, nowMs = Date.n
       research: brief ? tripResearchView(brief.answers, nowMs) : null,
     };
   }
+  if (current?.planning) {
+    current.planning.providers = tripSearchProviders(env);
+    current.planning.stages = current.planning.stages.map((/** @type {any} */ stage) => ({
+      ...stage,
+      service_links: tripServiceLinks(current.answers, stage.kind),
+      options: stage.options.map((/** @type {any} */ option) => ({
+        ...option,
+        service_links: tripServiceLinks(current.answers, stage.kind, option),
+      })),
+    }));
+  }
   return {
     items: summaries,
     current,
@@ -172,6 +186,21 @@ export async function handleTrips(request, env) {
         (body.revision != null && (!Number.isInteger(body.revision) || body.revision < 0)))
     )
       throw new Error('Перевір параметри зміни.');
+    if (request.method === 'GET' && url.searchParams.get('format') === 'map') {
+      if (!selectedId) throw new Error('Спочатку обери поїздку.');
+      const workspace = await readTravelWorkspace(env, selectedId, nowMs);
+      if (!workspace.current) throw new Error('Поїздку не знайдено.');
+      return reply({
+        ok: true,
+        ...(await tripMapData(
+          env,
+          workspace.current,
+          url.searchParams.get('kind') ?? 'stay',
+          nowMs,
+          url.searchParams.get('focus'),
+        )),
+      });
+    }
     if (request.method === 'GET' && url.searchParams.get('format') === 'md') {
       const row = await env.DB.prepare(
         "SELECT t.*,c.state_json FROM trips t JOIN chains c ON c.id=t.workflow_id WHERE t.id=? AND c.kind='trip'",

@@ -12,6 +12,7 @@ import {
   type ModelTelemetry,
 } from '../agent.js';
 import { decodeOpenAiArguments, openAiFunctionTools } from './tools.js';
+import { TRIP_SEARCH_FORMAT } from '../trip-search-schema.js';
 
 const RESPONSES_URL = 'https://api.openai.com/v1/responses';
 
@@ -137,7 +138,7 @@ export function createOpenAiEngine(config: OpenAiRuntimeConfig): ModelRuntime {
           input.push(...output);
           const calls = output.filter(isFunctionCall);
           if (calls.length === 0) {
-            const finalText = responseText(response, output);
+            const finalText = responseText(response, output, opts.profileName === 'trip-research');
             if (finalText && opts.streamPartials) opts.onPartialText(finalText);
             return {
               finalText,
@@ -203,7 +204,15 @@ async function createResponse(
       }
       return tool;
     }),
-    tool_choice: 'auto',
+    tool_choice:
+      opts.profileName === 'trip-research' &&
+      input.length === 1 &&
+      tools.some((t) => t.type === 'web_search')
+        ? { type: 'web_search' }
+        : 'auto',
+    ...(opts.profileName === 'trip-research'
+      ? { text: { format: TRIP_SEARCH_FORMAT }, include: ['web_search_call.action.sources'] }
+      : {}),
     parallel_tool_calls: false,
     store: false,
     service_tier: 'default',
@@ -321,8 +330,15 @@ function isFunctionCall(
   );
 }
 
-function responseText(response: ResponsesPayload, output: unknown[]): string | null {
-  if (typeof response.output_text === 'string') return withCitations(response.output_text, output);
+function responseText(
+  response: ResponsesPayload,
+  output: unknown[],
+  structured = false,
+): string | null {
+  // Structured cards already carry their own source URLs. A prose citation appendix
+  // would make an otherwise valid JSON response unreadable by the completion handler.
+  const format = (text: string) => (structured ? text : withCitations(text, output));
+  if (typeof response.output_text === 'string') return format(response.output_text);
   for (const item of output) {
     if (!isRecord(item) || item.type !== 'message' || !Array.isArray(item.content)) continue;
     const text = item.content
@@ -331,7 +347,7 @@ function responseText(response: ResponsesPayload, output: unknown[]): string | n
       )
       .map((part) => (typeof part.text === 'string' ? part.text : ''))
       .join('');
-    if (text) return withCitations(text, output);
+    if (text) return format(text);
   }
   return null;
 }

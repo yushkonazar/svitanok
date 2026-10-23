@@ -221,8 +221,8 @@ describe('guided travel journey', () => {
       return structuredClone(state);
     });
     mount();
-    expect(await screen.findByText('Ціну не підтверджено')).toBeVisible();
-    expect(screen.getByRole('link', { name: 'Переглянути джерело ↗' })).toHaveAttribute(
+    expect(await screen.findByText('Ціну потрібно перевірити')).toBeVisible();
+    expect(screen.getByRole('link', { name: 'Переглянути ↗' })).toHaveAttribute(
       'href',
       'https://example.com/offer-one',
     );

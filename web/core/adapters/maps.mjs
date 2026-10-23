@@ -186,7 +186,7 @@ export async function readPlace(env, placeId) {
  * окремого геокодування. Квота 100 % → лише кеш за назвою (S-1-14), порожній
  * кеш → QuotaExhaustedError.
  * @param {Env} env
- * @param {{ query: string, near?: { lat: number, lon: number } | null, city?: string | null, limit?: number, scope?: 'leisure', bounds?: {south: number,west: number,north: number,east: number} }} input
+ * @param {{ query: string, near?: { lat: number, lon: number } | null, city?: string | null, limit?: number, scope?: 'leisure'|'trip', bounds?: {south: number,west: number,north: number,east: number} }} input
  * @param {number} nowMs
  * @returns {Promise<{ places: PlaceCandidate[], source: 'api' | 'cache' }>}
  */
@@ -252,7 +252,7 @@ export async function placesSearch(env, input, nowMs) {
     const p = candidateOf(raw);
     if (p && places.length < limit) places.push(p);
   }
-  if (places.length && input.scope !== 'leisure') {
+  if (places.length && input.scope !== 'leisure' && input.scope !== 'trip') {
     const iso = new Date(nowMs).toISOString();
     // Пошук оновлює лише «зовнішні» поля; телефон/сайт/години з details,
     // fetched_at деталей і оцінка/улюблене власника лишаються.
@@ -398,9 +398,9 @@ function waypointBody(w) {
  * тож він передається лише коли попереду, а в результаті `traffic` каже,
  * чи його враховано.
  * @param {Env} env
- * @param {{ from: Waypoint, to: Waypoint, mode: keyof typeof TRAVEL_MODES, departAtMs?: number | null }} input
+ * @param {{ from: Waypoint, to: Waypoint, mode: keyof typeof TRAVEL_MODES, departAtMs?: number | null, geometry?: boolean }} input
  * @param {number} nowMs
- * @returns {Promise<{ distance_m: number, duration_s: number, duration_min: number, mode: string, traffic: boolean }>}
+ * @returns {Promise<{ distance_m: number, duration_s: number, duration_min: number, mode: string, traffic: boolean, polyline?: string }>}
  */
 export async function routesEta(env, input, nowMs) {
   const travelMode = TRAVEL_MODES[input.mode];
@@ -435,7 +435,8 @@ export async function routesEta(env, input, nowMs) {
       headers: {
         'content-type': 'application/json',
         'X-Goog-Api-Key': key,
-        'X-Goog-FieldMask': ROUTES_FIELD_MASK,
+        'X-Goog-FieldMask':
+          ROUTES_FIELD_MASK + (input.geometry ? ',routes.polyline.encodedPolyline' : ''),
       },
       body: JSON.stringify(body),
     },
@@ -457,6 +458,9 @@ export async function routesEta(env, input, nowMs) {
     duration_min: Math.max(1, Math.round(durationS / 60)),
     mode: input.mode,
     traffic: timed && travelMode === 'DRIVE',
+    ...(input.geometry && typeof route.polyline?.encodedPolyline === 'string'
+      ? { polyline: route.polyline.encodedPolyline }
+      : {}),
   };
 }
 

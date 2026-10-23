@@ -414,6 +414,7 @@
 .trips-editor-field {
   display: flex;
   flex-direction: column;
+  min-width: 0;
   gap: 7px;
   margin: 15px 0;
   font-size: 12px;
@@ -421,6 +422,7 @@
 .trips-editor input:not([type='checkbox']),
 .trips-editor select,
 .trips-editor textarea {
+  box-sizing: border-box;
   background: var(--color-glass);
   border: 1px solid var(--color-glassb);
   border-radius: 12px;
@@ -429,6 +431,8 @@
   font: inherit;
   min-height: 45px;
   width: 100%;
+  min-width: 0;
+  max-width: 100%;
 }
 .trips-editor > .trips-primary {
   width: 100%;

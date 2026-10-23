@@ -25,10 +25,37 @@ export function tripResearchBasis(answers) {
   return Object.fromEntries(BASIS.map((key) => [key, answers[key] ?? null]));
 }
 /** @param {unknown} value @param {number} max */
-const text = (value, max) =>
-  String(value ?? '')
-    .trim()
+const text = (value, max) => {
+  // Research may return arrays or nested objects despite the text contract.
+  // Keep readable scalar facts, never stringify an arbitrary provider object.
+  const values = Array.isArray(value) ? value.slice(0, 20) : [value];
+  return values
+    .filter(
+      (part) => typeof part === 'string' || (typeof part === 'number' && Number.isFinite(part)),
+    )
+    .map((part) =>
+      String(part)
+        .replace(/\[object Object\]/g, '')
+        .trim(),
+    )
+    .filter(Boolean)
+    .join(' · ')
     .slice(0, max);
+};
+/** Also repairs presentation of older observations without rewriting saved owner data.
+ * @param {any} raw */
+function optionText(raw) {
+  return {
+    title: text(raw.title, 160),
+    provider: text(raw.provider, 100),
+    dates: text(raw.dates, 120),
+    schedule: text(raw.schedule, 300),
+    location: text(raw.location, 160),
+    cancellation: text(raw.cancellation, 300),
+    tradeoffs: text(raw.tradeoffs, 500),
+    missing: text(raw.missing, 400),
+  };
+}
 /** @param {unknown} value */
 function source(value) {
   const u = new URL(String(value));
@@ -44,8 +71,8 @@ function optionId(identity) {
   return `offer-${hash.toString(16).padStart(16, '0')}`;
 }
 /** Only bounded reference data may enter this quarantine. It cannot set owner facts, book, or start support.
- * @param {any} raw @param {number} nowMs */
-export function normalizeTripOption(raw, nowMs) {
+ * @param {any} raw @param {number} nowMs @param {boolean} [authenticatedQuote] */
+export function normalizeTripOption(raw, nowMs, authenticatedQuote = false) {
   if (!['transport', 'stay', 'activity'].includes(raw.kind))
     throw new Error('Уточни тип пропозиції.');
   const title = text(raw.title, 160),
@@ -84,24 +111,82 @@ export function normalizeTripOption(raw, nowMs) {
       total_confirmed: p.total_confirmed === true,
     };
   }
-  const availability = ['unverified', 'page_observed', 'provider_quote'].includes(raw.availability)
-    ? raw.availability
-    : 'unverified';
+  const availability =
+    raw.availability === 'provider_quote' && !authenticatedQuote
+      ? 'unverified'
+      : ['unverified', 'page_observed', 'provider_quote'].includes(raw.availability)
+        ? raw.availability
+        : 'unverified';
+  const rating =
+    raw.rating &&
+    Number.isFinite(raw.rating.value) &&
+    raw.rating.value > 0 &&
+    [5, 10].includes(raw.rating.scale) &&
+    raw.rating.value <= raw.rating.scale &&
+    Number.isInteger(raw.rating.count) &&
+    raw.rating.count > 0 &&
+    text(raw.rating.source, 50)
+      ? {
+          value: raw.rating.value,
+          scale: raw.rating.scale,
+          count: raw.rating.count,
+          source: text(raw.rating.source, 50),
+        }
+      : null;
+  const coordinates =
+    authenticatedQuote &&
+    Number.isFinite(raw.coordinates?.lat) &&
+    Math.abs(raw.coordinates.lat) <= 90 &&
+    Number.isFinite(raw.coordinates?.lon) &&
+    Math.abs(raw.coordinates.lon) <= 180
+      ? { lat: raw.coordinates.lat, lon: raw.coordinates.lon }
+      : null;
+  const photos =
+    authenticatedQuote && Array.isArray(raw.photos)
+      ? raw.photos
+          .slice(0, 6)
+          .filter((/** @type {any} */ p) => {
+            try {
+              const url = new URL(p.url);
+              return (
+                url.protocol === 'https:' &&
+                !url.username &&
+                !url.password &&
+                /(^|\.)bstatic\.com$/.test(url.hostname)
+              );
+            } catch {
+              return false;
+            }
+          })
+          .map((/** @type {any} */ p) => ({
+            url: String(p.url).slice(0, 1200),
+            alt: title,
+            credit: 'Booking.com',
+          }))
+      : [];
   return {
+    ...optionText(raw),
     id,
     kind: raw.kind,
-    title,
-    provider: text(raw.provider, 100),
     source_url: source(raw.source_url),
     checked_at: new Date(checked).toISOString(),
     availability,
     price,
-    dates: text(raw.dates, 120),
-    schedule: text(raw.schedule, 300),
-    location: text(raw.location, 160),
-    cancellation: text(raw.cancellation, 300),
-    tradeoffs: text(raw.tradeoffs, 500),
-    missing: text(raw.missing, 400),
+    highlights: Array.isArray(raw.highlights)
+      ? raw.highlights
+          .slice(0, 3)
+          .map((/** @type {unknown} */ h) => text(h, 100))
+          .filter(Boolean)
+      : [],
+    duration_minutes:
+      Number.isInteger(raw.duration_minutes) &&
+      raw.duration_minutes > 0 &&
+      raw.duration_minutes <= 100_000
+        ? raw.duration_minutes
+        : null,
+    rating,
+    coordinates,
+    photos,
     status: 'candidate',
   };
 }
@@ -146,6 +231,10 @@ export function tripResearchView(answers, nowMs) {
     JSON.stringify(research.basis ?? {}) !== JSON.stringify(tripResearchBasis(answers));
   const options = (research.options ?? []).map((/** @type {any} */ o) => ({
     ...o,
+    ...optionText(o),
+    price: o.price
+      ? { ...o.price, includes: text(o.price.includes, 240), excludes: text(o.price.excludes, 240) }
+      : null,
     stale:
       stale ||
       (o.planning_basis != null && o.planning_basis !== planningStageKey(answers, o.kind)) ||

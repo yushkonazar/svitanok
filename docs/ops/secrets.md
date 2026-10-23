@@ -36,6 +36,9 @@
 | `GOOGLE_CLIENT_SECRET`       | CF                              | 365 дн.               |                                                                                       |
 | `GOOGLE_REFRESH_TOKEN`       | CF                              | за подією             | може втратити чинність; дату завершення не вгадуємо                                   |
 | `MAPS_API_KEY`               | CF                              | 365 дн.               |                                                                                       |
+| `MAPS_BROWSER_API_KEY`       | CF                              | 365 дн.               | опційна мапа Mini App; обмеження доменів і Maps JavaScript API                        |
+| `BOOKING_API_TOKEN`          | CF                              | 365 дн.               | опційний партнерський Booking Demand API                                              |
+| `BOOKING_AFFILIATE_ID`       | CF                              | за подією             | ідентифікатор партнерського підключення Booking                                       |
 | `WEATHER_API_KEY`            | CF + GitHub Secrets             | за подією             |                                                                                       |
 | `NEWSDATA_API_KEY`           | GitHub Secrets                  | за подією             | legacy; новини використовують RSS                                                     |
 | `GOOGLE_TRANSLATE_API_KEY`   | CF + GitHub Secrets             | за подією             |                                                                                       |

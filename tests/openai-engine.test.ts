@@ -20,6 +20,84 @@ function options(over: Partial<Parameters<ReturnType<typeof createOpenAiEngine>[
 }
 
 describe('OpenAI Responses runtime', () => {
+  it('uses web research and a strict card schema only for the travel profile', async () => {
+    const requests: Record<string, unknown>[] = [];
+    const engine = createOpenAiEngine({
+      apiKey: 'fixture-key',
+      models: { fast: 'gpt-6-luna', standard: 'gpt-6-sol', advanced: 'gpt-6-astra' },
+      reasoningEffort: 'medium',
+      fetchFn: vi.fn(async (_url, init) => {
+        requests.push(JSON.parse(String(init?.body)));
+        return Response.json({
+          status: 'completed',
+          output_text: '{"summary":"","options":[]}',
+          output: [],
+        });
+      }) as typeof fetch,
+    });
+    await engine.run(
+      options({
+        profileName: 'trip-research',
+        toolNames: [],
+        builtinTools: ['WebSearch', 'WebFetch'],
+      }),
+      'Find hotel candidates',
+    );
+    expect(requests[0]).toMatchObject({
+      tool_choice: { type: 'web_search' },
+      text: {
+        format: {
+          name: 'trip_search',
+          strict: true,
+          schema: { additionalProperties: false, properties: { options: { maxItems: 12 } } },
+        },
+      },
+    });
+    expect(requests[0]).toHaveProperty('include', ['web_search_call.action.sources']);
+    await engine.run(options({ profileName: 'chat' }), 'Hello');
+    expect(requests[1]).not.toHaveProperty('text');
+    expect(requests[1]!.tool_choice).toBe('auto');
+  });
+  it.each([true, false])(
+    'preserves travel JSON when web annotations exist (SDK text: %s)',
+    async (sdkText) => {
+      const json = '{"summary":"Перевірено","options":[]}';
+      const engine = createOpenAiEngine({
+        apiKey: 'fixture-key',
+        models: { fast: 'gpt-6-luna', standard: 'gpt-6-sol', advanced: 'gpt-6-astra' },
+        reasoningEffort: 'medium',
+        fetchFn: vi.fn(async () =>
+          Response.json({
+            status: 'completed',
+            ...(sdkText ? { output_text: json } : {}),
+            output: [
+              {
+                type: 'message',
+                content: [
+                  {
+                    type: 'output_text',
+                    text: json,
+                    annotations: [
+                      { type: 'url_citation', title: 'Source', url: 'https://example.com/hotel' },
+                    ],
+                  },
+                ],
+              },
+            ],
+          }),
+        ) as typeof fetch,
+      });
+      const result = await engine.run(
+        options({
+          profileName: 'trip-research',
+          toolNames: [],
+          builtinTools: ['WebSearch'],
+        }),
+        'Find hotel candidates',
+      );
+      expect(JSON.parse(result.finalText!)).toEqual({ summary: 'Перевірено', options: [] });
+    },
+  );
   it.each([
     'project_spend_limit_exceeded',
     'organization_spend_limit_exceeded',
