@@ -29,6 +29,8 @@ Maps JavaScript API увімкнено у проєкті `svitanok-apis`. Клю
 
 Спочатку потрібно отримати від партнерської підтримки підтвердження, що приватний застосунок з одним користувачем може отримати search/look/redirect доступ. Не вказувати вигадану компанію чи аудиторію. До такого підтвердження немає сенсу оформлювати CJ лише заради API.
 
+[Офіційний попередній портал Demand API](https://legacy.developers.booking.com/api/index.html) посилається на [форму заявки](https://affiliates-support.booking.com/hc/en-us/requests/new?ticket_form_id=210286). Перевірка 23.10.2026: форма недоступна (браузер повернув помилку DNS); заявку не відправляли. Нова документація спрямовує до Account Manager / Partner Centre, доступу до яких поки немає. Неперевірену email-адресу для Booking не підставляти.
+
 Після схвалення потрібні `BOOKING_API_TOKEN`, `BOOKING_AFFILIATE_ID`, фактична країна проживання booker (`BOOKING_BOOKER_COUNTRY`) і sandbox. Production вмикається після перевірки реальних дат, гостей, фотографій і повної ціни. Особистий туристичний логін Booking не замінює цих даних.
 
 Текст запиту до партнерської підтримки або майбутнього account manager:
@@ -41,7 +43,7 @@ Maps JavaScript API увімкнено у проєкті `svitanok-apis`. Клю
 
 Спочатку уточнити можливість приватного read-only доступу. Телефон і контактний email для заявки має підтвердити власник. Реєстраційну форму й згоду з договором не відправляли.
 
-Готовий текст запиту:
+Текст запиту, надісланого 23.10.2026 на `partner@infobus.eu` за прямим дозволом власника:
 
 > Добрий день! Розробляю Світанок — приватний Telegram Mini App для планування власних поїздок, один користувач. Адреса: https://svitanok.yushko.dev. Потрібен пошук автобусних рейсів за містами, датами й кількістю пасажирів: розклад, тривалість, ціна, багаж і посилання для переходу до оплати на INFOBUS. Бронювання та платежі через API не плануються. Чи можливий доступ до API для такого особистого використання? Які умови, вартість або мінімальні обсяги, чи є тестове середовище та які дані потрібні для заявки? Зокрема цікавить напрямок Львів — Прага й зворотна дорога.
 
@@ -49,7 +51,7 @@ Maps JavaScript API увімкнено у проєкті `svitanok-apis`. Клю
 
 [Офіційна сторінка](https://www.flixbus.com/company/partners/affiliate-partners) відокремлює AWIN-посилання від dynamic API. Для API вказано `online-distribution@flixbus.com`; у запиті просять інформацію про компанію, домени та місячну відвідуваність. Приватний проєкт потрібно описати прямо, без вигаданих показників.
 
-Готовий текст запиту:
+Текст запиту, надісланого 23.10.2026 на `online-distribution@flixbus.com` за прямим дозволом власника:
 
 > Hello Flix Online Distribution Team. I am developing Svitanok, a private Telegram Mini App for planning my personal trips, used by one person. Domain: https://svitanok.yushko.dev. There is no public audience or travel-agency business. I would like read-only access to dated FlixBus routes, schedules, fares and baggage conditions, with a redirect to FlixBus for booking and payment. Is your dynamic API or a suitable self-service integration available for this low-volume private use case? Please advise the eligibility requirements, agreement, fees or minimum volumes, sandbox access and next steps. My initial route is Lviv — Prague, including return travel.
 
@@ -57,4 +59,4 @@ Maps JavaScript API увімкнено у проєкті `svitanok-apis`. Клю
 
 За [офіційним описом API-програм](https://www.airbnb.com/help/article/3418) доступ залежить від програми та договору; відкритого guest-search API для приватного мандрівника не підтверджено. Підтримується перехід до Airbnb з датами й гостями. Реєстрація як власника житла для цього не потрібна.
 
-Жоден із наведених листів не надіслано. Вони готові для погодження та відправлення після підтвердження контактів власника. Паролі, платіжні дані та API-ключі не потрібні в переписці.
+Запити до INFOBUS та FlixBus надіслано, очікується відповідь щодо можливості приватного доступу, умов і вартості. Запит до Booking підготовлено, але не відправлено: робочий публічний канал заявки не підтверджено. Партнерських акаунтів не створено, договорів не прийнято, API-ключів цих сервісів ще немає. Паролі, платіжні дані та API-ключі не потрібні в переписці.
