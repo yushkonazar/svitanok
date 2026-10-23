@@ -42,9 +42,16 @@ export async function tripMapData(env, current, kind, nowMs, focusId = null) {
     throw new Error('Обери мапу житла, дороги або місць.');
   const a = current.answers ?? {};
   const destination = String(a.to ?? '');
-  const external = new URL('https://www.google.com/maps/search/');
+  const directions = kind === 'transport' && a.from_city && destination;
+  const external = new URL(
+    directions ? 'https://www.google.com/maps/dir/' : 'https://www.google.com/maps/search/',
+  );
   external.searchParams.set('api', '1');
-  external.searchParams.set('query', destination);
+  if (directions) {
+    external.searchParams.set('origin', String(a.from_city));
+    external.searchParams.set('destination', destination);
+    external.searchParams.set('travelmode', 'driving');
+  } else external.searchParams.set('query', destination);
   if (!env.MAPS_BROWSER_API_KEY || !env.MAPS_MAP_ID)
     return {
       enabled: false,
@@ -147,7 +154,11 @@ export async function tripMapData(env, current, kind, nowMs, focusId = null) {
     missing,
     caption:
       kind === 'transport'
-        ? 'Орієнтовний автомобільний маршрут Google. Розклад автобуса, його зупинки та проходження кордону перевіряй окремо.'
+        ? route?.polyline
+          ? 'Орієнтовний автомобільний маршрут Google. Розклад автобуса, його зупинки та проходження кордону перевіряй окремо.'
+          : markers.length
+            ? 'Показано пункти відправлення й прибуття. Щоб прокласти дорогу, відкрий Google Maps.'
+            : 'Показано місто призначення. Уточни місце відправлення, щоб прокласти дорогу.'
         : 'Позначки зіставлені зі знайденими об’єктами. Наявність і ціну перевір на сайті житла або місця.',
   };
 }

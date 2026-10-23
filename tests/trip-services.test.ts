@@ -288,6 +288,26 @@ describe('Booking read-only adapter', () => {
 });
 
 describe('private Google map data', () => {
+  it('labels endpoint-only maps honestly and opens directions with both cities even without credentials', async () => {
+    const current = { answers };
+    const data = await tripMapData(
+      workerEnv({ MAPS_BROWSER_API_KEY: 'browser-key', MAPS_MAP_ID: 'map-id' }),
+      current,
+      'transport',
+      NOW,
+    );
+    expect(data.markers).toHaveLength(2);
+    expect(data.route).toBeNull();
+    expect(data.caption).toContain('пункти відправлення й прибуття');
+    const disabled = await tripMapData(workerEnv(), current, 'transport', NOW);
+    expect(disabled.enabled).toBe(false);
+    const link = new URL(disabled.external_url);
+    expect(link.pathname).toBe('/maps/dir/');
+    expect(link.searchParams.get('origin')).toBe(answers.from_city);
+    expect(link.searchParams.get('destination')).toBe(answers.to);
+    expect(link.searchParams.get('travelmode')).toBe('driving');
+    expect(link.searchParams.get('api')).toBe('1');
+  });
   it('includes the card requested by the owner even when it is beyond the first eight results', async () => {
     const options = Array.from({ length: 12 }, (_, i) => ({
       id: `booking-${i}`,
