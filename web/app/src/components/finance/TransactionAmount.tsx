@@ -29,7 +29,7 @@ export function TransactionAmount({
     if (ref.current) observer?.observe(ref.current);
     const timer = window.setInterval(() => {
       if (visible && document.visibilityState !== 'hidden') setUah((v) => !v);
-    }, 3000);
+    }, 1500);
     return () => {
       window.clearInterval(timer);
       observer?.disconnect();
@@ -45,7 +45,7 @@ export function TransactionAmount({
   return (
     <span
       ref={ref}
-      className={`finance-transaction-amount ${band ? 'finance-expense-tone' : t.kind === 'income' ? 'text-pos' : ''}`}
+      className={`finance-transaction-amount ${band ? 'finance-expense-tone' : t.amountMinor > 0 ? 'text-pos' : ''}`}
       style={
         band
           ? ({ '--expense-dark': band.dark, '--expense-light': band.light } as CSSProperties)
@@ -54,14 +54,20 @@ export function TransactionAmount({
       title={band ? `${both} · ${band.label}` : both}
     >
       <span className="sr-only">{both}</span>
-      <span
-        key={cycling ? String(uah) : 'static'}
-        aria-hidden="true"
-        className="finance-currency-value"
-        data-cycling={cycling}
-      >
-        {cycling ? (uah ? moneyLabel(t.amountUah!) : moneyLabel(t.amountMinor, t.currency)) : both}
-      </span>
+      {cycling ? (
+        <span className="finance-currency-stack" aria-hidden="true">
+          <span className="finance-currency-value" data-visible={!uah}>
+            {moneyLabel(t.amountMinor, t.currency)}
+          </span>
+          <span className="finance-currency-value" data-visible={uah}>
+            {moneyLabel(t.amountUah!)}
+          </span>
+        </span>
+      ) : (
+        <span aria-hidden="true" className="finance-currency-value">
+          {both}
+        </span>
+      )}
     </span>
   );
 }

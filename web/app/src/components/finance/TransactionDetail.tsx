@@ -78,6 +78,12 @@ export function TransactionDetail({
       <p className="renewal-muted">
         {tx.category} · {new Date(tx.at).toLocaleString('uk-UA', { timeZone: 'Europe/Kyiv' })}
       </p>
+      {(tx.balanceCoveredBy || created?.balanceCoveredBy) && (
+        <p className="renewal-inset">
+          Історичний переказ уже враховано під час пізнішої звірки залишку. Поточна готівка не
+          списується повторно.
+        </p>
+      )}
       {tx.bankHold && (
         <p className="renewal-inset">
           {tx.bankVerifiedByOwner

@@ -7,6 +7,170 @@ import { readFinanceAnalytics } from '../web/core/finance/analytics-store.mjs';
 import { handleFinance } from '../web/api-finance.mjs';
 import { buildInitData } from './helpers/init-data.js';
 const now = Date.parse('2026-10-14T15:00:00Z');
+function bankTopup(d1: ReturnType<typeof setup>['d1'], id: string, at: string, amount = 40000) {
+  d1.db
+    .prepare(
+      'INSERT INTO transactions(id,at,amount,currency,amount_uah,description,category,flags_json,raw_json) VALUES(?,?,?,?,?,?,?,?,?)',
+    )
+    .run(
+      id,
+      at,
+      amount,
+      'UAH',
+      amount,
+      'Термінал mono',
+      'перекази й готівка',
+      '[]',
+      JSON.stringify({ account: 'one', financeKind: 'unclassified', hold: false }),
+    );
+}
+it('keeps a historical cash topup covered by a later balance assertion without debiting or undo-crediting current cash', async () => {
+  const { env, d1 } = setup();
+  await executeFinanceCommand(
+    env,
+    {
+      id: 'balance-anchor',
+      version: 0,
+      type: 'account-balance',
+      payload: { accountId: 'cash', balanceMinor: 100000 },
+    },
+    now - 86400000,
+  );
+  bankTopup(d1, 'old-bank-credit', '2026-10-12T10:00:00Z');
+  await executeFinanceCommand(
+    env,
+    {
+      id: 'old-bank-link',
+      version: 1,
+      type: 'bank-transfer',
+      payload: { transactionId: 'old-bank-credit', accountId: 'cash' },
+    },
+    now,
+  );
+  let f = await readFinanceWorkspace(env, now);
+  expect(f.accounts.find((a) => a.id === 'cash')!.balanceMinor).toBe(100000);
+  expect(f.transactions.find((t) => t.id === 'bank-transfer:old-bank-link')).toMatchObject({
+    at: '2026-10-12T10:00:00Z',
+    balanceCoveredBy: 'balance:balance-anchor',
+    amountMinor: -40000,
+  });
+  await executeFinanceCommand(
+    env,
+    {
+      id: 'old-bank-undo',
+      version: 2,
+      type: 'bank-transfer-undo',
+      payload: { transactionId: 'old-bank-credit' },
+    },
+    now,
+  );
+  f = await readFinanceWorkspace(env, now);
+  expect(f.accounts.find((a) => a.id === 'cash')!.balanceMinor).toBe(100000);
+});
+it('repairs only the legacy historical cash leg and preserves a new topup and all bank facts', async () => {
+  const { env, d1 } = setup();
+  await executeFinanceCommand(
+    env,
+    {
+      id: 'cash-balance-anchor',
+      version: 0,
+      type: 'account-balance',
+      payload: { accountId: 'cash', balanceMinor: 100000 },
+    },
+    now - 86400000,
+  );
+  bankTopup(d1, 'legacy-bank', '2026-10-12T10:00:00Z');
+  await executeFinanceCommand(
+    env,
+    {
+      id: 'legacy-bank-link',
+      version: 1,
+      type: 'bank-transfer',
+      payload: { transactionId: 'legacy-bank', accountId: 'cash' },
+    },
+    now,
+  );
+  d1.db
+    .prepare(
+      "UPDATE transactions SET raw_json=json_remove(raw_json,'$.financeBalanceCoveredBy') WHERE id=?",
+    )
+    .run('bank-transfer:legacy-bank-link');
+  bankTopup(d1, 'current-bank', '2026-10-14T10:00:00Z', 10000);
+  await executeFinanceCommand(
+    env,
+    {
+      id: 'current-bank-link',
+      version: 2,
+      type: 'bank-transfer',
+      payload: { transactionId: 'current-bank', accountId: 'cash' },
+    },
+    now,
+  );
+  const beforeBank = d1.db.prepare('SELECT * FROM transactions WHERE id=?').get('legacy-bank');
+  expect(
+    (await readFinanceWorkspace(env, now)).accounts.find((a) => a.id === 'cash')!.balanceMinor,
+  ).toBe(50000);
+  const repair = {
+    id: 'legacy-cash-repair',
+    version: 3,
+    type: 'bank-transfer-history-reconcile',
+    payload: { transactionIds: ['bank-transfer:legacy-bank-link'] },
+  };
+  await executeFinanceCommand(env, repair, now + 1000);
+  await executeFinanceCommand(env, repair, now + 2000);
+  const f = await readFinanceWorkspace(env, now);
+  expect(f.version).toBe(4);
+  expect(f.accounts.find((a) => a.id === 'cash')!.balanceMinor).toBe(90000);
+  expect(
+    f.transactions.find((t) => t.id === 'bank-transfer:current-bank-link')!.balanceCoveredBy,
+  ).toBeNull();
+  expect(d1.db.prepare('SELECT * FROM transactions WHERE id=?').get('legacy-bank')).toEqual(
+    beforeBank,
+  );
+  expect(f.transactions.find((t) => t.id === 'bank-transfer:legacy-bank-link')!.at).toBe(
+    '2026-10-12T10:00:00Z',
+  );
+});
+it('refuses a historical repair when the owner has since asserted a new balance', async () => {
+  const { env, d1 } = setup();
+  bankTopup(d1, 'older-bank', '2026-10-12T10:00:00Z');
+  await executeFinanceCommand(
+    env,
+    {
+      id: 'older-bank-link',
+      version: 0,
+      type: 'bank-transfer',
+      payload: { transactionId: 'older-bank', accountId: 'cash' },
+    },
+    now,
+  );
+  await executeFinanceCommand(
+    env,
+    {
+      id: 'new-cash-balance',
+      version: 1,
+      type: 'account-balance',
+      payload: { accountId: 'cash', balanceMinor: 100000 },
+    },
+    now + 1000,
+  );
+  await expect(
+    executeFinanceCommand(
+      env,
+      {
+        id: 'unsafe-cash-repair',
+        version: 2,
+        type: 'bank-transfer-history-reconcile',
+        payload: { transactionIds: ['bank-transfer:older-bank-link'] },
+      },
+      now + 2000,
+    ),
+  ).rejects.toThrow(/Новіша звірка/);
+  expect(
+    (await readFinanceWorkspace(env, now + 2000)).accounts.find((a) => a.id === 'cash')!
+      .balanceMinor,
+  ).toBe(100000);
+});
 it('unlinks a reused manual cash leg without crediting that pre-existing amount again', async () => {
   const { env, d1 } = setup();
   await executeFinanceCommand(

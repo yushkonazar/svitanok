@@ -191,7 +191,10 @@ it('keeps daily finance controls on the main screen and opens analytics lazily f
   expect(screen.getByRole('button', { name: 'Записати витрату' })).toBeInTheDocument();
   expect(screen.getByRole('heading', { name: 'Мої цілі' })).toBeInTheDocument();
   expect(screen.queryByText('Ритм особистих витрат')).not.toBeInTheDocument();
-  fireEvent.click(screen.getByRole('button', { name: 'Аналітика та звіти' }));
+  const analyticsButton = screen.getByRole('button', { name: 'Аналітика та звіти' });
+  expect(analyticsButton.textContent).toBe('');
+  expect(analyticsButton.querySelector('svg')).not.toBeNull();
+  fireEvent.click(analyticsButton);
   expect(await screen.findByRole('heading', { name: 'Аналітика та звіти' })).toBeInTheDocument();
   fireEvent.click(screen.getByRole('button', { name: '← До фінансів' }));
   expect(screen.getByRole('button', { name: 'Записати витрату' })).toBeInTheDocument();

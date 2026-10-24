@@ -62,15 +62,16 @@ it('cycles only the stored historical UAH debit and pauses while the page is hid
     () => visibility as DocumentVisibilityState,
   );
   const { container } = render(<TransactionAmount transaction={foreign()} />);
-  const amount = () => container.querySelector('.finance-currency-value')!.textContent;
+  const amount = () =>
+    container.querySelector('.finance-currency-value[data-visible="true"]')!.textContent;
   expect(amount()).toMatch(/5,00.*USD|5,00.*\$/);
-  act(() => vi.advanceTimersByTime(3000));
+  act(() => vi.advanceTimersByTime(1500));
   expect(amount()).toContain('207,15');
   visibility = 'hidden';
   act(() => vi.advanceTimersByTime(6000));
   expect(amount()).toContain('207,15');
   visibility = 'visible';
-  act(() => vi.advanceTimersByTime(3000));
+  act(() => vi.advanceTimersByTime(1500));
   expect(amount()).not.toContain('207,15');
   expect(container.querySelector('.sr-only')).toHaveTextContent('207,15');
 });
@@ -126,6 +127,7 @@ function terminalFinance() {
     {
       ...foreign(),
       id: 'terminal',
+      at: new Date().toISOString(),
       currency: 'UAH',
       amountMinor: 50000,
       amountUah: 50000,
@@ -151,6 +153,33 @@ it('offers terminal classification inline and links own cash with a single confi
     ),
   );
   expect(postFinance).toHaveBeenCalledTimes(1);
+});
+it('keeps incoming topups green before and after their classification as own transfers', () => {
+  for (const kind of ['unclassified', 'transfer', 'income']) {
+    const { container, unmount } = render(
+      <TransactionAmount
+        transaction={{ ...foreign(), kind, amountMinor: 50000, amountUah: 50000, currency: 'UAH' }}
+      />,
+    );
+    expect(container.querySelector('.finance-transaction-amount')).toHaveClass('text-pos');
+    unmount();
+  }
+});
+it('prompts only for the current Kyiv day and displays the actual bank time', () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date('2026-10-24T21:05:00Z'));
+  const f = terminalFinance();
+  f.transactions[0]!.at = '2026-10-24T21:01:00Z';
+  f.transactions.push({
+    ...f.transactions[0]!,
+    id: 'yesterday',
+    at: '2026-10-24T20:59:00Z',
+    description: 'Термінал mono учора',
+  });
+  mount(<TerminalSuggestions finance={f} onOpen={() => {}} />);
+  expect(screen.getAllByRole('button', { name: 'Моя готівка' })).toHaveLength(1);
+  expect(screen.queryByText('Термінал mono учора ↗')).not.toBeInTheDocument();
+  expect(screen.getByText(/25 жовтня/)).toBeInTheDocument();
 });
 it('lets the user reject a suggested manual cash match when it belongs to a different transfer', async () => {
   const f = terminalFinance();

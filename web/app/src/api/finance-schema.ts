@@ -33,6 +33,7 @@ export const financeTxSchema = z.object({
   bankAmountChanged: z.boolean().optional(),
   bankCheckedAt: z.string().nullable().optional(),
   reference: z.string().nullable(),
+  balanceCoveredBy: z.string().nullable().optional(),
   personalTaxiType: z.string().nullable().optional(),
   attention: z
     .object({

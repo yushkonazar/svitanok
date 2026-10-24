@@ -385,7 +385,6 @@ export function FinanceScreen() {
               >
                 <path d="M4 4v16h16M8 16v-4m5 4V8m5 8V5" />
               </svg>
-              <span>Аналітика</span>
             </button>
           </div>
         }
@@ -478,7 +477,13 @@ export function FinanceScreen() {
             </strong>
             {nearest && (
               <button className="renewal-link" onClick={() => setDetailId(nearest.id)}>
-                {nearest.nextDate} · {nearest.name} ↗
+                <time dateTime={nearest.nextDate}>
+                  {new Date(nearest.nextDate + 'T12:00:00Z').toLocaleDateString('uk-UA', {
+                    day: 'numeric',
+                    month: 'short',
+                  })}
+                </time>
+                <span>{nearest.name} ↗</span>
               </button>
             )}
           </div>

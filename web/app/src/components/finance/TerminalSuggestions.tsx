@@ -3,6 +3,8 @@ import type { Finance } from '../../api/finance-schema.ts';
 import { isTerminalTopup } from '../../../../core/finance/display.mjs';
 import { moneyLabel } from '../../lib/financeView.ts';
 import { useFinanceAction } from './useFinanceAction.ts';
+import { kyivParts } from '../../../../core/finance/planning.mjs';
+import { useTick } from '../../lib/useTick.ts';
 export function TerminalSuggestions({
   finance,
   onOpen,
@@ -14,15 +16,18 @@ export function TerminalSuggestions({
     [confirmed, setConfirmed] = useState<string[]>([]),
     [separate, setSeparate] = useState<string[]>([]),
     [cashId, setCashId] = useState(finance.accounts.find((a) => a.kind === 'cash')?.id ?? '');
-  const candidates = finance.transactions.filter(isTerminalTopup).slice(0, 3),
+  const today = kyivParts(useTick(30_000)).date;
+  const candidates = finance.transactions
+      .filter((t) => isTerminalTopup(t) && kyivParts(Date.parse(t.at)).date === today)
+      .slice(0, 3),
     cash = finance.accounts.find((a) => a.id === cashId);
   if (!candidates.length) return null;
   return (
     <section className="renewal-card finance-terminal">
       <h2 className="font-bold">Уточнити поповнення</h2>
       <p className="renewal-chart-note mt-2">
-        Термінал розпізнано за описом. Джерело грошей обираєте ви; власне поповнення не створює
-        доходу.
+        Сьогоднішні поповнення з термінала. Джерело грошей обираєте ви; власне поповнення не створює
+        доходу. Старі операції можна уточнити в їхніх деталях.
       </p>
       {finance.accounts.filter((a) => a.kind === 'cash').length > 1 && (
         <label className="renewal-field mt-3">
@@ -62,6 +67,15 @@ export function TerminalSuggestions({
               </button>
               <b>{moneyLabel(t.amountUah!)}</b>
             </div>
+            <time className="renewal-muted" dateTime={t.at}>
+              {new Date(t.at).toLocaleString('uk-UA', {
+                timeZone: 'Europe/Kyiv',
+                day: 'numeric',
+                month: 'long',
+                hour: '2-digit',
+                minute: '2-digit',
+              })}
+            </time>
             <p className="renewal-muted mt-2">Це поповнення з вашої готівки?</p>
             {hold && (
               <label className="flex gap-2 mt-2">

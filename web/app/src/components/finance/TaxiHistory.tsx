@@ -198,18 +198,25 @@ export function TaxiHistory({
                         <span className="renewal-muted">{label}</span>
                         <strong>{moneyLabel(value)}</strong>
                         <span
-                          className={
+                          className={`finance-metric-change ${
                             delta === 0
                               ? 'renewal-muted'
                               : delta > 0
                                 ? 'finance-compare-up'
                                 : 'finance-compare-down'
-                          }
+                          }`}
                           data-intensity={Math.abs(pct ?? 0) >= 20 ? 'high' : 'soft'}
                         >
-                          {delta > 0 ? '↑ +' : delta < 0 ? '↓ ' : ''}
-                          {moneyLabel(delta)}
-                          {pct == null ? '' : ` · ${pct > 0 ? '+' : ''}${pct.toFixed(1)}%`}
+                          <span>
+                            {delta > 0 ? '↑ +' : delta < 0 ? '↓ ' : ''}
+                            {moneyLabel(delta)}
+                          </span>
+                          {pct != null && (
+                            <span className="finance-change-percent">
+                              {pct > 0 ? '+' : ''}
+                              {pct.toFixed(1)}%
+                            </span>
+                          )}
                         </span>
                       </div>
                     );
