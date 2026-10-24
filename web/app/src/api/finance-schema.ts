@@ -76,6 +76,7 @@ export const taxiEntrySchema = z.object({
   accountId: z.string().nullable(),
   note: z.string(),
   revision: z.number().int(),
+  dayComplete: z.boolean().optional(),
 });
 export const financeGoalSchema = z.object({
   id: z.string(),
@@ -85,6 +86,7 @@ export const financeGoalSchema = z.object({
   status: z.string(),
   planAmountMinor: money.nullable().optional(),
   planPeriod: z.enum(['day', 'week', 'month']).nullable().optional(),
+  planStartedAt: z.string().nullable().optional(),
 });
 export const financeBudgetSchema = z.object({
   id: z.string(),
@@ -129,6 +131,38 @@ export const financeSchema = z.object({
   ok: z.literal(true),
   version: z.number().int(),
   generatedAt: z.string(),
+  display: z
+    .object({
+      expenseThresholds: z.array(money),
+      currencyCycle: z.boolean(),
+      animations: z.boolean(),
+      expenseForecast: z.enum(['history', 'plan']),
+      savingWeekday: z.number().int(),
+    })
+    .optional(),
+  budgetVersions: z
+    .array(
+      z.object({
+        id: z.string(),
+        budgetId: z.string(),
+        validFrom: z.string(),
+        sequence: z.number().optional(),
+        definition: z.record(z.string(), z.unknown()),
+        removed: z.boolean(),
+      }),
+    )
+    .optional(),
+  events: z
+    .array(
+      z.object({
+        id: z.string(),
+        kind: z.string(),
+        at: z.string(),
+        seenAt: z.string().nullable(),
+        data: z.record(z.string(), z.unknown()),
+      }),
+    )
+    .optional(),
   bankSync: z
     .object({
       id: z.string(),

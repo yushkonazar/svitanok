@@ -62,6 +62,7 @@ export type FinanceFormKind =
 export interface FinanceFormRequest {
   kind: FinanceFormKind;
   id?: string;
+  defaults?: { category?: string; description?: string };
 }
 const TITLES: Record<FinanceFormKind, string> = {
   expense: 'Записати витрату',
@@ -163,10 +164,17 @@ function FinanceFormBody({
     creditMode: selectedAccount?.creditLimitSource === 'bank' ? 'bank' : 'manual',
     personalType: 'change',
     toAccountId: f.accounts.find((a) => a.kind === 'bank')?.id ?? '',
-    category: budget?.category ?? transaction?.category ?? payment?.category ?? 'продукти',
+    category:
+      request.defaults?.category ??
+      budget?.category ??
+      transaction?.category ??
+      payment?.category ??
+      'продукти',
     name: goal?.name ?? budget?.category ?? payment?.name ?? '',
     goalStatus: goal?.status ?? 'active',
-    description: request.kind === 'edit-transaction' ? (transaction?.description ?? '') : '',
+    description:
+      request.defaults?.description ??
+      (request.kind === 'edit-transaction' ? (transaction?.description ?? '') : ''),
     date: entryTime.date,
     time: `${String(entryTime.hour).padStart(2, '0')}:${String(entryTime.minute).padStart(2, '0')}`,
     cash: entry ? String(entry.netCashMinor / 100) : '',
@@ -176,6 +184,7 @@ function FinanceFormBody({
     tips: entry ? String(entry.tipsMinor / 100) : '',
     direct: entry ? String(entry.directMinor / 100) : '',
     paidWork: entry?.paidWorkMinor ? String(entry.paidWorkMinor / 100) : '',
+    dayComplete: String(entry?.dayComplete !== false),
     note: entry?.note ?? '',
     opening: '',
     accountKind: 'bank',
@@ -685,6 +694,7 @@ function FinanceFormBody({
           tipsMinor: inputMoney('tips', true),
           directMinor: inputMoney('direct', true),
           paidWorkMinor: inputMoney('paidWork', true),
+          dayComplete: v.dayComplete !== 'false',
           note: v.note,
         });
       } else if (request.kind === 'policy') {
@@ -1026,18 +1036,24 @@ function FinanceFormBody({
                 </div>
                 {f.policies.some((p) => p.periodStart) && (
                   <>
-                    {select('taxiPeriodKey', 'Авто й робочий період', [
-                      ['', 'Автоматично за датою й часом'],
-                      ...f.taxiWeeks
-                        .filter((w) => !w.settled)
-                        .map(
-                          (w) => [w.key, taxiPeriodLabel(w.key, f.policies)] as [string, string],
-                        ),
-                    ])}
                     <p className="renewal-chart-note">
-                      Якщо дописуєш дані попереднього авто після переходу, обери його період. Для
-                      нової роботи залиш «Автоматично».
+                      Авто й період визначаються за датою та часом.
                     </p>
+                    <details open={Boolean(entry?.periodKey)}>
+                      <summary className="renewal-link">Уточнити минулий період</summary>
+                      {select('taxiPeriodKey', 'Авто й робочий період', [
+                        ['', 'Автоматично за датою й часом'],
+                        ...f.taxiWeeks
+                          .filter((w) => !w.settled)
+                          .map(
+                            (w) => [w.key, taxiPeriodLabel(w.key, f.policies)] as [string, string],
+                          ),
+                      ])}
+                      <p className="renewal-chart-note">
+                        Якщо дописуєш дані попереднього авто після переходу, обери його період. Для
+                        нової роботи залиш «Автоматично».
+                      </p>
+                    </details>
                   </>
                 )}
                 {field('cash', 'Каса після комісії, ₴', 'text', 'Наприклад, 4000')}
@@ -1067,13 +1083,22 @@ function FinanceFormBody({
                     {entry &&
                       entry.directMinor > 0 &&
                       field('direct', 'Прямі замовлення в старому записі, ₴')}
-                    {field('paidWork', 'Робочі витрати, сплачені особисто з обраного рахунку, ₴')}
+                    {field('paidWork', 'Сплачено за парк · до відшкодування, ₴')}
                     <p className="renewal-muted">
-                      Для паливної картки парку залиш порожнім. Це поле списує кошти з ручного
-                      рахунку й враховує їх у розрахунку з парком; не дублюй ту саму витрату окремою
-                      операцією.
+                      Лише суми, які парк компенсує: поле списує ручний рахунок і змінює
+                      взаєморозрахунок. Мийку власним коштом без компенсації записуй як особисту
+                      витрату; вона не змінює касу чи заробіток таксі. Пальне з картки парку сюди не
+                      входить.
                     </p>
                     {field('note', 'Нотатка')}
+                    <label className="flex gap-3">
+                      <input
+                        type="checkbox"
+                        checked={v.dayComplete === 'false'}
+                        onChange={(e) => set('dayComplete', String(!e.target.checked))}
+                      />
+                      Ще працюю · день не завершений
+                    </label>
                   </div>
                 </details>
                 <p className="renewal-muted">

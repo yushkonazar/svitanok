@@ -14,6 +14,21 @@ export interface AnalyticsRequest {
 export const financeAnalyticsSchema = z.object({
   ok: z.literal(true),
   generatedAt: z.string(),
+  budgetAnalysis: z
+    .array(
+      z.object({
+        id: z.string(),
+        name: z.string(),
+        period: z.string(),
+        totalMinor: money,
+        historyKnown: z.boolean(),
+        definitionScope: z.string(),
+        points: z.array(
+          z.object({ date: z.string(), amountMinor: money, planMinor: money.nullable() }),
+        ),
+      }),
+    )
+    .optional(),
   selection: z.object({
     from: z.string(),
     to: z.string(),

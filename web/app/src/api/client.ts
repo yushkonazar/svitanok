@@ -202,6 +202,30 @@ export async function postNewsAction(
 export async function fetchFinance() {
   return readFinanceSnapshot();
 }
+export async function fetchFinanceProjection(days: number) {
+  const { projectFinances } = await import('../../../core/finance/projection.mjs');
+  if (!inTelegram()) return projectFinances(readFinanceDemo(), days);
+  const response = await fetch(`/api/finance?view=forecast&days=${days}`, {
+    headers: authHeaders(),
+    cache: 'no-store',
+  });
+  throwIfSessionExpired(response);
+  if (!response.ok) throw new Error('Не вдалося оновити прогноз. Показано останній розрахунок.');
+  const value = await response.json();
+  if (
+    !value ||
+    !Array.isArray(value.daily) ||
+    value.daily.length !== days ||
+    value.daily.some(
+      (d: Record<string, unknown>) =>
+        !Number.isSafeInteger(d.balance) ||
+        !Number.isSafeInteger(d.lower) ||
+        !Number.isSafeInteger(d.upper),
+    )
+  )
+    throw new Error('Не вдалося перевірити дані прогнозу');
+  return value as ReturnType<typeof projectFinances>;
+}
 async function readFinanceSnapshot(signal?: AbortSignal) {
   if (!inTelegram()) return { finance: readFinanceDemo(), demo: true };
   const res = await fetch('/api/finance', {
@@ -243,10 +267,14 @@ export async function fetchFinanceAnalytics(input: AnalyticsRequest) {
   if (!inTelegram()) {
     const f = readFinanceDemo(),
       selection = analyticsSelection(params);
+    const { budgetAnalysisAccumulator } = await import('../../../core/finance/budget-analysis.mjs');
+    const budgetAcc = budgetAnalysisAccumulator(f, selection);
+    f.transactions.forEach((t) => budgetAcc.consume(t));
     return financeAnalyticsSchema.parse({
       ok: true,
       generatedAt: new Date().toISOString(),
       ...buildExpenseAnalytics(f.transactions, selection, f.merchantAliases),
+      budgetAnalysis: budgetAcc.finish(),
       report: buildFinanceReport(f, selection.from, selection.to),
       reportScope: 'all-accounts',
       coverage: {

@@ -23,6 +23,7 @@ vi.mock('../../api/client.ts', async (original) => ({
 const NOW = Date.parse('2026-10-14T15:00:00Z');
 let finance: Finance;
 beforeEach(() => {
+  sessionStorage.clear();
   vi.spyOn(Date, 'now').mockReturnValue(NOW);
   vi.spyOn(window, 'scrollTo').mockImplementation(() => {});
   resetFinanceDemo();
@@ -106,6 +107,81 @@ beforeEach(() => {
   });
   vi.mocked(postFinance).mockResolvedValue({ finance, demo: false });
 });
+it('starts with six distinct analysis sections and keeps account reconciliation secondary', async () => {
+  render(
+    <QueryClientProvider client={new QueryClient()}>
+      <FinanceAnalytics finance={finance} onBack={() => {}} />
+    </QueryClientProvider>,
+  );
+  const nav = screen.getByRole('navigation', { name: 'Розділи фінансової аналітики' });
+  expect(within(nav).getAllByRole('button')).toHaveLength(6);
+  expect(within(nav).getByRole('button', { name: 'Огляд' })).toHaveAttribute(
+    'aria-pressed',
+    'true',
+  );
+  expect(screen.queryByRole('button', { name: 'Інші розділи аналітики' })).not.toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Рахунки та звірка ↗' })).toBeInTheDocument();
+});
+it('shows only the remainder in Other categories instead of repeating the first five', async () => {
+  finance.transactions.push(
+    ...['авто', 'транспорт', 'спорт', 'цифрові сервіси', 'інше'].map((category, i) => ({
+      ...finance.transactions[0]!,
+      id: `extra-${i}`,
+      category,
+      amountMinor: -(i + 1) * 1000,
+      amountUah: -(i + 1) * 1000,
+    })),
+  );
+  open();
+  await screen.findByRole('region', { name: 'Підсумок витрат' });
+  fireEvent.click(screen.getByRole('button', { name: /Інші категорії.*30,00/ }));
+  const dialog = screen.getByRole('dialog', { name: 'Інші категорії витрат' });
+  expect(within(dialog).getAllByRole('button')).toHaveLength(2);
+  expect(within(dialog).queryByText('Кафе та ресторани')).not.toBeInTheDocument();
+  expect(within(dialog).queryByText('Продукти та супермаркети')).not.toBeInTheDocument();
+});
+it('restores a chosen range and filters on reopening while allowing an explicit deep link to override them', async () => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const first = render(
+    <QueryClientProvider client={client}>
+      <FinanceAnalytics finance={finance} initialTab="expenses" onBack={() => {}} />
+    </QueryClientProvider>,
+  );
+  await screen.findByRole('region', { name: 'Підсумок витрат' });
+  fireEvent.click(screen.getByRole('button', { name: '30 днів' }));
+  fireEvent.change(screen.getByLabelText('Рахунки'), { target: { value: 'cash' } });
+  await waitFor(() =>
+    expect(fetchFinanceAnalytics).toHaveBeenLastCalledWith(
+      expect.objectContaining({ account: 'cash', from: '2026-09-15' }),
+    ),
+  );
+  first.unmount();
+  const reopened = render(
+    <QueryClientProvider client={new QueryClient()}>
+      <FinanceAnalytics finance={finance} restoreContext onBack={() => {}} />
+    </QueryClientProvider>,
+  );
+  await screen.findByRole('region', { name: 'Підсумок витрат' });
+  expect(screen.getByLabelText('Рахунки')).toHaveValue('cash');
+  expect(screen.getByRole('button', { name: '30 днів' })).toHaveAttribute('aria-pressed', 'true');
+  reopened.unmount();
+  render(
+    <QueryClientProvider client={new QueryClient()}>
+      <FinanceAnalytics
+        finance={finance}
+        restoreContext
+        initialTab="expenses"
+        initialRequest={{ from: '2026-10-01', to: '2026-10-07', account: 'all' }}
+        onBack={() => {}}
+      />
+    </QueryClientProvider>,
+  );
+  await waitFor(() =>
+    expect(fetchFinanceAnalytics).toHaveBeenLastCalledWith(
+      expect.objectContaining({ account: 'all', from: '2026-10-01', to: '2026-10-07' }),
+    ),
+  );
+});
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
@@ -118,7 +194,7 @@ function open() {
     <QueryClientProvider
       client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
     >
-      <FinanceAnalytics finance={finance} onBack={back} />
+      <FinanceAnalytics finance={finance} initialTab="expenses" onBack={back} />
     </QueryClientProvider>,
   );
   return back;
@@ -168,7 +244,7 @@ it('applies a confirmed filter to totals and the operation explorer with identic
 it('selects a calendar day and opens only that day without closing or resetting the dashboard', async () => {
   open();
   await screen.findByRole('region', { name: 'Підсумок витрат' });
-  fireEvent.click(screen.getByRole('button', { name: 'Динаміка' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Динаміка й календар' }));
   fireEvent.change(screen.getByLabelText('Обрати точку'), { target: { value: '2026-10-09' } });
   fireEvent.click(screen.getByRole('button', { name: 'Операції обраного проміжку' }));
   await waitFor(() =>
@@ -178,7 +254,10 @@ it('selects a calendar day and opens only that day without closing or resetting 
     ),
   );
   fireEvent.click(screen.getByRole('button', { name: 'Закрити операції' }));
-  expect(screen.getByRole('button', { name: 'Динаміка' })).toHaveAttribute('aria-pressed', 'true');
+  expect(screen.getByRole('button', { name: 'Динаміка й календар' })).toHaveAttribute(
+    'aria-pressed',
+    'true',
+  );
   expect(screen.getByLabelText('Обрати точку')).toHaveValue('2026-10-09');
   fireEvent.click(screen.getByText('Календар витрат'));
   fireEvent.click(screen.getByLabelText(/2026-10-10: 200,00\s₴/));
@@ -199,12 +278,7 @@ it('validates custom dates before a request and distinguishes current account st
   expect(await screen.findByRole('alert')).toHaveTextContent(/Некорект/);
   expect(fetchFinanceAnalytics).toHaveBeenCalledTimes(1);
   fireEvent.click(screen.getByRole('button', { name: 'Скасувати' }));
-  fireEvent.click(screen.getByRole('button', { name: 'Інші розділи аналітики' }));
-  fireEvent.click(
-    within(screen.getByRole('dialog', { name: 'Розділи аналітики' })).getByRole('button', {
-      name: /Рахунки/,
-    }),
-  );
+  fireEvent.click(screen.getByRole('button', { name: 'Рахунки та звірка ↗' }));
   expect(screen.getByText(/Поточний стан на/)).toBeInTheDocument();
   expect(screen.queryByRole('button', { name: 'Власні дати' })).not.toBeInTheDocument();
   expect(screen.getByText('Кредитний ліміт')).toBeInTheDocument();
@@ -261,7 +335,7 @@ it('draws goal returns below zero instead of hiding negative values', () => {
   expect(Number(rects[1]?.getAttribute('height'))).toBeGreaterThan(0);
   expect(rects[1]?.getAttribute('fill')).toBe('var(--color-neg)');
 });
-it('opens the exact largest transaction and disables empty quality links', async () => {
+it('opens the exact largest transaction and hides empty quality links', async () => {
   open();
   await screen.findByRole('region', { name: 'Підсумок витрат' });
   const largest = screen.getByRole('heading', { name: 'Найбільша оплата' }).closest('section')!;
@@ -273,13 +347,13 @@ it('opens the exact largest transaction and disables empty quality links', async
     ),
   );
   fireEvent.click(screen.getByRole('button', { name: 'Закрити операції' }));
-  fireEvent.click(screen.getByText('Якість і джерела даних'));
-  expect(screen.getByRole('button', { name: 'Без гривневої суми: 0' })).toBeDisabled();
+  fireEvent.click(screen.getByText(/Якість і джерела даних/));
+  expect(screen.queryByRole('button', { name: 'Без гривневої суми: 0' })).not.toBeInTheDocument();
 });
 it('drills cumulative and weekday graphs into the correct ranges rather than an unrelated operation', async () => {
   open();
   await screen.findByRole('region', { name: 'Підсумок витрат' });
-  fireEvent.click(screen.getByRole('button', { name: 'Динаміка' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Динаміка й календар' }));
   fireEvent.change(screen.getByLabelText('День накопиченої суми'), {
     target: { value: '2026-10-10' },
   });

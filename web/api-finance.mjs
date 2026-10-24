@@ -10,6 +10,8 @@ import {
 import { json, readJsonBody } from './http-core.mjs';
 import { checkOwnerRead, checkPrimaryOwner, mutationInitData } from './auth-core.mjs';
 import { synchronizePlanFinance } from './core/motivation/finance-link.mjs';
+import { projectFinances } from './core/finance/projection.mjs';
+import { MODEL_VERSION } from './core/finance/adaptive-model.mjs';
 import {
   readFinanceWorkspace,
   executeFinanceCommand,
@@ -34,7 +36,64 @@ export async function handleFinance(request, env) {
     const from = url.searchParams.get('from'),
       to = url.searchParams.get('to');
     let result;
-    if (
+    if (!body && url.searchParams.get('view') === 'forecast') {
+      const db = env.DB;
+      if (!db) throw new Error('Finance database unavailable');
+      const days = Number(url.searchParams.get('days') ?? 7);
+      if (!Number.isInteger(days) || days < 1 || days > 93)
+        throw new FinanceValidation('Обери від 1 до 93 днів прогнозу');
+      const finance = await readFinanceWorkspace(env, nowMs);
+      const bytes = new TextEncoder().encode(
+        JSON.stringify([
+          finance.version,
+          finance.display,
+          finance.forecast,
+          finance.reserveMinor,
+          finance.policies,
+          finance.settlements,
+          finance.accounts,
+          finance.transactions,
+          finance.taxiEntries,
+          finance.goals,
+          finance.goalMoves,
+          finance.budgets,
+          finance.payments,
+        ]),
+      );
+      const digest = await crypto.subtle.digest('SHA-256', bytes);
+      const source = Array.from(new Uint8Array(digest), (n) =>
+        n.toString(16).padStart(2, '0'),
+      ).join('');
+      const key = `${MODEL_VERSION}:${source}:${days}:${Math.floor(nowMs / 3600000)}`;
+      const cached = await db
+        .prepare('SELECT result_json FROM finance_forecast_runs WHERE id = ?')
+        .bind(key)
+        .first();
+      result = cached
+        ? JSON.parse(String(cached.result_json))
+        : projectFinances(finance, days, nowMs);
+      if (!cached) {
+        await db.batch([
+          db
+            .prepare(
+              'INSERT INTO finance_forecast_runs(id,as_of,source_key,algorithm_version,horizon_days,result_json) VALUES(?,?,?,?,?,?) ON CONFLICT DO NOTHING',
+            )
+            .bind(
+              key,
+              new Date(nowMs).toISOString(),
+              source,
+              result.algorithmVersion,
+              days,
+              JSON.stringify(result),
+            ),
+          db
+            .prepare(
+              'DELETE FROM finance_forecast_runs WHERE id NOT IN (SELECT id FROM finance_forecast_runs ORDER BY as_of DESC LIMIT 5000)',
+            )
+            .bind(),
+        ]);
+      }
+    } else if (
       !body &&
       ['analytics', 'analytics-operations', 'analytics-merchants'].includes(
         url.searchParams.get('view') ?? '',

@@ -22,8 +22,8 @@ export function ForecastSteps({
     'Вільні кошти зараз',
     'Очікувані надходження',
     'Майбутні й непідтверджені оплати',
-    'Ще заплановано на повсякденні витрати',
-    'Майбутні відкладання',
+    'Очікувані повсякденні витрати',
+    'Очікувані відкладання',
   ];
   const amounts = [
     result.available,
@@ -102,6 +102,17 @@ export function ForecastSteps({
             )}
             {detail === 1 && (
               <>
+                {result.taxi.count > 0 && (
+                  <div className="renewal-inset mt-3">
+                    <b>
+                      Таксі · очікувана зміна вільних коштів:{' '}
+                      {moneyLabel(result.taxi.estimateMinor)}
+                    </b>
+                    <p className="renewal-chart-note mt-2">
+                      {result.taxi.reason} Записаних робочих днів: {result.taxi.count}.
+                    </p>
+                  </div>
+                )}
                 {result.incomes.map((i, n) => (
                   <div className="analytics-row" key={n}>
                     <span>
@@ -166,8 +177,9 @@ export function ForecastSteps({
                     </div>
                   ))}
                 <p className="renewal-chart-note mt-3">
-                  Минулі витрати вже змінили баланс. Тут лише ще не використана частина ввімкнених
-                  планів.
+                  Минулі витрати вже змінили баланс. Тут оцінка майбутніх витрат за історією або
+                  залишком вибраних планів. Пов’язані оплати за графіками виключені з навчання, щоб
+                  не рахувати їх удруге.
                 </p>
               </>
             )}
@@ -175,7 +187,14 @@ export function ForecastSteps({
               <>
                 {result.goalPlans.map((g) => (
                   <div className="analytics-row" key={g.id}>
-                    <span>Ціль: {g.name}</span>
+                    <span>
+                      Ціль: {g.name}
+                      <small>
+                        {g.description} План {moneyLabel(g.target)} /{' '}
+                        {g.period === 'week' ? 'тиждень' : g.period === 'month' ? 'місяць' : 'день'}
+                        ; очікуваний темп {g.pace}%.
+                      </small>
+                    </span>
                     <b>{moneyLabel(g.amount)}</b>
                   </div>
                 ))}

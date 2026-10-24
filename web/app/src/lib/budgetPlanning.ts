@@ -1,42 +1,14 @@
 import type { Finance } from '../api/finance-schema.ts';
-import {
-  kyivParts,
-  kyivInstant,
-  shiftDate,
-  share,
-  sumMoney,
-} from '../../../core/finance/planning.mjs';
+import { kyivParts, kyivInstant, sumMoney } from '../../../core/finance/planning.mjs';
 export type Budget = Finance['budgets'][number];
-export function periodWindow(period: Budget['period'], date: string) {
-  if (period === 'day') return { start: date, end: date, days: 1 };
-  if (period === 'week') {
-    const offset = (new Date(date + 'T12:00:00Z').getUTCDay() + 6) % 7;
-    const start = shiftDate(date, -offset);
-    return { start, end: shiftDate(start, 6), days: 7 };
-  }
-  const days = new Date(
-    Date.UTC(Number(date.slice(0, 4)), Number(date.slice(5, 7)), 0),
-  ).getUTCDate();
-  return { start: date.slice(0, 7) + '-01', end: date.slice(0, 7) + '-' + days, days };
-}
-export function budgetLimit(
-  b: Budget,
-  budgets: Budget[],
-  date: string,
-  seen = new Set<string>(),
-): number {
-  if (seen.has(b.id)) return 0;
-  seen.add(b.id);
-  if (b.limitMinor != null) return b.limitMinor;
-  const parent = budgets.find((p) => p.id === b.parentId);
-  const base = parent
-    ? Math.round(
-        (budgetLimit(parent, budgets, date, seen) * periodWindow(b.period, date).days) /
-          periodWindow(parent.period, date).days,
-      )
-    : (b.incomeBaseMinor ?? 0);
-  return share(base, b.shareBps ?? 0);
-}
+export {
+  budgetPeriod as periodWindow,
+  budgetPlanLimit as budgetLimit,
+} from '../../../core/finance/budget-history.mjs';
+import {
+  budgetPeriod as periodWindow,
+  budgetPlanLimit as budgetLimit,
+} from '../../../core/finance/budget-history.mjs';
 export function budgetRows(f: Finance, nowMs: number) {
   const date = kyivParts(nowMs).date;
   return f.budgets.map((b) => {

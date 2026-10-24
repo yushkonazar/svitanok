@@ -30,8 +30,8 @@ export function GoalHistory({
   ) => void;
   onMove: (id: string) => void;
 }) {
-  const [all, setAll] = useState(request.all ?? false),
-    [limit, setLimit] = useState(request.limit ?? 50);
+  const all = request.all ?? true;
+  const [limit, setLimit] = useState(request.limit ?? 50);
   const rows = finance.goalMoves
     .filter(
       (m) =>
@@ -64,26 +64,6 @@ export function GoalHistory({
         <p className="renewal-chart-note mt-3">
           {all ? 'Усі записані внески' : financeRange(request.from, request.to)}
         </p>
-        <div className="renewal-segments mt-3">
-          <button
-            aria-pressed={!all}
-            onClick={() => {
-              setAll(false);
-              setLimit(50);
-            }}
-          >
-            За період
-          </button>
-          <button
-            aria-pressed={all}
-            onClick={() => {
-              setAll(true);
-              setLimit(50);
-            }}
-          >
-            Уся історія
-          </button>
-        </div>
         <div className="renewal-metrics">
           <div className="renewal-metric">
             <span>Резерв / повернення</span>

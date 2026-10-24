@@ -39,6 +39,23 @@ export function TaxiHistory({
     ? calculateTaxiWeek(f.taxiEntries, f.policies, taxiPeriodStart(key, f.policies))
     : null;
   const settlement = f.settlements.find((s) => s.weekKey === key);
+  const previousWeek = week
+    ? f.taxiWeeks
+        .filter(
+          (w) =>
+            w.closed &&
+            w.complete &&
+            taxiPeriodStart(w.key, f.policies) < taxiPeriodStart(week.key, f.policies),
+        )
+        .sort((a, b) => taxiPeriodStart(b.key, f.policies) - taxiPeriodStart(a.key, f.policies))[0]
+    : null;
+  const previous = previousWeek
+    ? calculateTaxiWeek(f.taxiEntries, f.policies, taxiPeriodStart(previousWeek.key, f.policies))
+    : null;
+  const workdays = (entries: { at: string }[]) =>
+    new Set(entries.map((e) => kyivParts(Date.parse(e.at)).date)).size;
+  const days = workdays(calculated?.entries ?? []),
+    previousDays = workdays(previous?.entries ?? []);
   const expected = settlement?.expectedMinor ?? week?.settlementMinor ?? 0;
   const total = (field: 'commissionMinor' | 'fuelMinor' | 'tipsMinor') =>
     sumMoney(calculated?.entries.map((e) => e[field]) ?? []);
@@ -153,6 +170,59 @@ export function TaxiHistory({
                 </div>
               ))}
             </div>
+            {previous && calculated && week.complete && days > 0 && previousDays > 0 && (
+              <section className="renewal-inset">
+                <h3 className="font-bold">Порівняння з попередньою перезмінкою</h3>
+                <p className="renewal-chart-note mt-2">
+                  {taxiPeriodLabel(previousWeek!.key, f.policies)} · {days} проти {previousDays}{' '}
+                  записаних робочих днів. Порівнюємо на один робочий день, щоб довжина періоду не
+                  спотворювала результат.
+                </p>
+                <div className="renewal-metrics mt-3">
+                  {(
+                    [
+                      [
+                        'Чиста каса за робочий день',
+                        calculated.netCashMinor,
+                        previous.netCashMinor,
+                      ],
+                      ['Заробіток за робочий день', calculated.earnedMinor, previous.earnedMinor],
+                    ] as const
+                  ).map(([label, current, past]) => {
+                    const value = Math.round(current / days),
+                      base = Math.round(past / previousDays),
+                      delta = value - base,
+                      pct = base ? (delta / Math.abs(base)) * 100 : null;
+                    return (
+                      <div className="renewal-metric" key={label}>
+                        <span className="renewal-muted">{label}</span>
+                        <strong>{moneyLabel(value)}</strong>
+                        <span
+                          className={
+                            delta === 0
+                              ? 'renewal-muted'
+                              : delta > 0
+                                ? 'finance-compare-up'
+                                : 'finance-compare-down'
+                          }
+                          data-intensity={Math.abs(pct ?? 0) >= 20 ? 'high' : 'soft'}
+                        >
+                          {delta > 0 ? '↑ +' : delta < 0 ? '↓ ' : ''}
+                          {moneyLabel(delta)}
+                          {pct == null ? '' : ` · ${pct > 0 ? '+' : ''}${pct.toFixed(1)}%`}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+                {taxiVehicleName(previous.from, f.policies) !==
+                  taxiVehicleName(calculated.from, f.policies) && (
+                  <p className="renewal-chart-note mt-3">
+                    Авто змінилося: результат також залежить від різних умов роботи.
+                  </p>
+                )}
+              </section>
+            )}
             <details className="renewal-inset">
               <summary className="renewal-link cursor-pointer">Як пораховано заробіток</summary>
               <div className="flex flex-col gap-3 mt-3">

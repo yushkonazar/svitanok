@@ -101,6 +101,6 @@ it('includes child budget categories once and opens a goal contribution by its l
   expect(onTransaction).toHaveBeenCalledWith('bank-id', '2026-10-14', {
     limit: 50,
     scrollTop: 0,
-    all: false,
+    all: true,
   });
 });

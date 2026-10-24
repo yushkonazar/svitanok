@@ -51,6 +51,45 @@ describe('finance preview uses the real money rules', () => {
       before.transactions.filter((t) => t.kind === 'income').length,
     );
   });
+  it('uses the same transfer reference as the server and undoes a demo terminal credit once', async () => {
+    const seeded = readFinanceDemo();
+    seeded.transactions.unshift({
+      ...seeded.transactions[0]!,
+      id: 'demo-terminal',
+      bank: true,
+      accountId: 'mono:demo',
+      kind: 'unclassified',
+      amountMinor: 40000,
+      amountUah: 40000,
+      description: 'Термінал mono',
+      reference: null,
+    });
+    localStorage.setItem('svitanok:finance-demo:v1', JSON.stringify(seeded));
+    vi.resetModules();
+    const demo = await import('./finance-demo.ts');
+    const before = demo.readFinanceDemo();
+    demo.writeFinanceDemo({
+      id: 'demo-terminal-link',
+      version: before.version,
+      type: 'bank-transfer',
+      payload: { transactionId: 'demo-terminal', accountId: 'cash' },
+    });
+    const linked = demo.readFinanceDemo();
+    expect(
+      linked.transactions.find((t) => t.id === 'bank-transfer:demo-terminal-link')!.reference,
+    ).toBe('demo-terminal-link');
+    const undo = {
+      id: 'demo-terminal-undo',
+      version: linked.version,
+      type: 'bank-transfer-undo',
+      payload: { transactionId: 'demo-terminal' },
+    };
+    demo.writeFinanceDemo(undo);
+    demo.writeFinanceDemo(undo);
+    expect(demo.readFinanceDemo().accounts.find((a) => a.id === 'cash')!.balanceMinor).toBe(
+      before.accounts.find((a) => a.id === 'cash')!.balanceMinor,
+    );
+  });
   it('tracks the exact agreed overpayment through the last installment', () => {
     const before = readFinanceDemo();
     writeFinanceDemo({

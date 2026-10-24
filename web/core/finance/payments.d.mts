@@ -31,6 +31,14 @@ export function interestDebtPayment(
   interestMinor: number;
 } | null;
 export function isDebtKind(kind: string): boolean;
+export interface ScheduledPayment {
+  date: string;
+  payment: number;
+  remaining: number | null;
+  overpayment?: number;
+  extraRemaining?: number;
+}
+export function paymentSchedule(payment: any, cap?: number): ScheduledPayment[];
 export function estimateRemaining(
   amountMinor: number,
   count: number,

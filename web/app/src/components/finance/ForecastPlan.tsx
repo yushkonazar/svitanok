@@ -1,12 +1,13 @@
-import { useRef, useState } from 'react';
-import { useQueryClient } from '@tanstack/react-query';
+import { useRef, useState, useMemo } from 'react';
+import { useQueryClient, useQuery } from '@tanstack/react-query';
 import type { Finance, FinanceCommand } from '../../api/finance-schema.ts';
-import { postFinance } from '../../api/client.ts';
+import { postFinance, fetchFinanceProjection } from '../../api/client.ts';
 import { FINANCE_QUERY } from '../../api/finance-hooks.ts';
 import { financeForecast } from '../../lib/financeForecast.ts';
 import { periodWindow } from '../../lib/budgetPlanning.ts';
 import { moneyLabel } from '../../lib/financeView.ts';
-import { kyivParts, parseMoney } from '../../../../core/finance/planning.mjs';
+import { kyivParts, parseMoney, shiftDate } from '../../../../core/finance/planning.mjs';
+import { ProjectionChart } from './ProjectionChart.tsx';
 import { Sheet } from '../ui/Sheet.tsx';
 import { ForecastSteps } from './ForecastSteps.tsx';
 import { taxiWeek } from '../../../../core/finance/planning.mjs';
@@ -24,22 +25,68 @@ export function ForecastPlan({
   const [period, setPeriod] = useState(f.policies.length ? 'handover' : 'week'),
     [editing, setEditing] = useState(false);
   const today = kyivParts(nowMs).date;
+  const [customDate, setCustomDate] = useState(shiftDate(today, 13));
   const days =
-    period === 'handover'
+    period === 'custom'
       ? Math.max(
           1,
-          Math.round(
-            (Date.parse(kyivParts(taxiWeek(nowMs, f.policies).to).date) - Date.parse(today)) /
-              86400000,
-          ) + 1,
+          Math.min(93, Math.round((Date.parse(customDate) - Date.parse(today)) / 86400000) + 1),
         )
-      : period === '7'
-        ? 7
-        : Math.round(
-            (Date.parse(periodWindow(period as 'week' | 'month', today).end) - Date.parse(today)) /
-              86400000,
-          ) + 1;
-  const result = financeForecast(f, days, nowMs);
+      : period === 'handover'
+        ? Math.max(
+            1,
+            Math.round(
+              (Date.parse(kyivParts(taxiWeek(nowMs, f.policies).to).date) - Date.parse(today)) /
+                86400000,
+            ) + 1,
+          )
+        : period === '7'
+          ? 7
+          : Math.round(
+              (Date.parse(periodWindow(period as 'week' | 'month', today).end) -
+                Date.parse(today)) /
+                86400000,
+            ) + 1;
+  const local = useMemo(() => financeForecast(f, days, nowMs), [f, days, nowMs]);
+  const forecast = useQuery({
+    queryKey: [
+      ...FINANCE_QUERY,
+      'projection',
+      days,
+      f.version,
+      f.generatedAt,
+      f.bankSync?.completedAt,
+      Math.floor(nowMs / 60000),
+    ],
+    queryFn: () => fetchFinanceProjection(days),
+    staleTime: 60000,
+    retry: 1,
+    refetchOnWindowFocus: false,
+  });
+  const result = forecast.data ?? local;
+  const [comparison, setComparison] = useState(() => ({
+    finance: f,
+    days,
+    baseline: local,
+    changes: [] as string[],
+  }));
+  if (comparison.finance !== f || comparison.days !== days) {
+    const changes =
+      comparison.days === days
+        ? (
+            [
+              ['Кошти зараз', result.available - comparison.baseline.available],
+              ['Очікувані надходження', result.expectedIncome - comparison.baseline.expectedIncome],
+              ['Відомі оплати', result.obligations - comparison.baseline.obligations],
+              ['Повсякденні витрати', result.plannedExpense - comparison.baseline.plannedExpense],
+              ['Очікувані внески', result.saving - comparison.baseline.saving],
+            ] as const
+          )
+            .filter(([, delta]) => delta !== 0)
+            .map(([label, delta]) => `${label}: ${delta > 0 ? '+' : ''}${moneyLabel(delta)}`)
+        : [];
+    setComparison({ finance: f, days, baseline: result, changes });
+  }
   const fmt = (date: string) =>
     new Date(date + 'T12:00:00Z').toLocaleDateString('uk-UA', { day: 'numeric', month: 'long' });
   return (
@@ -52,12 +99,34 @@ export function ForecastPlan({
           ['week', 'До неділі'],
           ['7', '7 днів'],
           ['month', 'До кінця місяця'],
+          ['custom', 'До дати'],
         ].map(([id, label]) => (
           <button key={id} aria-pressed={period === id} onClick={() => setPeriod(id)}>
             {label}
           </button>
         ))}
       </div>
+      {period === 'custom' && (
+        <label className="renewal-field mt-3">
+          Кінцева дата
+          <input
+            type="date"
+            min={today}
+            max={shiftDate(today, 92)}
+            value={customDate}
+            onChange={(e) => {
+              if (e.target.value)
+                setCustomDate(
+                  e.target.value < today
+                    ? today
+                    : e.target.value > shiftDate(today, 92)
+                      ? shiftDate(today, 92)
+                      : e.target.value,
+                );
+            }}
+          />
+        </label>
+      )}
       <p className="renewal-muted mt-3">
         Від сьогодні до {fmt(result.until)} · {days} дн.
       </p>
@@ -69,6 +138,44 @@ export function ForecastPlan({
       <p className="renewal-muted">
         Орієнтовні вільні кошти після майбутніх платежів, бюджетів і відкладань.
       </p>
+      {result.minimum && (
+        <p className={result.minimum.amount < 0 ? 'text-neg mt-3' : 'renewal-inset mt-3'}>
+          Найменший очікуваний залишок: <b>{moneyLabel(result.minimum.amount)}</b> ·{' '}
+          {fmt(result.minimum.date)}
+        </p>
+      )}
+      <p className="renewal-chart-note mt-2">
+        Перераховано{' '}
+        {new Date(result.asOf).toLocaleString('uk-UA', {
+          timeZone: 'Europe/Kyiv',
+          dateStyle: 'short',
+          timeStyle: 'short',
+        })}
+        .{forecast.isFetching ? ' Оновлюю…' : ''}
+      </p>
+      {forecast.error && (
+        <p role="status" className="renewal-chart-note">
+          {forecast.error.message}
+        </p>
+      )}
+      {comparison.changes.length > 0 && (
+        <p className="renewal-inset mt-3" role="status">
+          Прогноз оновився після зміни обліку. {comparison.changes.join(' · ')}.
+        </p>
+      )}
+      <ProjectionChart projection={result} />
+      {result.unlinkedPaymentCount > 0 && (
+        <div className="renewal-inset mt-3">
+          <p>
+            У збереженій історії є {result.unlinkedPaymentCount} оплат розстрочок або кредитів без
+            прив’язки. Вони не повторюються як щоденні витрати. Перевірте, чи всі майбутні оплати
+            враховано у графіках.
+          </p>
+          <button className="renewal-link mt-2" onClick={onCalendar}>
+            Перевірити графіки оплат ↗
+          </button>
+        </div>
+      )}
       <ForecastSteps result={result} finance={f} onPayment={onPayment} />
       {f.policies.length > 0 && (
         <div className="renewal-inset mt-3 text-sm">
@@ -78,13 +185,14 @@ export function ForecastPlan({
             <p className="renewal-muted mt-2">
               Сценарії: {moneyLabel(result.taxi.lowerMinor ?? 0)} —{' '}
               {moneyLabel(result.taxi.upperMinor ?? 0)}. Повних попередніх періодів:{' '}
-              {result.taxi.historyPeriods}. Це діапазон минулих сценаріїв, а не гарантований дохід.
+              {result.taxi.historyPeriods}. Це сценарна оцінка, а не гарантований дохід.
             </p>
           )}
           {result.taxiCovered && (
             <p className="renewal-muted mt-2">
-              На цю дату вже є ручне надходження «Таксі» або без джерела. Воно замінює автоматичну
-              оцінку; інше надходження можна позначити окремо.
+              Ручні надходження «Таксі» та старі надходження без уточненого джерела замінюють
+              розрахунок із парком у відповідні дати. Для іншого доходу оберіть джерело «Інший
+              дохід».
             </p>
           )}
           <p className="renewal-muted mt-2">
@@ -108,8 +216,8 @@ export function ForecastPlan({
       )}
       {!result.hasPlans && (
         <p className="renewal-inset text-sm mt-3">
-          Поки враховано лише відомі платежі. Увімкни «Включати у прогноз» у потрібних бюджетах, щоб
-          додати харчування та інші витрати.
+          Для повсякденних витрат і внесків поки недостатньо даних. Додай історію або налаштуй плани
+          витрат і цілей.
         </p>
       )}
       {result.result != null && result.result < 0 && (
@@ -129,7 +237,8 @@ export function ForecastPlan({
           ))}
           {result.goalPlans.map((g) => (
             <p className="renewal-muted" key={g.id}>
-              Ціль «{g.name}»: {moneyLabel(g.amount)}
+              Ціль «{g.name}»: {moneyLabel(g.amount)} · {g.description}{' '}
+              {g.gap > 0 ? `Різниця до обраного темпу: ${moneyLabel(g.gap)}.` : ''}
             </p>
           ))}
           {result.incomes.map((i, n) => (
@@ -138,14 +247,26 @@ export function ForecastPlan({
             </p>
           ))}
           <p className="renewal-chart-note">
-            Невитрачений ліміт розподіляється на решту днів поточного періоду; новий період
-            починається з повного плану. Минулі витрати вже змінили залишки й удруге не
-            віднімаються. Внески, уже переказані в банку, та резерви цілей теж не віднімаємо
-            повторно. Прогноз не виконує платежів; незаплановані витрати й майбутні зміни таксі
-            невідомі. Дохід, указаний як база бюджету, не є авансовим надходженням. Майбутні гроші
-            додаються через «Планові надходження» та окремо показану оцінку таксі на дату
-            перезмінки.
+            Оцінка змінних витрат адаптується до історії. Відомі платежі рахуються за графіками;
+            очікувані внески мають гнучкий час без дедлайнів. Власні перекази, минулі витрати та вже
+            враховані резерви не віднімаються вдруге. Прогноз не виконує реальних платежів.
           </p>
+          {result.plans.map((p) => (
+            <p key={`model:${p.id}`} className="renewal-chart-note">
+              {p.name}:{' '}
+              {p.model === 'plan'
+                ? 'За планом'
+                : p.model === 'kalman-weekly'
+                  ? 'Адаптивний рівень і ритм тижня'
+                  : 'Адаптивний рівень ETS'}{' '}
+              · записаних днів {p.count}.
+            </p>
+          ))}
+          {result.warnings.map((w) => (
+            <p key={w} className="renewal-chart-note">
+              {w}
+            </p>
+          ))}
         </div>
       </details>
       <div className="finance-tool-grid mt-4">
@@ -260,7 +381,7 @@ function IncomePlan({
                 }
               >
                 <option value="unspecified">Не визначено · замінює оцінку таксі в цю дату</option>
-                <option value="taxi">Таксі · власна оцінка</option>
+                <option value="taxi">Таксі · очікувана виплата від парку</option>
                 <option value="other">Інший дохід · додати окремо</option>
               </select>
             </label>
@@ -328,6 +449,7 @@ function IncomePlan({
                 amountMinor: 0,
                 nextDate: today,
                 recurrence: 'once',
+                source: 'other',
               },
             ])
           }

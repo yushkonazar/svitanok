@@ -16,6 +16,13 @@ import { ForecastPlan } from './ForecastPlan.tsx';
 import { AccountsPanel } from './AccountsPanel.tsx';
 import { FinanceForm, type FinanceFormRequest } from './FinanceForm.tsx';
 import { PageHeading } from '../ui/PageHeading.tsx';
+import { FinanceDisplaySettings } from './FinanceDisplaySettings.tsx';
+import { TerminalSuggestions } from './TerminalSuggestions.tsx';
+import { FinanceMilestone } from './FinanceMilestone.tsx';
+import { TransactionAmount } from './TransactionAmount.tsx';
+import { paymentSchedule } from '../../../../core/finance/payments.mjs';
+import { savingsForecast } from '../../../../core/finance/savings-forecast.mjs';
+import './finance-renewal.css';
 import type { AnalyticsTab } from './FinanceAnalytics.tsx';
 import type { AnalyticsRequest } from '../../api/finance-analytics-schema.ts';
 import type { ExplorerOptions } from './AnalyticsExplorer.tsx';
@@ -57,6 +64,14 @@ export function FinanceScreen() {
     return () => setVerticalSwipes(true);
   }, []);
   const { data, isLoading, error, refetch } = useFinance();
+  const [displayOpen, setDisplayOpen] = useState(false);
+  useEffect(() => {
+    document.documentElement.dataset.financeMotion =
+      data?.finance.display?.animations === false ? 'off' : 'on';
+    return () => {
+      delete document.documentElement.dataset.financeMotion;
+    };
+  }, [data?.finance.display?.animations]);
   const query = useQueryClient();
   const [bankAccount, setBankAccount] = useState('all');
   const [bankOpen, setBankOpen] = useState(false);
@@ -197,6 +212,10 @@ export function FinanceScreen() {
   const operations = view.txs.filter(
     (t) => operationsSource === 'all' || (operationsSource === 'mono' ? t.bank : !t.bank),
   );
+  const nearest = f.payments
+    .filter((p) => p.status === 'active')
+    .sort((a, b) => a.nextDate.localeCompare(b.nextDate))[0];
+  const goalOutlook = savingsForecast(f, 42, nowMs);
   const pendingTransactions = f.transactions.filter(
     (t) => t.duplicateSuspected && t.attention?.status !== 'different',
   );
@@ -214,6 +233,7 @@ export function FinanceScreen() {
     <FinanceForm
       key={`${activeForm.kind}-${activeForm.id ?? ''}`}
       request={activeForm}
+      onOpenForm={setForm}
       finance={f}
       onClose={() => {
         if (['payment-paid', 'payment-close', 'payment-cancel'].includes(activeForm.kind))
@@ -241,6 +261,7 @@ export function FinanceScreen() {
           demo={data.demo}
           initialTab={activeAnalytics}
           initialRequest={linkedRequest}
+          restoreContext={!linkedTab && !linkedRequest && activeAnalytics === 'overview'}
           onRefreshBank={(id) => void refreshBank(id)}
           bankBusy={bankBusy}
           bankError={bankError}
@@ -275,6 +296,7 @@ export function FinanceScreen() {
         <TransactionDetail
           key={transaction.id}
           transaction={transaction}
+          finance={f}
           version={f.version}
           onBack={closeDetail}
           onClassify={() =>
@@ -290,6 +312,7 @@ export function FinanceScreen() {
   if (detail)
     return (
       <>
+        <FinanceMilestone finance={f} />
         <PaymentDetail
           payment={detail}
           onBack={closeDetail}
@@ -346,7 +369,7 @@ export function FinanceScreen() {
               title="Аналітика та звіти"
               onClick={() => {
                 overviewScroll.current = window.scrollY;
-                setAnalyticsTab('expenses');
+                setAnalyticsTab('overview');
               }}
             >
               <svg
@@ -362,10 +385,16 @@ export function FinanceScreen() {
               >
                 <path d="M4 4v16h16M8 16v-4m5 4V8m5 8V5" />
               </svg>
+              <span>Аналітика</span>
             </button>
           </div>
         }
       />
+      <button className="renewal-link self-end" onClick={() => setDisplayOpen(true)}>
+        Вигляд і прогноз
+      </button>
+      {displayOpen && <FinanceDisplaySettings finance={f} onClose={() => setDisplayOpen(false)} />}
+      <FinanceMilestone finance={f} />
       {!!pendingTransactions.length && (
         <section className="renewal-card">
           <h2 className="text-lg font-bold">Списання для перевірки</h2>
@@ -440,38 +469,27 @@ export function FinanceScreen() {
         <div className="renewal-metrics">
           <div className="renewal-metric">
             <span className="renewal-muted">
-              {f.accounts.some((a) => a.currency === 'UAH' && a.balanceMinor == null)
-                ? 'Відомі залишки'
-                : 'На рахунках'}{' '}
-              · ₴
+              {nearest ? 'Найближча оплата' : 'Зарезервовано на цілі'}
             </span>
-            <strong>{moneyLabel(view.owned)}</strong>
+            <strong>
+              {nearest
+                ? moneyLabel(paymentSchedule(nearest, 1)[0]?.payment ?? nearest.amountMinor)
+                : moneyLabel(view.allocated)}
+            </strong>
+            {nearest && (
+              <button className="renewal-link" onClick={() => setDetailId(nearest.id)}>
+                {nearest.nextDate} · {nearest.name} ↗
+              </button>
+            )}
           </div>
           <div className="renewal-metric">
             <span className="renewal-muted">Залишити для парку</span>
             <strong className="text-a2">{moneyLabel(f.reserveMinor)}</strong>
           </div>
         </div>
-        <div className="renewal-section-head mt-4">
-          <span className="renewal-muted">Рух грошей</span>
-          <div className="renewal-segments">
-            {[7, 30].map((n) => (
-              <button key={n} onClick={() => setDays(n)} aria-pressed={days === n}>
-                {n} днів
-              </button>
-            ))}
-          </div>
-        </div>
-        <div className="renewal-metrics">
-          <div className="renewal-metric">
-            <span className="renewal-muted">Інші надходження · {days}д</span>
-            <strong className="text-pos">{moneyLabel(view.income)}</strong>
-          </div>
-          <div className="renewal-metric">
-            <span className="renewal-muted">Особисті витрати · {days}д</span>
-            <strong>{moneyLabel(view.expense)}</strong>
-          </div>
-        </div>
+        <button className="renewal-link mt-4" onClick={() => setAnalyticsTab('overview')}>
+          Рух коштів і зміни за період ↗
+        </button>
         <p className="renewal-chart-note mt-3">
           {bankBusy || f.bankSync?.active
             ? 'Monobank оновлюється…'
@@ -506,6 +524,17 @@ export function FinanceScreen() {
             </button>
           </div>
           <p className="renewal-chart-note mb-3">{taxiPeriodLabel(taxi.key, f.policies)}, Київ</p>
+          <button
+            className="renewal-link mb-3"
+            onClick={() =>
+              setForm({
+                kind: 'expense',
+                defaults: { category: 'догляд за авто', description: 'Мийка автомобіля' },
+              })
+            }
+          >
+            Особиста витрата · мийка, догляд за авто
+          </button>
           <div className="renewal-metrics mb-3">
             <div className="renewal-metric">
               <span className="renewal-muted">Чиста каса · після комісії</span>
@@ -716,6 +745,26 @@ export function FinanceScreen() {
                 ))}
             </details>
           )}
+          {f.payments.some((p) => p.status === 'done') && (
+            <details className="mt-4">
+              <summary className="renewal-link">Завершені договори й оплати</summary>
+              {f.payments
+                .filter((p) => p.status === 'done')
+                .map((p) => (
+                  <button
+                    key={p.id}
+                    className="renewal-list-row w-full text-left"
+                    onClick={() => setDetailId(p.id)}
+                  >
+                    <span>
+                      {p.name}
+                      <small>Завершено · історія збережена</small>
+                    </span>
+                    <span>Переглянути ↗</span>
+                  </button>
+                ))}
+            </details>
+          )}
           {!!f.detectedSubscriptions.length && (
             <details className="mt-3">
               <summary className="renewal-link">Підписки, виявлені банківським обліком</summary>
@@ -786,6 +835,14 @@ export function FinanceScreen() {
             надходження не зараховані в дохід автоматично.
           </p>
         )}
+        <TerminalSuggestions finance={f} onOpen={openTransaction} />
+        <div className="renewal-segments my-3" aria-label="Період останніх операцій">
+          {[7, 30].map((n) => (
+            <button key={n} aria-pressed={days === n} onClick={() => setDays(n)}>
+              {n} днів
+            </button>
+          ))}
+        </div>
         {operations.slice(0, 5).map((t) => (
           <button
             type="button"
@@ -829,11 +886,7 @@ export function FinanceScreen() {
                 {new Date(t.at).toLocaleDateString('uk-UA', { timeZone: 'Europe/Kyiv' })}
               </small>
             </span>
-            <b
-              className={`font-mono whitespace-nowrap ${t.amountMinor > 0 ? 'text-pos' : 'text-tx'}`}
-            >
-              {moneyLabel(t.amountMinor, t.currency)}
-            </b>
+            <TransactionAmount transaction={t} display={f.display} />
           </button>
         ))}
         {operations.length > 5 && (
@@ -851,7 +904,7 @@ export function FinanceScreen() {
         )}
         {!operations.length && <p className="renewal-muted">За цей період операцій немає.</p>}
       </section>
-      <BudgetPlan finance={f} nowMs={nowMs} />
+      <BudgetPlan finance={f} nowMs={nowMs} onAnalyze={() => setAnalyticsTab('budgets')} />
       <ForecastPlan
         finance={f}
         nowMs={nowMs}
@@ -876,8 +929,16 @@ export function FinanceScreen() {
           const allocated = sumMoney(
             f.goalMoves.filter((m) => m.goalId === g.id).map((m) => m.amountMinor),
           );
+          const outlook = goalOutlook.find((p) => p.id === g.id),
+            next = outlook?.events[0];
           return (
             <div key={g.id} className="mb-5">
+              {next && (
+                <p className="renewal-chart-note mt-3">
+                  Очікуваний внесок: {moneyLabel(next.amount)} · орієнтовно {next.date}. Без
+                  дедлайну.{outlook?.adaptive ? ' Темп адаптовано до історії.' : ''}
+                </p>
+              )}
               <div className="renewal-section-head flex-wrap">
                 <b className="text-sm w-full">{g.name}</b>
                 <button

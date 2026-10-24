@@ -4,6 +4,7 @@ import { buildFinanceReport, validateReportRange } from './reporting.mjs';
 import { NOT_TEST_SQL } from './store.mjs';
 import { kyivParts, shiftDate, sumMoney } from './planning.mjs';
 import { financeReviewAccumulator, financeReviewContext } from './review.mjs';
+import { budgetAnalysisAccumulator } from './budget-analysis.mjs';
 
 const COLUMNS = 'id,at,amount,currency,amount_uah,category,description,raw_json,flags_json';
 const RAW = "CASE WHEN json_valid(raw_json) THEN raw_json ELSE '{}' END";
@@ -45,6 +46,7 @@ export async function readFinanceAnalytics(
   if (!env.DB) throw new Error('Finance DB unavailable');
   const s = analyticsSelection(params, nowMs);
   const f = await readFinanceWorkspace(env, nowMs, undefined, { omitTransactions: true });
+  const budgets = budgetAnalysisAccumulator(f, s);
   const review = options.review ? financeReviewAccumulator(s, f.payments, f.merchantAliases) : null;
   const current = validateReportRange(s.from, s.to, nowMs),
     previous = validateReportRange(s.previousFrom, s.previousTo, nowMs);
@@ -79,6 +81,7 @@ export async function readFinanceAnalytics(
     for (const row of rows) {
       const tx = financeTransactionOf(row);
       acc.consume(tx);
+      budgets.consume(tx);
       global.consume(tx);
       review?.consume(tx);
     }
@@ -137,6 +140,7 @@ export async function readFinanceAnalytics(
     context = financeReviewContext(f, nowMs, metadata);
   }
   return {
+    budgetAnalysis: budgets.finish(),
     ok: true,
     generatedAt: new Date(nowMs).toISOString(),
     ...data,

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import './finance-analytics.css';
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { fetchFinanceAnalytics, isSessionExpired } from '../../api/client.ts';
@@ -6,7 +6,7 @@ import { FINANCE_QUERY } from '../../api/finance-hooks.ts';
 import type { Finance } from '../../api/finance-schema.ts';
 import type { AnalyticsRequest } from '../../api/finance-analytics-schema.ts';
 import { kyivParts, shiftDate } from '../../../../core/finance/planning.mjs';
-import { analyticsSelection } from '../../../../core/finance/analytics.mjs';
+import { analyticsSelection, matchesAnalytics } from '../../../../core/finance/analytics.mjs';
 import { financeCategoryLabel } from '../../../../core/finance/categories.mjs';
 import { moneyLabel } from '../../lib/financeView.ts';
 import { useTick } from '../../lib/useTick.ts';
@@ -22,6 +22,7 @@ import { GoalHistory, type GoalHistoryRequest } from './GoalHistory.tsx';
 import { periodWindow } from '../../lib/budgetPlanning.ts';
 import { CategoryDonut, AnalyticsBars } from './AnalyticsCharts.tsx';
 import { ExpenseCalendar } from './ExpenseCalendar.tsx';
+import { FinanceMilestone } from './FinanceMilestone.tsx';
 import {
   OverviewAnalytics,
   BudgetAnalytics,
@@ -42,6 +43,42 @@ export const ANALYTICS_TABS = {
   accounts: 'Рахунки',
 } as const;
 export type AnalyticsTab = keyof typeof ANALYTICS_TABS;
+function savedContext() {
+  try {
+    const saved = JSON.parse(sessionStorage.getItem('svitanok.finance.analytics.v2') ?? 'null');
+    if (!saved || !Object.hasOwn(ANALYTICS_TABS, saved.tab)) return null;
+    if (
+      !['structure', 'dynamics'].includes(saved.expenseView) ||
+      !['7d', '30d', 'month', 'previous-month', 'custom'].includes(saved.preset)
+    )
+      return null;
+    analyticsSelection(new URLSearchParams({ from: saved.range.from, to: saved.range.to }));
+    if (!['adjacent', 'month'].includes(saved.range.comparison)) return null;
+    const f = saved.filters;
+    if (
+      !f ||
+      !['account', 'category', 'merchant'].every((k) => typeof f[k] === 'string') ||
+      !['all', 'mono', 'manual'].includes(f.source) ||
+      !['all', 'confirmed', 'pending'].includes(f.status)
+    )
+      return null;
+    return saved as {
+      tab: AnalyticsTab;
+      range: { from: string; to: string; comparison: 'adjacent' | 'month' };
+      filters: {
+        account: string;
+        category: string;
+        merchant: string;
+        source: NonNullable<AnalyticsRequest['source']>;
+        status: NonNullable<AnalyticsRequest['status']>;
+      };
+      expenseView: string;
+      preset: string;
+    };
+  } catch {
+    return null;
+  }
+}
 export function analyticsPreset(preset: string, today = kyivParts(Date.now()).date) {
   if (preset === 'month')
     return { from: today.slice(0, 7) + '-01', to: today, comparison: 'month' as const };
@@ -57,8 +94,9 @@ export function analyticsPreset(preset: string, today = kyivParts(Date.now()).da
 }
 export function FinanceAnalytics({
   finance,
-  initialTab = 'expenses',
+  initialTab = 'overview',
   initialRequest,
+  restoreContext = false,
   demo = false,
   onBack,
   onRefreshBank,
@@ -68,6 +106,7 @@ export function FinanceAnalytics({
   finance: Finance;
   initialTab?: AnalyticsTab;
   initialRequest?: AnalyticsRequest;
+  restoreContext?: boolean;
   demo?: boolean;
   onBack: () => void;
   onRefreshBank?: (id: string) => void;
@@ -76,8 +115,11 @@ export function FinanceAnalytics({
 }) {
   const nowMs = useTick(60000),
     today = kyivParts(nowMs).date;
-  const [tab, setTab] = useState<AnalyticsTab>(initialTab),
-    [preset, setPreset] = useState(initialRequest ? 'custom' : '7d'),
+  const [saved] = useState(() => (restoreContext && !initialRequest ? savedContext() : null));
+  const [tab, setTab] = useState<AnalyticsTab>(
+      saved?.tab ?? (initialTab === 'dynamics' ? 'expenses' : initialTab),
+    ),
+    [preset, setPreset] = useState(saved?.preset ?? (initialRequest ? 'custom' : '7d')),
     [range, setRange] = useState(() =>
       initialRequest
         ? {
@@ -85,15 +127,17 @@ export function FinanceAnalytics({
             to: initialRequest.to,
             comparison: initialRequest.comparison ?? 'adjacent',
           }
-        : analyticsPreset('7d'),
+        : (saved?.range ?? analyticsPreset('7d')),
     );
-  const [filters, setFilters] = useState({
-    account: initialRequest?.account ?? 'all',
-    category: initialRequest?.category ?? '',
-    merchant: initialRequest?.merchant ?? '',
-    source: (initialRequest?.source ?? 'all') as NonNullable<AnalyticsRequest['source']>,
-    status: (initialRequest?.status ?? 'all') as NonNullable<AnalyticsRequest['status']>,
-  });
+  const [filters, setFilters] = useState(
+    saved?.filters ?? {
+      account: initialRequest?.account ?? 'all',
+      category: initialRequest?.category ?? '',
+      merchant: initialRequest?.merchant ?? '',
+      source: (initialRequest?.source ?? 'all') as NonNullable<AnalyticsRequest['source']>,
+      status: (initialRequest?.status ?? 'all') as NonNullable<AnalyticsRequest['status']>,
+    },
+  );
   const [filterOpen, setFilterOpen] = useState(false),
     [customOpen, setCustomOpen] = useState(false),
     [draft, setDraft] = useState({ from: range.from, to: range.to }),
@@ -104,8 +148,7 @@ export function FinanceAnalytics({
   const [explorer, setExplorer] = useState<
     ({ request: AnalyticsRequest } & ExplorerOptions) | null
   >(null);
-  const [moreOpen, setMoreOpen] = useState(false),
-    [catalogOpen, setCatalogOpen] = useState(false),
+  const [catalogOpen, setCatalogOpen] = useState(false),
     [lineDay, setLineDay] = useState<string | null>(null);
   const [goalHistory, setGoalHistory] = useState<GoalHistoryRequest | null>(null);
   const [historyReturn, setHistoryReturn] = useState<GoalHistoryRequest | null>(null);
@@ -115,8 +158,22 @@ export function FinanceAnalytics({
   const [groupChoice, setGroup] = useState<'auto' | 'day' | 'week' | 'month'>('auto'),
     [selectedDay, setSelectedDay] = useState<string | null>(null),
     [merchantSort, setMerchantSort] = useState<'amount' | 'count'>('amount');
-  const currentState = ['budgets', 'payments', 'accounts'].includes(tab),
-    expensesScope = ['expenses', 'dynamics'].includes(tab);
+  const currentState = ['payments', 'accounts', 'goals'].includes(tab),
+    expensesScope = ['overview', 'expenses', 'dynamics', 'budgets'].includes(tab);
+  const [expenseView, setExpenseView] = useState(
+    saved?.expenseView ?? (initialTab === 'dynamics' ? 'dynamics' : 'structure'),
+  );
+  const [categoryView, setCategoryView] = useState<'donut' | 'ranking'>('donut');
+  useEffect(() => {
+    try {
+      sessionStorage.setItem(
+        'svitanok.finance.analytics.v2',
+        JSON.stringify({ tab, range, filters, expenseView, preset }),
+      );
+    } catch {
+      /* storage optional */
+    }
+  }, [tab, range, filters, expenseView, preset]);
   const request: AnalyticsRequest = {
     ...range,
     ...(expensesScope
@@ -140,9 +197,9 @@ export function FinanceAnalytics({
   const data = query.data;
   const group =
     groupChoice === 'auto'
-      ? (data?.selection.days ?? 7) > 90
+      ? (data?.selection.days ?? 7) > 120
         ? 'month'
-        : (data?.selection.days ?? 7) > 14
+        : (data?.selection.days ?? 7) > 31
           ? 'week'
           : 'day'
       : groupChoice;
@@ -217,7 +274,9 @@ export function FinanceAnalytics({
       <section className="analytics-controls" aria-label="Період і фільтри аналітики">
         {currentState ? (
           <p className="renewal-inset renewal-chart-note">
-            Поточний стан на {today}. Історичні дати обираються у витратах, динаміці, цілях і таксі.
+            {tab === 'goals'
+              ? 'Цілі показують повну історію внесків незалежно від періоду витрат.'
+              : `Поточний стан на ${today}. Для майбутніх оплат нижче є окремий горизонт.`}
           </p>
         ) : (
           <>
@@ -298,20 +357,38 @@ export function FinanceAnalytics({
           </div>
         )}
       </section>
-      <nav className="analytics-tabs" aria-label="Розділи фінансової аналітики">
-        {(['overview', 'expenses', 'dynamics'] as const).map((t) => (
+      <nav className="analytics-tabs finance-main-tabs" aria-label="Розділи фінансової аналітики">
+        {(['overview', 'expenses', 'budgets', 'payments', 'goals', 'taxi'] as const).map((t) => (
           <button key={t} aria-pressed={tab === t} onClick={() => setTab(t)}>
             {ANALYTICS_TABS[t]}
           </button>
         ))}
-        <button
-          aria-label="Інші розділи аналітики"
-          aria-expanded={moreOpen}
-          onClick={() => setMoreOpen(true)}
-        >
-          Ще ▾
-        </button>
       </nav>
+      {(tab === 'expenses' || tab === 'dynamics') && (
+        <div className="renewal-segments" aria-label="Перегляд витрат">
+          <button
+            aria-pressed={expenseView === 'structure'}
+            onClick={() => {
+              setExpenseView('structure');
+              setTab('expenses');
+            }}
+          >
+            Структура
+          </button>
+          <button
+            aria-pressed={expenseView === 'dynamics'}
+            onClick={() => {
+              setExpenseView('dynamics');
+              setTab('expenses');
+            }}
+          >
+            Динаміка й календар
+          </button>
+        </div>
+      )}
+      <button className="renewal-link self-end" onClick={() => setTab('accounts')}>
+        Рахунки та звірка ↗
+      </button>
       <p className="analytics-context">
         <b>{ANALYTICS_TABS[tab]}</b> ·{' '}
         {currentState ? 'Поточний стан' : expensesScope ? 'Вибраний облік' : 'Усі рахунки'}
@@ -326,20 +403,22 @@ export function FinanceAnalytics({
           data.quality.pendingCount > 0 ||
           data.quality.possibleDuplicateCount > 0) && (
           <div className="analytics-chips">
-            <button
-              className="renewal-secondary"
-              disabled={!data.quality.unclassifiedCount}
-              onClick={() => operations({}, undefined, 'unclassified')}
-            >
-              Без типу: {data.quality.unclassifiedCount}
-            </button>
-            <button
-              className="renewal-secondary"
-              disabled={!data.quality.pendingCount}
-              onClick={() => operations({ status: 'pending' }, undefined, 'all')}
-            >
-              Hold API: {data.quality.pendingCount}
-            </button>
+            {data.quality.unclassifiedCount > 0 && (
+              <button
+                className="renewal-secondary"
+                onClick={() => operations({}, undefined, 'unclassified')}
+              >
+                Без типу: {data.quality.unclassifiedCount}
+              </button>
+            )}
+            {data.quality.pendingCount > 0 && (
+              <button
+                className="renewal-secondary"
+                onClick={() => operations({ status: 'pending' }, undefined, 'all')}
+              >
+                Hold API: {data.quality.pendingCount}
+              </button>
+            )}
             {data.quality.possibleDuplicateCount > 0 && (
               <button
                 className="renewal-secondary"
@@ -371,7 +450,7 @@ export function FinanceAnalytics({
         inert={!currentState && query.isPlaceholderData}
         aria-hidden={!currentState && query.isPlaceholderData}
       >
-        {tab === 'expenses' && data && (
+        {tab === 'expenses' && expenseView === 'structure' && data && (
           <>
             <section className="renewal-card analytics-hero" aria-label="Підсумок витрат">
               <p className="renewal-muted">
@@ -412,12 +491,62 @@ export function FinanceAnalytics({
             </section>
             <section className="renewal-card">
               <h2 className="text-lg font-bold">Куди пішли гроші</h2>
+              <div className="renewal-segments mt-3" aria-label="Вигляд категорій">
+                <button
+                  aria-pressed={categoryView === 'donut'}
+                  onClick={() => setCategoryView('donut')}
+                >
+                  Коло
+                </button>
+                <button
+                  aria-pressed={categoryView === 'ranking'}
+                  onClick={() => setCategoryView('ranking')}
+                >
+                  Рейтинг
+                </button>
+              </div>
               {!data.selection.category ? (
-                <CategoryDonut
-                  rows={data.categories}
-                  onSelect={selectCategory}
-                  onOther={() => setOtherOpen(true)}
-                />
+                categoryView === 'donut' ? (
+                  <CategoryDonut
+                    rows={data.categories}
+                    onSelect={selectCategory}
+                    onOther={() => setOtherOpen(true)}
+                  />
+                ) : (
+                  <div className="finance-category-ranks">
+                    {data.categories
+                      .filter((c) => c.amountMinor > 0)
+                      .map((c) => (
+                        <button
+                          key={c.category}
+                          className="finance-debt-row"
+                          onClick={() => selectCategory(c.category)}
+                        >
+                          <span>
+                            {financeCategoryLabel(c.category)} · {c.count} оплат
+                          </span>
+                          <b>
+                            {moneyLabel(c.amountMinor)} ·{' '}
+                            {Math.round(
+                              (c.amountMinor / Math.max(1, data.summary.expenseMinor)) * 100,
+                            )}
+                            %
+                          </b>
+                          <span className="renewal-progress">
+                            <span
+                              style={{
+                                width: `${(c.amountMinor / Math.max(1, data.categories[0]?.amountMinor ?? 0)) * 100}%`,
+                              }}
+                            />
+                          </span>
+                          <small className="renewal-muted">
+                            До попереднього періоду: {c.deltaMinor > 0 ? '+' : ''}
+                            {moneyLabel(c.deltaMinor)}
+                          </small>
+                        </button>
+                      ))}
+                  </div>
+                )
               ) : (
                 <button
                   className="renewal-secondary mt-3"
@@ -521,26 +650,38 @@ export function FinanceAnalytics({
         {tab === 'overview' && data && (
           <OverviewAnalytics data={data} onCategory={selectCategory} />
         )}
-        {tab === 'dynamics' && data && (
+        {(tab === 'dynamics' || (tab === 'expenses' && expenseView === 'dynamics')) && data && (
           <>
             <section className="renewal-card">
               <h2 className="text-lg font-bold">Витрати за періодами</h2>
               <div className="renewal-segments mt-3">
-                {(['auto', 'day', 'week', 'month'] as const).map((g) => (
+                {(['day', 'week', 'month'] as const).map((g) => (
                   <button
                     key={g}
-                    aria-pressed={groupChoice === g}
+                    aria-pressed={group === g}
                     onClick={() => {
                       setGroup(g);
+                      if (g === 'month' && (data?.selection.days ?? 0) < 60) {
+                        setRange({
+                          from: new Date(
+                            Date.UTC(Number(today.slice(0, 4)), Number(today.slice(5, 7)) - 6, 1),
+                          )
+                            .toISOString()
+                            .slice(0, 10),
+                          to: today,
+                          comparison: 'adjacent',
+                        });
+                        setPreset('custom');
+                      }
                       setSelectedDay(null);
                     }}
                   >
-                    {g === 'auto'
-                      ? 'Авто'
-                      : g === 'day'
-                        ? 'Дні'
-                        : g === 'week'
-                          ? 'Тижні'
+                    {g === 'day'
+                      ? 'Дні'
+                      : g === 'week'
+                        ? 'Тижні'
+                        : data.selection.days < 60
+                          ? 'Місяці · розширити до 6 міс.'
                           : 'Місяці'}
                   </button>
                 ))}
@@ -578,7 +719,36 @@ export function FinanceAnalytics({
                 Операції {selectedDay ? 'обраного проміжку' : 'за період'}
               </button>
             </section>
-            <ExpenseCalendar daily={data.daily} onSelect={(date) => operations({}, date)} />
+            <ExpenseCalendar
+              daily={data.daily}
+              knownSince={
+                data.coverage.oldestTransactionAt
+                  ? kyivParts(Date.parse(data.coverage.oldestTransactionAt)).date
+                  : null
+              }
+              issueDates={finance.transactions
+                .filter(
+                  (t) =>
+                    (t.bankMissingFromStatement ||
+                      t.amountUah == null ||
+                      t.kind === 'unclassified' ||
+                      (t.bankHold && !t.bankVerifiedByOwner)) &&
+                    matchesAnalytics(t, data.selection, finance.merchantAliases),
+                )
+                .map((t) => kyivParts(Date.parse(t.at)).date)}
+              thresholds={finance.display?.expenseThresholds}
+              dailyLimit={
+                filters.category
+                  ? (finance.budgets.find(
+                      (b) =>
+                        b.period === 'day' &&
+                        b.categories.length === 1 &&
+                        b.categories[0] === filters.category,
+                    )?.limitMinor ?? undefined)
+                  : undefined
+              }
+              onSelect={(date) => operations({}, date)}
+            />
             <section className="renewal-card">
               <h2 className="font-bold">Накопичені витрати</h2>
               <AnalyticsBars
@@ -646,20 +816,27 @@ export function FinanceAnalytics({
             </section>
           </>
         )}
-        {tab === 'budgets' && (
+        {tab === 'budgets' && data && (
           <BudgetAnalytics
             finance={finance}
             nowMs={nowMs}
+            data={data}
             onBudget={(b) => {
               const w = periodWindow(b.period, today);
               if (b.purpose === 'saving')
-                setGoalHistory({ goalIds: b.goalIds, from: w.start, to: today, title: b.category });
+                setGoalHistory({
+                  goalIds: b.goalIds,
+                  from: w.start,
+                  to: today,
+                  title: b.category,
+                  all: true,
+                });
               else
                 setExplorer({
                   request: {
                     ...range,
-                    from: w.start,
-                    to: today,
+                    from: range.from,
+                    to: range.to,
                     account: 'all',
                     category: '',
                     merchant: '',
@@ -675,7 +852,7 @@ export function FinanceAnalytics({
         {tab === 'payments' && (
           <PaymentAnalytics finance={finance} nowMs={nowMs} onPayment={setPaymentId} />
         )}
-        {tab === 'goals' && data && (
+        {tab === 'goals' && (
           <GoalsAnalytics
             finance={finance}
             data={data}
@@ -684,13 +861,14 @@ export function FinanceAnalytics({
                 goalIds: [goalId],
                 from: date ?? range.from,
                 to: date ?? range.to,
+                all: !date,
                 title: finance.goals.find((g) => g.id === goalId)?.name,
               })
             }
           />
         )}
         {tab === 'taxi' && data && (
-          <TaxiAnalytics data={data} onWeek={(key) => setTaxiKey(key ?? '')} />
+          <TaxiAnalytics finance={finance} data={data} onWeek={(key) => setTaxiKey(key ?? '')} />
         )}
         {tab === 'accounts' && (
           <AccountAnalytics
@@ -714,54 +892,71 @@ export function FinanceAnalytics({
         )}
         {!currentState && data && (
           <details className="renewal-card">
-            <summary className="renewal-link">Якість і джерела даних</summary>
+            <summary className="renewal-link">
+              Якість і джерела даних ·{' '}
+              {data.quality.unclassifiedCount +
+                data.quality.unknownCurrencyCount +
+                data.quality.pendingCount +
+                data.quality.possibleDuplicateCount +
+                data.quality.invalidDirectionCount +
+                data.quality.amountChangedCount >
+              0
+                ? 'є записи для перевірки'
+                : 'перевірок не потрібно'}
+            </summary>
             <div className="flex flex-col gap-3 mt-4">
               <p className="renewal-chart-note">
                 Зібрано{' '}
                 {new Date(data.generatedAt).toLocaleString('uk-UA', { timeZone: 'Europe/Kyiv' })}.
                 Відкриття звіту не запускає оновлення Monobank.
               </p>
-              <button
-                className="analytics-quality"
-                disabled={!data.quality.unclassifiedCount}
-                onClick={() => operations({}, undefined, 'unclassified')}
-              >
-                Без визначеного типу: {data.quality.unclassifiedCount}
-              </button>
-              <button
-                disabled={!data.quality.unknownCurrencyCount}
-                className="analytics-quality"
-                onClick={() => operations({}, undefined, 'all', { issue: 'unknown-uah' })}
-              >
-                Без гривневої суми: {data.quality.unknownCurrencyCount}
-              </button>
-              <button
-                className="analytics-quality"
-                disabled={!data.quality.pendingCount}
-                onClick={() => operations({ status: 'pending' }, undefined, 'all')}
-              >
-                Hold без підтвердження власника: {data.quality.pendingCount} ·{' '}
-                {moneyLabel(data.quality.pendingMinor)}
-              </button>
-              <p className="renewal-chart-note">
-                Схожі покупки вже перевірено: {data.quality.resolvedDuplicateCount}.
-              </p>
+              {data.quality.unclassifiedCount > 0 && (
+                <button
+                  className="analytics-quality"
+                  onClick={() => operations({}, undefined, 'unclassified')}
+                >
+                  Без визначеного типу: {data.quality.unclassifiedCount}
+                </button>
+              )}
+              {data.quality.unknownCurrencyCount > 0 && (
+                <button
+                  className="analytics-quality"
+                  onClick={() => operations({}, undefined, 'all', { issue: 'unknown-uah' })}
+                >
+                  Без гривневої суми: {data.quality.unknownCurrencyCount}
+                </button>
+              )}
+              {data.quality.pendingCount > 0 && (
+                <button
+                  className="analytics-quality"
+                  onClick={() => operations({ status: 'pending' }, undefined, 'all')}
+                >
+                  Hold без підтвердження власника: {data.quality.pendingCount} ·{' '}
+                  {moneyLabel(data.quality.pendingMinor)}
+                </button>
+              )}
+              {data.quality.resolvedDuplicateCount > 0 && (
+                <p className="renewal-chart-note">
+                  Схожі покупки вже перевірено: {data.quality.resolvedDuplicateCount}.
+                </p>
+              )}
               {(
                 [
                   ['duplicates', 'Схожі списання', data.quality.possibleDuplicateCount],
                   ['direction', 'Напрямок суми', data.quality.invalidDirectionCount],
                   ['changed', 'Банк змінив суму', data.quality.amountChangedCount],
                 ] as const
-              ).map(([issue, label, count]) => (
-                <button
-                  className="analytics-quality"
-                  disabled={!count}
-                  key={issue}
-                  onClick={() => operations({}, undefined, 'all', { issue })}
-                >
-                  {label}: {count}
-                </button>
-              ))}
+              )
+                .filter(([, , count]) => count > 0)
+                .map(([issue, label, count]) => (
+                  <button
+                    className="analytics-quality"
+                    key={issue}
+                    onClick={() => operations({}, undefined, 'all', { issue })}
+                  >
+                    {label}: {count}
+                  </button>
+                ))}
               <p className="renewal-chart-note">
                 Банківська історія зберігається до {data.coverage.bankRetentionDays} днів.
                 {data.coverage.oldestTransactionAt
@@ -907,19 +1102,22 @@ export function FinanceAnalytics({
         </Sheet>
       )}
       {otherOpen && data && (
-        <Sheet label="Усі категорії витрат" onClose={() => setOtherOpen(false)}>
+        <Sheet label="Інші категорії витрат" onClose={() => setOtherOpen(false)}>
           <div className="renewal-finance">
-            <h2 className="text-xl font-bold mb-4">Усі категорії</h2>
-            {data.categories.map((c) => (
-              <button
-                className="analytics-operation"
-                key={c.category}
-                onClick={() => selectCategory(c.category)}
-              >
-                <span>{financeCategoryLabel(c.category)}</span>
-                <b>{moneyLabel(c.amountMinor)}</b>
-              </button>
-            ))}
+            <h2 className="text-xl font-bold mb-4">Інші категорії</h2>
+            {data.categories
+              .filter((c) => c.amountMinor > 0)
+              .slice(5)
+              .map((c) => (
+                <button
+                  className="analytics-operation"
+                  key={c.category}
+                  onClick={() => selectCategory(c.category)}
+                >
+                  <span>{financeCategoryLabel(c.category)}</span>
+                  <b>{moneyLabel(c.amountMinor)}</b>
+                </button>
+              ))}
           </div>
         </Sheet>
       )}
@@ -1023,27 +1221,6 @@ export function FinanceAnalytics({
           }}
         />
       )}
-      {moreOpen && (
-        <Sheet label="Розділи аналітики" onClose={() => setMoreOpen(false)}>
-          <div className="renewal-finance">
-            <h2 className="text-xl font-bold mb-3">Розділи аналітики</h2>
-            {Object.entries(ANALYTICS_TABS).map(([key, label]) => (
-              <button
-                className="analytics-operation"
-                aria-pressed={tab === key}
-                key={key}
-                onClick={() => {
-                  setTab(key as AnalyticsTab);
-                  setMoreOpen(false);
-                }}
-              >
-                <span>{label}</span>
-                <span>{tab === key ? '✓' : '↗'}</span>
-              </button>
-            ))}
-          </div>
-        </Sheet>
-      )}
       {catalogOpen && (
         <MerchantCatalog
           request={request}
@@ -1088,6 +1265,7 @@ export function FinanceAnalytics({
       )}
       {payment && !form && (
         <Sheet label={payment.name} onClose={() => setPaymentId(null)}>
+          <FinanceMilestone finance={finance} />
           <PaymentDetail
             payment={payment}
             onBack={() => setPaymentId(null)}

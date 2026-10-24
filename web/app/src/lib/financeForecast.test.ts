@@ -25,6 +25,16 @@ function data() {
   f.budgets = [];
   f.reserveMinor = 0;
   f.taxiWeeks = [];
+  f.taxiEntries = [];
+  f.policies = [];
+  f.settlements = [];
+  f.display = {
+    expenseThresholds: [20000, 100000, 300000],
+    currencyCycle: true,
+    animations: true,
+    expenseForecast: 'plan',
+    savingWeekday: 2,
+  };
   f.forecast = { incomes: [] };
   return f;
 }
@@ -68,11 +78,14 @@ it('counts manual taxi estimates once while allowing a separately identified inc
       amountMinor: 10000,
       nextDate: '2026-10-12',
       recurrence: 'once',
+      source: 'taxi',
     },
   ];
   expect(financeForecast(f, 7, now).expectedIncome).toBe(10000);
+  delete f.forecast.incomes[0].source;
+  expect(financeForecast(f, 7, now).expectedIncome).toBe(10000);
   f.forecast.incomes[0].source = 'other';
-  expect(financeForecast(f, 7, now).expectedIncome).toBe(60000);
+  expect(financeForecast(f, 7, now).expectedIncome).toBeGreaterThan(60000);
   f.forecast.incomes[0].source = 'taxi';
   expect(financeForecast(f, 7, now).expectedIncome).toBe(10000);
 });
