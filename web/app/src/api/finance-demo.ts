@@ -328,9 +328,19 @@ export function writeFinanceDemo(command: FinanceCommand) {
         (t) => !t.bank && t.reference === bank.reference && t.accountId !== bank.accountId,
       );
       if (!leg) throw new Error('Готівкову сторону не знайдено');
-      if (leg.id === `bank-transfer:${bank.reference}`)
+      if (leg.id === `bank-transfer:${bank.reference}`) {
+        const coveredBy =
+          leg.balanceCoveredBy ??
+          f.transactions.find(
+            (t) => t.accountId === leg.accountId && t.id.startsWith('balance:') && t.at > leg.at,
+          )?.id;
         tx(-leg.amountMinor, 'transfer', leg.accountId!, ':undo', `undo:${bank.reference}`);
-      else leg.reference = null;
+        if (coveredBy) {
+          f.transactions[0].balanceCoveredBy = coveredBy;
+          const cash = f.accounts.find((a) => a.id === leg.accountId);
+          if (cash) cash.balanceMinor = (cash.balanceMinor ?? 0) + leg.amountMinor;
+        }
+      } else leg.reference = null;
       bank.reference = null;
       bank.kind = 'unclassified';
       break;
@@ -345,6 +355,7 @@ export function writeFinanceDemo(command: FinanceCommand) {
     case 'account-balance': {
       if (!account || account.kind === 'mono') throw new Error('Обери рахунок ручного обліку');
       tx(num('balanceMinor') - (account.balanceMinor ?? 0), 'adjustment', account.id);
+      f.transactions[0].id = `balance:${id}`;
       break;
     }
     case 'taxi-personal-income': {
@@ -391,9 +402,16 @@ export function writeFinanceDemo(command: FinanceCommand) {
         throw new Error('Обери протилежну ручну операцію переказу');
       if (old) old.reference = id;
       else {
+        const anchor = f.transactions.find(
+          (t) => t.accountId === account.id && t.id.startsWith('balance:') && t.at > bank.at,
+        );
         tx(-bank.amountMinor, 'transfer', account.id, ':counter', id);
         f.transactions[0].id = `bank-transfer:${id}`;
         f.transactions[0].at = bank.at;
+        if (anchor) {
+          f.transactions[0].balanceCoveredBy = anchor.id;
+          account.balanceMinor = (account.balanceMinor ?? 0) + bank.amountMinor;
+        }
       }
       bank.kind = 'transfer';
       bank.reference = id;

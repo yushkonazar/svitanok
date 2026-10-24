@@ -51,6 +51,7 @@ export function financeTransactionOf(row) {
     bankAmountChanged: Boolean(raw.financeBankAmountChanged),
     bankCheckedAt: typeof raw.bankCheckedAt === 'string' ? raw.bankCheckedAt : null,
     reference: raw.financeReference ?? null,
+    balanceCoveredBy: raw.financeBalanceCoveredBy ?? null,
     principalMinor: raw.financePrincipalMinor ?? null,
     overpaymentMinor: raw.financeOverpaymentMinor ?? null,
     personalTaxiType: raw.financePersonalTaxiType ?? null,
@@ -168,7 +169,7 @@ export async function readFinanceWorkspace(env, nowMs = Date.now(), range, optio
     db.prepare('SELECT * FROM finance_settings WHERE id = ?').bind('owner'),
     db
       .prepare(
-        `SELECT a.*, a.opening_minor + COALESCE((SELECT SUM(t.amount) FROM transactions t WHERE json_extract(t.raw_json, '$.financeAccount') = a.id AND t.at >= a.opening_at AND ${NOT_TEST_SQL}), 0) AS balance_minor FROM finance_accounts a ORDER BY created_at, id`,
+        `SELECT a.*, a.opening_minor + COALESCE((SELECT SUM(t.amount) FROM transactions t WHERE json_extract(t.raw_json, '$.financeAccount') = a.id AND json_extract(t.raw_json, '$.financeBalanceCoveredBy') IS NULL AND t.at >= a.opening_at AND ${NOT_TEST_SQL}), 0) AS balance_minor FROM finance_accounts a ORDER BY created_at, id`,
       )
       .bind(),
     db.prepare('SELECT * FROM finance_taxi_policies ORDER BY effective_at').bind(),
@@ -546,8 +547,18 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
     }
     return found;
   };
-  /** @param {string} txId @param {number} amount @param {string} kind @param {string} accountId @param {string} category @param {string} description @param {string} at @param {string|null} [reference] */
-  const ledger = (txId, amount, kind, accountId, category, description, at, reference = null) =>
+  /** @param {string} txId @param {number} amount @param {string} kind @param {string} accountId @param {string} category @param {string} description @param {string} at @param {string|null} [reference] @param {Record<string,unknown>} [metadata] */
+  const ledger = (
+    txId,
+    amount,
+    kind,
+    accountId,
+    category,
+    description,
+    at,
+    reference = null,
+    metadata = {},
+  ) =>
     insert('transactions', {
       id: txId,
       at,
@@ -561,8 +572,18 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
         financeKind: kind,
         financeAccount: accountId,
         financeReference: reference,
+        ...metadata,
       }),
     });
+
+  /** @param {string} accountId @param {string} movementAt */
+  const coveringBalance = (accountId, movementAt) =>
+    db
+      .prepare(
+        `SELECT id, at FROM transactions WHERE json_extract(raw_json, '$.financeAccount') = ? AND id GLOB 'balance:*' AND json_extract(raw_json, '$.financeKind') = 'adjustment' AND at > ? AND at <= ? AND ${NOT_TEST_SQL} ORDER BY at DESC, id DESC LIMIT 1`,
+      )
+      .bind(accountId, movementAt, now)
+      .first();
 
   if (type === 'display-settings') {
     let display;
@@ -578,6 +599,50 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
     ]);
   } else if (type === 'event-seen') {
     update('UPDATE finance_events SET seen_at = ? WHERE id = ?', [now, text(payload.eventId)]);
+  } else if (type === 'bank-transfer-history-reconcile') {
+    const ids = payload.transactionIds;
+    if (!Array.isArray(ids) || !ids.length || ids.length > 50 || new Set(ids).size !== ids.length)
+      throw new FinanceValidation('Обери до 50 історичних сторін переказів');
+    for (const transactionId of ids) {
+      const leg = state.transactions.find((t) => t.id === transactionId);
+      const bank =
+        leg &&
+        state.transactions.find(
+          (t) =>
+            t.bank &&
+            t.kind === 'transfer' &&
+            t.reference === leg.reference &&
+            t.amountMinor === -leg.amountMinor &&
+            t.accountId !== leg.accountId,
+        );
+      if (
+        !leg ||
+        leg.bank ||
+        leg.kind !== 'transfer' ||
+        !leg.reference ||
+        leg.id !== `bank-transfer:${leg.reference}` ||
+        !bank
+      )
+        throw new FinanceValidation('Історичний переказ потребує однозначного зв’язку з банком');
+      if (leg.balanceCoveredBy) continue;
+      const anchor = await coveringBalance(leg.accountId, leg.at);
+      const created = await db
+        .prepare('SELECT at FROM finance_commands WHERE id = ?')
+        .bind(leg.reference)
+        .first();
+      if (!anchor || !created || String(anchor.at) >= String(created.at))
+        throw new FinanceValidation(
+          'Новіша звірка вже враховує цей переказ або його початкова звірка невідома',
+        );
+      update("UPDATE transactions SET raw_json=json_patch(COALESCE(raw_json,'{}'),?) WHERE id=?", [
+        JSON.stringify({
+          financeBalanceCoveredBy: anchor.id,
+          financeCreatedAt: created.at,
+          financeHistoryReconciledBy: id,
+        }),
+        leg.id,
+      ]);
+    }
   } else if (type === 'bank-transfer-undo') {
     const tx = state.transactions.find((t) => t.id === payload.transactionId);
     if (!tx?.bank || tx.kind !== 'transfer' || !tx.reference)
@@ -598,7 +663,11 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
       throw new FinanceValidation(
         'Цей зв’язок потребує звірки: другу сторону не вдалося визначити однозначно',
       );
-    if (counterpart)
+    if (counterpart) {
+      const anchor = counterpart.balanceCoveredBy
+        ? null
+        : await coveringBalance(counterpart.accountId, counterpart.at);
+      const coveredBy = counterpart.balanceCoveredBy ?? anchor?.id;
       ledger(
         `bank-transfer-undo:${id}`,
         -counterpart.amountMinor,
@@ -608,8 +677,9 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
         'Скасування готівкової сторони поповнення',
         now,
         `undo:${tx.reference}`,
+        coveredBy ? { financeBalanceCoveredBy: coveredBy } : {},
       );
-    else if (reused)
+    } else if (reused)
       update('UPDATE transactions SET raw_json = json_patch(raw_json, ?) WHERE id = ?', [
         JSON.stringify({ financeReference: null }),
         reused.id,
@@ -752,7 +822,11 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
         JSON.stringify({ financeReference: id }),
         leg.id,
       ]);
-    } else
+    } else {
+      // A later owner-confirmed balance already covers earlier cash movements.
+      // Keep the historical transfer without debiting today's cash a second time.
+      const balanceAnchor = await coveringBalance(counterpart.id, bankTx.at);
+      const coveredBy = balanceAnchor ? String(balanceAnchor.id) : null;
       ledger(
         `bank-transfer:${id}`,
         -bankTx.amountMinor,
@@ -762,7 +836,9 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
         'Друга сторона власного переказу Monobank',
         bankTx.at,
         id,
+        { financeCreatedAt: now, ...(coveredBy ? { financeBalanceCoveredBy: coveredBy } : {}) },
       );
+    }
     update(
       "UPDATE transactions SET category=?,raw_json=json_patch(COALESCE(raw_json,'{}'),?) WHERE id=?",
       [

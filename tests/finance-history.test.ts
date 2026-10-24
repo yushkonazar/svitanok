@@ -20,7 +20,7 @@ function setup() {
   ]);
   const env = workerEnv({ DB: d1.stub });
   let sequence = 0;
-  const send = async (type: string, payload: Record<string, unknown>) =>
+  const send = async (type: string, payload: Record<string, unknown>, commandAt = NOW) =>
     executeFinanceCommand(
       env,
       {
@@ -29,7 +29,7 @@ function setup() {
         type,
         payload,
       },
-      NOW,
+      commandAt,
     );
   const bank = async (id: string, amount: number, at = '2026-10-08T12:00:00Z', hold = false) => {
     await writeMonoAccounts(
@@ -139,7 +139,11 @@ describe('finance history, actual settlements and linked transfers', () => {
   });
   it('links bank deposit to one cash debit, blocks reuse, and idempotent replay cannot duplicate', async () => {
     const { env, send, bank } = setup();
-    await send('account-balance', { accountId: 'cash', balanceMinor: 400000 });
+    await send(
+      'account-balance',
+      { accountId: 'cash', balanceMinor: 400000 },
+      Date.parse('2026-10-08T10:00:00Z'),
+    );
     await bank('deposit-on-card', 200000);
     const command = {
       id: 'linked-cash-bank',
@@ -373,11 +377,14 @@ describe('explicit owner confirmation of successful bank operations with a stale
       let payload: Record<string, unknown>;
       let expectedCash: number;
       if (type === 'bank-transfer') {
-        await send('account-balance', {
-          accountId: 'cash',
-          balanceMinor: 800000,
-          at: '2026-10-08T10:00:00Z',
-        });
+        await send(
+          'account-balance',
+          {
+            accountId: 'cash',
+            balanceMinor: 800000,
+          },
+          Date.parse('2026-10-08T10:00:00Z'),
+        );
         await bank('owner-verified', 200000, undefined, true);
         payload = { transactionId: 'owner-verified', accountId: 'cash' };
         expectedCash = 600000;
