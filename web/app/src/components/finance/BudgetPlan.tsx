@@ -5,11 +5,19 @@ import { FINANCE_QUERY } from '../../api/finance-hooks.ts';
 import { postFinance } from '../../api/client.ts';
 import { budgetRows, orderedBudgets, budgetLimit, type Budget } from '../../lib/budgetPlanning.ts';
 import { moneyLabel } from '../../lib/financeView.ts';
-import { parseMoney, kyivParts } from '../../../../core/finance/planning.mjs';
+import { parseMoney, kyivParts, shiftDate, sumMoney } from '../../../../core/finance/planning.mjs';
 import { financeCategoryLabel } from '../../../../core/finance/categories.mjs';
 import { Sheet } from '../ui/Sheet.tsx';
 
-export function BudgetPlan({ finance: f, nowMs }: { finance: Finance; nowMs: number }) {
+export function BudgetPlan({
+  finance: f,
+  nowMs,
+  onAnalyze,
+}: {
+  finance: Finance;
+  nowMs: number;
+  onAnalyze?: () => void;
+}) {
   const query = useQueryClient();
   const [editing, setEditing] = useState<{
     id?: string;
@@ -72,8 +80,8 @@ export function BudgetPlan({ finance: f, nowMs }: { finance: Finance; nowMs: num
         </button>
       </div>
       <p className="renewal-muted mb-4">
-        Основний план можна розкласти на підплани. Додаткові ліміти контролюють витрати; у прогноз
-        входять лише ввімкнені плани.
+        Ліміти допомагають керувати витратами. Прогноз оцінює витрати за історією; у налаштуваннях
+        можна обрати розрахунок за ввімкненими планами.
       </p>
       {!rows.length && (
         <p className="renewal-muted mb-4">Почни з основного плану або однієї категорії.</p>
@@ -81,6 +89,23 @@ export function BudgetPlan({ finance: f, nowMs }: { finance: Finance; nowMs: num
       {rows.map((b) => {
         const siblings = rows.filter((x) => (x.parentId ?? null) === (b.parentId ?? null));
         const i = siblings.findIndex((x) => x.id === b.id);
+        const today = kyivParts(nowMs).date;
+        const recent = Array.from({ length: 7 }, (_, i) => shiftDate(today, i - 6)).map((date) => ({
+          date,
+          amount: -sumMoney(
+            f.transactions
+              .filter(
+                (t) =>
+                  t.kind === 'expense' &&
+                  t.amountUah != null &&
+                  t.amountUah < 0 &&
+                  b.categories.includes(t.category) &&
+                  kyivParts(Date.parse(t.at)).date === date,
+              )
+              .map((t) => t.amountUah!),
+          ),
+        }));
+        const max = Math.max(1, ...recent.map((p) => p.amount));
         return (
           <article
             key={b.id}
@@ -123,6 +148,27 @@ export function BudgetPlan({ finance: f, nowMs }: { finance: Finance; nowMs: num
               {b.left < 0 ? 'Понад план' : 'Ще доступно в цьому періоді'}
               {b.goalId ? ` · ${f.goals.find((g) => g.id === b.goalId)?.name ?? 'Ціль'}` : ''}
             </p>
+            {b.purpose === 'expense' && (
+              <div className="finance-budget-mini">
+                <span className="renewal-chart-note">Витрати · останні 7 днів</span>
+                <div
+                  className="finance-spark-bars"
+                  role="img"
+                  aria-label={recent.map((p) => `${p.date}: ${moneyLabel(p.amount)}`).join('; ')}
+                >
+                  {recent.map((p) => (
+                    <span
+                      key={p.date}
+                      title={`${p.date} · ${moneyLabel(p.amount)}`}
+                      style={{ height: `${Math.max(2, (p.amount / max) * 36)}px` }}
+                    />
+                  ))}
+                </div>
+                <p className="renewal-chart-note">
+                  За записаними операціями. Неповна історія може занижувати суми.
+                </p>
+              </div>
+            )}
             {b.children > 0 && (
               <p className={`renewal-chart-note ${b.childAllocation > b.limit ? 'text-neg' : ''}`}>
                 Підпланам виділено {moneyLabel(b.childAllocation)} із {moneyLabel(b.limit)} за
@@ -158,6 +204,11 @@ export function BudgetPlan({ finance: f, nowMs }: { finance: Finance; nowMs: num
           </article>
         );
       })}
+      {onAnalyze && rows.length > 0 && (
+        <button className="renewal-link mb-4" onClick={onAnalyze}>
+          Історія плану й факту ↗
+        </button>
+      )}
       {error && !editing && (
         <p role="alert" className="text-neg text-sm">
           {error}

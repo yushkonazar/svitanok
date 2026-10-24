@@ -153,6 +153,7 @@ const EXPECTED_COLUMNS: Record<string, string[]> = {
     'credit_limits_json',
     'forecast_json',
     'merchant_aliases_json',
+    'display_json',
   ],
   finance_taxi_policies: [
     'id',
@@ -185,6 +186,7 @@ const EXPECTED_COLUMNS: Record<string, string[]> = {
     'created_at',
     'updated_at',
     'period_key',
+    'day_complete',
   ],
   finance_taxi_settlements: [
     'id',
@@ -205,6 +207,7 @@ const EXPECTED_COLUMNS: Record<string, string[]> = {
     'created_at',
     'plan_amount_minor',
     'plan_period',
+    'plan_started_at',
   ],
   finance_goal_moves: [
     'id',
@@ -231,6 +234,23 @@ const EXPECTED_COLUMNS: Record<string, string[]> = {
     'sort_order',
     'forecast_enabled',
     'template_role',
+  ],
+  finance_budget_versions: [
+    'id',
+    'budget_id',
+    'valid_from',
+    'definition_json',
+    'removed',
+    'sequence',
+  ],
+  finance_events: ['id', 'kind', 'at', 'data_json', 'seen_at'],
+  finance_forecast_runs: [
+    'id',
+    'as_of',
+    'source_key',
+    'algorithm_version',
+    'horizon_days',
+    'result_json',
   ],
   finance_payments: [
     'id',
@@ -661,6 +681,12 @@ const EXPECTED_INDEXES: Record<string, IndexSpec[]> = {
   ],
   finance_goal_moves: [{ cols: ['goal_id'] }, { cols: ['bank_tx_id'], unique: true }],
   finance_budgets: [{ cols: ['category', 'period'], unique: true }, { cols: ['parent_id'] }],
+  finance_budget_versions: [
+    { cols: ['budget_id', 'valid_from', 'sequence'], unique: true },
+    { cols: ['budget_id', 'valid_from'] },
+  ],
+  finance_events: [{ cols: ['at'] }],
+  finance_forecast_runs: [{ cols: ['as_of'] }],
   facts: [
     { cols: ['kind', 'key'], unique: true },
     { cols: ['expires_at'] },
@@ -758,7 +784,7 @@ const columnsOf = (table: string): { name: string; pk: number }[] =>
   }[];
 
 describe('міграції D1 — файли', () => {
-  it('сорок шість файлів 0001–0046, нумерація без дірок', () => {
+  it('сорок сім файлів 0001–0047, нумерація без дірок', () => {
     expect(files.map((f) => f.slice(0, 4))).toEqual([
       '0001',
       '0002',
@@ -806,6 +832,7 @@ describe('міграції D1 — файли', () => {
       '0044',
       '0045',
       '0046',
+      '0047',
     ]);
   });
 });

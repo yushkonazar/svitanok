@@ -1,5 +1,6 @@
 import { financeCategories } from './categories.mjs';
 import { parseFinanceAttention } from './attention-state.mjs';
+import { financeDisplay } from './display.mjs';
 import { bankPaymentAmount } from './payment-link.mjs';
 import { fixedDebtPayment, isDebtKind, interestDebtPayment, interestQuote } from './payments.mjs';
 import { NOT_TEST_SQL, readMonoAccounts } from './store.mjs';
@@ -153,6 +154,7 @@ function taxiOf(row) {
     accountId: row.account_id == null ? null : String(row.account_id),
     note: String(row.note ?? ''),
     revision: Number(row.revision),
+    dayComplete: row.day_complete !== 0,
   };
 }
 
@@ -196,6 +198,12 @@ export async function readFinanceWorkspace(env, nowMs = Date.now(), range, optio
         "SELECT value_json FROM facts WHERE kind='setting' AND key='mono_bank_refresh' LIMIT 1",
       )
       .bind(),
+    db
+      .prepare(
+        'SELECT * FROM finance_budget_versions ORDER BY valid_from DESC, sequence DESC LIMIT 5000',
+      )
+      .bind(),
+    db.prepare('SELECT * FROM finance_events ORDER BY at DESC LIMIT 100').bind(),
   ]);
   /** @type {(index: number) => KvBlob[]} */
   const rows = (index) => /** @type {KvBlob[]} */ (result[index]?.results ?? []);
@@ -337,6 +345,22 @@ export async function readFinanceWorkspace(env, nowMs = Date.now(), range, optio
     ok: true,
     version: Number(settings.version),
     generatedAt: new Date(nowMs).toISOString(),
+    display: financeDisplay(jsonObject(settings.display_json)),
+    budgetVersions: rows(12).map((r) => ({
+      id: String(r.id),
+      budgetId: String(r.budget_id),
+      validFrom: String(r.valid_from),
+      sequence: Number(r.sequence),
+      definition: jsonObject(r.definition_json),
+      removed: Boolean(r.removed),
+    })),
+    events: rows(13).map((r) => ({
+      id: String(r.id),
+      kind: String(r.kind),
+      at: String(r.at),
+      data: jsonObject(r.data_json),
+      seenAt: r.seen_at == null ? null : String(r.seen_at),
+    })),
     bankSync: rows(11)[0]?.value_json ? jsonObject(rows(11)[0]?.value_json) : null,
     merchantAliases: jsonObject(settings.merchant_aliases_json),
     settings: {
@@ -371,6 +395,7 @@ export async function readFinanceWorkspace(env, nowMs = Date.now(), range, optio
       status: String(r.status),
       planAmountMinor: r.plan_amount_minor == null ? null : Number(r.plan_amount_minor),
       planPeriod: r.plan_period == null ? null : String(r.plan_period),
+      planStartedAt: r.plan_started_at == null ? null : String(r.plan_started_at),
     })),
     goalMoves: rows(6).map((r) => ({
       id: String(r.id),
@@ -539,7 +564,61 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
       }),
     });
 
-  if (type === 'credit-limit') {
+  if (type === 'display-settings') {
+    let display;
+    try {
+      display = financeDisplay(payload);
+    } catch (error) {
+      throw new FinanceValidation(
+        error instanceof Error ? error.message : 'Перевір налаштування вигляду',
+      );
+    }
+    update("UPDATE finance_settings SET display_json = ? WHERE id = 'owner'", [
+      JSON.stringify(display),
+    ]);
+  } else if (type === 'event-seen') {
+    update('UPDATE finance_events SET seen_at = ? WHERE id = ?', [now, text(payload.eventId)]);
+  } else if (type === 'bank-transfer-undo') {
+    const tx = state.transactions.find((t) => t.id === payload.transactionId);
+    if (!tx?.bank || tx.kind !== 'transfer' || !tx.reference)
+      throw new FinanceValidation('Пов’язаний власний переказ не знайдено');
+    const counterpart = state.transactions.find(
+      (t) => t.id === `bank-transfer:${tx.reference}` && t.reference === tx.reference,
+    );
+    const manual = state.transactions.filter(
+      (t) =>
+        !t.bank &&
+        t.kind === 'transfer' &&
+        t.reference === tx.reference &&
+        t.amountMinor === -tx.amountMinor &&
+        t.accountId !== tx.accountId,
+    );
+    const reused = manual.length === 1 ? manual[0] : undefined;
+    if (!counterpart && !reused)
+      throw new FinanceValidation(
+        'Цей зв’язок потребує звірки: другу сторону не вдалося визначити однозначно',
+      );
+    if (counterpart)
+      ledger(
+        `bank-transfer-undo:${id}`,
+        -counterpart.amountMinor,
+        'transfer',
+        counterpart.accountId,
+        'перекази й готівка',
+        'Скасування готівкової сторони поповнення',
+        now,
+        `undo:${tx.reference}`,
+      );
+    else if (reused)
+      update('UPDATE transactions SET raw_json = json_patch(raw_json, ?) WHERE id = ?', [
+        JSON.stringify({ financeReference: null }),
+        reused.id,
+      ]);
+    update('UPDATE transactions SET raw_json = json_patch(raw_json, ?) WHERE id = ?', [
+      JSON.stringify({ financeKind: 'unclassified', financeReference: null }),
+      tx.id,
+    ]);
+  } else if (type === 'credit-limit') {
     const found = state.accounts.find((a) => a.id === payload.accountId && a.kind === 'mono');
     if (!found) throw new FinanceValidation('Обери підключену картку Monobank');
     const row = await db
@@ -907,6 +986,7 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
       paid_work_minor: paid,
       account_id: src.id,
       note: typeof payload.note === 'string' ? payload.note.slice(0, 500) : '',
+      day_complete: payload.dayComplete === false ? 0 : 1,
       updated_at: now,
     };
     if (previous) {
@@ -1056,10 +1136,16 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
             'week',
             'month',
           ]);
+    const planStartedAt =
+      !previousGoal ||
+      previousGoal.planAmountMinor !== planAmount ||
+      previousGoal.planPeriod !== planPeriod
+        ? now
+        : previousGoal.planStartedAt;
     if (previousGoal)
       update(
-        'UPDATE finance_goals SET name=?,target_minor=?,deadline=?,status=?,plan_amount_minor=?,plan_period=? WHERE id=?',
-        [name, target, deadline, status, planAmount, planPeriod, previousGoal.id],
+        'UPDATE finance_goals SET name=?,target_minor=?,deadline=?,status=?,plan_amount_minor=?,plan_period=?,plan_started_at=? WHERE id=?',
+        [name, target, deadline, status, planAmount, planPeriod, planStartedAt, previousGoal.id],
       );
     else
       insert('finance_goals', {
@@ -1070,6 +1156,7 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
         status,
         plan_amount_minor: planAmount,
         plan_period: planPeriod,
+        plan_started_at: now,
         created_at: now,
       });
   } else if (type === 'goal-move') {
@@ -1154,7 +1241,17 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
       state.budgets.forEach((b) => {
         if (b.parentId && ids.has(b.parentId)) ids.add(b.id);
       });
-    for (const budgetId of ids) update('DELETE FROM finance_budgets WHERE id = ?', [budgetId]);
+    for (const budgetId of ids) {
+      insert('finance_budget_versions', {
+        id: `${id}:${budgetId}`,
+        budget_id: budgetId,
+        valid_from: now,
+        definition_json: JSON.stringify(state.budgets.find((b) => b.id === budgetId)),
+        removed: 1,
+        sequence: version + 1,
+      });
+      update('DELETE FROM finance_budgets WHERE id = ?', [budgetId]);
+    }
   } else if (type === 'budget-reorder') {
     if (
       !Array.isArray(payload.ids) ||
@@ -1681,6 +1778,27 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
         ? null
         : Math.max(0, payment.installmentsLeft - 1);
     const done = fullyPaid || (remaining == null && (payment.recurrence === 'once' || count === 0));
+    if (done)
+      insert('finance_events', {
+        id: `completed:${id}`,
+        kind: 'payment-completed',
+        at: now,
+        data_json: JSON.stringify({
+          paymentId: payment.id,
+          name: payment.name,
+          kind: payment.kind,
+          paidMinor: amount,
+          principalReducedMinor: principal,
+          monthlyReliefMinor: payment.recurrence === 'month' ? payment.amountMinor : 0,
+          debtBeforeMinor: sumMoney(
+            state.payments
+              .filter((p) => p.status === 'active' && isDebtKind(p.kind))
+              .map((p) => (p.remainingMinor ?? 0) + (p.overpaymentRemainingMinor ?? 0)),
+          ),
+          debtReducedMinor:
+            (payment.remainingMinor ?? 0) + (payment.overpaymentRemainingMinor ?? 0),
+        }),
+      });
     const next =
       done || payment.recurrence === 'once'
         ? payment.nextDate
@@ -1760,6 +1878,20 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
       [text(payload.category), JSON.stringify({ financeKind: kind }), tx.id],
     );
   } else throw new FinanceValidation('Невідома фінансова дія');
+  if (['budget', 'budget-template', 'budget-reorder'].includes(type)) {
+    statements.push(
+      db
+        .prepare(
+          `INSERT INTO finance_budget_versions(id,budget_id,valid_from,sequence,definition_json)
+      SELECT ? || ':' || b.id,b.id,?,?,json_object('id',b.id,'category',b.category,
+      'categories',json(b.categories_json),'purpose',b.purpose,'period',b.period,
+      'limitMinor',b.limit_minor,'shareBps',b.share_bps,'incomeBaseMinor',b.income_base_minor,
+      'parentId',b.parent_id,'goalId',b.goal_id) FROM finance_budgets b WHERE ${guard}
+      ON CONFLICT DO NOTHING`,
+        )
+        .bind(id, now, version + 1, id, hash, now, version),
+    );
+  }
   statements.push(
     db
       .prepare(

@@ -86,7 +86,7 @@ describe('deleting a trip from Mini App', () => {
     expect(await screen.findByText('Поїздку видалено.')).toBeVisible();
     expect(screen.getByLabelText('Місто або місце')).toBeVisible();
     expect(screen.queryByRole('option', { name: /Прага/ })).not.toBeInTheDocument();
-    expect(screen.getByTestId('location')).toHaveTextContent('');
+    await waitFor(() => expect(screen.getByTestId('location')).toBeEmptyDOMElement());
   });
   it.each(['', '&view=details'])(
     'allows deletion of a cancelled trip in either view (%s)',

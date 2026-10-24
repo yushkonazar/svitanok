@@ -101,6 +101,43 @@ export function d1FromSqlite(migrations: string[], { atomicBatch = false } = {})
   for (const file of files) {
     db.exec(readFileSync(join(__dirname, '..', '..', 'web', 'core', 'migrations', file), 'utf8'));
   }
+  // Narrow migration fixtures deliberately stop before goal-plan columns (0033).
+  // Only expand complete finance workspaces; schema-order tests remain untouched.
+  if (
+    files.includes('0028_mini_app_finance.sql') &&
+    files.includes('0033_finance_history_and_links.sql')
+  ) {
+    if (!files.includes('0035_finance_budget_planning.sql'))
+      db.exec(
+        readFileSync(
+          join(
+            __dirname,
+            '..',
+            '..',
+            'web',
+            'core',
+            'migrations',
+            '0035_finance_budget_planning.sql',
+          ),
+          'utf8',
+        ),
+      );
+    if (!files.includes('0047_finance_analytics_renewal.sql'))
+      db.exec(
+        readFileSync(
+          join(
+            __dirname,
+            '..',
+            '..',
+            'web',
+            'core',
+            'migrations',
+            '0047_finance_analytics_renewal.sql',
+          ),
+          'utf8',
+        ),
+      );
+  }
   if (
     files.includes('0007_instructions_plans.sql') &&
     files.includes('0003_telemetry.sql') &&

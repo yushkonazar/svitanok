@@ -1,5 +1,8 @@
 import type { Finance } from '../../api/finance-schema.ts';
 import { moneyLabel } from '../../lib/financeView.ts';
+import { kyivParts } from '../../../../core/finance/planning.mjs';
+import { useTick } from '../../lib/useTick.ts';
+import { useEffect, useRef } from 'react';
 import {
   PAYMENT_KIND_LABELS,
   isDebtKind,
@@ -25,9 +28,35 @@ export function PaymentCard({
   compact?: boolean;
 }) {
   const date = new Date(p.nextDate + 'T12:00:00Z');
+  const today = kyivParts(useTick(30_000)).date;
+  const due = p.status === 'active' && p.nextDate <= today;
+  const ref = useRef<HTMLElement>(null);
+  useEffect(() => {
+    const element = ref.current;
+    if (!element || !due) return;
+    let visible = true;
+    const update = () => {
+      element.dataset.animationActive = String(visible && document.visibilityState !== 'hidden');
+    };
+    const observer =
+      typeof IntersectionObserver === 'undefined'
+        ? null
+        : new IntersectionObserver((entries) => {
+            visible = entries[0]?.isIntersecting ?? false;
+            update();
+          });
+    observer?.observe(element);
+    document.addEventListener('visibilitychange', update);
+    update();
+    return () => {
+      observer?.disconnect();
+      document.removeEventListener('visibilitychange', update);
+    };
+  }, [due]);
   return (
     <article
-      className={`renewal-payment-card${compact ? ' renewal-payment-compact' : ''}`}
+      ref={ref}
+      className={`renewal-payment-card${compact ? ' renewal-payment-compact' : ''}${due ? ' finance-payment-due' : ''}`}
       aria-label={p.name}
     >
       <time className="renewal-datebox" dateTime={p.nextDate}>
@@ -35,6 +64,11 @@ export function PaymentCard({
         <small>{date.toLocaleDateString('uk-UA', { month: 'short' })}</small>
       </time>
       <div className="renewal-payment-info">
+        {due && (
+          <span className="finance-due-label">
+            {p.nextDate === today ? 'Сьогодні' : 'Потрібно підтвердити'}
+          </span>
+        )}
         <button className="renewal-payment-name" onClick={onOpen}>
           <span>{p.name}</span> <span aria-hidden="true">↗</span>
         </button>

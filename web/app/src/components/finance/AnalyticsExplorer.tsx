@@ -15,6 +15,7 @@ import { Sheet } from '../ui/Sheet.tsx';
 import { SessionExpired } from '../ui/SessionExpired.tsx';
 import { FinanceForm } from './FinanceForm.tsx';
 import { TransactionDetail } from './TransactionDetail.tsx';
+import { TransactionAmount } from './TransactionAmount.tsx';
 export type ExplorerOptions = {
   day?: string;
   kind?: string;
@@ -130,6 +131,7 @@ export function AnalyticsOperations({
         {active ? (
           <TransactionDetail
             transaction={active}
+            finance={finance}
             version={finance.version}
             backLabel={
               options.transactionId ? (options.returnLabel ?? 'До аналітики') : 'До операцій'
@@ -252,9 +254,7 @@ export function AnalyticsOperations({
                     </small>
                   </span>
                   <strong>
-                    {tx.amountUah == null
-                      ? moneyLabel(tx.amountMinor, tx.currency)
-                      : moneyLabel(tx.amountUah)}
+                    <TransactionAmount transaction={tx} display={finance.display} />
                   </strong>
                 </button>
               ))}

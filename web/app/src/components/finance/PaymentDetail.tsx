@@ -1,8 +1,7 @@
 import type { Finance } from '../../api/finance-schema.ts';
 import { paymentSchedule } from '../../lib/paymentSchedule.ts';
 import { moneyLabel } from '../../lib/financeView.ts';
-import { ObservationChart } from '../charts/ObservationChart.tsx';
-import { shiftDate } from '../../../../core/finance/planning.mjs';
+import { DebtTrajectory } from './DebtTrajectory.tsx';
 import { PageHeading } from '../ui/PageHeading.tsx';
 import {
   isDebtKind,
@@ -163,14 +162,7 @@ export function PaymentDetail({
       {left != null && ((p.rateBps ?? 0) === 0 || p.interestMethod) && rows.length > 0 && (
         <section className="renewal-card">
           <h2 className="text-lg font-semibold mb-4">Як зменшуватиметься борг</h2>
-          <ObservationChart
-            label="Плановий залишок тіла боргу"
-            unit="₴"
-            points={[
-              { date: shiftDate(p.nextDate, -1), value: left / 100 },
-              ...rows.map((r) => ({ date: r.date, value: (r.remaining ?? 0) / 100 })),
-            ].filter((r, i, a) => i === 0 || r.date !== a[i - 1].date)}
-          />
+          <DebtTrajectory payment={p} />
           <p className="renewal-chart-note mt-3">
             Прогноз за обраним графіком, без дострокових оплат. Залишок зміниться в обліку лише
             після підтвердження фактичної оплати.

@@ -4,6 +4,7 @@ import type { Finance } from '../../api/finance-schema.ts';
 import { postFinance } from '../../api/client.ts';
 import { FINANCE_QUERY } from '../../api/finance-hooks.ts';
 import { moneyLabel } from '../../lib/financeView.ts';
+import { useFinanceAction } from './useFinanceAction.ts';
 
 export function TransactionDetail({
   transaction: tx,
@@ -11,13 +12,30 @@ export function TransactionDetail({
   onBack,
   onClassify,
   backLabel = 'До фінансів',
+  finance,
 }: {
   transaction: Finance['transactions'][number];
   version: number;
   onBack: () => void;
   onClassify: () => void;
   backLabel?: string;
+  finance?: Finance;
 }) {
+  const undo = useFinanceAction({ version });
+  const created = finance?.transactions.find(
+    (t) => t.id === `bank-transfer:${tx.reference}` && t.reference === tx.reference,
+  );
+  const manual =
+    finance?.transactions.filter(
+      (t) =>
+        !t.bank &&
+        t.kind === 'transfer' &&
+        t.reference === tx.reference &&
+        t.amountMinor === -tx.amountMinor &&
+        t.accountId !== tx.accountId,
+    ) ?? [];
+  const canUndo =
+    !!tx.bank && !!tx.reference && tx.kind === 'transfer' && (!!created || manual.length === 1);
   const query = useQueryClient();
   const [pending, setPending] = useState(false);
   const [error, setError] = useState('');
@@ -50,6 +68,13 @@ export function TransactionDetail({
       </button>
       <h1 className="text-xl font-bold">{tx.description || 'Операція'}</h1>
       <strong>{moneyLabel(tx.amountMinor, tx.currency)}</strong>
+      {tx.currency !== 'UAH' && (
+        <p className="renewal-inset">
+          {tx.amountUah == null
+            ? 'Гривнева сума цієї операції невідома. Поточний курс не підставляється.'
+            : `${tx.bank ? 'Фактичне списання з рахунку' : 'Зафіксована гривнева сума'}: ${moneyLabel(tx.amountUah)}. Історичний еквівалент збережено разом з операцією.`}
+        </p>
+      )}
       <p className="renewal-muted">
         {tx.category} · {new Date(tx.at).toLocaleString('uk-UA', { timeZone: 'Europe/Kyiv' })}
       </p>
@@ -105,6 +130,31 @@ export function TransactionDetail({
         <button disabled={pending} className="renewal-button" onClick={onClassify}>
           Уточнити категорію та тип
         </button>
+      )}
+      {canUndo && (
+        <div className="renewal-inset">
+          <p className="renewal-chart-note mb-3">
+            {created
+              ? 'Скасування власного переказу поверне автоматично списану суму на ручний рахунок і дозволить уточнити банківську операцію.'
+              : 'Скасування відв’яже наявний ручний запис. Його суму збережено: повторного зарахування на рахунок не буде.'}
+          </p>
+          <button
+            className="renewal-secondary"
+            disabled={undo.pending}
+            onClick={() =>
+              void (undo.uncertain
+                ? undo.retry()
+                : undo.run('bank-transfer-undo', { transactionId: tx.id }))
+            }
+          >
+            {undo.pending
+              ? 'Перевіряю…'
+              : undo.uncertain
+                ? 'Перевірити скасування'
+                : 'Скасувати зв’язок переказу'}
+          </button>
+          {undo.error && <p role="alert">{undo.error}</p>}
+        </div>
       )}
       {pending && <p role="status">Зберігаю відповідь…</p>}
       {error && <p role="alert">{error}</p>}

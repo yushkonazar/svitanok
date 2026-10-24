@@ -5,15 +5,50 @@ import { ForecastPlan } from './ForecastPlan.tsx';
 import { FINANCE_QUERY } from '../../api/finance-hooks.ts';
 import { readFinanceDemo, writeFinanceDemo, resetFinanceDemo } from '../../api/finance-demo.ts';
 import type { FinanceCommand } from '../../api/finance-schema.ts';
+import { fetchFinanceProjection } from '../../api/client.ts';
+import { financeForecast } from '../../lib/financeForecast.ts';
 vi.mock('../../api/client.ts', () => ({
+  fetchFinanceProjection: vi.fn(async (days: number) =>
+    financeForecast(readFinanceDemo(), days, 1791633600000),
+  ),
   postFinance: async (command: FinanceCommand) => {
     writeFinanceDemo(command);
     return { finance: readFinanceDemo(), demo: true };
   },
 }));
 beforeEach(() => {
+  vi.mocked(fetchFinanceProjection).mockClear();
   resetFinanceDemo();
   vi.spyOn(window, 'scrollTo').mockImplementation(() => {});
+});
+it('refreshes its estimate when a bank snapshot changes without a new financial command version', async () => {
+  const f = readFinanceDemo(),
+    client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const { rerender } = render(
+    <QueryClientProvider client={client}>
+      <ForecastPlan finance={f} nowMs={1791633600000} onCalendar={() => {}} />
+    </QueryClientProvider>,
+  );
+  await waitFor(() => expect(fetchFinanceProjection).toHaveBeenCalledTimes(1));
+  const updated = {
+    ...f,
+    generatedAt: '2026-10-24T15:00:00Z',
+    accounts: f.accounts.map((a) =>
+      a.id === 'cash' ? { ...a, balanceMinor: (a.balanceMinor ?? 0) + 10000 } : a,
+    ),
+  };
+  vi.mocked(fetchFinanceProjection).mockImplementationOnce(async (days) =>
+    financeForecast(updated, days, 1791633600000),
+  );
+  rerender(
+    <QueryClientProvider client={client}>
+      <ForecastPlan finance={updated} nowMs={1791633600000} onCalendar={() => {}} />
+    </QueryClientProvider>,
+  );
+  await waitFor(() => expect(fetchFinanceProjection).toHaveBeenCalledTimes(2));
+  expect(screen.getByText(/Прогноз оновився після зміни обліку/)).toHaveTextContent(
+    /Кошти зараз: \+100/,
+  );
 });
 afterEach(() => {
   cleanup();

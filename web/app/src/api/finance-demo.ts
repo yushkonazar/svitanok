@@ -1,6 +1,7 @@
 import { financeSchema, type Finance, type FinanceCommand } from './finance-schema.ts';
 import { financeCategories } from '../../../core/finance/categories.mjs';
 import { validateMerchantAliases } from '../../../core/finance/analytics.mjs';
+import { financeDisplay } from '../../../core/finance/display.mjs';
 import { bankPaymentAmount } from '../../../core/finance/payment-link.mjs';
 import { fixedDebtPayment, interestDebtPayment } from '../../../core/finance/payments.mjs';
 import {
@@ -312,6 +313,28 @@ export function writeFinanceDemo(command: FinanceCommand) {
     if (a) a.balanceMinor = (a.balanceMinor ?? 0) + amount;
   };
   switch (command.type) {
+    case 'display-settings':
+      f.display = financeDisplay(p);
+      break;
+    case 'event-seen': {
+      const event = f.events?.find((e) => e.id === p.eventId);
+      if (event) event.seenAt = now;
+      break;
+    }
+    case 'bank-transfer-undo': {
+      const bank = f.transactions.find((t) => t.id === p.transactionId);
+      if (!bank?.reference) throw new Error('Переказ не знайдено');
+      const leg = f.transactions.find(
+        (t) => !t.bank && t.reference === bank.reference && t.accountId !== bank.accountId,
+      );
+      if (!leg) throw new Error('Готівкову сторону не знайдено');
+      if (leg.id === `bank-transfer:${bank.reference}`)
+        tx(-leg.amountMinor, 'transfer', leg.accountId!, ':undo', `undo:${bank.reference}`);
+      else leg.reference = null;
+      bank.reference = null;
+      bank.kind = 'unclassified';
+      break;
+    }
     case 'credit-limit': {
       if (!account || account.kind !== 'mono') throw new Error('Обери картку Monobank');
       account.creditLimitMinor = p.creditLimitMinor === null ? 700000 : num('creditLimitMinor');
@@ -366,9 +389,10 @@ export function writeFinanceDemo(command: FinanceCommand) {
           old.amountMinor !== -bank.amountMinor)
       )
         throw new Error('Обери протилежну ручну операцію переказу');
-      if (old) old.reference = bank.id;
+      if (old) old.reference = id;
       else {
-        tx(-bank.amountMinor, 'transfer', account.id, ':counter', bank.id);
+        tx(-bank.amountMinor, 'transfer', account.id, ':counter', id);
+        f.transactions[0].id = `bank-transfer:${id}`;
         f.transactions[0].at = bank.at;
       }
       bank.kind = 'transfer';
@@ -471,6 +495,7 @@ export function writeFinanceDemo(command: FinanceCommand) {
         accountId: str('accountId'),
         note: str('note'),
         revision: previous ? previous.revision + 1 : 0,
+        dayComplete: p.dayComplete !== false,
       });
       if (num('receivedCashMinor') || num('paidWorkMinor'))
         tx(
@@ -588,6 +613,10 @@ export function writeFinanceDemo(command: FinanceCommand) {
         planAmountMinor: p.planAmountMinor == null ? null : num('planAmountMinor'),
         planPeriod: (p.planAmountMinor == null ? null : str('planPeriod')) as
           'day' | 'week' | 'month' | null,
+        planStartedAt:
+          !old || old.planAmountMinor !== p.planAmountMinor || old.planPeriod !== p.planPeriod
+            ? now
+            : old.planStartedAt,
       };
       if (old) Object.assign(old, values);
       else f.goals.push(values);
@@ -644,6 +673,19 @@ export function writeFinanceDemo(command: FinanceCommand) {
         f.budgets.forEach((b) => {
           if (b.parentId && ids.has(b.parentId)) ids.add(b.id);
         });
+      f.budgetVersions = [
+        ...(f.budgetVersions ?? []),
+        ...f.budgets
+          .filter((b) => ids.has(b.id))
+          .map((b) => ({
+            id: `${id}:${b.id}`,
+            budgetId: b.id,
+            validFrom: now,
+            sequence: f.version + 1,
+            definition: { ...b },
+            removed: true,
+          })),
+      ];
       f.budgets = f.budgets.filter((b) => !ids.has(b.id));
       break;
     }
@@ -833,6 +875,15 @@ export function writeFinanceDemo(command: FinanceCommand) {
       const pay = f.payments.find((s) => s.id === p.paymentId);
       if (!pay || pay.status !== 'active') throw new Error('Активний платіж не знайдено');
       const amount = num('amountMinor');
+      const debtBefore = sumMoney(
+        f.payments
+          .filter(
+            (x) =>
+              x.status === 'active' && ['loan', 'installment', 'card-installment'].includes(x.kind),
+          )
+          .map((x) => (x.remainingMinor ?? 0) + (x.overpaymentRemainingMinor ?? 0)),
+      );
+      const priorRemaining = (pay.remainingMinor ?? 0) + (pay.overpaymentRemainingMinor ?? 0);
       if (
         pay.interestMethod &&
         p.close !== true &&
@@ -908,6 +959,26 @@ export function writeFinanceDemo(command: FinanceCommand) {
         pay.status = 'done';
       else if (pay.recurrence !== 'once')
         pay.nextDate = nextPaymentDate(pay.nextDate, pay.anchorDay, pay.recurrence);
+      if (pay.status === 'done')
+        f.events = [
+          {
+            id: `completed:${id}`,
+            kind: 'payment-completed',
+            at: now,
+            seenAt: null,
+            data: {
+              paymentId: pay.id,
+              name: pay.name,
+              kind: pay.kind,
+              paidMinor: amount,
+              principalReducedMinor: principal,
+              monthlyReliefMinor: pay.recurrence === 'month' ? pay.amountMinor : 0,
+              debtBeforeMinor: debtBefore,
+              debtReducedMinor: priorRemaining,
+            },
+          },
+          ...(f.events ?? []),
+        ];
       break;
     }
     case 'transaction-attention': {
@@ -932,6 +1003,19 @@ export function writeFinanceDemo(command: FinanceCommand) {
     }
     default:
       throw new Error('Невідома дія демо');
+  }
+  if (['budget', 'budget-template', 'budget-reorder', 'budget-remove'].includes(command.type)) {
+    f.budgetVersions = [
+      ...(f.budgetVersions ?? []),
+      ...f.budgets.map((b) => ({
+        id: `${id}:${b.id}`,
+        budgetId: b.id,
+        validFrom: now,
+        sequence: f.version + 1,
+        definition: { ...b },
+        removed: false,
+      })),
+    ];
   }
   f.version++;
   memory = rebuild(f);
