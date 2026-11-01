@@ -209,11 +209,9 @@ describe('runBriefing — неділя', () => {
     // topicBriefing) — раніше чат отримував лише [дата]. Окремий .send()-
     // виклик (best-effort, §код-рев'ю): провал недільного посту не має
     // блокувати вже доставлене щоденне (lastSentDate).
-    expect(notifier.sent).toHaveLength(2); // два виклики .send() — щоденний + недільний
+    expect(notifier.sent).toHaveLength(1); // the Monday overview owns weekly delivery
     expect(notifier.sent[0]).toHaveLength(1);
-    expect(notifier.sent[1]).toHaveLength(1);
-    expect(notifier.sent[1]![0]).toContain('Підсумок тижня');
-    expect(notifier.sent[1]![0]).toContain('Новин показано: 1');
+    expect(notifier.sent[0]![0]).not.toContain('Підсумок тижня');
   });
 
   it('НЕ неділя -> weekly-review блок відсутній, чат отримує лише [дата] (без регресії)', async () => {

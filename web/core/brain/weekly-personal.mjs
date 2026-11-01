@@ -5,15 +5,20 @@ import { kyivParts, shiftDate } from '../finance/planning.mjs';
 
 /** Period metrics, not rolling context windows. Missing legacy timestamps on
  * the unfinished last day are explicitly excluded, never guessed from a slot.
- * @param {Record<string, any>} checkins @param {number} asOfMs */
-export function weeklyPersonalPeriods(checkins, asOfMs) {
+ * @param {Record<string, any>} checkins @param {number} asOfMs
+ * @param {ReturnType<typeof reportPeriod>} [period] */
+export function weeklyPersonalPeriods(checkins, asOfMs, period) {
   const today = kyivParts(asOfMs).date;
-  const from = weekBounds(today).from;
-  const days = (Date.parse(today) - Date.parse(from)) / 86_400_000 + 1;
+  const selectedPeriod = period ?? reportPeriod(weekBounds(today).from, today, asOfMs);
+  const from = selectedPeriod.dateFrom;
+  const last = selectedPeriod.dateTo;
+  const days = (Date.parse(last) - Date.parse(from)) / 86_400_000 + 1;
   const read = (/** @type {number} */ offset) => {
     const cutoff = shiftReportCutoff(asOfMs, -7 * offset);
     const dateFrom = shiftDate(from, -7 * offset),
-      dateTo = shiftDate(today, -7 * offset);
+      dateTo = shiftDate(last, -7 * offset);
+    const currentPeriod = reportPeriod(dateFrom, dateTo, cutoff);
+    const observationCutoff = Math.min(cutoff, Date.parse(currentPeriod.to) - 1);
     /** @type {Record<string, any>} */ const selected = {};
     let unknownTimingSlots = 0;
     for (const [date, record] of Object.entries(checkins ?? {})) {
@@ -30,8 +35,8 @@ export function weeklyPersonalPeriods(checkins, asOfMs) {
             answer.ts ??
             '',
         );
-        if (Number.isFinite(at) && at > cutoff) delete copy[slot];
-        else if (date === dateTo && !Number.isFinite(at)) {
+        if (Number.isFinite(at) && at > observationCutoff) delete copy[slot];
+        else if (!currentPeriod.complete && date === dateTo && !Number.isFinite(at)) {
           unknownTimingSlots++;
           delete copy[slot];
         }
@@ -63,7 +68,7 @@ export function weeklyPersonalPeriods(checkins, asOfMs) {
       };
     };
     return {
-      period: reportPeriod(dateFrom, dateTo, cutoff),
+      period: currentPeriod,
       legacy: metrics.current,
       observationsV2: metrics.observationsV2.currentMetrics,
       observationsV3: metrics.observationsV3.currentMetrics,

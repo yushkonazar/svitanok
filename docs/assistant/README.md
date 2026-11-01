@@ -21,7 +21,7 @@
 | `agents/tutor.md` | agent | Навчальний | `delegate` |
 | `agents/day-planner.md` | agent | Денний (намір → пункти, уточнення, пояснення; розкладка - ядро) | `DayPlanChain`, `/plan`, `delegate` |
 | `checklists/ua-car.md`, `abroad-plane-bus.md`, `ua-train-bus.md` | checklist | `TripChain` (текст блоків T-30/T-7/T-1) і Планувальник | створення поїздки |
-| `weekly-review.md` | profile | профіль `weekly-review` | нд 09:00 / «звіт зараз» |
+| `weekly-review.md` | profile | профіль `weekly-review` | пн 08:00 за завершений тиждень / «звіт зараз» |
 
 ## Front-matter (обовʼязковий)
 

@@ -1,22 +1,21 @@
 // Профіль weekly-review (07 §5, S-9-1…5): що ядро дає прогону на вхід і що
 // робить із його виходом. Сам прогін іде звичайним шляхом (startClaimedRun →
 // /run мозку → deliver у тему), тут - лише те, що відрізняє звіт від чату:
-//   - вхід за §0 інструкції: period_from/to (пн-нд, Київ), first_sunday_of_month,
+//   - вхід за §0 інструкції: завершений період пн-нд, first_monday_of_month,
 //     попередній звіт (щоб не повторюватись), instruction_hash;
 //   - вихід: deliver кладе текст у `reports(kind=weekly, instruction_hash)`.
 // Без транскрипту чату, без памʼяті сесій - інструкція каже «нічого іншого».
 
 import { kyivDateKey } from '../../kyiv-time.mjs';
-import { weekBounds } from '../tools/weekly.mjs';
 import { instructionHash } from '../instructions.mjs';
 import { evaluateWeeklyReport, usableWeeklyReports } from './weekly-report-quality.mjs';
-import { reportPeriod } from '../report-period.mjs';
+import { completedWeekPeriod } from '../report-period.mjs';
 
-/** «звіт зараз» (S-9-5) - той самий профіль за запитом, період = поточний тиждень. */
+/** «звіт зараз» reads the same most recent completed week as the scheduled run. */
 export const WEEKLY_NOW_RE = /^звіт\s+зараз[.!]?$/i;
 /** Скільки попереднього звіту показувати моделі (вона має не повторюватись,
  *  а не переказувати минулий). */
-export const PREVIOUS_REPORT_MAX_CHARS = 6_000;
+export const PREVIOUS_REPORT_MAX_CHARS = 2_200;
 
 /**
  * Вхідний текст прогону weekly-review (§0 інструкції).
@@ -30,28 +29,28 @@ export const PREVIOUS_REPORT_MAX_CHARS = 6_000;
  */
 export async function buildWeeklyReviewInput(env, nowMs) {
   const today = kyivDateKey(new Date(nowMs));
-  const { from, to } = weekBounds(today);
+  const period = completedWeekPeriod(nowMs);
+  const { dateFrom: from, dateTo: to } = period;
   const dayOfMonth = Number(today.slice(8, 10));
-  const isSunday = new Date(`${today}T00:00:00Z`).getUTCDay() === 0;
-  const firstSunday = isSunday && dayOfMonth <= 7;
+  const firstMonday = new Date(`${today}T00:00:00Z`).getUTCDay() === 1 && dayOfMonth <= 7;
   const previous = await readPreviousReport(env, from);
   const lines = [
     `period_from: ${from}`,
     `period_to: ${to}`,
     `as_of: ${new Date(nowMs).toISOString()}`,
     `time_zone: Europe/Kyiv`,
-    `query_from: ${reportPeriod(from, today, nowMs).from}`,
-    `query_to_exclusive: ${reportPeriod(from, today, nowMs).to}`,
+    `query_from: ${period.from}`,
+    `query_to_exclusive: ${period.to}`,
     `today: ${today}`,
-    `first_sunday_of_month: ${firstSunday}`,
+    `first_monday_of_month: ${firstMonday}`,
     '',
     previous
       ? `Попередній тижневий звіт (${previous.period}; ${previous.status === 'ready' ? 'готовий' : 'частковий або давній без перевірки повноти'}), щоб не повторюватись:\n${clip(previous.text, PREVIOUS_REPORT_MAX_CHARS)}`
       : 'Попереднього тижневого звіту немає - це перший.',
     '',
-    'Прочитай підготовлений сервером пакет: data.read(scope="weekly") без cap і period. Він містить особисті дані, всі фінанси й телеметрію з єдиним часом зрізу. compaction скорочує лише деталі: наявні підсумки не є недоступними джерелами. Не підмінюй його коротким фінансовим запитом. Напиши звіт за інструкцією й зазнач «станом на» час зрізу.',
+    'Прочитай data.read(scope="weekly") без cap і period. Усі джерела мають один завершений календарний тиждень. Відбери до трьох важливих спостережень і до двох дій за інструкцією; поверни компактний JSON highlights/actions. Детальну діагностику не переказуй. Не вигадуй задач для виправлення внутрішньої системи.',
   ];
-  return { text: lines.join('\n'), periodFrom: from, periodTo: to, firstSunday };
+  return { text: lines.join('\n'), periodFrom: from, periodTo: to, firstMonday };
 }
 
 /**
@@ -87,11 +86,24 @@ export async function readRunProfile(env, runId) {
   return row?.profile ?? null;
 }
 
+/** Exact period identity also deduplicates manual and scheduled overviews.
+ * @param {Env} env @param {string} from @param {string} to */
+export async function latestWeeklyReport(env, from, to) {
+  if (!env.DB) return null;
+  return env.DB.prepare(
+    `SELECT id,text_md,status,run_id,as_of,quality_json,created_at
+    FROM reports WHERE kind='weekly' AND period_from=? AND period_to=?
+    ORDER BY CASE WHEN status IN ('ready','partial') THEN 0 ELSE 1 END,created_at DESC,id DESC LIMIT 1`,
+  )
+    .bind(from, to)
+    .first();
+}
+
 /**
  * Зберегти доставлений звіт у `reports` (07 §1). Хеш - той, що зараз у D1
  * `instructions` для weekly-review: він же поїхав у /run, тож рядок звіту
- * каже, ЯКОЮ інструкцією його написано. Період - тиждень дати доставки за
- * Києвом (звіт нд 09:00 і «звіт зараз» обидва описують поточний тиждень).
+ * каже, ЯКОЮ інструкцією його написано. Період заморожено читачем прогону,
+ * тому затримка доставки не переносить огляд до нового тижня.
  * @param {Env} env
  * @param {string} text
  * @param {number} nowMs
@@ -116,7 +128,7 @@ export async function saveWeeklyReport(env, text, nowMs, options = {}) {
       id,
       from,
       to,
-      text,
+      quality.overview?.text ?? text,
       hash,
       new Date(nowMs).toISOString(),
       quality.status,

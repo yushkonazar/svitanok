@@ -24,6 +24,7 @@ import { makeRunner, type EngineRunOptions } from '../brain/src/agent.js';
 import { instructionHash } from '../brain/src/instructions.js';
 
 const NOW = Date.parse('2026-10-18T06:00:00.000Z'); // Sunday, Kyiv 09:00.
+const REPORT_NOW = Date.parse('2026-10-19T05:00:00.000Z'); // Monday, closed previous week.
 const TEXT =
   '📊 Тиждень 12.10 — 18.10\n\nГРОШІ\n• Усі рахунки: 7 780,23 грн.\n\nСИСТЕМА\n• Телеметрію прочитано.\n\nЩО ЗРОБИТИ\nЦього тижня від тебе нічого не потрібно';
 const migrations = readdirSync(join(__dirname, '..', 'web/core/migrations'))
@@ -202,8 +203,8 @@ describe('weekly report reliability, synthetic weekly slice', () => {
     insert.run('before', '2026-10-11T20:59:59.999Z', 'old-error');
     insert.run('inside', '2026-10-11T21:00:00.000Z', null);
     insert.run('last', '2026-10-18T06:00:00.000Z', null);
-    insert.run('after', '2026-10-18T06:00:00.001Z', 'future-error');
-    const packet = JSON.parse((await runDataRead(s.env, { scope: 'weekly' }, NOW)).result);
+    insert.run('after', '2026-10-18T21:00:00.000Z', 'future-error');
+    const packet = JSON.parse((await runDataRead(s.env, { scope: 'weekly' }, REPORT_NOW)).result);
     expect(packet.system.period.from).toBe(packet.period.from);
     expect(packet.system.period.to).toBe(packet.period.to);
     expect(packet.finance.period.to).toBe(packet.period.to);
@@ -238,7 +239,7 @@ describe('weekly report reliability, synthetic weekly slice', () => {
     const s = setup();
     exampleSlice(s);
     s.kv.set('stats', '{corrupt');
-    const packet = JSON.parse((await runDataRead(s.env, { scope: 'weekly' }, NOW)).result);
+    const packet = JSON.parse((await runDataRead(s.env, { scope: 'weekly' }, REPORT_NOW)).result);
     expect(packet.sources.stats.status).toBe('unavailable');
     expect(packet.sources.archive.status).toBe('empty');
     expect(packet.checkin).toBeNull();
@@ -305,7 +306,11 @@ describe('weekly report reliability, synthetic weekly slice', () => {
       )
       .run(
         new Date(NOW).toISOString(),
-        JSON.stringify({ missing: [], sources: { stats: { status: 'available' } } }),
+        JSON.stringify({
+          missing: [],
+          period: reportPeriod('2026-10-12', '2026-10-18', NOW),
+          sources: { stats: { status: 'available' } },
+        }),
       );
     expect((await evaluateWeeklyReport(s.env, TEXT, NOW, { runId: 'r' })).status).toBe('ready');
     expect(
@@ -354,7 +359,7 @@ describe('Brain → signed Core API → report quality', () => {
       .prepare(
         "INSERT INTO runs(id,trigger,profile,started_at) VALUES('run-1','chat','weekly-review',?)",
       )
-      .run(new Date(NOW).toISOString());
+      .run(new Date(REPORT_NOW).toISOString());
     const env = workerEnv({
       ...s.env,
       ASSISTANT_V2: 'on',
@@ -382,10 +387,10 @@ describe('Brain → signed Core API → report quality', () => {
       hmacKey: 'test-key',
       accessClientId: null,
       accessClientSecret: null,
-      now: () => NOW + 2000,
+      now: () => REPORT_NOW + 2000,
       fetchFn: (async (url, init) => {
         const request = new Request(url, init);
-        const response = await handleInternal(request, env, NOW + 2000);
+        const response = await handleInternal(request, env, REPORT_NOW + 2000);
         calls.push({
           path: new URL(request.url).pathname,
           body: JSON.parse(String(init?.body)),
@@ -437,7 +442,7 @@ describe('Brain → signed Core API → report quality', () => {
       expect(reads[1]?.body.args).toEqual({ scope: 'weekly' });
       expect(s.d1.db.prepare('SELECT status, as_of FROM reports').get()).toMatchObject({
         status: 'ready',
-        as_of: new Date(NOW).toISOString(),
+        as_of: new Date(REPORT_NOW).toISOString(),
       });
       const steps = reportRuns.mock.calls[0] as unknown[] | undefined;
       expect(JSON.stringify(steps)).toContain('corrected once');
@@ -464,15 +469,17 @@ describe('Brain → signed Core API → report quality', () => {
       });
   });
 
-  it('always names missing sources in a partial delivery', async () => {
+  it('keeps coverage details in the saved report while the partial delivery stays short', async () => {
     const s = transport();
     s.kv.set('stats', '{corrupt');
     await s.client.callTool('run-1', 'data.read', { scope: 'weekly' });
     await s.client.deliver('run-1', TEXT);
     expect(s.d1.db.prepare('SELECT status FROM reports').get()?.status).toBe('partial');
     const outbox = JSON.stringify(s.d1.db.prepare('SELECT payload_json FROM outbox').all());
-    expect(outbox).toContain('Частковий звіт');
-    expect(outbox).toContain('особиста статистика');
+    expect(outbox).toContain('Дані неповні');
+    expect(outbox).not.toContain('Неповні дані:');
+    const quality = s.d1.db.prepare('SELECT quality_json FROM reports').get()?.quality_json;
+    expect(JSON.parse(String(quality)).missing).toContain('stats');
   });
 
   it('names incomplete API cost coverage in the partial header', async () => {

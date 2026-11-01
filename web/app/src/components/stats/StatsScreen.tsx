@@ -1,5 +1,6 @@
 import { AdaptiveReview } from './AdaptiveReview.tsx';
 import { useState } from 'react';
+import { Link } from 'react-router-dom';
 import { PageHeading } from '../ui/PageHeading.tsx';
 import { useStats } from '../../api/hooks.ts';
 import { LoadingSkeleton, ErrorState } from '../ui/states.tsx';
@@ -31,6 +32,12 @@ export function StatsScreen() {
         description="Від щоденних відповідей до змін, які можна помітити."
       />
       <AdaptiveReview s={s} days={days} setDays={setDays} />
+      <Link
+        to="/weekly-report"
+        className="renewal-card flex items-center justify-between gap-4 font-bold"
+      >
+        Тижневі огляди <span aria-hidden="true">→</span>
+      </Link>
       <details className="renewal-card">
         <summary className="cursor-pointer text-sm font-bold">Інтереси й робота Світанку</summary>
         <div className="mt-5 flex flex-col gap-6">

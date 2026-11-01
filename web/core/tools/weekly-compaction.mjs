@@ -297,9 +297,13 @@ export function compactWeeklyDetails(doc, level) {
   }
   doc.compaction = {
     summariesPreserved: true,
-    detailsOmitted: [...omitted].filter(
-      (path) => ![...omitted].some((parent) => parent !== path && path.startsWith(`${parent}.`)),
-    ),
+    detailsOmitted: [...omitted].filter((path) => {
+      // Each prefix lookup is constant time. Comparing every pair of omitted
+      // paths made a rich categorical map quadratic at every compaction level.
+      for (let dot = path.indexOf('.'); dot >= 0; dot = path.indexOf('.', dot + 1))
+        if (omitted.has(path.slice(0, dot))) return false;
+      return true;
+    }),
     note: 'Скорочено лише деталізацію. Наявні підсумки блоків не є недоступними джерелами.',
   };
 }

@@ -303,24 +303,23 @@ describe('mail-secretary.md - розділ «Строки»', () => {
 describe('weekly-review.md - блоки звіту', () => {
   const weekly = files.find((f) => f.path === 'weekly-review.md');
 
-  it('усі блоки §5 на місці, включно з ДНІ (S-P-16)', () => {
+  it('defines a bounded decision document instead of mandatory long report sections', () => {
     const parsed = parseInstruction(weekly?.raw ?? '');
     if (!parsed.ok) throw new Error(parsed.error);
-    for (const block of [
-      'ЩО ЗМІНИЛОСЬ',
-      // «ЩО ПОТРЕБУЄ ДІЇ» злився з фінальним «ЩО ЗРОБИТИ» (реліз 08.09):
-      // два списки дій в одному звіті дублювали одне одного, а власник
-      // просив пропозиції саме в кінці й привʼязані до пунктів вище.
-      'ЩО ЗРОБИТИ',
-      'ГРОШІ',
-      'СИСТЕМА',
-      'ДНІ',
-      'МІСЯЦЬ',
-      'ПРО САМУ СТАТИСТИКУ',
-      'ЧОГО Я НЕ БАЧИВ',
-    ]) {
-      expect(parsed.body).toContain(`\n${block}`);
-    }
+    const example = parsed.body.match(/^\{"highlights":.+\}$/m)?.[0];
+    expect(example).toBeDefined();
+    const document = JSON.parse(example!);
+    expect(document.highlights.length).toBeLessThanOrEqual(3);
+    expect(document.actions.length).toBeLessThanOrEqual(2);
+    expect(
+      document.highlights.every(
+        (row: { kind: string; text: string }) =>
+          ['plan', 'personal', 'finance'].includes(row.kind) && row.text.length <= 360,
+      ),
+    ).toBe(true);
+    expect(parsed.body).toContain('понеділок о 08:00');
+    expect(parsed.body).toContain('2 200 символів');
+    expect(parsed.body).not.toContain('Довжина: ліміту нема');
   });
 
   it('джерела даних §1 - рівно три інструменти front-matter', () => {
@@ -328,6 +327,6 @@ describe('weekly-review.md - блоки звіту', () => {
     if (!parsed.ok) throw new Error(parsed.error);
     expect(parsed.front.tools).toEqual(['data.read', 'finance.query', 'runs.query']);
     expect(parsed.body).toContain('data.read(scope=weekly)');
-    expect(parsed.body).toContain('runs.query(period=тиждень)');
+    expect(parsed.body).toContain('runs.query(period="YYYY-MM-DD..YYYY-MM-DD")');
   });
 });

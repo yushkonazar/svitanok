@@ -261,7 +261,9 @@ describe('runDataRead: weekly і archive наскрізь (KV + чинний п�
     expect(doc.plan.items).toBeUndefined();
     expect(doc.archive.monthly['2026-06'].checkinDays).toBe(12);
     expect(doc.levers.weeksUsable).toBe(9);
-    expect(Object.keys(doc.checkin.raw.records)).toHaveLength(30);
+    expect(Object.keys(doc.checkin.raw.records)).toHaveLength(27);
+    expect(doc.week).toEqual({ from: '2026-08-24', to: '2026-08-30' });
+    expect(Object.keys(doc.checkin.raw.records).every((date) => date <= '2026-08-30')).toBe(true);
   });
 
   it('weekly з period=7d - сім діб сирих; крива period - помилка контракту ДО читань', async () => {

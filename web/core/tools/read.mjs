@@ -50,8 +50,7 @@ import { readWeeklyFinance } from '../brain/weekly-finance.mjs';
 import { weeklyPersonalPeriods } from '../brain/weekly-personal.mjs';
 import { readPlanReport } from '../motivation/reporting.mjs';
 import { runRunsQuery } from './runs.mjs';
-import { reportPeriod } from '../report-period.mjs';
-import { weekBounds } from './weekly.mjs';
+import { completedWeekPeriod } from '../report-period.mjs';
 import { buildWeeklyDigest, buildArchiveDigest, parsePeriodDays } from './weekly.mjs';
 
 /** Кап data.read за замовчуванням = профіль chat (07 §4: chat 12k). */
@@ -112,16 +111,16 @@ export async function runDataRead(env, args, nowMs) {
       'finance',
       'system',
     ];
-    const week = weekBounds(todayKey);
+    const period = completedWeekPeriod(nowMs);
     const reads = await Promise.allSettled([
       readReportState(env, 'stats'),
       readReportState(env, 'state'),
       readReportJson(env, ARCHIVE_KEY),
       readReportJson(env, WEEKLY_ARCHIVE_KEY),
       readReportJson(env, 'levers'),
-      readPlanReport(env, reportPeriod(week.from, todayKey, nowMs)),
-      readWeeklyFinance(env, nowMs),
-      runRunsQuery(env, { period: `${week.from}..${todayKey}` }, nowMs).then((r) =>
+      readPlanReport(env, period),
+      readWeeklyFinance(env, nowMs, period),
+      runRunsQuery(env, { period: `${period.dateFrom}..${period.dateTo}` }, nowMs).then((r) =>
         JSON.parse(r.result),
       ),
     ]);
@@ -145,8 +144,8 @@ export async function runDataRead(env, args, nowMs) {
     let personalPeriods = null;
     if (data.stats) {
       try {
-        agg = aggregateStats(data.stats, todayKey);
-        personalPeriods = weeklyPersonalPeriods(data.stats.checkins ?? {}, nowMs);
+        agg = aggregateStats(data.stats, period.dateTo);
+        personalPeriods = weeklyPersonalPeriods(data.stats.checkins ?? {}, nowMs, period);
       } catch {
         sources.stats = { status: 'unavailable', reason: 'Не вдалося обчислити статистику' };
       }
@@ -158,12 +157,12 @@ export async function runDataRead(env, args, nowMs) {
       weeklyArchive: data.weeklyArchive,
       levers: data.levers,
       plans: data.plans,
-      todayKey,
+      todayKey: period.dateTo,
       rawDays: periodDays,
       cap,
       sources,
       personalPeriods,
-      period: reportPeriod(week.from, todayKey, nowMs),
+      period,
       finance: data.finance,
       system: data.system,
     });
