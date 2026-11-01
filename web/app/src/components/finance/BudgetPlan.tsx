@@ -8,7 +8,7 @@ import { moneyLabel } from '../../lib/financeView.ts';
 import { parseMoney, kyivParts, shiftDate, sumMoney } from '../../../../core/finance/planning.mjs';
 import { financeCategoryLabel } from '../../../../core/finance/categories.mjs';
 import { Sheet } from './FinanceSheet.tsx';
-import { amountNumber, financeDay } from './analytics-format.ts';
+import { amountNumber, compactAmount, financeDay } from './analytics-format.ts';
 
 export function BudgetPlan({
   finance: f,
@@ -95,17 +95,19 @@ export function BudgetPlan({
         const recent = Array.from({ length: 7 }, (_, i) => shiftDate(today, i - 6)).map((date) => ({
           date,
           unknown: !knownSince || date < knownSince,
-          amount: -sumMoney(
-            f.transactions
-              .filter(
-                (t) =>
-                  t.kind === 'expense' &&
-                  t.amountUah != null &&
-                  t.amountUah < 0 &&
-                  b.categories.includes(t.category) &&
-                  kyivParts(Date.parse(t.at)).date === date,
-              )
-              .map((t) => t.amountUah!),
+          amount: Math.abs(
+            sumMoney(
+              f.transactions
+                .filter(
+                  (t) =>
+                    t.kind === 'expense' &&
+                    t.amountUah != null &&
+                    t.amountUah < 0 &&
+                    b.categories.includes(t.category) &&
+                    kyivParts(Date.parse(t.at)).date === date,
+                )
+                .map((t) => t.amountUah!),
+            ),
           ),
         }));
         const max = Math.max(1, ...recent.map((p) => p.amount));
@@ -166,8 +168,17 @@ export function BudgetPlan({
                       className="finance-spark-day"
                       aria-label={`${financeDay(p.date)}: ${p.unknown ? 'недостатньо збереженої історії' : moneyLabel(p.amount)}${p.date === today ? ' · сьогодні, день триває' : ''}`}
                     >
-                      <b className="finance-spark-value">
-                        {p.unknown ? '?' : amountNumber(p.amount)}
+                      <b className="finance-spark-value" aria-hidden="true">
+                        <span className="finance-spark-full">
+                          {p.unknown ? '?' : amountNumber(p.amount)}
+                        </span>
+                        <span className="finance-spark-compact">
+                          {(p.unknown ? '?' : compactAmount(Math.round(p.amount / 100) * 100))
+                            .split(/\s+/)
+                            .map((part, index) => (
+                              <span key={index}>{part}</span>
+                            ))}
+                        </span>
                       </b>
                       <span className="finance-spark-track" aria-hidden="true">
                         <span
@@ -179,9 +190,23 @@ export function BudgetPlan({
                     </div>
                   ))}
                 </div>
+                <dl className="finance-spark-exact" aria-label="Точні щоденні суми у гривнях">
+                  {recent.map((p) => (
+                    <div key={p.date}>
+                      <dt>
+                        <time dateTime={p.date}>{financeDay(p.date)}</time>
+                      </dt>
+                      <dd>{p.unknown ? '?' : amountNumber(p.amount)}</dd>
+                    </div>
+                  ))}
+                </dl>
                 <p className="renewal-chart-note">
-                  Точні суми над стовпчиками. Сьогоднішній день ще триває. «?» — недостатньо
-                  збереженої історії, а не нуль витрат.
+                  <span className="finance-spark-wide-note">Точні суми над стовпчиками. </span>
+                  <span className="finance-spark-narrow-note">
+                    Підписи стовпчиків округлено; точні суми — під графіком.{' '}
+                  </span>
+                  Сьогоднішній день ще триває. «?» — недостатньо збереженої історії, а не нуль
+                  витрат.
                 </p>
               </div>
             )}

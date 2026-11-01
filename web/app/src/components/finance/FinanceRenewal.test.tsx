@@ -82,8 +82,10 @@ it('shows both fixed currency values with reduced motion instead of hiding the h
     removeEventListener: () => {},
   }));
   const { container } = render(<TransactionAmount transaction={foreign()} />);
-  expect(container.querySelector('.finance-currency-value')).toHaveTextContent('207,15');
-  expect(container.querySelector('.finance-currency-value')).toHaveTextContent('5,00');
+  const amounts = container.querySelectorAll('.finance-currency-static .finance-currency-value');
+  expect(amounts).toHaveLength(2);
+  expect(amounts[0]).toHaveTextContent('5,00');
+  expect(amounts[1]).toHaveTextContent('207,15');
 });
 it('does not invent a conversion or expense band when the UAH debit is unknown', () => {
   const { container } = render(

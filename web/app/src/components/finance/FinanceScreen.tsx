@@ -875,7 +875,7 @@ export function FinanceScreen() {
           <button
             type="button"
             key={t.id}
-            className="renewal-list-row w-full text-left"
+            className="renewal-list-row finance-operation-row w-full text-left"
             onClick={() =>
               !t.bank && (!!t.reference || !['expense', 'income', 'unclassified'].includes(t.kind))
                 ? setOperationExplorer({
@@ -898,23 +898,21 @@ export function FinanceScreen() {
                     })
             }
           >
-            <span>
-              <b>{t.description}</b>
-              <small>
-                {t.category} · {LABELS[t.kind] ?? t.kind} ·{' '}
-                {t.bankAmountChanged
-                  ? 'Сума змінилася · '
-                  : t.bankMissingFromStatement
-                    ? 'Потрібна звірка · '
-                    : t.bankHold
-                      ? t.bankVerifiedByOwner
-                        ? 'Підтверджено тобою · '
-                        : 'обробляється банком · '
-                      : ''}{' '}
-                {new Date(t.at).toLocaleDateString('uk-UA', { timeZone: 'Europe/Kyiv' })}
-              </small>
-            </span>
+            <b className="finance-operation-title">{t.description}</b>
             <TransactionAmount transaction={t} display={f.display} />
+            <small className="finance-operation-meta">
+              {t.category} · {LABELS[t.kind] ?? t.kind} ·{' '}
+              {t.bankAmountChanged
+                ? 'Сума змінилася · '
+                : t.bankMissingFromStatement
+                  ? 'Потрібна звірка · '
+                  : t.bankHold
+                    ? t.bankVerifiedByOwner
+                      ? 'Підтверджено тобою · '
+                      : 'обробляється банком · '
+                    : ''}{' '}
+              {new Date(t.at).toLocaleDateString('uk-UA', { timeZone: 'Europe/Kyiv' })}
+            </small>
           </button>
         ))}
         {operations.length > 5 && (

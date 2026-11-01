@@ -257,27 +257,23 @@ export function AnalyticsOperations({
               .map((tx) => (
                 <button
                   disabled={query.isPlaceholderData}
-                  className="analytics-operation"
+                  className="analytics-operation finance-operation-row"
                   key={tx.id}
                   onClick={() => setSelected(tx)}
                 >
-                  <span>
-                    <b>{tx.description || 'Без назви'}</b>
-                    <small>
-                      {new Date(tx.at).toLocaleString('uk-UA', {
-                        timeZone: 'Europe/Kyiv',
-                        day: 'numeric',
-                        month: 'short',
-                        hour: '2-digit',
-                        minute: '2-digit',
-                      })}{' '}
-                      · {financeCategoryLabel(tx.category)}
-                      {tx.bankHold && !tx.bankVerifiedByOwner ? ' · обробляється банком' : ''}
-                    </small>
-                  </span>
-                  <strong>
-                    <TransactionAmount transaction={tx} display={finance.display} />
-                  </strong>
+                  <b className="finance-operation-title">{tx.description || 'Без назви'}</b>
+                  <TransactionAmount transaction={tx} display={finance.display} />
+                  <small className="finance-operation-meta">
+                    {new Date(tx.at).toLocaleString('uk-UA', {
+                      timeZone: 'Europe/Kyiv',
+                      day: 'numeric',
+                      month: 'short',
+                      hour: '2-digit',
+                      minute: '2-digit',
+                    })}{' '}
+                    · {financeCategoryLabel(tx.category)}
+                    {tx.bankHold && !tx.bankVerifiedByOwner ? ' · обробляється банком' : ''}
+                  </small>
                 </button>
               ))}
             {query.data && !query.data.pages[0]?.items.length && (

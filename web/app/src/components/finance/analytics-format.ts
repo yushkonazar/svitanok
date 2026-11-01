@@ -46,12 +46,15 @@ export const daysCount = (n: number) => counted(n, 'день', 'дні', 'дні
 export const percentLabel = (n: number) =>
   `${n.toLocaleString('uk-UA', { maximumFractionDigits: 1 })}%`;
 export const amountNumber = (minor: number) =>
-  (minor / 100).toLocaleString('uk-UA', {
+  ((minor === 0 ? 0 : minor) / 100).toLocaleString('uk-UA', {
     minimumFractionDigits: minor % 100 ? 2 : 0,
     maximumFractionDigits: 2,
   });
 export const compactAmount = (minor: number) =>
-  (minor / 100).toLocaleString('uk-UA', { notation: 'compact', maximumFractionDigits: 1 });
+  ((minor === 0 ? 0 : minor) / 100).toLocaleString('uk-UA', {
+    notation: 'compact',
+    maximumFractionDigits: 1,
+  });
 
 export const financeMonthShort = (date: string) => {
   const parts = new Intl.DateTimeFormat('uk-UA', {
