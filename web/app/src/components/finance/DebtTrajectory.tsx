@@ -1,3 +1,4 @@
+import { financeDate, financeDay } from './analytics-format.ts';
 import { useChartWidth, axisMoney } from './useChartWidth.ts';
 import { useEffect, useState } from 'react';
 import type { Finance } from '../../api/finance-schema.ts';
@@ -44,6 +45,19 @@ export function DebtTrajectory({ payment: p }: { payment: Finance['payments'][nu
         viewBox={`0 0 ${width} 230`}
         role="img"
         aria-label="Плановий залишок тіла боргу після кожного платежу"
+        onClick={(e) => {
+          const box = e.currentTarget.getBoundingClientRect();
+          const px = ((e.clientX - box.left) / box.width) * width;
+          const py = ((e.clientY - box.top) / box.height) * 230;
+          if (px < 70 || px > width - 20 || py < 25 || py > 185) return;
+          const nearest = rows.reduce(
+            (best, row, i) =>
+              Math.abs(x(row.date) - px) < Math.abs(x(rows[best]!.date) - px) ? i : best,
+            0,
+          );
+          setPlaying(false);
+          setChoice(nearest);
+        }}
       >
         <title>Зменшення тіла боргу за збереженим графіком</title>
         <text x="63" y="40" textAnchor="end" className="analytics-axis">
@@ -60,12 +74,18 @@ export function DebtTrajectory({ payment: p }: { payment: Finance['payments'][nu
           strokeWidth="3"
           strokeDasharray="7 3"
         />
-        <circle cx={x(row.date)} cy={y(row.remaining ?? 0)} r="6" fill="var(--color-a2)" />
+        <circle
+          cx={x(row.date)}
+          cy={y(row.remaining ?? 0)}
+          r="6"
+          fill="var(--color-a2)"
+          style={{ transition: allowed ? 'cx .25s ease, cy .25s ease' : 'none' }}
+        />
         <text x="85" y="215" className="analytics-axis">
-          {rows[0]!.date}
+          {financeDay(rows[0]!.date)}
         </text>
         <text x={width - 25} y="215" textAnchor="end" className="analytics-axis">
-          {rows.at(-1)!.date}
+          {financeDay(rows.at(-1)!.date)}
         </text>
       </svg>
       <div className="finance-tabs-detail">
@@ -104,7 +124,7 @@ export function DebtTrajectory({ payment: p }: { payment: Finance['payments'][nu
         >
           {rows.map((r, i) => (
             <option key={r.date} value={i}>
-              {r.date} · {moneyLabel(r.payment)}
+              {financeDate(r.date)} · {moneyLabel(r.payment)}
             </option>
           ))}
         </select>
@@ -112,7 +132,7 @@ export function DebtTrajectory({ payment: p }: { payment: Finance['payments'][nu
       <div className="finance-projection-day mt-3">
         <div>
           <span>Обрана дата</span>
-          <b>{row.date}</b>
+          <b>{financeDate(row.date)}</b>
         </div>
         <div>
           <span>Платіж</span>

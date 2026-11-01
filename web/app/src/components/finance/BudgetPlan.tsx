@@ -7,7 +7,8 @@ import { budgetRows, orderedBudgets, budgetLimit, type Budget } from '../../lib/
 import { moneyLabel } from '../../lib/financeView.ts';
 import { parseMoney, kyivParts, shiftDate, sumMoney } from '../../../../core/finance/planning.mjs';
 import { financeCategoryLabel } from '../../../../core/finance/categories.mjs';
-import { Sheet } from '../ui/Sheet.tsx';
+import { Sheet } from './FinanceSheet.tsx';
+import { amountNumber, financeDay } from './analytics-format.ts';
 
 export function BudgetPlan({
   finance: f,
@@ -54,6 +55,7 @@ export function BudgetPlan({
     }
   };
   const rows = orderedBudgets(budgetRows(f, nowMs));
+  const knownSince = f.transactions.map((t) => kyivParts(Date.parse(t.at)).date).sort()[0] ?? null;
   const move = (b: Budget, direction: number) => {
     const ids = orderedBudgets(f.budgets).map((x) => x.id);
     const siblings = rows.filter((x) => (x.parentId ?? null) === (b.parentId ?? null));
@@ -92,6 +94,7 @@ export function BudgetPlan({
         const today = kyivParts(nowMs).date;
         const recent = Array.from({ length: 7 }, (_, i) => shiftDate(today, i - 6)).map((date) => ({
           date,
+          unknown: !knownSince || date < knownSince,
           amount: -sumMoney(
             f.transactions
               .filter(
@@ -150,22 +153,35 @@ export function BudgetPlan({
             </p>
             {b.purpose === 'expense' && (
               <div className="finance-budget-mini">
-                <span className="renewal-chart-note">Витрати · останні 7 днів</span>
+                <span className="renewal-chart-note">Витрати · останні 7 днів · ₴</span>
                 <div
                   className="finance-spark-bars"
-                  role="img"
-                  aria-label={recent.map((p) => `${p.date}: ${moneyLabel(p.amount)}`).join('; ')}
+                  role="list"
+                  aria-label="Щоденні витрати за останні сім днів"
                 >
                   {recent.map((p) => (
-                    <span
+                    <div
                       key={p.date}
-                      title={`${p.date} · ${moneyLabel(p.amount)}`}
-                      style={{ height: `${Math.max(2, (p.amount / max) * 36)}px` }}
-                    />
+                      role="listitem"
+                      className="finance-spark-day"
+                      aria-label={`${financeDay(p.date)}: ${p.unknown ? 'недостатньо збереженої історії' : moneyLabel(p.amount)}${p.date === today ? ' · сьогодні, день триває' : ''}`}
+                    >
+                      <b className="finance-spark-value">
+                        {p.unknown ? '?' : amountNumber(p.amount)}
+                      </b>
+                      <span className="finance-spark-track" aria-hidden="true">
+                        <span
+                          data-today={p.date === today}
+                          style={{ height: `${(p.amount / max) * 100}%` }}
+                        />
+                      </span>
+                      <time dateTime={p.date}>{financeDay(p.date)}</time>
+                    </div>
                   ))}
                 </div>
                 <p className="renewal-chart-note">
-                  За записаними операціями. Неповна історія може занижувати суми.
+                  Точні суми над стовпчиками. Сьогоднішній день ще триває. «?» — недостатньо
+                  збереженої історії, а не нуль витрат.
                 </p>
               </div>
             )}

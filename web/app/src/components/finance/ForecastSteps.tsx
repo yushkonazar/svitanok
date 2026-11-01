@@ -3,9 +3,10 @@ import './finance-analytics.css';
 import type { Finance } from '../../api/finance-schema.ts';
 import type { financeForecast } from '../../lib/financeForecast.ts';
 import { moneyLabel } from '../../lib/financeView.ts';
-import { Sheet } from '../ui/Sheet.tsx';
+import { Sheet } from './FinanceSheet.tsx';
 import { financeDate } from './analytics-format.ts';
 import { sumMoney } from '../../../../core/finance/planning.mjs';
+import { budgetPeriod } from '../../../../core/finance/budget-history.mjs';
 export function ForecastSteps({
   result,
   finance,
@@ -34,10 +35,13 @@ export function ForecastSteps({
   ];
   let cumulative = 0;
   const steps = amounts.map((amount, i) => {
+    const from = cumulative;
     cumulative = sumMoney([cumulative, amount]);
-    return { label: labels[i]!, amount, total: cumulative };
+    return { label: labels[i]!, amount, from, total: cumulative };
   });
-  const max = Math.max(1, ...steps.map((s) => Math.abs(s.total)));
+  const min = Math.min(0, ...steps.map((s) => s.total));
+  const max = Math.max(0, ...steps.map((s) => s.total));
+  const span = Math.max(1, max - min);
   return (
     <>
       <div className="finance-forecast-steps mt-4">
@@ -50,14 +54,6 @@ export function ForecastSteps({
               {!result.incomplete && (
                 <>
                   <small>Після кроку: {moneyLabel(step.total)}</small>
-                  <span className="renewal-progress">
-                    <span
-                      style={{
-                        width: `${(Math.abs(step.total) / max) * 100}%`,
-                        background: step.total < 0 ? 'var(--color-neg)' : 'var(--color-a2)',
-                      }}
-                    />
-                  </span>
                 </>
               )}
             </span>
@@ -65,9 +61,27 @@ export function ForecastSteps({
               {step.amount > 0 && i === 1 ? '+ ' : ''}
               {moneyLabel(step.amount)} ↗
             </strong>
+            {!result.incomplete && (
+              <span className="finance-waterfall-track" aria-hidden="true">
+                <i style={{ left: `${(-min / span) * 100}%` }} />
+                <span
+                  style={{
+                    left: `${((Math.min(step.from, step.total) - min) / span) * 100}%`,
+                    width: `${(Math.abs(step.amount) / span) * 100}%`,
+                    background: step.amount < 0 ? 'var(--color-neg)' : 'var(--color-info)',
+                  }}
+                />
+              </span>
+            )}
           </button>
         ))}
       </div>
+      {!result.incomplete && (
+        <p className="renewal-chart-note">
+          Смужки показують рух від залишку перед кроком до залишку після нього на спільній шкалі.
+          Пунктир — нуль.
+        </p>
+      )}
       {detail !== null && (
         <Sheet label="Деталі прогнозу" onClose={() => setDetail(null)}>
           <div className="renewal-finance">
@@ -193,6 +207,31 @@ export function ForecastSteps({
                         {g.description} План {moneyLabel(g.target)} /{' '}
                         {g.period === 'week' ? 'тиждень' : g.period === 'month' ? 'місяць' : 'день'}
                         ; очікуваний темп {g.pace}%.
+                      </small>
+                      <small>
+                        Різниця до плану завершених періодів: {moneyLabel(g.gap)}.{' '}
+                        {g.adaptive
+                          ? 'Очікування адаптоване до фактичного темпу; це не сума боргу.'
+                          : 'Модель враховує невнесену частину; окремо додавати її не потрібно.'}
+                      </small>
+                      <small>
+                        У поточному періоді:{' '}
+                        {moneyLabel(
+                          sumMoney(
+                            g.events
+                              .filter((e) => e.date <= budgetPeriod(g.period, result.today).end)
+                              .map((e) => e.amount),
+                          ),
+                        )}
+                        ; у наступних:{' '}
+                        {moneyLabel(
+                          sumMoney(
+                            g.events
+                              .filter((e) => e.date > budgetPeriod(g.period, result.today).end)
+                              .map((e) => e.amount),
+                          ),
+                        )}
+                        .
                       </small>
                     </span>
                     <b>{moneyLabel(g.amount)}</b>

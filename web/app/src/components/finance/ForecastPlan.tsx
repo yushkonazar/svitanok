@@ -1,3 +1,4 @@
+import { counted } from './analytics-format.ts';
 import { useRef, useState, useMemo } from 'react';
 import { useQueryClient, useQuery } from '@tanstack/react-query';
 import type { Finance, FinanceCommand } from '../../api/finance-schema.ts';
@@ -8,7 +9,7 @@ import { periodWindow } from '../../lib/budgetPlanning.ts';
 import { moneyLabel } from '../../lib/financeView.ts';
 import { kyivParts, parseMoney, shiftDate } from '../../../../core/finance/planning.mjs';
 import { ProjectionChart } from './ProjectionChart.tsx';
-import { Sheet } from '../ui/Sheet.tsx';
+import { Sheet } from './FinanceSheet.tsx';
 import { ForecastSteps } from './ForecastSteps.tsx';
 import { taxiWeek } from '../../../../core/finance/planning.mjs';
 export function ForecastPlan({
@@ -138,6 +139,19 @@ export function ForecastPlan({
       <p className="renewal-muted">
         Орієнтовні вільні кошти після майбутніх платежів, бюджетів і відкладань.
       </p>
+      {result.result != null && result.saving > 0 && (
+        <details className="renewal-inset mt-3">
+          <summary className="renewal-link">Якщо внести на цілі пізніше</summary>
+          <p className="mt-2">
+            Наприкінці періоду: <b>{moneyLabel(result.result + result.saving)}</b>
+          </p>
+          <p className="renewal-chart-note mt-2">
+            Окремий сценарій: ще не зроблені внески на {moneyLabel(result.saving)} перенесено за
+            межі обраного періоду. Надходження й решта витрат незмінні. План і фактичні гроші цей
+            перегляд не змінює; внески не мають прострочення.
+          </p>
+        </details>
+      )}
       {result.minimum && (
         <p className={result.minimum.amount < 0 ? 'text-neg mt-3' : 'renewal-inset mt-3'}>
           Найменший очікуваний залишок: <b>{moneyLabel(result.minimum.amount)}</b> ·{' '}
@@ -167,9 +181,15 @@ export function ForecastPlan({
       {result.unlinkedPaymentCount > 0 && (
         <div className="renewal-inset mt-3">
           <p>
-            У збереженій історії є {result.unlinkedPaymentCount} оплат розстрочок або кредитів без
-            прив’язки. Вони не повторюються як щоденні витрати. Перевірте, чи всі майбутні оплати
-            враховано у графіках.
+            У збереженій історії є{' '}
+            {counted(
+              result.unlinkedPaymentCount,
+              'оплата розстрочки або кредиту',
+              'оплати розстрочок або кредитів',
+              'оплат розстрочок або кредитів',
+            )}{' '}
+            без прив’язки. Вони не повторюються як щоденні витрати. Перевірте, чи всі майбутні
+            оплати враховано у графіках.
           </p>
           <button className="renewal-link mt-2" onClick={onCalendar}>
             Перевірити графіки оплат ↗

@@ -1,3 +1,4 @@
+import { counted } from './analytics-format.ts';
 import type { Finance } from '../../api/finance-schema.ts';
 import { moneyLabel } from '../../lib/financeView.ts';
 import { kyivParts } from '../../../../core/finance/planning.mjs';
@@ -86,7 +87,9 @@ export function PaymentCard({
         {p.remainingMinor != null && (
           <p className="renewal-muted">
             Залишок {moneyLabel(p.remainingMinor + (p.overpaymentRemainingMinor ?? 0))}
-            {p.installmentsLeft != null ? ` · ${p.installmentsLeft} платежів` : ''}
+            {p.installmentsLeft != null
+              ? ` · ${counted(p.installmentsLeft, 'платіж', 'платежі', 'платежів')}`
+              : ''}
           </p>
         )}
         {!compact && p.overpaymentRemainingMinor != null && (

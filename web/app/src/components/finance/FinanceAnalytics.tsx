@@ -11,16 +11,22 @@ import { financeCategoryLabel } from '../../../../core/finance/categories.mjs';
 import { moneyLabel } from '../../lib/financeView.ts';
 import { useTick } from '../../lib/useTick.ts';
 import { SessionExpired } from '../ui/SessionExpired.tsx';
-import { Sheet } from '../ui/Sheet.tsx';
+import { Sheet } from './FinanceSheet.tsx';
 import { FinanceForm, type FinanceFormRequest } from './FinanceForm.tsx';
 import { TaxiHistory } from './TaxiHistory.tsx';
 import { PaymentDetail } from './PaymentDetail.tsx';
 import { AnalyticsOperations, type ExplorerOptions } from './AnalyticsExplorer.tsx';
 import { MerchantCatalog } from './MerchantCatalog.tsx';
-import { financeRange } from './analytics-format.ts';
+import {
+  financeRange,
+  financeDay,
+  financeDate,
+  financeTime,
+  paymentsCount,
+} from './analytics-format.ts';
 import { GoalHistory, type GoalHistoryRequest } from './GoalHistory.tsx';
 import { periodWindow } from '../../lib/budgetPlanning.ts';
-import { CategoryDonut, AnalyticsBars } from './AnalyticsCharts.tsx';
+import { CategoryDonut, AnalyticsBars, CategoryComparison } from './AnalyticsCharts.tsx';
 import { ExpenseCalendar } from './ExpenseCalendar.tsx';
 import { FinanceMilestone } from './FinanceMilestone.tsx';
 import {
@@ -203,11 +209,12 @@ export function FinanceAnalytics({
           ? 'week'
           : 'day'
       : groupChoice;
-  const selectCategory = (category: string) => {
+  const selectCategory = (category: string, initialPrevious = false) => {
     if (query.isPlaceholderData) return;
     setExplorer({
-      request: { ...request, category, merchant: '' },
+      request: { ...request, category },
       detail: true,
+      initialPrevious,
       title: financeCategoryLabel(category),
     });
     setOtherOpen(false);
@@ -224,6 +231,7 @@ export function FinanceAnalytics({
   const changeRange = (value: string) => {
     setPreset(value);
     setRange(analyticsPreset(value, today));
+    setGroup('auto');
     setSelectedDay(null);
     setLineDay(null);
   };
@@ -276,7 +284,9 @@ export function FinanceAnalytics({
           <p className="renewal-inset renewal-chart-note">
             {tab === 'goals'
               ? 'Цілі показують повну історію внесків незалежно від періоду витрат.'
-              : `Поточний стан на ${today}. Для майбутніх оплат нижче є окремий горизонт.`}
+              : tab === 'accounts'
+                ? `Рахунки станом на ${financeDate(today)}. Час звірки та джерело залишку вказано на кожному рахунку.`
+                : `Поточний стан на ${financeDate(today)}. Для майбутніх оплат нижче є окремий горизонт.`}
           </p>
         ) : (
           <>
@@ -392,8 +402,12 @@ export function FinanceAnalytics({
       <p className="analytics-context">
         <b>{ANALYTICS_TABS[tab]}</b> ·{' '}
         {currentState ? 'Поточний стан' : expensesScope ? 'Вибраний облік' : 'Усі рахунки'}
+        {!currentState ? ` · ${financeDay(range.from)}–${financeDay(range.to)}` : ''}
+        {expensesScope && filters.account !== 'all'
+          ? ` · ${finance.accounts.find((a) => a.id === filters.account)?.name ?? filters.account}`
+          : ''}
         {expensesScope
-          ? ` · ${filters.source === 'all' ? 'банк і ручні' : filters.source === 'mono' ? 'Monobank' : 'ручні записи'} · ${filters.status === 'all' ? 'усі статуси' : filters.status === 'confirmed' ? 'підтверджені' : 'hold без підтвердження'}`
+          ? ` · ${filters.source === 'all' ? 'банк і ручні' : filters.source === 'mono' ? 'Monobank' : 'ручні записи'} · ${filters.status === 'all' ? 'усі статуси' : filters.status === 'confirmed' ? 'підтверджені' : 'очікують підтвердження'}`
           : ''}
       </p>
       {!currentState &&
@@ -416,7 +430,7 @@ export function FinanceAnalytics({
                 className="renewal-secondary"
                 onClick={() => operations({ status: 'pending' }, undefined, 'all')}
               >
-                Hold API: {data.quality.pendingCount}
+                Очікують підтвердження: {data.quality.pendingCount}
               </button>
             )}
             {data.quality.possibleDuplicateCount > 0 && (
@@ -443,6 +457,12 @@ export function FinanceAnalytics({
             Повторити
           </button>
         </div>
+      )}
+      {expensesScope && data && data.selection.to === today && (
+        <p className="renewal-chart-note">
+          Сьогоднішній день триває. Зріз: {financeTime(data.generatedAt)}. Попередній період
+          порівнюється до відповідного часу доби.
+        </p>
       )}
       <div
         className="analytics-report flex flex-col gap-4"
@@ -523,7 +543,7 @@ export function FinanceAnalytics({
                           onClick={() => selectCategory(c.category)}
                         >
                           <span>
-                            {financeCategoryLabel(c.category)} · {c.count} оплат
+                            {financeCategoryLabel(c.category)} · {paymentsCount(c.count)}
                           </span>
                           <b>
                             {moneyLabel(c.amountMinor)} ·{' '}
@@ -597,7 +617,7 @@ export function FinanceAnalytics({
                     <span>
                       <b>{m.merchant || 'Без назви'}</b>
                       <small>
-                        {m.count} оплат · середнє{' '}
+                        {paymentsCount(m.count)} · середнє{' '}
                         {moneyLabel(Math.round(m.amountMinor / Math.max(1, m.count)))}
                       </small>
                     </span>
@@ -632,7 +652,9 @@ export function FinanceAnalytics({
                 >
                   <span>
                     <b>{data.summary.largest.description}</b>
-                    <small>{kyivParts(Date.parse(data.summary.largest.at)).date}</small>
+                    <small>
+                      {financeDate(kyivParts(Date.parse(data.summary.largest.at)).date)}
+                    </small>
                   </span>
                   <strong>{moneyLabel(data.summary.largest.amountMinor)}</strong>
                 </button>
@@ -680,7 +702,7 @@ export function FinanceAnalytics({
                       ? 'Дні'
                       : g === 'week'
                         ? 'Тижні'
-                        : data.selection.days < 60
+                        : group !== 'month' && data.selection.days < 60
                           ? 'Місяці · розширити до 6 міс.'
                           : 'Місяці'}
                   </button>
@@ -821,7 +843,7 @@ export function FinanceAnalytics({
             finance={finance}
             nowMs={nowMs}
             data={data}
-            onBudget={(b) => {
+            onBudget={(b, point) => {
               const w = periodWindow(b.period, today);
               if (b.purpose === 'saving')
                 setGoalHistory({
@@ -834,16 +856,11 @@ export function FinanceAnalytics({
               else
                 setExplorer({
                   request: {
-                    ...range,
-                    from: range.from,
-                    to: range.to,
-                    account: 'all',
-                    category: '',
-                    merchant: '',
-                    source: 'all',
-                    status: 'all',
+                    ...request,
+                    from: point?.from ?? range.from,
+                    to: point?.to ?? range.to,
                   },
-                  categories: JSON.stringify(b.categories),
+                  budgetId: b.id,
                   title: b.category,
                 });
             }}
@@ -960,7 +977,7 @@ export function FinanceAnalytics({
               <p className="renewal-chart-note">
                 Банківська історія зберігається до {data.coverage.bankRetentionDays} днів.
                 {data.coverage.oldestTransactionAt
-                  ? ` Найдавніший збережений запис: ${kyivParts(Date.parse(data.coverage.oldestTransactionAt)).date}.`
+                  ? ` Найдавніший збережений запис: ${financeDate(kyivParts(Date.parse(data.coverage.oldestTransactionAt)).date)}.`
                   : ''}
                 {data.coverage.beyondBankRetention
                   ? ' Порівняння виходить за цей строк і може бути неповним.'
@@ -986,6 +1003,7 @@ export function FinanceAnalytics({
               try {
                 analyticsSelection(new URLSearchParams(draft), nowMs);
                 setRange({ ...draft, comparison: 'adjacent' });
+                setGroup('auto');
                 setPreset('custom');
                 setCustomOpen(false);
                 setSelectedDay(null);
@@ -1073,13 +1091,13 @@ export function FinanceAnalytics({
                 }
               >
                 <option value="all">Усі · як в основному обліку</option>
-                <option value="confirmed">Без hold або підтверджені мною</option>
-                <option value="pending">Hold без мого підтвердження</option>
+                <option value="confirmed">Без позначки обробки або підтверджені мною</option>
+                <option value="pending">Обробляються банком, ще не підтверджені мною</option>
               </select>
             </label>
             <p className="renewal-chart-note">
-              Hold — позначка API, а не перевірка того, що показує застосунок банку. Підтвердження
-              власника зберігається окремо. Перекази й резерви виключені з витрат у всіх режимах.
+              Банківський стан може оновитися пізніше за застосунок Monobank. Підтвердження власника
+              зберігається окремо. Перекази й резерви виключені з витрат у всіх режимах.
             </p>
             <button className="renewal-button" onClick={() => setFilterOpen(false)}>
               Готово
@@ -1135,8 +1153,8 @@ export function FinanceAnalytics({
             </p>
             <p>
               Середнє за календарний день = {moneyLabel(data.summary.expenseMinor)} ÷{' '}
-              {data.selection.days} днів. Середній платіж використовує {data.summary.count} оплат;
-              медіана — середня за порядком величина.
+              {data.selection.days} днів. Середній платіж використовує{' '}
+              {paymentsCount(data.summary.count)}; медіана — середня за порядком величина.
             </p>
             <p>
               Повернення покупки не розпізнається за позитивною сумою автоматично. Якщо воно не
@@ -1153,49 +1171,19 @@ export function FinanceAnalytics({
           <div className="renewal-finance flex flex-col gap-4">
             <h2 className="text-xl font-bold">Порівняння витрат</h2>
             <p className="renewal-chart-note">
-              {data.selection.from} — {data.selection.to} проти {data.selection.previousFrom} —{' '}
-              {data.selection.previousTo}. Ті самі рахунки, категорії, продавець і статус.
+              {financeRange(data.selection.from, data.selection.to)} проти{' '}
+              {financeRange(data.selection.previousFrom, data.selection.previousTo)}. Ті самі
+              рахунки, категорії, продавець і статус.
             </p>
-            <AnalyticsBars
-              label="Витрати за категоріями у двох періодах"
-              comparison
-              onSelect={(category) => {
-                if (category) {
-                  setComparisonOpen(false);
-                  selectCategory(category);
-                }
-              }}
-              points={[...data.categories]
+            <CategoryComparison
+              rows={[...data.categories]
                 .sort((a, b) => Math.abs(b.deltaMinor) - Math.abs(a.deltaMinor))
-                .slice(0, 8)
-                .map((c, i) => ({
-                  key: c.category,
-                  label: String(i + 1),
-                  amountMinor: c.amountMinor,
-                  previousMinor: c.previousMinor,
-                }))}
+                .slice(0, 8)}
+              onSelect={(category, previous) => {
+                setComparisonOpen(false);
+                selectCategory(category, previous);
+              }}
             />
-            {[...data.categories]
-              .sort((a, b) => Math.abs(b.deltaMinor) - Math.abs(a.deltaMinor))
-              .slice(0, 8)
-              .map((c, i) => (
-                <button
-                  className="analytics-operation"
-                  key={c.category}
-                  onClick={() => {
-                    setComparisonOpen(false);
-                    selectCategory(c.category);
-                  }}
-                >
-                  <span>
-                    {i + 1}. {financeCategoryLabel(c.category)}
-                  </span>
-                  <b>
-                    {c.deltaMinor > 0 ? '+' : ''}
-                    {moneyLabel(c.deltaMinor)}
-                  </b>
-                </button>
-              ))}
             {data.summary.changeBps == null && (
               <p className="renewal-chart-note">
                 Відсоток зміни не визначається за нульової бази або неповного порівняння.

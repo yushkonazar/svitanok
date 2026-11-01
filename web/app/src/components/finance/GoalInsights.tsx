@@ -1,3 +1,5 @@
+import { useState } from 'react';
+import { financeDate, financeDay, compactAmount } from './analytics-format.ts';
 import { useChartWidth } from './useChartWidth.ts';
 import type { Finance } from '../../api/finance-schema.ts';
 import { kyivParts, sumMoney, shiftDate } from '../../../../core/finance/planning.mjs';
@@ -12,6 +14,7 @@ export function GoalInsights({
   onHistory: (goalId: string, date?: string) => void;
 }) {
   const { ref, width } = useChartWidth();
+  const [chosenPlan, setChosenPlan] = useState<{ goal: string; date: string } | null>(null);
   const chartWidth = Math.max(260, width - 40);
   const now = useTick(60000),
     today = kyivParts(now).date,
@@ -38,13 +41,14 @@ export function GoalInsights({
           span = Math.max(86400000, maxDate - minDate);
         const x = (d: string) => 65 + ((Date.parse(d) - minDate) / span) * (chartWidth - 90),
           y = (v: number) =>
-            184 - (Math.min(g.targetMinor * 1.25, v) / Math.max(1, g.targetMinor)) * 145;
+            184 - (v / Math.max(1, g.targetMinor, total, ...points.map((p) => p.value))) * 145;
         let path = `M65 ${y(0)}`;
         points.forEach((p) => {
           path += ` H${x(p.date)} V${y(p.value)}`;
         });
+        path += ` H${x(today)}`;
         let projected = total,
-          projectPath = `M${x(points.at(-1)?.date ?? today)} ${y(total)}`;
+          projectPath = `M${x(today)} ${y(total)}`;
         const projectedPoints =
           plan?.events.map((e) => ({
             date: e.date,
@@ -57,6 +61,9 @@ export function GoalInsights({
         const byDeadline = g.deadline
           ? (projectedPoints.filter((p) => p.date <= g.deadline!).at(-1)?.value ?? total)
           : null;
+        const selectedProjection =
+          projectedPoints.find((p) => chosenPlan?.goal === g.id && chosenPlan.date === p.date) ??
+          projectedPoints[0];
         return (
           <section className="renewal-card" key={g.id}>
             <h2 className="text-lg font-bold">{g.name}</h2>
@@ -65,13 +72,80 @@ export function GoalInsights({
               із {moneyLabel(g.targetMinor)} · залишилось{' '}
               {moneyLabel(Math.max(0, g.targetMinor - total))}
             </p>
+            {g.deadline && (
+              <p
+                className={`renewal-inset mt-3 ${byDeadline != null && byDeadline < g.targetMinor ? 'text-neg' : ''}`}
+              >
+                Орієнтир цілі: {financeDate(g.deadline)}.
+                {byDeadline != null && g.deadline <= shiftDate(today, 92)
+                  ? ` За цим темпом до дати буде ${moneyLabel(byDeadline)}; залишиться ${moneyLabel(Math.max(0, g.targetMinor - byDeadline))}.`
+                  : ''}{' '}
+                Дати окремих внесків гнучкі.
+              </p>
+            )}
             <div className="finance-goal-chart mt-3">
               <svg
                 viewBox={`0 0 ${chartWidth} 225`}
                 role="img"
                 aria-label={`Повна історія накопичення: ${g.name}`}
+                onClick={(e) => {
+                  const box = e.currentTarget.getBoundingClientRect();
+                  const px = ((e.clientX - box.left) / box.width) * chartWidth;
+                  const py = ((e.clientY - box.top) / box.height) * 225;
+                  if (px < 65 || px > chartWidth - 25 || py < 25 || py > 190) return;
+                  const items = [
+                    ...points.map((p) => ({ ...p, actual: true })),
+                    ...projectedPoints.map((p) => ({ ...p, actual: false })),
+                  ];
+                  const nearest = items.reduce<(typeof items)[number] | undefined>(
+                    (best, p) =>
+                      !best || Math.abs(x(p.date) - px) < Math.abs(x(best.date) - px) ? p : best,
+                    undefined,
+                  );
+                  if (nearest?.actual) onHistory(g.id, nearest.date);
+                  else if (nearest) setChosenPlan({ goal: g.id, date: nearest.date });
+                }}
               >
                 <title>Усі фактичні внески та очікуваний подальший темп</title>
+                {[0, g.targetMinor / 2].map((value) => (
+                  <g key={value}>
+                    <line
+                      x1="65"
+                      x2={chartWidth - 20}
+                      y1={y(value)}
+                      y2={y(value)}
+                      stroke="var(--color-glassb)"
+                    />
+                    <text x="58" y={y(value) + 4} textAnchor="end" className="analytics-axis">
+                      {compactAmount(value)}
+                    </text>
+                  </g>
+                ))}
+                <line
+                  x1={x(today)}
+                  x2={x(today)}
+                  y1="28"
+                  y2="188"
+                  stroke="var(--color-tx2)"
+                  strokeDasharray="2 4"
+                />
+                <text x={x(today)} y="16" textAnchor="middle" className="analytics-axis">
+                  Сьогодні
+                </text>
+                {g.deadline &&
+                  Date.parse(g.deadline) <= maxDate &&
+                  Date.parse(g.deadline) >= minDate && (
+                    <line
+                      x1={x(g.deadline)}
+                      x2={x(g.deadline)}
+                      y1="28"
+                      y2="188"
+                      stroke="var(--color-a2)"
+                      strokeDasharray="5 4"
+                      opacity=".5"
+                    />
+                  )}
+
                 <line
                   x1="65"
                   x2={chartWidth - 20}
@@ -91,27 +165,24 @@ export function GoalInsights({
                   strokeWidth="2"
                   strokeDasharray="6 4"
                 />
+                {selectedProjection && (
+                  <circle
+                    cx={x(selectedProjection.date)}
+                    cy={y(selectedProjection.value)}
+                    r="5"
+                    fill="var(--color-info)"
+                  />
+                )}
                 {points.map((p) => (
                   <g key={p.date}>
                     <circle cx={x(p.date)} cy={y(p.value)} r="4" fill="var(--color-pos)" />
-                    <circle
-                      cx={x(p.date)}
-                      cy={y(p.value)}
-                      r="14"
-                      fill="transparent"
-                      onClick={() => onHistory(g.id, p.date)}
-                    >
-                      <title>
-                        {p.date}: {moneyLabel(p.value)}
-                      </title>
-                    </circle>
                   </g>
                 ))}
                 <text x="65" y="214" className="analytics-axis">
-                  {first}
+                  {financeDay(first)}
                 </text>
                 <text x={chartWidth - 25} y="214" textAnchor="end" className="analytics-axis">
-                  {last}
+                  {financeDay(last)}
                 </text>
               </svg>
             </div>
@@ -119,6 +190,28 @@ export function GoalInsights({
               Суцільна лінія — всі записані внески й повернення. Пунктир — очікування, не здійснені
               перекази. Облік внесків не замінює звірку балансу банківської банки.
             </p>
+            {plan && plan.events.length > 0 && (
+              <label className="renewal-field mt-3">
+                Очікуваний внесок · перегляд
+                <select
+                  value={
+                    chosenPlan?.goal === g.id && plan.events.some((e) => e.date === chosenPlan.date)
+                      ? chosenPlan.date
+                      : plan.events[0]!.date
+                  }
+                  onChange={(e) => setChosenPlan({ goal: g.id, date: e.target.value })}
+                >
+                  {plan.events.map((e) => (
+                    <option key={e.date} value={e.date}>
+                      {financeDate(e.date)} · {moneyLabel(e.amount)}
+                    </option>
+                  ))}
+                </select>
+                <small className="renewal-chart-note">
+                  Гнучке очікування. Перегляд не створює переказу.
+                </small>
+              </label>
+            )}
             {plan && (
               <div className="renewal-inset mt-3">
                 <p>
@@ -134,7 +227,7 @@ export function GoalInsights({
                 </p>
                 <p className="renewal-muted mt-2">
                   {plan.events[0]
-                    ? `Орієнтовний наступний внесок ${moneyLabel(plan.events[0].amount)} · ${plan.events[0].date}. `
+                    ? `Орієнтовний наступний внесок ${moneyLabel(plan.events[0].amount)} · ${financeDate(plan.events[0].date)}. `
                     : ''}
                   {plan.description}
                 </p>
@@ -145,19 +238,10 @@ export function GoalInsights({
                 )}
                 <p className="renewal-chart-note mt-2">
                   {finish
-                    ? `Очікуване досягнення за цим темпом: ${finish}.`
+                    ? `Очікуване досягнення за цим темпом: ${financeDate(finish)}.`
                     : 'За поточним темпом дата завершення поза 93-денним горизонтом або ще невідома.'}
                 </p>
               </div>
-            )}
-            {g.deadline && (
-              <p className="renewal-chart-note mt-3">
-                Орієнтир цілі: {g.deadline}.
-                {byDeadline != null && g.deadline <= shiftDate(today, 92)
-                  ? ` До орієнтира за цим сценарієм ${moneyLabel(byDeadline)}; до цілі залишиться ${moneyLabel(Math.max(0, g.targetMinor - byDeadline))}.`
-                  : ''}{' '}
-                Дати окремих внесків гнучкі.
-              </p>
             )}
             <button className="renewal-secondary mt-3" onClick={() => onHistory(g.id)}>
               Уся історія внесків ↗

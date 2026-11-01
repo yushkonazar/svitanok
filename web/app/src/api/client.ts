@@ -19,6 +19,7 @@ import { SAMPLE_BRIEF } from './briefing-sample.ts';
 import { settingsResponseSchema, type SettingsResponse, type Settings } from './settings-schema.ts';
 import { savedPageSchema, type SavedPage } from './schema.ts';
 import { workerQualityResponseSchema, type WorkerQuality } from './worker-quality-schema.ts';
+import { budgetCategoriesAt } from '../../../core/finance/budget-analysis.mjs';
 import { financeSchema, financeReportSchema, type FinanceCommand } from './finance-schema.ts';
 import { readFinanceDemo, writeFinanceDemo } from './finance-demo.ts';
 import { FinanceCommandRejectedError, FinanceSaveUncertainError } from './finance-errors.ts';
@@ -326,13 +327,24 @@ export async function fetchAnalyticsOperations(
     weekday?: string;
     transactionId?: string;
     categories?: string;
+    budgetId?: string;
+    series?: 'previous';
   } = {},
 ) {
   const params = analyticsParams(input);
   for (const [key, value] of Object.entries(options)) if (value) params.set(key, value);
   if (!inTelegram()) {
     const f = readFinanceDemo(),
-      selection = analyticsSelection(params),
+      original = analyticsSelection(params),
+      selection =
+        options.series === 'previous'
+          ? {
+              ...original,
+              from: original.previousFrom,
+              to: original.previousTo,
+              period: original.previousPeriod,
+            }
+          : original,
       cursor = options.cursor ? JSON.parse(options.cursor) : null;
     const rows = f.transactions
       .filter((t) => {
@@ -343,10 +355,13 @@ export async function fetchAnalyticsOperations(
           (!options.transactionId || t.id === options.transactionId) &&
           (!options.categories ||
             (JSON.parse(options.categories) as string[]).includes(t.category)) &&
+          (!options.budgetId ||
+            budgetCategoriesAt(f, options.budgetId, date).includes(t.category)) &&
           (options.weekday == null ||
             String((new Date(date + 'T12:00:00Z').getUTCDay() + 6) % 7) === options.weekday) &&
           date >= selection.from &&
           date <= selection.to &&
+          (!selection.period || Date.parse(t.at) < Date.parse(selection.period.to)) &&
           (!options.day || date === options.day) &&
           ((options.kind ?? 'expense') === 'all' || t.kind === (options.kind ?? 'expense')) &&
           ((options.kind ?? 'expense') !== 'expense' || (t.amountUah != null && t.amountUah < 0)) &&

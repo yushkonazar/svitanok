@@ -1,10 +1,11 @@
+import { paymentsCount } from './analytics-format.ts';
 import { useState, useRef, useEffect } from 'react';
 import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query';
 import { fetchFinanceMerchants, postFinance, isSessionExpired } from '../../api/client.ts';
 import type { AnalyticsRequest } from '../../api/finance-analytics-schema.ts';
 import type { Finance, FinanceCommand } from '../../api/finance-schema.ts';
 import { FINANCE_QUERY } from '../../api/finance-hooks.ts';
-import { Sheet } from '../ui/Sheet.tsx';
+import { Sheet } from './FinanceSheet.tsx';
 import { SessionExpired } from '../ui/SessionExpired.tsx';
 import { moneyLabel } from '../../lib/financeView.ts';
 export function MerchantCatalog({
@@ -189,7 +190,7 @@ export function MerchantCatalog({
               >
                 <span>
                   {m.merchant || 'Без назви'}
-                  <small>{m.count} оплат</small>
+                  <small>{paymentsCount(m.count)}</small>
                 </span>
                 <strong>{moneyLabel(m.amountMinor)}</strong>
               </button>

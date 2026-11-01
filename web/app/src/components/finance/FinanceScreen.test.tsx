@@ -163,7 +163,7 @@ it('opens all taxi periods directly, selects the unpaid period and preserves it 
   const history = screen.getByRole('dialog', { name: 'Історія перезмінок' });
   expect(within(history).getByText(/Усі періоди: 4/)).toBeInTheDocument();
   expect(within(history).getByLabelText('Робочий період')).toHaveValue('2026-10-12');
-  expect(within(history).getByRole('option', { name: /28 вер/ })).toBeInTheDocument();
+  expect(within(history).getByRole('option', { name: /28\.09/ })).toBeInTheDocument();
   expect(screen.queryByRole('heading', { name: 'Аналітика та звіти' })).not.toBeInTheDocument();
   fireEvent.click(within(history).getByRole('button', { name: 'Розрахуватись' }));
   const form = screen.getByRole('dialog', { name: 'Розрахунок із парком' });
@@ -202,7 +202,7 @@ it('keeps daily finance controls on the main screen and opens analytics lazily f
 it('opens an assistant link with the exact report period and returns to the main finance screen', async () => {
   renderFinance('/finance?analytics=expenses&from=2026-10-01&to=2026-10-14&category=продукти');
   expect(await screen.findByRole('heading', { name: 'Аналітика та звіти' })).toBeInTheDocument();
-  expect(screen.getByText('1 жовтня 2026 р. — 14 жовтня 2026 р. · Київ')).toBeInTheDocument();
+  expect(screen.getByText('1 жовтня 2026 — 14 жовтня 2026 · Київ')).toBeInTheDocument();
   fireEvent.click(screen.getByRole('button', { name: '← До фінансів' }));
   expect(screen.getByRole('button', { name: 'Записати витрату' })).toBeInTheDocument();
 });

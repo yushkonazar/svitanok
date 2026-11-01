@@ -13,7 +13,7 @@ import {
 } from '../../../../core/finance/planning.mjs';
 import { taxiPeriodLabel, taxiScheduleLabel } from '../../lib/taxiPeriods.ts';
 import { moneyLabel } from '../../lib/financeView.ts';
-import { Sheet } from '../ui/Sheet.tsx';
+import { Sheet } from './FinanceSheet.tsx';
 
 export function TaxiTransition({ finance: f, onClose }: { finance: Finance; onClose: () => void }) {
   const [nowMs] = useState(Date.now);

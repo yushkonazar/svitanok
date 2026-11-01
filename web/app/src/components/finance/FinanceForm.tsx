@@ -1,3 +1,4 @@
+import { financeDate } from './analytics-format.ts';
 import { BankRefreshPanel } from './BankRefreshPanel.tsx';
 import { useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
@@ -16,7 +17,7 @@ import {
   taxiPeriodStart,
 } from '../../../../core/finance/planning.mjs';
 import { haptic } from '../../telegram.ts';
-import { Sheet } from '../ui/Sheet.tsx';
+import { Sheet } from './FinanceSheet.tsx';
 import { moneyLabel } from '../../lib/financeView.ts';
 import { taxiPeriodLabel } from '../../lib/taxiPeriods.ts';
 import { TaxiTransition } from './TaxiTransition.tsx';
@@ -517,9 +518,9 @@ function FinanceFormBody({
     return tx?.bankHold ? (
       <div className="renewal-inset">
         <p className="renewal-muted">
-          API Monobank ще передає hold для цієї операції. Якщо в застосунку банку вона вже успішна,
-          можеш підтвердити це самостійно. Пов’яжемо цей запис, без другого списання; позначку API
-          не змінюємо.
+          У даних Monobank операція ще обробляється. Якщо в застосунку банку вона вже успішна, можеш
+          підтвердити це самостійно. Пов’яжемо цей запис, без другого списання; позначку API не
+          змінюємо.
         </p>
         <label className="flex items-start gap-3 text-sm">
           <input
@@ -656,6 +657,7 @@ function FinanceFormBody({
         Object.assign(p, {
           accountId: request.id,
           creditLimitMinor: v.creditMode === 'bank' ? null : inputMoney('credit'),
+          currency: selectedAccount?.currency,
         });
       } else if (request.kind === 'taxi-personal') {
         type = 'taxi-personal-income';
@@ -890,13 +892,13 @@ function FinanceFormBody({
                   ['', 'Обери поповнення або зняття'],
                   ...bankTransfers.map((t): [string, string] => [
                     t.id,
-                    `${t.description} · ${moneyLabel(t.amountMinor)} · ${kyivParts(Date.parse(t.at)).date}${t.bankHold ? ' · hold у API' : ''}`,
+                    `${t.description} · ${moneyLabel(t.amountMinor)} · ${financeDate(kyivParts(Date.parse(t.at)).date)}${t.bankHold ? ' · обробляється банком' : ''}`,
                   ]),
                 ])}
                 {bankOwnerConfirmation()}
                 <p className="renewal-inset renewal-muted">
                   Обери поповнення картки або зняття готівки, ще не пов’язане з іншим записом. Якщо
-                  API досі показує hold, звір успішність у Monobank і підтвердь це тут.
+                  банк ще передає стан обробки, звір успішність у Monobank і підтвердь це тут.
                 </p>
                 {select('accountId', 'Другий рахунок · готівка або ручний', accountOptions)}
                 <p className="renewal-inset renewal-muted">
@@ -960,11 +962,17 @@ function FinanceFormBody({
                   ['manual', 'Вкажу поточний ліміт сам'],
                 ])}
                 {v.creditMode === 'manual' &&
-                  field('credit', 'Повний кредитний ліміт, ₴', 'text', 'Наприклад, 7000')}
+                  field(
+                    'credit',
+                    `Повний кредитний ліміт, ${selectedAccount?.currency === 'UAH' ? '₴' : (selectedAccount?.currency ?? '')}`,
+                    'text',
+                    'Наприклад, 7000',
+                  )}
                 <p className="renewal-muted">
-                  Власний баланс = доступний баланс банку мінус повний кредитний ліміт. Наприклад: 5
-                  100 − 7 000 = −1 900 ₴. Ліміт не є доходом і не входить у вільні кошти. Ручне
-                  значення діє, доки ти його не зміниш або не повернеш автоматичне визначення.
+                  Власний баланс = доступний баланс банку мінус повний кредитний ліміт у валюті цієї
+                  картки ({selectedAccount?.currency}). Ліміт не є доходом і не входить у вільні
+                  кошти. Ручне значення діє, доки ти його не зміниш або не повернеш автоматичне
+                  визначення.
                 </p>
               </>
             )}
@@ -1037,7 +1045,17 @@ function FinanceFormBody({
                 {f.policies.some((p) => p.periodStart) && (
                   <>
                     <p className="renewal-chart-note">
-                      Авто й період визначаються за датою та часом.
+                      Авто й період визначаються за датою та часом.{' '}
+                      {(() => {
+                        try {
+                          return taxiPeriodLabel(
+                            taxiWeek(Date.parse(at()), f.policies).key,
+                            f.policies,
+                          );
+                        } catch {
+                          return 'Перевір дату й час.';
+                        }
+                      })()}
                     </p>
                     <details open={Boolean(entry?.periodKey)}>
                       <summary className="renewal-link">Уточнити минулий період</summary>
@@ -1056,6 +1074,14 @@ function FinanceFormBody({
                     </details>
                   </>
                 )}
+                <label className="flex gap-3">
+                  <input
+                    type="checkbox"
+                    checked={v.dayComplete === 'false'}
+                    onChange={(e) => set('dayComplete', String(!e.target.checked))}
+                  />
+                  Ще працюю · день не завершений
+                </label>
                 {field('cash', 'Каса після комісії, ₴', 'text', 'Наприклад, 4000')}
                 <div className="renewal-form-grid">
                   {field('commission', 'Комісія, ₴', 'text', '700')}
@@ -1091,14 +1117,6 @@ function FinanceFormBody({
                       входить.
                     </p>
                     {field('note', 'Нотатка')}
-                    <label className="flex gap-3">
-                      <input
-                        type="checkbox"
-                        checked={v.dayComplete === 'false'}
-                        onChange={(e) => set('dayComplete', String(!e.target.checked))}
-                      />
-                      Ще працюю · день не завершений
-                    </label>
                   </div>
                 </details>
                 <p className="renewal-muted">
@@ -1216,7 +1234,7 @@ function FinanceFormBody({
                         )
                         .map((t): [string, string] => [
                           t.id,
-                          `${t.description} · ${moneyLabel(t.amountMinor)} · ${kyivParts(Date.parse(t.at)).date}`,
+                          `${t.description} · ${moneyLabel(t.amountMinor)} · ${financeDate(kyivParts(Date.parse(t.at)).date)}`,
                         ]),
                     ])}
                     {bankOwnerConfirmation()}
@@ -1504,7 +1522,7 @@ function FinanceFormBody({
                         )
                         .map((t): [string, string] => [
                           t.id,
-                          `${t.description} · ${moneyLabel(-(bankPaymentAmount(t) ?? 0))} · ${kyivParts(Date.parse(t.at)).date}${t.bankHold ? ' · hold у API' : ''}${t.currency !== 'UAH' ? ` (${moneyLabel(-t.amountMinor, t.currency)})` : ''}`,
+                          `${t.description} · ${moneyLabel(-(bankPaymentAmount(t) ?? 0))} · ${financeDate(kyivParts(Date.parse(t.at)).date)}${t.bankHold ? ' · обробляється банком' : ''}${t.currency !== 'UAH' ? ` (${moneyLabel(-t.amountMinor, t.currency)})` : ''}`,
                         ]),
                     ])}
                     {bankOwnerConfirmation()}

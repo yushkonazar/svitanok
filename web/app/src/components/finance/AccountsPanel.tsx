@@ -1,3 +1,5 @@
+import { AccountCollection, accountFreshness } from './AccountPresentation.tsx';
+import { financeTime } from './analytics-format.ts';
 import type { Finance } from '../../api/finance-schema.ts';
 import type { FinanceFormRequest } from './FinanceForm.tsx';
 import { moneyLabel } from '../../lib/financeView.ts';
@@ -22,80 +24,83 @@ export function AccountsPanel({
         Власні залишки, кредитні кошти й способи перенесення грошей.
       </p>
       <div className="finance-account-grid">
-        {f.accounts.map((a) => (
-          <article key={a.id} className="finance-account">
-            <div className="renewal-section-head">
-              <span className="finance-account-icon" aria-hidden="true">
-                {a.kind === 'cash' ? '₴' : '▤'}
-              </span>
-              <span className="renewal-pill">
-                {a.kind === 'mono' ? 'Monobank' : a.kind === 'cash' ? 'Готівка' : 'Ручний облік'}
-              </span>
-            </div>
-            <h3 className="font-semibold break-words">{a.name}</h3>
-            <p
-              className={`finance-account-balance ${a.balanceMinor != null && a.balanceMinor < 0 ? 'text-neg' : ''}`}
-            >
-              {a.balancePending
-                ? bankBusy
-                  ? 'Оновлюємо баланс'
-                  : 'Онови дані Monobank'
-                : a.balanceMinor == null
-                  ? 'Потрібен залишок'
-                  : moneyLabel(a.balanceMinor, a.currency)}
-            </p>
-            {a.kind === 'mono' && (
-              <>
-                <p className="renewal-chart-note">
-                  Доступно в банку:{' '}
-                  {a.availableMinor == null ? '—' : moneyLabel(a.availableMinor, a.currency)}
-                  <br />
-                  Кредитний ліміт:{' '}
-                  {a.creditLimitMinor == null
-                    ? 'невідомий'
-                    : moneyLabel(a.creditLimitMinor, a.currency)}
-                </p>
-                {onRefreshBank && (
+        <AccountCollection accounts={f.accounts}>
+          {(a) => (
+            <article key={a.id} className="finance-account">
+              <div className="renewal-section-head">
+                <span className="finance-account-icon" aria-hidden="true">
+                  {a.kind === 'cash' ? '₴' : '▤'}
+                </span>
+                <span className="renewal-pill">
+                  {a.kind === 'mono' ? 'Monobank' : a.kind === 'cash' ? 'Готівка' : 'Ручний облік'}
+                </span>
+              </div>
+              <h3 className="font-semibold break-words">{a.name}</h3>
+              <p
+                className={`finance-account-balance ${a.balanceMinor != null && a.balanceMinor < 0 ? 'text-neg' : ''}`}
+              >
+                {a.balancePending
+                  ? bankBusy
+                    ? 'Оновлюємо баланс'
+                    : 'Онови дані Monobank'
+                  : a.balanceMinor == null
+                    ? 'Потрібен залишок'
+                    : moneyLabel(a.balanceMinor, a.currency)}
+              </p>
+              {a.kind === 'mono' && (
+                <>
+                  <p className="renewal-chart-note">
+                    Доступно в банку:{' '}
+                    {a.availableMinor == null ? '—' : moneyLabel(a.availableMinor, a.currency)}
+                    <br />
+                    Кредитний ліміт:{' '}
+                    {a.creditLimitMinor == null
+                      ? 'невідомий'
+                      : moneyLabel(a.creditLimitMinor, a.currency)}
+                  </p>
+                  {onRefreshBank && (
+                    <button
+                      className="renewal-link"
+                      disabled={bankBusy}
+                      aria-busy={bankBusy}
+                      onClick={() => onRefreshBank(a.id)}
+                    >
+                      Оновити виписку ↻
+                    </button>
+                  )}
+                  {a.creditLimitSource === 'manual' &&
+                    a.bankCreditLimitMinor != null &&
+                    a.bankCreditLimitMinor !== a.creditLimitMinor && (
+                      <p className="renewal-chart-note">
+                        У Monobank ліміт {moneyLabel(a.bankCreditLimitMinor, a.currency)}; тут
+                        використовується твій ручний ліміт. Перевір налаштування.
+                      </p>
+                    )}
                   <button
                     className="renewal-link"
-                    disabled={bankBusy}
-                    aria-busy={bankBusy}
-                    onClick={() => onRefreshBank(a.id)}
+                    onClick={() => onAction({ kind: 'credit-limit', id: a.id })}
                   >
-                    Оновити виписку ↻
+                    Налаштувати ліміт
                   </button>
-                )}
-                {a.creditLimitSource === 'manual' &&
-                  a.bankCreditLimitMinor != null &&
-                  a.bankCreditLimitMinor !== a.creditLimitMinor && (
-                    <p className="renewal-chart-note">
-                      У Monobank ліміт {moneyLabel(a.bankCreditLimitMinor, a.currency)}; тут
-                      використовується твій ручний ліміт. Перевір налаштування.
-                    </p>
-                  )}
+                </>
+              )}
+              {a.kind !== 'mono' && (
                 <button
                   className="renewal-link"
-                  onClick={() => onAction({ kind: 'credit-limit', id: a.id })}
+                  onClick={() => onAction({ kind: 'account-balance', id: a.id })}
                 >
-                  Налаштувати ліміт
+                  Уточнити залишок
                 </button>
-              </>
-            )}
-            {a.kind !== 'mono' && (
-              <button
-                className="renewal-link"
-                onClick={() => onAction({ kind: 'account-balance', id: a.id })}
-              >
-                Уточнити залишок
-              </button>
-            )}
-            <small className="renewal-muted">
-              {a.asOf
-                ? `Оновлено ${new Date(a.asOf).toLocaleString('uk-UA', { timeZone: 'Europe/Kyiv', dateStyle: 'short', timeStyle: 'short' })}`
-                : 'Початковий залишок'}
-            </small>
-          </article>
-        ))}
+              )}
+              <small className="renewal-muted">
+                {accountFreshness(a)}
+                {a.kind !== 'mono' && a.lastMovementAt ? (
+                  <span className="block">Останній рух: {financeTime(a.lastMovementAt)}</span>
+                ) : null}
+              </small>
+            </article>
+          )}
+        </AccountCollection>
       </div>
       <div className="finance-tool-grid mt-4">
         <button className="renewal-secondary" onClick={() => onAction({ kind: 'transfer' })}>

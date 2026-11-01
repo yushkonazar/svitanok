@@ -9,9 +9,9 @@ import { FINANCE_QUERY } from '../../api/finance-hooks.ts';
 import type { Finance } from '../../api/finance-schema.ts';
 import type { AnalyticsRequest } from '../../api/finance-analytics-schema.ts';
 import { financeCategoryLabel } from '../../../../core/finance/categories.mjs';
-import { financeRange } from './analytics-format.ts';
+import { financeRange, financeDate, paymentsCount } from './analytics-format.ts';
 import { moneyLabel } from '../../lib/financeView.ts';
-import { Sheet } from '../ui/Sheet.tsx';
+import { Sheet } from './FinanceSheet.tsx';
 import { SessionExpired } from '../ui/SessionExpired.tsx';
 import { FinanceForm } from './FinanceForm.tsx';
 import { TransactionDetail } from './TransactionDetail.tsx';
@@ -23,6 +23,8 @@ export type ExplorerOptions = {
   weekday?: string;
   transactionId?: string;
   categories?: string;
+  budgetId?: string;
+  initialPrevious?: boolean;
   detail?: boolean;
   comparison?: boolean;
   title?: string;
@@ -37,7 +39,7 @@ export function AnalyticsOperations({
   const [selected, setSelected] = useState<Finance['transactions'][number] | null>(null),
     [editing, setEditing] = useState(false),
     [merchant, setMerchant] = useState<string | null>(null),
-    [previous, setPrevious] = useState(false);
+    [previous, setPrevious] = useState(options.initialPrevious ?? false);
   const base = { ...request, merchant: merchant ?? request.merchant };
   const summary = useQuery({
     queryKey: [
@@ -61,6 +63,7 @@ export function AnalyticsOperations({
         }
       : base;
   const query = useInfiniteQuery({
+    enabled: !previous || !options.detail || !!summary.data,
     queryKey: [
       ...FINANCE_QUERY,
       'analytics-operations',
@@ -71,12 +74,13 @@ export function AnalyticsOperations({
       options.weekday,
       options.transactionId,
       options.categories,
+      options.budgetId,
       finance.version,
       finance.bankSync?.completedAt,
     ],
     initialPageParam: null as string | null,
     queryFn: ({ pageParam }) =>
-      fetchAnalyticsOperations(effective, {
+      fetchAnalyticsOperations(base, {
         cursor: pageParam,
         day: options.day,
         kind: options.kind ?? 'expense',
@@ -84,6 +88,8 @@ export function AnalyticsOperations({
         weekday: options.weekday,
         transactionId: options.transactionId,
         categories: options.categories,
+        budgetId: options.budgetId,
+        series: previous ? 'previous' : undefined,
       }),
     getNextPageParam: (page) => page.nextCursor ?? undefined,
     staleTime: 60000,
@@ -153,7 +159,23 @@ export function AnalyticsOperations({
               </button>
             )}
             <p className="renewal-chart-note mt-3">
-              {options.day ?? financeRange(effective.from, effective.to)} · фільтри збережено
+              {options.day ? financeDate(options.day) : financeRange(effective.from, effective.to)}
+              {' · '}
+              {effective.account && effective.account !== 'all'
+                ? (finance.accounts.find((a) => a.id === effective.account)?.name ??
+                  effective.account)
+                : 'Усі рахунки'}
+              {effective.source && effective.source !== 'all'
+                ? effective.source === 'mono'
+                  ? ' · Monobank'
+                  : ' · Ручні записи'
+                : ''}
+              {effective.status && effective.status !== 'all'
+                ? effective.status === 'confirmed'
+                  ? ' · Підтверджені'
+                  : ' · Очікують підтвердження'
+                : ''}
+              {effective.merchant ? ` · ${effective.merchant}` : ''}
             </p>
             {options.detail && summary.data && (
               <>
@@ -161,7 +183,7 @@ export function AnalyticsOperations({
                   <div className="renewal-metric">
                     <span>Поточний період</span>
                     <strong>{moneyLabel(summary.data.summary.expenseMinor)}</strong>
-                    <small>{summary.data.summary.count} оплат</small>
+                    <small>{paymentsCount(summary.data.summary.count)}</small>
                   </div>
                   <div className="renewal-metric">
                     <span>Попередній період</span>
@@ -250,7 +272,7 @@ export function AnalyticsOperations({
                         minute: '2-digit',
                       })}{' '}
                       · {financeCategoryLabel(tx.category)}
-                      {tx.bankHold && !tx.bankVerifiedByOwner ? ' · на обробці в API' : ''}
+                      {tx.bankHold && !tx.bankVerifiedByOwner ? ' · обробляється банком' : ''}
                     </small>
                   </span>
                   <strong>

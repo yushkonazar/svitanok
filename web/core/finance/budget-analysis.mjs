@@ -1,31 +1,40 @@
 import { matchesAnalytics } from './analytics.mjs';
 import { kyivParts, shiftDate, sumMoney } from './planning.mjs';
 import { budgetPeriod, budgetDefinitionAt, budgetPlanLimit } from './budget-history.mjs';
+/** The same historical membership is used by totals and the paginated explorer.
+ * @param {any} finance @param {string} budgetId @param {string} date
+ * @param {Set<string>} [seen] @returns {string[]} */
+export function budgetCategoriesAt(finance, budgetId, date, seen = new Set()) {
+  if (seen.has(budgetId)) return [];
+  seen.add(budgetId);
+  const budget = finance.budgets.find(
+    (/** @type {any} */ b) => b.id === budgetId && b.purpose === 'expense',
+  );
+  if (!budget) return [];
+  const definition = budgetDefinitionAt(finance, budgetId, date) ?? budget;
+  return [
+    ...new Set([
+      ...(definition.categories ?? [definition.category]),
+      ...finance.budgets
+        .filter(
+          (/** @type {any} */ child) =>
+            child.purpose === 'expense' &&
+            (budgetDefinitionAt(finance, child.id, date) ?? child).parentId === budgetId,
+        )
+        .flatMap((/** @type {any} */ child) =>
+          budgetCategoriesAt(finance, child.id, date, new Set(seen)),
+        ),
+    ]),
+  ];
+}
 /** @param {any} finance @param {any} selection */
 export function budgetAnalysisAccumulator(finance, selection) {
   const dates = Array.from({ length: selection.days }, (_, i) => shiftDate(selection.from, i));
   const definitions = finance.budgets.filter((/** @type {any} */ b) => b.purpose === 'expense');
-  /** @param {any} b @param {string} date @param {Set<string>} [seen] @returns {string[]} */
-  const categoriesAt = (b, date, seen = new Set()) => {
-    if (seen.has(b.id)) return [];
-    seen.add(b.id);
-    const definition = budgetDefinitionAt(finance, b.id, date) ?? b;
-    return [
-      ...new Set([
-        ...(definition.categories ?? [definition.category]),
-        ...definitions
-          .filter(
-            (/** @type {any} */ child) =>
-              (budgetDefinitionAt(finance, child.id, date) ?? child).parentId === b.id,
-          )
-          .flatMap((/** @type {any} */ child) => categoriesAt(child, date, new Set(seen))),
-      ]),
-    ];
-  };
   const scopes = new Map(
     definitions.map((/** @type {any} */ b) => [
       b.id,
-      new Map(dates.map((date) => [date, new Set(categoriesAt(b, date))])),
+      new Map(dates.map((date) => [date, new Set(budgetCategoriesAt(finance, b.id, date))])),
     ]),
   );
   /** @type {Map<string,Map<string,number>>} */ const totals = new Map(

@@ -416,17 +416,48 @@ html[data-finance-motion='off'] .finance-rank-track > span {
   font-weight: 700;
 }
 .finance-spark-bars {
-  display: flex;
-  align-items: end;
-  gap: 5px;
-  height: 40px;
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 4px;
   margin: 6px 0;
 }
-.finance-spark-bars > span {
-  flex: 1;
+.finance-spark-day {
+  min-width: 0;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.finance-spark-value {
+  display: flex;
+  align-items: end;
+  justify-content: center;
+  min-height: 30px;
+  font-size: 10px;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+.finance-spark-track {
+  display: flex;
+  align-items: end;
+  justify-content: center;
+  height: 46px;
+  border-bottom: 1px solid var(--color-glassb);
+  margin: 5px 0;
+}
+.finance-spark-track > span {
+  display: block;
+  width: 70%;
   background: var(--color-info);
   border-radius: 3px 3px 0 0;
-  opacity: 0.7;
+  opacity: 0.85;
+}
+.finance-spark-track > span[data-today='true'] {
+  opacity: 0.5;
+  border: 1px dashed var(--color-info);
+}
+.finance-spark-day time {
+  color: var(--color-tx2);
+  font-size: 10px;
+  white-space: nowrap;
 }
 .finance-budget-mini {
   margin-top: 10px;

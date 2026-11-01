@@ -1,3 +1,5 @@
+import { AccountCollection, accountFreshness } from './AccountPresentation.tsx';
+import { financeTime, financeRange as localizedRange } from './analytics-format.ts';
 import { BudgetHistoryAnalytics } from './BudgetHistoryAnalytics.tsx';
 import { PaymentInsights } from './PaymentInsights.tsx';
 import { GoalInsights } from './GoalInsights.tsx';
@@ -37,8 +39,8 @@ export function OverviewAnalytics({
         <p className="renewal-muted">Особисті витрати · вибраний облік</p>
         <div className="renewal-big">{moneyLabel(data.summary.expenseMinor)}</div>
         <p className="renewal-chart-note mt-2">
-          {data.selection.from} — {data.selection.to}. Ті самі фільтри застосовано до поточних
-          витрат і порівняння.
+          {localizedRange(data.selection.from, data.selection.to)}. Ті самі фільтри застосовано до
+          поточних витрат і порівняння.
         </p>
         <div className="renewal-metrics">
           <Metric label="Зміна до попереднього періоду" value={data.summary.changeMinor} />
@@ -55,7 +57,7 @@ export function OverviewAnalytics({
           label="Витрати за днями вибраного періоду"
           points={data.daily.map((d) => ({
             key: d.date,
-            label: d.date.slice(8),
+            label: d.date.slice(8) + '.' + d.date.slice(5, 7),
             amountMinor: d.expenseMinor,
           }))}
         />
@@ -185,101 +187,111 @@ export function AccountAnalytics({
           <Metric label="Вільні кошти" value={view.unknownBalances ? null : view.available} />
         </div>
       </section>
-      {finance.accounts.map((a) => (
-        <section className="renewal-card" key={a.id}>
-          <h2 className="font-bold">{a.name}</h2>
-          <div className="analytics-row">
-            <span>Власні кошти</span>
-            <b>
-              {a.balanceMinor == null ? 'Не підтверджено' : moneyLabel(a.balanceMinor, a.currency)}
-            </b>
-          </div>
-          {a.kind === 'mono' && (
-            <>
-              <div className="analytics-row">
-                <span>Доступно з лімітом</span>
-                <b>
-                  {a.availableMinor == null ? 'Невідомо' : moneyLabel(a.availableMinor, a.currency)}
-                </b>
-              </div>
-              {a.creditLimitSource === 'manual' &&
-                a.bankCreditLimitMinor != null &&
-                a.bankCreditLimitMinor !== a.creditLimitMinor && (
-                  <p className="renewal-inset mt-3">
-                    Ручний ліміт відрізняється від Monobank: у банку{' '}
-                    {moneyLabel(a.bankCreditLimitMinor, a.currency)}. Перевір налаштування.
-                  </p>
-                )}
-              <div className="analytics-row">
-                <span>Кредитний ліміт</span>
-                <b>
-                  {a.creditLimitMinor == null
-                    ? 'Невідомо'
-                    : moneyLabel(a.creditLimitMinor, a.currency)}
-                </b>
-              </div>
-              <div className="analytics-row">
-                <span>Використано кредиту</span>
-                <b>
-                  {a.balanceMinor == null
-                    ? 'Невідомо'
-                    : moneyLabel(Math.max(0, -a.balanceMinor), a.currency)}
-                </b>
-              </div>
-            </>
-          )}
-          <p className="renewal-chart-note mt-3">
-            {a.asOf
-              ? `Оновлено ${new Date(a.asOf).toLocaleString('uk-UA', { timeZone: 'Europe/Kyiv' })}`
-              : 'Початковий або ручний залишок'}
-          </p>
-          {a.currency === 'UAH' && a.balanceMinor != null && (
-            <>
-              <div className="renewal-progress mt-3">
-                <span
-                  style={{
-                    width: `${
-                      (Math.max(0, a.balanceMinor) /
-                        Math.max(
-                          1,
-                          finance.accounts
-                            .filter((x) => x.currency === 'UAH')
-                            .reduce((n, x) => n + Math.max(0, x.balanceMinor ?? 0), 0),
-                        )) *
-                      100
-                    }%`,
-                  }}
-                />
-              </div>
-              <p className="renewal-chart-note">
-                Частка позитивних гривневих залишків. Кредитні ліміти сюди не входять.
-              </p>
-            </>
-          )}
-          <div className="finance-tool-grid mt-3">
-            <button
-              className="renewal-secondary"
-              onClick={() =>
-                onAction({ kind: a.kind === 'mono' ? 'credit-limit' : 'account-balance', id: a.id })
-              }
-            >
-              {a.kind === 'mono' ? 'Налаштувати ліміт' : 'Уточнити залишок'}
-            </button>
-            {a.kind === 'mono' && onRefresh && (
+      <AccountCollection accounts={finance.accounts}>
+        {(a) => (
+          <section className="renewal-card" key={a.id}>
+            <h2 className="font-bold">{a.name}</h2>
+            <div className="analytics-row">
+              <span>Власні кошти</span>
+              <b>
+                {a.balanceMinor == null
+                  ? 'Не підтверджено'
+                  : moneyLabel(a.balanceMinor, a.currency)}
+              </b>
+            </div>
+            {a.kind === 'mono' && (
+              <>
+                <div className="analytics-row">
+                  <span>Доступно з лімітом</span>
+                  <b>
+                    {a.availableMinor == null
+                      ? 'Невідомо'
+                      : moneyLabel(a.availableMinor, a.currency)}
+                  </b>
+                </div>
+                {a.creditLimitSource === 'manual' &&
+                  a.bankCreditLimitMinor != null &&
+                  a.bankCreditLimitMinor !== a.creditLimitMinor && (
+                    <p className="renewal-inset mt-3">
+                      Ручний ліміт відрізняється від Monobank: у банку{' '}
+                      {moneyLabel(a.bankCreditLimitMinor, a.currency)}. Перевір налаштування.
+                    </p>
+                  )}
+                <div className="analytics-row">
+                  <span>Кредитний ліміт</span>
+                  <b>
+                    {a.creditLimitMinor == null
+                      ? 'Невідомо'
+                      : moneyLabel(a.creditLimitMinor, a.currency)}
+                  </b>
+                </div>
+                <div className="analytics-row">
+                  <span>Використано кредиту</span>
+                  <b>
+                    {a.balanceMinor == null
+                      ? 'Невідомо'
+                      : moneyLabel(Math.max(0, -a.balanceMinor), a.currency)}
+                  </b>
+                </div>
+              </>
+            )}
+            <p className="renewal-chart-note mt-3">
+              {accountFreshness(a)}
+              {a.kind !== 'mono' && a.lastMovementAt ? (
+                <span className="block">Останній рух: {financeTime(a.lastMovementAt)}</span>
+              ) : null}
+            </p>
+            {a.currency === 'UAH' && a.balanceMinor != null && (
+              <>
+                <div className="renewal-progress mt-3">
+                  <span
+                    style={{
+                      width: `${
+                        (Math.max(0, a.balanceMinor) /
+                          Math.max(
+                            1,
+                            finance.accounts
+                              .filter((x) => x.currency === 'UAH')
+                              .reduce((n, x) => n + Math.max(0, x.balanceMinor ?? 0), 0),
+                          )) *
+                        100
+                      }%`,
+                    }}
+                  />
+                </div>
+                <p className="renewal-chart-note">
+                  Частка позитивних гривневих залишків. Кредитні ліміти сюди не входять.
+                </p>
+              </>
+            )}
+            <div className="finance-tool-grid mt-3">
               <button
                 className="renewal-secondary"
-                disabled={busy || !!finance.bankSync?.active}
-                onClick={() => onRefresh(a.id)}
+                onClick={() =>
+                  onAction({
+                    kind: a.kind === 'mono' ? 'credit-limit' : 'account-balance',
+                    id: a.id,
+                  })
+                }
               >
-                {busy || finance.bankSync?.active ? 'Оновлюю…' : 'Оновити Monobank'}
+                {a.kind === 'mono' ? 'Налаштувати ліміт' : 'Уточнити залишок'}
               </button>
-            )}
-          </div>
-        </section>
-      ))}
+              {a.kind === 'mono' && onRefresh && (
+                <button
+                  className="renewal-secondary"
+                  disabled={busy || !!finance.bankSync?.active}
+                  onClick={() => onRefresh(a.id)}
+                >
+                  {busy || finance.bankSync?.active ? 'Оновлюю…' : 'Оновити Monobank'}
+                </button>
+              )}
+            </div>
+          </section>
+        )}
+      </AccountCollection>
       <p className="renewal-chart-note">
-        Історичний графік загальних залишків з’явиться після погодження збереження їхніх знімків.
-        Поточні ліміти не застосовуються заднім числом до старих балансів.
+        Історія загальних залишків ще недоступна. Поточні значення не відновлюють минулий стан
+        рахунків.
       </p>
     </>
   );

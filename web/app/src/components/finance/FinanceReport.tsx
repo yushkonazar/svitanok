@@ -1,3 +1,4 @@
+import { counted } from './analytics-format.ts';
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { fetchFinanceReport, isSessionExpired } from '../../api/client.ts';
@@ -135,8 +136,9 @@ export function FinanceReport({ onBack }: { onBack: () => void }) {
             report.unknownCurrencyCount > 0 ||
             report.taxiWeeks.some((w) => !w.complete)) && (
             <p className="renewal-inset renewal-muted">
-              Звіт може бути неповним: {report.unclassifiedCount} операцій без визначеного типу,{' '}
-              {report.unknownCurrencyCount} без гривневої суми.
+              Звіт може бути неповним:{' '}
+              {counted(report.unclassifiedCount, 'операція', 'операції', 'операцій')} без
+              визначеного типу, {report.unknownCurrencyCount} без гривневої суми.
               {report.taxiWeeks.some((w) => !w.complete) ? ' Є неповні зміни таксі.' : ''}
             </p>
           )}
@@ -165,7 +167,9 @@ export function FinanceReport({ onBack }: { onBack: () => void }) {
                       }}
                     />
                   </div>
-                  <p className="renewal-chart-note mt-2">{c.count} операцій</p>
+                  <p className="renewal-chart-note mt-2">
+                    {counted(c.count, 'операція', 'операції', 'операцій')}
+                  </p>
                 </div>
               ))
             ) : (

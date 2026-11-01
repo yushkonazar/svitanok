@@ -2,6 +2,7 @@ import { useId, useState } from 'react';
 import { moneyLabel } from '../../lib/financeView.ts';
 import { expenseBand } from '../../lib/expensePalette.ts';
 import { quantile } from '../../../../core/finance/adaptive-model.mjs';
+import { financeMonth, financeRange, financeDate, counted } from './analytics-format.ts';
 
 export function ExpenseCalendar({
   daily,
@@ -20,10 +21,16 @@ export function ExpenseCalendar({
 }) {
   const id = useId();
   const months = [...new Set(daily.map((day) => day.date.slice(0, 7)))];
-  const [chosenMonth, setChosenMonth] = useState(months.at(-1) ?? '');
+  const preferred =
+    [...months].sort(
+      (a, b) =>
+        daily.filter((d) => d.date.startsWith(b)).length -
+        daily.filter((d) => d.date.startsWith(a)).length,
+    )[0] ?? '';
+  const [chosenMonth, setChosenMonth] = useState(preferred);
   const [selected, setSelected] = useState(''),
     [scale, setScale] = useState<'relative' | 'personal'>('relative');
-  const month = months.includes(chosenMonth) ? chosenMonth : (months.at(-1) ?? '');
+  const month = months.includes(chosenMonth) ? chosenMonth : preferred;
   if (!month) return null;
   const [year, number] = month.split('-').map(Number);
   const first = new Date(Date.UTC(year!, number! - 1, 1));
@@ -48,15 +55,18 @@ export function ExpenseCalendar({
           <select id={id} value={month} onChange={(event) => setChosenMonth(event.target.value)}>
             {months.map((value) => (
               <option key={value} value={value}>
-                {value}
+                {financeMonth(value)}
               </option>
             ))}
           </select>
         </label>
         <div className="analytics-row mt-3">
-          <span>Записано за місяць</span>
+          <span>За вибрані дні місяця</span>
           <b>{moneyLabel(monthRows.reduce((n, d) => n + d.expenseMinor, 0))}</b>
         </div>
+        <p className="renewal-chart-note">
+          {monthRows.length ? financeRange(monthRows[0]!.date, monthRows.at(-1)!.date) : ''}
+        </p>
         <div className="renewal-segments mt-3" aria-label="Кольорова шкала календаря">
           <button aria-pressed={scale === 'relative'} onClick={() => setScale('relative')}>
             Відносна інтенсивність
@@ -111,7 +121,7 @@ export function ExpenseCalendar({
                 className={`${intensity > 45 && scale === 'relative' ? 'analytics-calendar-bright' : ''}${limited || issue ? ' finance-calendar-incomplete' : ''}`}
                 title={
                   record
-                    ? `${date}: ${moneyLabel(record.expenseMinor)} · ${record.count} операцій${limited ? ' · раніше збереженої історії' : issue ? ' · є записи для перевірки' : ''}`
+                    ? `${date}: ${moneyLabel(record.expenseMinor)} · ${counted(record.count, 'операція', 'операції', 'операцій')}${limited ? ' · раніше збереженої історії' : issue ? ' · є записи для перевірки' : ''}`
                     : 'Поза вибраним періодом'
                 }
               >
@@ -133,7 +143,7 @@ export function ExpenseCalendar({
         {selectedDay && (
           <div className="renewal-inset mt-3">
             <b>
-              {selectedDay.date} · {moneyLabel(selectedDay.expenseMinor)}
+              {financeDate(selectedDay.date)} · {moneyLabel(selectedDay.expenseMinor)}
             </b>
             <p className="renewal-chart-note">
               Операцій: {selectedDay.count}.

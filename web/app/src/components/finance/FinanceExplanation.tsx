@@ -1,7 +1,7 @@
 import type { Finance } from '../../api/finance-schema.ts';
 import { financeView, moneyLabel } from '../../lib/financeView.ts';
 import { taxiPeriodLabel } from '../../lib/taxiPeriods.ts';
-import { Sheet } from '../ui/Sheet.tsx';
+import { Sheet } from './FinanceSheet.tsx';
 import { calculateTaxiWeek, taxiPeriodStart, share } from '../../../../core/finance/planning.mjs';
 function TaxiFormula({ finance: f, weekKey }: { finance: Finance; weekKey: string }) {
   const taxi = calculateTaxiWeek(f.taxiEntries, f.policies, taxiPeriodStart(weekKey, f.policies));

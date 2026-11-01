@@ -7,6 +7,12 @@ export interface BudgetAnalysis {
   historyKnown: boolean;
   definitionScope: string;
 }
+export function budgetCategoriesAt(
+  finance: any,
+  budgetId: string,
+  date: string,
+  seen?: Set<string>,
+): string[];
 export function budgetAnalysisAccumulator(
   finance: any,
   selection: any,

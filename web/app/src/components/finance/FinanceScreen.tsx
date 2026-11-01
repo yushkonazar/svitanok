@@ -1,3 +1,4 @@
+import { financeDate, financeTime, counted, plural } from './analytics-format.ts';
 import { lazy, Suspense, useState, useLayoutEffect, useEffect, useRef } from 'react';
 import { setVerticalSwipes } from '../../telegram.ts';
 import { useTick } from '../../lib/useTick.ts';
@@ -462,6 +463,14 @@ export function FinanceScreen() {
             ? 'Потрібно підтвердити залишки й кредитний ліміт картки або доповнити комісію й готівку змін таксі.'
             : 'Власні кошти на рахунках мінус резерв парку та зарезервовані кошти на цілі. Кредитний ліміт не є твоїми грошима.'}
         </p>
+        <div className="renewal-finance-actions mt-4">
+          <button className="renewal-button" onClick={() => setForm({ kind: 'expense' })}>
+            Записати витрату
+          </button>
+          <button className="renewal-secondary" onClick={() => setForm({ kind: 'income' })}>
+            Додати дохід
+          </button>
+        </div>
         <button className="renewal-link mt-3" onClick={() => setExplainOpen(true)}>
           Як порахована ця сума?
         </button>
@@ -496,20 +505,20 @@ export function FinanceScreen() {
           Рух коштів і зміни за період ↗
         </button>
         <p className="renewal-chart-note mt-3">
+          {(() => {
+            const dates = f.accounts
+              .filter((a) => a.kind === 'mono' && a.asOf)
+              .map((a) => a.asOf!)
+              .sort();
+            return dates.length ? `Найновіші дані залишків: ${financeTime(dates.at(-1)!)}. ` : '';
+          })()}
           {bankBusy || f.bankSync?.active
             ? 'Monobank оновлюється…'
             : f.bankSync?.completedAt
-              ? `Остання звірка Monobank: ${new Date(f.bankSync.completedAt).toLocaleString('uk-UA', { timeZone: 'Europe/Kyiv', dateStyle: 'short', timeStyle: 'short' })}`
+              ? `Остання повна звірка Monobank: ${new Date(f.bankSync.completedAt).toLocaleString('uk-UA', { timeZone: 'Europe/Kyiv', dateStyle: 'short', timeStyle: 'short' })}`
               : 'Час звірки Monobank ще не зафіксовано.'}
         </p>
-        <div className="renewal-finance-actions mt-4">
-          <button className="renewal-button" onClick={() => setForm({ kind: 'expense' })}>
-            Записати витрату
-          </button>
-          <button className="renewal-secondary" onClick={() => setForm({ kind: 'income' })}>
-            Додати дохід
-          </button>
-        </div>
+
         {f.accounts.some((a) => a.currency !== 'UAH') && (
           <p className="renewal-muted mt-3">
             Валютні рахунки показані окремо й не підсумовані з гривнею.
@@ -835,10 +844,24 @@ export function FinanceScreen() {
           ))}
         </div>
         {!!view.unclassified.length && (
-          <p className="renewal-muted mb-3">
-            {view.unclassified.length} операцій потребують уточнення типу. Перекази й невизначені
-            надходження не зараховані в дохід автоматично.
-          </p>
+          <button
+            className="renewal-inset finance-unclassified-action mb-3"
+            onClick={() =>
+              setOperationExplorer({
+                request: { from: shiftDate(today, 1 - days), to: today },
+                kind: 'unclassified',
+                title: 'Операції для уточнення',
+              })
+            }
+          >
+            {counted(view.unclassified.length, 'операція', 'операції', 'операцій')}{' '}
+            {plural(view.unclassified.length, 'потребує', 'потребують', 'потребують')} уточнення
+            типу ↗
+            <small className="block renewal-chart-note">
+              Відкрити всі невизначені операції за обрані дні. Надходження не зараховані в дохід
+              автоматично.
+            </small>
+          </button>
         )}
         <TerminalSuggestions finance={f} onOpen={openTransaction} />
         <div className="renewal-segments my-3" aria-label="Період останніх операцій">
@@ -886,7 +909,7 @@ export function FinanceScreen() {
                     : t.bankHold
                       ? t.bankVerifiedByOwner
                         ? 'Підтверджено тобою · '
-                        : 'hold у API · '
+                        : 'обробляється банком · '
                       : ''}{' '}
                 {new Date(t.at).toLocaleDateString('uk-UA', { timeZone: 'Europe/Kyiv' })}
               </small>
@@ -940,8 +963,8 @@ export function FinanceScreen() {
             <div key={g.id} className="mb-5">
               {next && (
                 <p className="renewal-chart-note mt-3">
-                  Очікуваний внесок: {moneyLabel(next.amount)} · орієнтовно {next.date}. Без
-                  дедлайну.{outlook?.adaptive ? ' Темп адаптовано до історії.' : ''}
+                  Очікуваний внесок: {moneyLabel(next.amount)} · орієнтовно {financeDate(next.date)}
+                  . Дати внесків гнучкі.{outlook?.adaptive ? ' Темп адаптовано до історії.' : ''}
                 </p>
               )}
               <div className="renewal-section-head flex-wrap">
@@ -961,7 +984,7 @@ export function FinanceScreen() {
               </div>
               <p className="renewal-muted">
                 {moneyLabel(allocated)} із {moneyLabel(g.targetMinor)}
-                {g.deadline ? ` · до ${g.deadline}` : ''}
+                {g.deadline ? ` · орієнтир цілі ${financeDate(g.deadline)}` : ''}
               </p>
               <Progress percent={(allocated / g.targetMinor) * 100} />
               {g.planAmountMinor != null && g.planPeriod && (

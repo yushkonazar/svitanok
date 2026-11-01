@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import type { Finance } from '../../api/finance-schema.ts';
-import { Sheet } from '../ui/Sheet.tsx';
+import { Sheet } from './FinanceSheet.tsx';
 import { moneyLabel } from '../../lib/financeView.ts';
 import { kyivParts, sumMoney } from '../../../../core/finance/planning.mjs';
 import { financeRange } from './analytics-format.ts';

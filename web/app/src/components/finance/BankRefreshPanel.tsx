@@ -72,7 +72,7 @@ export function BankRefreshPanel({
               .
             </>
           )}
-          Позначка hold може залишитись, якщо її досі передає API банку.
+          Позначка обробки може залишитися, поки банк не оновить передані дані.
         </p>
       ) : message ? (
         <p className="renewal-muted" role="status">

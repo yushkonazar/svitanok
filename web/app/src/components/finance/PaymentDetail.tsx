@@ -1,3 +1,4 @@
+import { counted } from './analytics-format.ts';
 import type { Finance } from '../../api/finance-schema.ts';
 import { paymentSchedule } from '../../lib/paymentSchedule.ts';
 import { moneyLabel } from '../../lib/financeView.ts';
@@ -72,8 +73,10 @@ export function PaymentDetail({
           </div>
         )}
         <p className="renewal-muted">
-          {p.installmentsLeft == null ? 'За твоїм графіком' : `${p.installmentsLeft} платежів`} ·{' '}
-          {p.status === 'done' ? 'Завершено' : p.status === 'paused' ? 'Призупинено' : 'Активний'}
+          {p.installmentsLeft == null
+            ? 'За твоїм графіком'
+            : counted(p.installmentsLeft, 'платіж', 'платежі', 'платежів')}{' '}
+          · {p.status === 'done' ? 'Завершено' : p.status === 'paused' ? 'Призупинено' : 'Активний'}
         </p>
         {percentage != null && (
           <>
