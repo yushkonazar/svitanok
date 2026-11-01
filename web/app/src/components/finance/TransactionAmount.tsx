@@ -13,6 +13,7 @@ export function TransactionAmount({
 }) {
   const display = financeDisplay(settings),
     ref = useRef<HTMLSpanElement>(null),
+    paused = useRef(false),
     [uah, setUah] = useState(false);
   const foreign = t.currency !== 'UAH' && t.amountUah != null;
   const reduced = useReducedMotion(),
@@ -28,7 +29,13 @@ export function TransactionAmount({
           });
     if (ref.current) observer?.observe(ref.current);
     const timer = window.setInterval(() => {
-      if (visible && document.visibilityState !== 'hidden') setUah((v) => !v);
+      if (
+        visible &&
+        !paused.current &&
+        !ref.current?.closest('button,a')?.matches(':focus-visible') &&
+        document.visibilityState !== 'hidden'
+      )
+        setUah((v) => !v);
     }, 1500);
     return () => {
       window.clearInterval(timer);
@@ -45,6 +52,12 @@ export function TransactionAmount({
   return (
     <span
       ref={ref}
+      onMouseEnter={() => {
+        paused.current = true;
+      }}
+      onMouseLeave={() => {
+        paused.current = false;
+      }}
       className={`finance-transaction-amount ${band ? 'finance-expense-tone' : t.amountMinor > 0 ? 'text-pos' : ''}`}
       style={
         band

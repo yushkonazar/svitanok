@@ -169,7 +169,10 @@ export async function readFinanceWorkspace(env, nowMs = Date.now(), range, optio
     db.prepare('SELECT * FROM finance_settings WHERE id = ?').bind('owner'),
     db
       .prepare(
-        `SELECT a.*, a.opening_minor + COALESCE((SELECT SUM(t.amount) FROM transactions t WHERE json_extract(t.raw_json, '$.financeAccount') = a.id AND json_extract(t.raw_json, '$.financeBalanceCoveredBy') IS NULL AND t.at >= a.opening_at AND ${NOT_TEST_SQL}), 0) AS balance_minor FROM finance_accounts a ORDER BY created_at, id`,
+        `SELECT a.*, a.opening_minor + COALESCE((SELECT SUM(t.amount) FROM transactions t WHERE json_extract(t.raw_json, '$.financeAccount') = a.id AND json_extract(t.raw_json, '$.financeBalanceCoveredBy') IS NULL AND t.at >= a.opening_at AND ${NOT_TEST_SQL}), 0) AS balance_minor,
+        (SELECT MAX(t.at) FROM transactions t WHERE json_extract(t.raw_json, '$.financeAccount') = a.id AND json_extract(t.raw_json, '$.financeBalanceCoveredBy') IS NULL AND t.at >= a.opening_at AND ${NOT_TEST_SQL}) AS last_movement_at,
+        (SELECT MAX(t.at) FROM transactions t WHERE json_extract(t.raw_json, '$.financeAccount') = a.id AND json_extract(t.raw_json, '$.financeKind') = 'adjustment' AND t.at >= a.opening_at AND ${NOT_TEST_SQL}) AS balance_confirmed_at
+        FROM finance_accounts a ORDER BY created_at, id`,
       )
       .bind(),
     db.prepare('SELECT * FROM finance_taxi_policies ORDER BY effective_at').bind(),
@@ -280,6 +283,9 @@ export async function readFinanceWorkspace(env, nowMs = Date.now(), range, optio
     currency: String(r.currency),
     balanceMinor: Number(r.balance_minor),
     asOf: String(r.opening_at),
+    // asOf remains the ledger boundary used by command validation.
+    balanceConfirmedAt: r.balance_confirmed_at == null ? null : String(r.balance_confirmed_at),
+    lastMovementAt: r.last_movement_at == null ? null : String(r.last_movement_at),
     monoId: r.mono_id == null ? null : String(r.mono_id),
     source: 'ledger',
   }));
@@ -691,6 +697,8 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
   } else if (type === 'credit-limit') {
     const found = state.accounts.find((a) => a.id === payload.accountId && a.kind === 'mono');
     if (!found) throw new FinanceValidation('Обери підключену картку Monobank');
+    if (payload.currency != null && payload.currency !== found.currency)
+      throw new FinanceValidation('Валюта ліміту має відповідати валюті картки');
     const row = await db
       .prepare('SELECT credit_limits_json FROM finance_settings WHERE id = ?')
       .bind('owner')

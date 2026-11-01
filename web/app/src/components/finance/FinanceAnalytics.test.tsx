@@ -136,7 +136,12 @@ it('shows only the remainder in Other categories instead of repeating the first 
   await screen.findByRole('region', { name: 'Підсумок витрат' });
   fireEvent.click(screen.getByRole('button', { name: /Інші категорії.*30,00/ }));
   const dialog = screen.getByRole('dialog', { name: 'Інші категорії витрат' });
-  expect(within(dialog).getAllByRole('button')).toHaveLength(2);
+  expect(
+    within(dialog)
+      .getAllByRole('button')
+      .filter((button) => button.getAttribute('aria-label') !== 'Закрити вікно'),
+  ).toHaveLength(2);
+  expect(within(dialog).getByRole('button', { name: 'Закрити вікно' })).toBeVisible();
   expect(within(dialog).queryByText('Кафе та ресторани')).not.toBeInTheDocument();
   expect(within(dialog).queryByText('Продукти та супермаркети')).not.toBeInTheDocument();
 });
@@ -279,7 +284,7 @@ it('validates custom dates before a request and distinguishes current account st
   expect(fetchFinanceAnalytics).toHaveBeenCalledTimes(1);
   fireEvent.click(screen.getByRole('button', { name: 'Скасувати' }));
   fireEvent.click(screen.getByRole('button', { name: 'Рахунки та звірка ↗' }));
-  expect(screen.getByText(/Поточний стан на/)).toBeInTheDocument();
+  expect(screen.getByText(/Рахунки станом на/)).toBeInTheDocument();
   expect(screen.queryByRole('button', { name: 'Власні дати' })).not.toBeInTheDocument();
   expect(screen.getByText('Кредитний ліміт')).toBeInTheDocument();
 });
@@ -307,7 +312,7 @@ it('paginates operations and edits the existing bank category without requiring 
       expect.objectContaining({ cursor: 'cursor' }),
     ),
   );
-  fireEvent.click(screen.getByRole('button', { name: /Маркет.*на обробці/ }));
+  fireEvent.click(screen.getByRole('button', { name: /Маркет.*обробляється банком/ }));
   fireEvent.click(screen.getByRole('button', { name: 'Уточнити категорію та тип' }));
   fireEvent.change(screen.getByLabelText('Категорія'), { target: { value: 'кафе й ресторани' } });
   fireEvent.click(screen.getByRole('button', { name: 'Зберегти тип і категорію' }));

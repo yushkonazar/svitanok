@@ -71,6 +71,7 @@ export function Sheet({
   resetKey,
   scrollKey,
   initialScrollTop = 0,
+  panelClassName = '',
 }: {
   onClose: () => void;
   children: ReactNode;
@@ -80,6 +81,7 @@ export function Sheet({
   resetKey?: number;
   scrollKey?: string;
   initialScrollTop?: number;
+  panelClassName?: string;
 }) {
   const panelRef = useRef<HTMLDivElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
@@ -215,7 +217,7 @@ export function Sheet({
             positions.current.set(scrollKey, event.currentTarget.scrollTop);
         }}
         onClick={(e) => e.stopPropagation()}
-        className="w-full min-w-0 max-h-[90dvh] overflow-x-hidden overflow-y-auto overscroll-contain touch-pan-y px-5 pb-7 pt-2.5 outline-none"
+        className={`w-full min-w-0 max-h-[90dvh] overflow-x-hidden overflow-y-auto overscroll-contain touch-pan-y px-5 pb-7 pt-2.5 outline-none ${panelClassName}`}
         style={{
           background: 'var(--color-bg2, #1b1e2a)',
           borderTop: '1px solid var(--color-glassb)',

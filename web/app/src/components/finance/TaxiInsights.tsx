@@ -1,3 +1,5 @@
+import { financeRange } from './analytics-format.ts';
+import { counted, percentLabel } from './analytics-format.ts';
 import { useState } from 'react';
 import type { Finance } from '../../api/finance-schema.ts';
 import type { FinanceAnalytics } from '../../api/finance-analytics-schema.ts';
@@ -24,6 +26,7 @@ export function TaxiInsights({
 }) {
   const [policy, setPolicy] = useState('all'),
     [view, setView] = useState('weeks');
+  const [measure, setMeasure] = useState<'total' | 'day'>('total');
   const start = kyivInstant(data.selection.from, 0),
     end = kyivInstant(shiftDate(data.selection.to, 1), 0);
   const entries = f.taxiEntries.filter(
@@ -42,7 +45,16 @@ export function TaxiInsights({
     .map((w) => {
       const calculated = calculateTaxiWeek(f.taxiEntries, f.policies, w.from!);
       const groups = calculated.groups.filter((g) => policy === 'all' || g.policyId === policy);
-      return { week: w, groups, earned: sumMoney(groups.map((g) => g.earnedMinor)) };
+      const dayCount = new Set(
+        f.taxiEntries
+          .filter(
+            (e) =>
+              taxiEntryWeek(e, f.policies).key === w.key &&
+              (policy === 'all' || e.policyId === policy),
+          )
+          .map((e) => kyivParts(Date.parse(e.at)).date),
+      ).size;
+      return { week: w, groups, earned: sumMoney(groups.map((g) => g.earnedMinor)), dayCount };
     })
     .filter((w) => policy === 'all' || w.groups.length);
   const gross = sumMoney(entries.map((e) => e.netCashMinor + e.commissionMinor)),
@@ -79,8 +91,8 @@ export function TaxiInsights({
       <section className="renewal-card">
         <h2 className="text-lg font-bold">Таксі · аналіз роботи</h2>
         <p className="renewal-chart-note mt-2">
-          Календарні записи {data.selection.from} — {data.selection.to}. Отримана готівка, каса й
-          заробіток мають різне значення.
+          Календарні записи {financeRange(data.selection.from, data.selection.to)}. Отримана
+          готівка, каса й заробіток мають різне значення.
         </p>
         <label className="renewal-field mt-3">
           Авто й умови
@@ -110,11 +122,11 @@ export function TaxiInsights({
           </div>
           <div className="renewal-metric">
             <span className="renewal-muted">Комісія / оборот</span>
-            <strong>{gross ? `${((commission / gross) * 100).toFixed(1)}%` : 'Немає бази'}</strong>
+            <strong>{gross ? percentLabel((commission / gross) * 100) : 'Немає бази'}</strong>
           </div>
           <div className="renewal-metric">
             <span className="renewal-muted">Пальне парку / оборот</span>
-            <strong>{gross ? `${((fuel / gross) * 100).toFixed(1)}%` : 'Немає бази'}</strong>
+            <strong>{gross ? percentLabel((fuel / gross) * 100) : 'Немає бази'}</strong>
           </div>
         </div>
         <p className="renewal-chart-note mt-3">
@@ -139,19 +151,34 @@ export function TaxiInsights({
         </div>
         {view === 'weeks' && (
           <>
-            <h3 className="font-bold mt-4">Заробіток у повних робочих періодах</h3>
+            <h3 className="font-bold mt-4">Заробіток за робочі періоди</h3>
+            <div className="renewal-segments mt-3" aria-label="Міра заробітку">
+              <button aria-pressed={measure === 'total'} onClick={() => setMeasure('total')}>
+                Сума періоду
+              </button>
+              <button aria-pressed={measure === 'day'} onClick={() => setMeasure('day')}>
+                На записаний день
+              </button>
+            </div>
             <AnalyticsBars
               label="Заробіток за повні робочі періоди"
-              points={[...periods].reverse().map(({ week, earned }) => ({
+              points={[...periods].reverse().map(({ week, earned, dayCount }) => ({
                 key: week.key,
-                label: week.key.slice(8, 10) + '.' + week.key.slice(5, 7),
-                amountMinor: earned,
+                label:
+                  week.key.slice(8, 10) +
+                  '.' +
+                  week.key.slice(5, 7) +
+                  (week.closed ? '' : ' · триває'),
+                amountMinor:
+                  measure === 'day' ? (dayCount ? Math.round(earned / dayCount) : 0) : earned,
+                incomplete: !week.closed,
               }))}
               onSelect={(key) => onWeek(key || undefined)}
             />
             <p className="finance-context-note mt-3">
-              Нижче повні періоди, що перетинають календарний фільтр. Короткі періоди та зміни авто
-              підписані; більше днів не означає кращу ефективність.
+              Напівпрозорий стовпчик — період ще триває. Нижче повні періоди, що перетинають
+              календарний фільтр. Короткі періоди та зміни авто підписані; більше днів не означає
+              кращу ефективність.
             </p>
             {periods.map(({ week: w, earned }) => {
               const dayCount = new Set(
@@ -168,7 +195,8 @@ export function TaxiInsights({
                   <span>
                     {taxiPeriodLabel(w.key, f.policies)}
                     <small>
-                      {dayCount} записаних днів · {w.closed ? 'завершений період' : 'ще триває'}
+                      {counted(dayCount, 'записаний день', 'записані дні', 'записаних днів')} ·{' '}
+                      {w.closed ? 'завершений період' : 'ще триває'}
                       {w.from != null && w.to != null && w.to - w.from < 6 * 86400000
                         ? ' · короткий період'
                         : ''}
@@ -189,14 +217,21 @@ export function TaxiInsights({
             <h3 className="font-bold mt-4">Каса у записані робочі дні</h3>
             <AnalyticsBars
               label="Медіанна чиста каса за робочий день тижня"
+              mode="range"
               points={points
                 .filter((p) => p.amounts.length)
                 .map((p) => ({
                   key: String(p.day),
                   label: ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Нд'][p.day]!,
                   amountMinor: p.median,
+                  lowMinor: p.low,
+                  highMinor: p.high,
                 }))}
             />
+            <p className="renewal-chart-note">
+              Точка — медіана, риска — мінімум і максимум записаних днів. Одна точка без розмаху
+              означає одне спостереження або однакові значення.
+            </p>
             {points.map((p) => (
               <div className="analytics-row" key={p.day}>
                 <span>
@@ -205,7 +240,9 @@ export function TaxiInsights({
                       p.day
                     ]
                   }
-                  <small>{p.amounts.length} записаних днів</small>
+                  <small>
+                    {counted(p.amounts.length, 'записаний день', 'записані дні', 'записаних днів')}
+                  </small>
                 </span>
                 <span>
                   {p.amounts.length ? `Медіана ${moneyLabel(p.median)}` : 'Немає спостережень'}

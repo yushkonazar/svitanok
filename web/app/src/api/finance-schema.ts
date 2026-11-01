@@ -13,6 +13,8 @@ export const financeAccountSchema = z.object({
   balancePending: z.boolean().optional(),
   creditLimitSource: z.string().optional(),
   asOf: z.string().nullable(),
+  balanceConfirmedAt: z.string().nullable().optional(),
+  lastMovementAt: z.string().nullable().optional(),
   monoId: z.string().nullable(),
   source: z.string(),
 });

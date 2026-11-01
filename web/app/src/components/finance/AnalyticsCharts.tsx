@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { moneyLabel } from '../../lib/financeView.ts';
-import { financeCategoryLabel } from '../../../../core/finance/categories.mjs';
+import { financeCategoryLabel, financeCategories } from '../../../../core/finance/categories.mjs';
+import { amountNumber, paymentsCount } from './analytics-format.ts';
 export const analyticsColors = [
   'var(--color-a2)',
   'var(--color-info)',
@@ -10,9 +11,24 @@ export const analyticsColors = [
   'var(--color-neg)',
 ];
 function categoryColor(category: string) {
+  const palette = [
+    '#71c7ed',
+    '#ffb078',
+    '#b7a0f5',
+    '#65d3ae',
+    '#ef8dba',
+    '#e2c56f',
+    '#8ba9f3',
+    '#c7d47a',
+    '#ed9486',
+    '#9dd5d3',
+    '#d2a780',
+    '#9ac18e',
+  ];
+  const index = financeCategories().indexOf(category);
   let hash = 0;
   for (const char of category) hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
-  return `hsl(${hash % 360} 58% 58%)`;
+  return palette[(index >= 0 ? index : hash) % palette.length]!;
 }
 export function CategoryDonut({
   rows,
@@ -110,7 +126,7 @@ export function CategoryDonut({
               {((p.amountMinor / total) * 100).toLocaleString('uk-UA', {
                 maximumFractionDigits: 1,
               })}
-              % · {p.count} оплат
+              % · {paymentsCount(p.count)}
             </small>
           </span>
         </button>
@@ -123,6 +139,9 @@ export interface AnalyticsPoint {
   label: string;
   amountMinor: number;
   previousMinor?: number;
+  incomplete?: boolean;
+  lowMinor?: number;
+  highMinor?: number;
 }
 export function AnalyticsBars({
   points,
@@ -138,7 +157,7 @@ export function AnalyticsBars({
   onSelect?: (key: string) => void;
   selected?: string | null;
   comparison?: boolean;
-  mode?: 'bars' | 'line';
+  mode?: 'bars' | 'line' | 'range';
   pickerLabel?: string;
 }) {
   const ref = useRef<HTMLDivElement>(null),
@@ -160,20 +179,26 @@ export function AnalyticsBars({
     bottom = 143,
     top = 23,
     h = bottom - top,
-    max = Math.max(1, ...points.flatMap((p) => [p.amountMinor, p.previousMinor ?? 0])),
+    max = Math.max(
+      1,
+      ...points.flatMap((p) => [p.amountMinor, p.previousMinor ?? 0, p.highMinor ?? 0]),
+    ),
     min = Math.min(0, ...points.flatMap((p) => [p.amountMinor, p.previousMinor ?? 0]));
   const y = (v: number) => bottom - ((v - min) / (max - min)) * h,
     zero = y(0);
   const span = Math.max(1, width - left - right),
     step = span / points.length;
-  const ticks = [
-    ...new Set([
-      0,
-      Math.floor((points.length - 1) / 3),
-      Math.floor(((points.length - 1) * 2) / 3),
-      points.length - 1,
-    ]),
-  ];
+  const ticks =
+    points.length <= 7 && points.every((p) => p.label.length <= 3)
+      ? points.map((_, i) => i)
+      : [
+          ...new Set([
+            0,
+            Math.floor((points.length - 1) / 3),
+            Math.floor(((points.length - 1) * 2) / 3),
+            points.length - 1,
+          ]),
+        ];
   const chosen = points.find((p) => p.key === selected);
   return (
     <div ref={ref} className="analytics-bars">
@@ -244,6 +269,43 @@ export function AnalyticsBars({
             fill="var(--color-a2)"
           />
         )}
+        {mode === 'line' && chosen && (
+          <g>
+            <line
+              x1={left + (points.indexOf(chosen) + 0.5) * step}
+              x2={left + (points.indexOf(chosen) + 0.5) * step}
+              y1={top}
+              y2={bottom}
+              stroke="var(--color-info)"
+              strokeDasharray="3 3"
+            />
+            <circle
+              cx={left + (points.indexOf(chosen) + 0.5) * step}
+              cy={y(chosen.amountMinor)}
+              r="5"
+              fill="var(--color-info)"
+            />
+          </g>
+        )}
+        {mode === 'range' &&
+          points.map((p, i) => (
+            <g key={p.key}>
+              <line
+                x1={left + (i + 0.5) * step}
+                x2={left + (i + 0.5) * step}
+                y1={y(p.lowMinor ?? p.amountMinor)}
+                y2={y(p.highMinor ?? p.amountMinor)}
+                stroke="var(--color-info)"
+                strokeWidth="3"
+              />
+              <circle
+                cx={left + (i + 0.5) * step}
+                cy={y(p.amountMinor)}
+                r="5"
+                fill="var(--color-a2)"
+              />
+            </g>
+          ))}
         {mode === 'bars' &&
           points.map((p, i) => (
             <g key={p.key} opacity={selected && selected !== p.key ? 0.35 : 1}>
@@ -254,6 +316,9 @@ export function AnalyticsBars({
                 height={Math.abs(y(p.amountMinor) - zero)}
                 rx="2"
                 fill={p.amountMinor < 0 ? 'var(--color-neg)' : 'var(--color-a2)'}
+                opacity={p.incomplete ? 0.55 : 1}
+                stroke={p.incomplete ? 'var(--color-a2)' : undefined}
+                strokeDasharray={p.incomplete ? '3 2' : undefined}
               >
                 <title>
                   {p.label}: {moneyLabel(p.amountMinor)}
@@ -272,6 +337,19 @@ export function AnalyticsBars({
                 </rect>
               )}
             </g>
+          ))}
+        {points.length <= 4 &&
+          mode !== 'line' &&
+          points.map((p, i) => (
+            <text
+              key={p.key}
+              x={left + (i + 0.5) * step}
+              y={Math.max(12, y(p.highMinor ?? p.amountMinor) - 6)}
+              textAnchor="middle"
+              className="analytics-value-label"
+            >
+              {amountNumber(p.amountMinor)}
+            </text>
           ))}
         {ticks.map((i) => (
           <text
@@ -303,6 +381,91 @@ export function AnalyticsBars({
           {chosen.label}: {moneyLabel(chosen.amountMinor)}
         </p>
       )}
+      <details className="analytics-data-table">
+        <summary className="renewal-link">Дані графіка</summary>
+        <div className="finance-table-scroll">
+          <table className="finance-data-table">
+            <caption className="sr-only">{label}</caption>
+            <thead>
+              <tr>
+                <th>Період</th>
+                <th>Сума, ₴</th>
+                {comparison && <th>Попередній, ₴</th>}
+              </tr>
+            </thead>
+            <tbody>
+              {points.map((p) => (
+                <tr key={p.key}>
+                  <th>
+                    {p.label}
+                    {p.incomplete ? ' · триває' : ''}
+                  </th>
+                  <td>{moneyLabel(p.amountMinor)}</td>
+                  {comparison && <td>{moneyLabel(p.previousMinor ?? 0)}</td>}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </details>
+    </div>
+  );
+}
+
+export function CategoryComparison({
+  rows,
+  onSelect,
+}: {
+  rows: { category: string; amountMinor: number; previousMinor: number; deltaMinor: number }[];
+  onSelect: (category: string, previous: boolean) => void;
+}) {
+  const max = Math.max(1, ...rows.flatMap((r) => [r.amountMinor, r.previousMinor]));
+  return (
+    <div
+      className="finance-category-comparison"
+      role="group"
+      aria-label="Витрати за категоріями у двох періодах"
+    >
+      <p className="renewal-chart-note">
+        Теплий — обраний період, синій — попередній. Натисни відповідну суму, щоб відкрити її
+        операції.
+      </p>
+      {rows.map((r) => (
+        <article key={r.category} className="renewal-inset">
+          <div className="renewal-section-head">
+            <b>{financeCategoryLabel(r.category)}</b>
+            <span className="renewal-chart-note">
+              Δ {r.deltaMinor > 0 ? '+' : ''}
+              {moneyLabel(r.deltaMinor)}
+            </span>
+          </div>
+          {[false, true].map((previous) => {
+            const amount = previous ? r.previousMinor : r.amountMinor;
+            return (
+              <button
+                type="button"
+                className="finance-comparison-series"
+                key={String(previous)}
+                onClick={() => onSelect(r.category, previous)}
+                aria-label={`${financeCategoryLabel(r.category)} · ${previous ? 'Попередній' : 'Обраний'} · ${moneyLabel(amount)}`}
+              >
+                <span>
+                  {previous ? 'Попередній' : 'Обраний'}
+                  <b>{moneyLabel(amount)} ↗</b>
+                </span>
+                <span className="renewal-progress" aria-hidden="true">
+                  <span
+                    style={{
+                      width: `${(amount / max) * 100}%`,
+                      background: previous ? 'var(--color-info)' : 'var(--color-a2)',
+                    }}
+                  />
+                </span>
+              </button>
+            );
+          })}
+        </article>
+      ))}
     </div>
   );
 }

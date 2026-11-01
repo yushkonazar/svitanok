@@ -1,17 +1,27 @@
 import { useChartWidth, axisMoney } from './useChartWidth.ts';
 import { useState } from 'react';
+import { kyivParts } from '../../../../core/finance/planning.mjs';
 import type { Finance } from '../../api/finance-schema.ts';
 import type { FinanceAnalytics } from '../../api/finance-analytics-schema.ts';
 import { budgetRows, orderedBudgets, budgetLimit, periodWindow } from '../../lib/budgetPlanning.ts';
 import { budgetAnalysisAccumulator } from '../../../../core/finance/budget-analysis.mjs';
 import { quantile } from '../../../../core/finance/adaptive-model.mjs';
 import { moneyLabel } from '../../lib/financeView.ts';
+import {
+  financeDay,
+  financeMonth,
+  financeMonthShort,
+  financeRange,
+  amountNumber,
+} from './analytics-format.ts';
 export type BudgetPoint = {
   key: string;
   label: string;
   actual: number;
   plan: number | null;
   partial?: boolean;
+  from?: string;
+  to?: string;
 };
 export function BudgetHistoryChart({
   points,
@@ -23,6 +33,8 @@ export function BudgetHistoryChart({
   onSelect?: (key: string) => void;
 }) {
   const { ref, width: chartWidth } = useChartWidth();
+  const [selected, setSelected] = useState('');
+  const activeKey = points.some((p) => p.key === selected) ? selected : '';
   const max = Math.max(1, ...points.flatMap((p) => [p.actual, p.plan ?? 0]));
   const count = Math.max(1, points.length),
     width = (chartWidth - 90) / count;
@@ -49,7 +61,17 @@ export function BudgetHistoryChart({
             h = (p.actual / max) * 146,
             plan = p.plan != null ? 178 - (p.plan / max) * 146 : null;
           return (
-            <g key={p.key}>
+            <g key={p.key} opacity={activeKey && p.key !== activeKey ? 0.4 : 1}>
+              {points.length <= 4 && (
+                <text
+                  x={x + width * 0.5}
+                  y={Math.max(15, 171 - h)}
+                  textAnchor="middle"
+                  className="analytics-value-label"
+                >
+                  {amountNumber(p.actual)}
+                </text>
+              )}
               <rect
                 x={x + width * 0.16}
                 y={178 - h}
@@ -85,7 +107,10 @@ export function BudgetHistoryChart({
                 width={width}
                 height="160"
                 fill="transparent"
-                onClick={() => onSelect?.(p.key)}
+                onClick={() => {
+                  setSelected(p.key);
+                  onSelect?.(p.key);
+                }}
               >
                 <title>
                   {p.key}: факт {moneyLabel(p.actual)};{' '}
@@ -101,6 +126,26 @@ export function BudgetHistoryChart({
         Стовпчики — факт, риски — план. Напівпрозорий стовпчик — неповний період. Усі точні суми
         доступні в таблиці.
       </p>
+      {onSelect && (
+        <label className="renewal-field mt-3">
+          Період бюджету
+          <select
+            value={points.some((p) => p.key === selected) ? selected : ''}
+            onChange={(e) => {
+              setSelected(e.target.value);
+              if (e.target.value) onSelect(e.target.value);
+            }}
+          >
+            <option value="">Обери період</option>
+            {points.map((p) => (
+              <option key={p.key} value={p.key}>
+                {p.label} · факт {moneyLabel(p.actual)}
+                {p.partial ? ' · частково' : ''}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
     </div>
   );
 }
@@ -113,7 +158,10 @@ export function BudgetHistoryAnalytics({
   finance: Finance;
   data: FinanceAnalytics;
   nowMs: number;
-  onBudget: (budget: ReturnType<typeof budgetRows>[number]) => void;
+  onBudget: (
+    budget: ReturnType<typeof budgetRows>[number],
+    point?: { from: string; to: string },
+  ) => void;
 }) {
   const [compareCurrent, setCompareCurrent] = useState(false);
   const fallback = budgetAnalysisAccumulator(finance, data.selection);
@@ -125,8 +173,8 @@ export function BudgetHistoryAnalytics({
       <section className="renewal-card">
         <h2 className="text-lg font-bold">Як змінюються витрати в межах бюджетів</h2>
         <p className="renewal-chart-note mt-2">
-          Період: {data.selection.from} — {data.selection.to}. Поточний план редагується на головній
-          сторінці; тут — історія поведінки.
+          Період: {financeRange(data.selection.from, data.selection.to)}. Поточний план редагується
+          на головній сторінці; тут — історія поведінки.
         </p>
         <label className="flex gap-3 mt-3">
           <input
@@ -153,10 +201,17 @@ export function BudgetHistoryAnalytics({
               key = b.period === 'day' ? d.date : w.start;
             const old = groups.get(key) ?? {
               key,
-              label: b.period === 'month' ? key.slice(0, 7) : key.slice(8) + '.' + key.slice(5, 7),
+              label: b.period === 'month' ? financeMonthShort(key) : financeDay(key),
               actual: 0,
               plan: 0,
-              partial: w.start < data.selection.from || w.end > data.selection.to,
+              partial:
+                w.start < data.selection.from ||
+                w.end > data.selection.to ||
+                w.end >= kyivParts(nowMs).date ||
+                !data.coverage.oldestTransactionAt ||
+                w.start < kyivParts(Date.parse(data.coverage.oldestTransactionAt)).date,
+              from: w.start < data.selection.from ? data.selection.from : w.start,
+              to: w.end > data.selection.to ? data.selection.to : w.end,
             };
             old.actual += d.amountMinor;
             const plan = compareCurrent
@@ -168,6 +223,7 @@ export function BudgetHistoryAnalytics({
             groups.set(key, old);
           });
           const points = [...groups.values()],
+            complete = points.filter((p) => !p.partial),
             known = points.filter((p) => p.plan != null),
             over = known.filter((p) => p.actual > p.plan!).length;
           return (
@@ -183,13 +239,23 @@ export function BudgetHistoryAnalytics({
                     Типова сума за{' '}
                     {b.period === 'day' ? 'день' : b.period === 'week' ? 'тиждень' : 'місяць'}
                   </span>
-                  <strong>{moneyLabel(Math.round(quantile(points.map((p) => p.actual))))}</strong>
+                  <strong>
+                    {complete.length >= 3
+                      ? moneyLabel(Math.round(quantile(complete.map((p) => p.actual))))
+                      : 'Недостатньо повних періодів'}
+                  </strong>
+                  <small className="renewal-chart-note">
+                    Повних спостережень: {complete.length}. Для оцінки потрібно щонайменше 3.
+                  </small>
                 </div>
               </div>
               <BudgetHistoryChart
                 points={points}
                 label={`${b.category}: факт і план`}
-                onSelect={() => onBudget(b)}
+                onSelect={(key) => {
+                  const point = points.find((p) => p.key === key);
+                  if (point?.from && point.to) onBudget(b, { from: point.from, to: point.to });
+                }}
               />
               {known.length > 0 && (
                 <p className="renewal-chart-note mt-2">
@@ -217,7 +283,7 @@ export function BudgetHistoryAnalytics({
                       {points.map((p) => (
                         <tr key={p.key}>
                           <th>
-                            {p.key}
+                            {b.period === 'month' ? financeMonth(p.key) : financeDay(p.key)}
                             {p.partial ? ' · частково' : ''}
                           </th>
                           <td>{moneyLabel(p.actual)}</td>

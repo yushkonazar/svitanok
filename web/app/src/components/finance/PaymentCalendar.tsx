@@ -3,7 +3,7 @@ import type { Finance } from '../../api/finance-schema.ts';
 import { paymentCalendar } from '../../lib/paymentCalendar.ts';
 import { financeView, moneyLabel } from '../../lib/financeView.ts';
 import { kyivParts } from '../../../../core/finance/planning.mjs';
-import { Sheet } from '../ui/Sheet.tsx';
+import { Sheet } from './FinanceSheet.tsx';
 import { useTick } from '../../lib/useTick.ts';
 export function PaymentCalendar({
   finance: f,

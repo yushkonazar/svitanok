@@ -1,3 +1,4 @@
+import { financeDay, financeTime, percentLabel } from './analytics-format.ts';
 import { useState } from 'react';
 import type { Finance } from '../../api/finance-schema.ts';
 import {
@@ -9,7 +10,7 @@ import {
 } from '../../../../core/finance/planning.mjs';
 import { moneyLabel } from '../../lib/financeView.ts';
 import { taxiPeriodLabel, taxiVehicleName } from '../../lib/taxiPeriods.ts';
-import { Sheet } from '../ui/Sheet.tsx';
+import { Sheet } from './FinanceSheet.tsx';
 import type { FinanceFormRequest } from './FinanceForm.tsx';
 export function TaxiHistory({
   finance: f,
@@ -102,8 +103,13 @@ export function TaxiHistory({
               >
                 {f.taxiWeeks.map((w) => (
                   <option key={w.key} value={w.key}>
-                    {taxiVehicleName(taxiPeriodStart(w.key, f.policies), f.policies)} ·{' '}
-                    {taxiPeriodLabel(w.key, f.policies)} ·{' '}
+                    {financeDay(kyivParts(taxiPeriodStart(w.key, f.policies)).date)}{' '}
+                    {new Date(taxiPeriodStart(w.key, f.policies)).toLocaleTimeString('uk-UA', {
+                      timeZone: 'Europe/Kyiv',
+                      hour: '2-digit',
+                      minute: '2-digit',
+                    })}
+                    {w.to ? ` → ${financeDay(kyivParts(w.to).date)}` : ''} ·{' '}
                     {w.settled ? 'розраховано' : w.closed ? 'очікує розрахунку' : 'триває'}
                   </option>
                 ))}
@@ -130,12 +136,18 @@ export function TaxiHistory({
                     Фактично {settlement.amountMinor < 0 ? 'віддав' : 'отримав'}:{' '}
                     {moneyLabel(Math.abs(settlement.amountMinor))}
                   </b>
-                  <span className="renewal-muted">
+                  <span
+                    className={
+                      settlement.amountMinor - expected < 0
+                        ? 'finance-context-note text-neg'
+                        : 'finance-context-note text-pos'
+                    }
+                  >
                     Різниця для твоїх коштів: {moneyLabel(settlement.amountMinor - expected)}. Мінус
                     — сплатив більше або отримав менше.
                   </span>
                   <span className="renewal-chart-note">
-                    Розраховано {kyivParts(Date.parse(settlement.at)).date}
+                    Розраховано {financeTime(settlement.at)}
                     {settlement.note ? ` · ${settlement.note}` : ''}
                   </span>
                   {!settlement.transactionId && (
@@ -214,7 +226,7 @@ export function TaxiHistory({
                           {pct != null && (
                             <span className="finance-change-percent">
                               {pct > 0 ? '+' : ''}
-                              {pct.toFixed(1)}%
+                              {percentLabel(pct)}
                             </span>
                           )}
                         </span>

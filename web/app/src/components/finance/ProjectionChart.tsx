@@ -2,11 +2,13 @@ import { useState } from 'react';
 import { useChartWidth, axisMoney } from './useChartWidth.ts';
 import type { Projection } from '../../../../core/finance/projection.mjs';
 import { moneyLabel } from '../../lib/financeView.ts';
+import { financeDate, financeDay } from './analytics-format.ts';
 export function ProjectionChart({ projection: p }: { projection: Projection }) {
   const [selected, setSelected] = useState('');
   const { ref, width } = useChartWidth(!p.incomplete && p.daily.length > 0);
   if (p.incomplete || !p.daily.length) return null;
   const row = p.daily.find((d) => d.date === selected) ?? p.daily[0]!;
+  const index = p.daily.indexOf(row);
   const values = p.daily.flatMap((d) => [d.lower, d.upper, d.balance, 0]),
     min = Math.min(...values),
     max = Math.max(...values),
@@ -25,7 +27,19 @@ export function ProjectionChart({ projection: p }: { projection: Projection }) {
     ' Z';
   return (
     <div className="finance-projection-chart mt-4" ref={ref}>
-      <svg viewBox={`0 0 ${width} 245`} role="img" aria-label="Сценарії вільних коштів за днями">
+      <svg
+        viewBox={`0 0 ${width} 245`}
+        role="img"
+        aria-label="Сценарії вільних коштів за днями"
+        onClick={(e) => {
+          const box = e.currentTarget.getBoundingClientRect();
+          const px = ((e.clientX - box.left) / box.width) * width;
+          const py = ((e.clientY - box.top) / box.height) * 245;
+          if (px < 68 || px > width - 27 || py < 35 || py > 208) return;
+          const nearest = Math.round(((px - 68) / (width - 95)) * Math.max(1, p.daily.length - 1));
+          setSelected(p.daily[Math.max(0, Math.min(p.daily.length - 1, nearest))]!.date);
+        }}
+      >
         <title>Прогноз залишку й сценарний діапазон, гривні</title>
         {[min, min + span / 2, max].map((v, i) => (
           <g key={i}>
@@ -46,6 +60,15 @@ export function ProjectionChart({ projection: p }: { projection: Projection }) {
         />
         <path d={area} fill="var(--color-info)" opacity=".13" />
         <path d={path('balance')} fill="none" stroke="var(--color-info)" strokeWidth="3" />
+        <line
+          x1={x(index)}
+          x2={x(index)}
+          y1="36"
+          y2="204"
+          stroke="var(--color-info)"
+          strokeDasharray="3 3"
+          opacity=".5"
+        />
         {p.daily.map((d, i) => (
           <g key={d.date}>
             <circle
@@ -54,17 +77,11 @@ export function ProjectionChart({ projection: p }: { projection: Projection }) {
               r={row.date === d.date ? 6 : 3}
               fill={d.balance < 0 ? 'var(--color-neg)' : 'var(--color-info)'}
             />
-            <circle
-              cx={x(i)}
-              cy={y(d.balance)}
-              r="15"
-              fill="transparent"
-              onClick={() => setSelected(d.date)}
-            >
+            <g pointerEvents="none">
               <title>
-                {d.date}: {moneyLabel(d.balance)}
+                {financeDate(d.date)}: {moneyLabel(d.balance)}
               </title>
-            </circle>
+            </g>
             {(i === 0 || i === p.daily.length - 1) && (
               <text x={x(i)} y="233" textAnchor="middle" className="analytics-axis">
                 {d.date.slice(8)}.{d.date.slice(5, 7)}
@@ -82,11 +99,30 @@ export function ProjectionChart({ projection: p }: { projection: Projection }) {
         <select value={row.date} onChange={(e) => setSelected(e.target.value)}>
           {p.daily.map((d) => (
             <option key={d.date} value={d.date}>
-              {d.date} · {moneyLabel(d.balance)}
+              {financeDate(d.date)} · {moneyLabel(d.balance)}
             </option>
           ))}
         </select>
       </label>
+      <div className="finance-chart-stepper">
+        <button
+          type="button"
+          className="renewal-secondary"
+          disabled={index === 0}
+          onClick={() => setSelected(p.daily[index - 1]!.date)}
+        >
+          ← День
+        </button>
+        <strong aria-live="polite">{financeDay(row.date)}</strong>
+        <button
+          type="button"
+          className="renewal-secondary"
+          disabled={index === p.daily.length - 1}
+          onClick={() => setSelected(p.daily[index + 1]!.date)}
+        >
+          День →
+        </button>
+      </div>
       <div className="finance-projection-day mt-3">
         <div>
           <span>Очікувані надходження</span>
@@ -108,6 +144,12 @@ export function ProjectionChart({ projection: p }: { projection: Projection }) {
           <span>Вільно наприкінці дня</span>
           <b>{moneyLabel(row.balance)}</b>
         </div>
+        <div>
+          <span>Сценарні межі на цю дату</span>
+          <b>
+            {moneyLabel(row.lower)} — {moneyLabel(row.upper)}
+          </b>
+        </div>
       </div>
       <details className="mt-3">
         <summary className="renewal-link">Усі дні таблицею</summary>
@@ -127,7 +169,7 @@ export function ProjectionChart({ projection: p }: { projection: Projection }) {
             <tbody>
               {p.daily.map((d) => (
                 <tr key={d.date}>
-                  <th>{d.date}</th>
+                  <th>{financeDate(d.date)}</th>
                   <td>{moneyLabel(d.income)}</td>
                   <td>{moneyLabel(d.payment)}</td>
                   <td>{moneyLabel(d.expense)}</td>

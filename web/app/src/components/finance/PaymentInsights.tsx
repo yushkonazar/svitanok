@@ -9,6 +9,15 @@ import { kyivParts, shiftDate, sumMoney } from '../../../../core/finance/plannin
 import { periodWindow } from '../../lib/budgetPlanning.ts';
 import { moneyLabel } from '../../lib/financeView.ts';
 import { AnalyticsBars } from './AnalyticsCharts.tsx';
+import { useReducedMotion } from '../../lib/useReducedMotion.ts';
+import {
+  financeDate,
+  financeMonth,
+  financeMonthShort,
+  financeRange,
+  paymentsCount,
+  compactAmount,
+} from './analytics-format.ts';
 function endDate(p: Finance['payments'][number]) {
   const last = paymentSchedule(p, 1200).at(-1);
   return last &&
@@ -28,6 +37,7 @@ export function PaymentInsights({
   onPayment: (id: string) => void;
 }) {
   const today = kyivParts(nowMs).date;
+  const reducedMotion = useReducedMotion();
   const [horizon, setHorizon] = useState('month'),
     [kind, setKind] = useState('all'),
     [day, setDay] = useState<string | null>(null),
@@ -83,7 +93,7 @@ export function PaymentInsights({
     const end = periodWindow('month', date).end;
     return {
       key: date.slice(0, 7),
-      label: date.slice(5, 7) + '.' + date.slice(2, 4),
+      label: financeMonthShort(date),
       amountMinor: sumMoney(
         schedules
           .filter((p) => p.date >= date && p.date <= end && (kind === 'all' || p.kind === kind))
@@ -178,7 +188,8 @@ export function PaymentInsights({
           {moneyLabel(sumMoney(planned.map((p) => p.payment)))}
         </div>
         <p className="renewal-chart-note">
-          {from} — {to} · {planned.length} оплат. Фільтр типу застосовано до суми й календаря.
+          {financeRange(from, to)} · {paymentsCount(planned.length)}. Фільтр типу застосовано до
+          суми й календаря.
         </p>
         {from > to && (
           <p role="alert" className="text-neg">
@@ -215,7 +226,7 @@ export function PaymentInsights({
               <button key={p.id} className="analytics-operation" onClick={() => onPayment(p.id)}>
                 <span>
                   {p.name}
-                  <small>{p.nextDate} · у Світанку ще не підтверджено</small>
+                  <small>{financeDate(p.nextDate)} · у Світанку ще не підтверджено</small>
                 </span>
                 <b>{moneyLabel(p.amountMinor)}</b>
               </button>
@@ -227,7 +238,9 @@ export function PaymentInsights({
         </section>
       )}
       <section className="renewal-card">
-        <h2 className="text-lg font-bold">Календар майбутніх списань</h2>
+        <h2 id="finance-payment-calendar" className="text-lg font-bold">
+          Календар майбутніх списань
+        </h2>
         <div className="renewal-segments mt-3">
           <button aria-pressed={!grid} onClick={() => setGrid(false)}>
             За датами
@@ -249,11 +262,14 @@ export function PaymentInsights({
               >
                 {(months.length ? months : [month]).map((m) => (
                   <option key={m} value={m}>
-                    {m}
+                    {financeMonth(m)}
                   </option>
                 ))}
               </select>
             </label>
+            <p className="renewal-chart-note mt-3">
+              Суми в клітинках — ₴, великі суми скорочено. Обери день для точного списку.
+            </p>
             <div className="finance-month-grid" aria-label="Дати планових оплат">
               {['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Нд'].map((d) => (
                 <span className="analytics-calendar-weekday" key={d}>
@@ -278,10 +294,11 @@ export function PaymentInsights({
                       aria-pressed={day === date}
                       onClick={() => setDay(date)}
                       title={`${date}: ${moneyLabel(sumMoney(items.map((p) => p.payment)))}`}
+                      aria-label={`${financeDate(date)}: ${moneyLabel(sumMoney(items.map((p) => p.payment)))}, ${paymentsCount(items.length)}`}
                     >
                       <b>{i + 1}</b>
                       <small>
-                        {items.length ? moneyLabel(sumMoney(items.map((p) => p.payment))) : '—'}
+                        {items.length ? compactAmount(sumMoney(items.map((p) => p.payment))) : '—'}
                       </small>
                     </button>
                   );
@@ -303,7 +320,7 @@ export function PaymentInsights({
             return (
               <div key={date}>
                 <div className="finance-calendar-date">
-                  <span>{date}</span>
+                  <span>{financeDate(date)}</span>
                   <span>{moneyLabel(sumMoney(items.map((p) => p.payment)))}</span>
                 </div>
                 {items.slice(0, remaining).map((p) => (
@@ -337,11 +354,25 @@ export function PaymentInsights({
         <AnalyticsBars
           points={monthly}
           label="Майбутні платежі за місяцями"
+          selected={
+            horizon === 'custom' &&
+            custom.from.endsWith('-01') &&
+            custom.to === periodWindow('month', custom.from).end
+              ? custom.from.slice(0, 7)
+              : null
+          }
           onSelect={(key) => {
             if (key) {
               setCustom({ from: key + '-01', to: periodWindow('month', key + '-01').end });
               setHorizon('custom');
               setDay(null);
+              document.getElementById('finance-payment-calendar')?.scrollIntoView({
+                block: 'start',
+                behavior:
+                  reducedMotion || document.documentElement.dataset.financeMotion === 'off'
+                    ? 'auto'
+                    : 'smooth',
+              });
             }
           }}
         />
@@ -378,7 +409,7 @@ export function PaymentInsights({
                   <span>
                     <b>{p.name}</b>
                     <small>
-                      {PAYMENT_KIND_LABELS[p.kind]} · наступна оплата {p.nextDate}
+                      {PAYMENT_KIND_LABELS[p.kind]} · наступна оплата {financeDate(p.nextDate)}
                     </small>
                   </span>
                   <b>
@@ -403,9 +434,9 @@ export function PaymentInsights({
                 <p className="renewal-chart-note">
                   {p.installmentsLeft == null
                     ? 'Кількість оплат не задана'
-                    : `Залишилось ${p.installmentsLeft} оплат`}
+                    : `Залишилось: ${paymentsCount(p.installmentsLeft)}`}
                   {endDate(p)
-                    ? ` · кінець збереженого графіка ${endDate(p)}`
+                    ? ` · кінець збереженого графіка ${financeDate(endDate(p)!)}`
                     : ' · дата завершення ще невідома'}
                   {p.recurrence === 'month'
                     ? ` · після закриття регулярні оплати менші приблизно на ${moneyLabel(p.amountMinor)}/міс.`

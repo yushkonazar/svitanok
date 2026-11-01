@@ -162,7 +162,7 @@ it('submits the complete credit limit, not spent credit, and refreshes all finan
   expect(postFinance).toHaveBeenCalledWith(
     expect.objectContaining({
       type: 'credit-limit',
-      payload: { accountId: 'mono:demo', creditLimitMinor: 700000 },
+      payload: { accountId: 'mono:demo', creditLimitMinor: 700000, currency: 'UAH' },
     }),
   );
   expect(invalidate).toHaveBeenCalledWith({ queryKey: FINANCE_QUERY });
@@ -613,7 +613,9 @@ it('shows a held deposit with a distinct API marker and updates its status witho
     </QueryClientProvider>,
   );
   fireEvent.change(screen.getByLabelText('Як обліковуємо переказ?'), { target: { value: 'bank' } });
-  expect(screen.getByRole('option', { name: /Термінал mono.*hold у API/ })).toBeInTheDocument();
+  expect(
+    screen.getByRole('option', { name: /Термінал mono.*обробляється банком/ }),
+  ).toBeInTheDocument();
   const refreshed = {
     demo: true,
     finance: {

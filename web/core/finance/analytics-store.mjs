@@ -4,7 +4,7 @@ import { buildFinanceReport, validateReportRange } from './reporting.mjs';
 import { NOT_TEST_SQL } from './store.mjs';
 import { kyivParts, shiftDate, sumMoney } from './planning.mjs';
 import { financeReviewAccumulator, financeReviewContext } from './review.mjs';
-import { budgetAnalysisAccumulator } from './budget-analysis.mjs';
+import { budgetAnalysisAccumulator, budgetCategoriesAt } from './budget-analysis.mjs';
 
 const COLUMNS = 'id,at,amount,currency,amount_uah,category,description,raw_json,flags_json';
 const RAW = "CASE WHEN json_valid(raw_json) THEN raw_json ELSE '{}' END";
@@ -160,7 +160,19 @@ export async function readFinanceAnalytics(
  * @param {Env} env @param {URLSearchParams} params @param {number} [nowMs] */
 export async function readAnalyticsOperations(env, params, nowMs = Date.now()) {
   if (!env.DB) throw new Error('Finance DB unavailable');
-  const s = analyticsSelection(params, nowMs),
+  const original = analyticsSelection(params, nowMs);
+  const series = params.get('series');
+  if (series != null && series !== 'previous') throw new Error('Некоректний період порівняння');
+  const s =
+      series === 'previous'
+        ? {
+            ...original,
+            from: original.previousFrom,
+            to: original.previousTo,
+            days: validateReportRange(original.previousFrom, original.previousTo, nowMs).days,
+            period: original.previousPeriod,
+          }
+        : original,
     range = validateReportRange(s.from, s.to, nowMs);
   const cursor = readCursor(params.get('cursor')),
     kind = params.get('kind') ?? 'expense',
@@ -181,7 +193,9 @@ export async function readAnalyticsOperations(env, params, nowMs = Date.now()) {
   const clauses = [`at >= ?`, `at < ?`, NOT_TEST_SQL];
   /** @type {(string|number)[]} */ const bindings = [
     new Date(range.start).toISOString(),
-    new Date(Math.min(range.end, nowMs + 1)).toISOString(),
+    new Date(
+      Math.min(range.end, nowMs + 1, s.period ? Date.parse(s.period.to) : Infinity),
+    ).toISOString(),
   ];
   if (s.account !== 'all') {
     clauses.push(`${ACCOUNT} = ?`);
@@ -235,6 +249,36 @@ export async function readAnalyticsOperations(env, params, nowMs = Date.now()) {
       throw new Error('Некоректні категорії операцій');
     clauses.push("COALESCE(category,'інше') IN (SELECT value FROM json_each(?))");
     bindings.push(JSON.stringify(categories));
+  }
+  if (params.has('budgetId')) {
+    const budgetId = params.get('budgetId') ?? '';
+    if (!budgetId || budgetId.length > 120) throw new Error('Некоректний бюджет');
+    const finance = await readFinanceWorkspace(env, nowMs, undefined, { omitTransactions: true });
+    if (!finance.budgets.some((b) => b.id === budgetId && b.purpose === 'expense'))
+      throw new Error('Бюджет не знайдено');
+    /** @type {{start:string,end:string,categories:string[]}[]} */
+    const scopes = [];
+    for (let i = 0; i < s.days; i++) {
+      const date = shiftDate(s.from, i),
+        period = validateReportRange(date, date, nowMs);
+      const scope = {
+        start: new Date(period.start).toISOString(),
+        end: new Date(period.end).toISOString(),
+        categories: budgetCategoriesAt(finance, budgetId, date).sort(),
+      };
+      const last = scopes.at(-1);
+      if (
+        last &&
+        last.end === scope.start &&
+        JSON.stringify(last.categories) === JSON.stringify(scope.categories)
+      )
+        last.end = scope.end;
+      else scopes.push(scope);
+    }
+    clauses.push(
+      "EXISTS (SELECT 1 FROM json_each(?) AS budget_scope WHERE transactions.at >= json_extract(budget_scope.value,'$.start') AND transactions.at < json_extract(budget_scope.value,'$.end') AND COALESCE(transactions.category,'інше') IN (SELECT value FROM json_each(json_extract(budget_scope.value,'$.categories'))))",
+    );
+    bindings.push(JSON.stringify(scopes));
   }
   if (transactionId) {
     clauses.push('id = ?');

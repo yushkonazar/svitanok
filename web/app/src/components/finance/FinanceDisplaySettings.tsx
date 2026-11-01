@@ -3,7 +3,7 @@ import type { Finance } from '../../api/finance-schema.ts';
 import { financeDisplay, recommendThresholds } from '../../../../core/finance/display.mjs';
 import { parseMoney } from '../../../../core/finance/planning.mjs';
 import { expensePalette } from '../../lib/expensePalette.ts';
-import { Sheet } from '../ui/Sheet.tsx';
+import { Sheet } from './FinanceSheet.tsx';
 import { useFinanceAction } from './useFinanceAction.ts';
 export function FinanceDisplaySettings({
   finance,
