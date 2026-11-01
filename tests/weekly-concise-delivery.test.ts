@@ -94,6 +94,51 @@ function setup() {
   return { d1, env, fetch, sent, drafts, seed, deliver };
 }
 describe('single weekly overview across generation, retry and Telegram outbox', () => {
+  it('resumes the saved immutable text after saving succeeded but enqueue failed', async () => {
+    const s = setup();
+    s.seed('first');
+    s.d1.db.exec(`CREATE TRIGGER reject_outbox BEFORE INSERT ON outbox BEGIN
+      SELECT RAISE(ABORT, 'synthetic enqueue failure'); END`);
+    await expect(s.deliver('first')).rejects.toThrow('synthetic enqueue failure');
+    expect(s.d1.db.prepare('SELECT COUNT(*) n FROM reports').get()?.n).toBe(1);
+    expect(s.sent).toHaveLength(0);
+    s.d1.db.exec('DROP TRIGGER reject_outbox');
+    expect((await s.deliver('first', { amount: 9999, at: NOW + 1000 })).status).toBe(200);
+    expect(s.sent).toHaveLength(1);
+    expect(s.sent[0]?.body.text).toContain('100 грн');
+    expect(s.sent[0]?.body.text).not.toContain('9999');
+    expect(s.d1.db.prepare('SELECT COUNT(*) n FROM reports').get()?.n).toBe(1);
+  });
+
+  it('allows a new generation to recover unchanged evidence that never reached the outbox', async () => {
+    const s = setup();
+    s.seed('first');
+    s.d1.db.exec(`CREATE TRIGGER reject_outbox BEFORE INSERT ON outbox BEGIN
+      SELECT RAISE(ABORT, 'synthetic enqueue failure'); END`);
+    await expect(s.deliver('first')).rejects.toThrow('synthetic enqueue failure');
+    s.d1.db.exec('DROP TRIGGER reject_outbox');
+    s.seed('second', conciseFixture(), NOW + 1000);
+    expect((await s.deliver('second', { at: NOW + 1000 })).status).toBe(200);
+    expect(s.sent).toHaveLength(1);
+  });
+
+  it('retries a terminally failed update with a new generation instead of treating the inherited receipt as delivery', async () => {
+    const s = setup();
+    s.seed('first');
+    await s.deliver('first');
+    const changed = conciseFixture();
+    changed.finance.summary.expenseMinor = 12500;
+    s.seed('second', changed, NOW + 1000);
+    s.fetch.mockResolvedValueOnce(Response.json({ ok: false }, { status: 500 }));
+    await s.deliver('second', { amount: 125, at: NOW + 1000 });
+    s.d1.db.prepare("UPDATE outbox SET status='failed' WHERE id='weekly:second:0'").run();
+    s.seed('third', changed, NOW + 2000);
+    expect((await s.deliver('third', { amount: 125, at: NOW + 2000 })).status).toBe(200);
+    expect(s.sent).toHaveLength(2);
+    expect(s.sent.at(-1)?.method).toBe('editMessageText');
+    expect(s.sent.at(-1)?.body.text).toContain('125 грн');
+  });
+
   it('updates a value that returned to an earlier historical state instead of suppressing the correction', async () => {
     const s = setup();
     s.seed('first');

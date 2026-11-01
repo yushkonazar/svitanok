@@ -440,8 +440,7 @@ async function handleDeliver(env, ctx, runId, body, nowMs) {
       weeklyQuality,
     );
     weeklyQuality.delivery = delivery.delivery;
-    if (delivery.suppressed && delivery.previousText)
-      weeklyQuality.overview.text = String(delivery.previousText);
+    if (delivery.previousText) weeklyQuality.overview.text = String(delivery.previousText);
     // Save before enqueue: both the details link and the dispatch-time dedupe
     // need the exact same immutable report version. A failed save never claims success.
     reportId = (await saveWeeklyReport(env, body.text, nowMs, { runId, quality: weeklyQuality }))

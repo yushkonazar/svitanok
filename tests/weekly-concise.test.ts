@@ -265,6 +265,25 @@ describe('short report contract, coverage and recovery', () => {
     other.details!.finance!.summary!.expenseMinor = 10001;
     expect(await weeklyEvidenceFingerprint(other)).not.toBe(before);
   });
+  it('detects corrections to personal comparison bases and next-week deadlines', async () => {
+    const f = conciseFixture();
+    const q = {
+      ...weeklyPacketQuality(f),
+      status: 'ready',
+      periodFrom: f.period.dateFrom,
+      periodTo: f.period.dateTo,
+    };
+    q.details!.personalPeriods!.previousWeeks = [
+      { observationsV3: { 'morning.energy': { n: 4, average: 3 } } },
+    ];
+    const baseline = await weeklyEvidenceFingerprint(q);
+    q.details!.personalPeriods!.previousWeeks[0].observationsV3['morning.energy'].average = 4;
+    expect(await weeklyEvidenceFingerprint(q)).not.toBe(baseline);
+    q.details!.plan!.upcomingOutsidePeriod.tasks = [{ id: 'next', dueAt: '2026-10-27T08:00:00Z' }];
+    const deadline = await weeklyEvidenceFingerprint(q);
+    q.details!.plan!.upcomingOutsidePeriod.tasks[0]!.dueAt = '2026-10-28T08:00:00Z';
+    expect(await weeklyEvidenceFingerprint(q)).not.toBe(deadline);
+  });
 });
 
 describe('private saved overview workspace', () => {

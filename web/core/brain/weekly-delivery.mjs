@@ -15,6 +15,19 @@ function canonical(value) {
 /** @param {any} quality */
 export async function weeklyEvidenceFingerprint(quality) {
   const d = quality.details;
+  const tasks = (/** @type {any} */ list) =>
+    list?.map((/** @type {any} */ t) => ({
+      id: t.id,
+      title: t.title,
+      lifecycle: t.lifecycle,
+      units: t.units,
+      dueAt: t.dueAt,
+    }));
+  const personal = (/** @type {any} */ period) => ({
+    legacy: period?.legacy,
+    observationsV2: period?.observationsV2,
+    observationsV3: period?.observationsV3,
+  });
   // Operational costs, collection timestamps, prose and optional warnings are
   // deliberately excluded: another generation is not a new event in the owner's week.
   const data = {
@@ -23,22 +36,15 @@ export async function weeklyEvidenceFingerprint(quality) {
     plan: d?.plan
       ? {
           summary: d.plan.summary,
-          tasks: d.plan.tasks?.map((/** @type {any} */ t) => ({
-            id: t.id,
-            title: t.title,
-            lifecycle: t.lifecycle,
-            units: t.units,
-            dueAt: t.dueAt,
-          })),
+          tasks: tasks(d.plan.tasks),
+          upcoming: tasks(d.plan.upcomingOutsidePeriod?.tasks),
+          overdue: tasks(d.plan.overdueBeforePeriod?.tasks),
         }
       : null,
     personal: d?.personalPeriods
       ? {
-          current: {
-            legacy: d.personalPeriods.current?.legacy,
-            observationsV2: d.personalPeriods.current?.observationsV2,
-            observationsV3: d.personalPeriods.current?.observationsV3,
-          },
+          current: personal(d.personalPeriods.current),
+          previousWeeks: d.personalPeriods.previousWeeks?.map(personal),
         }
       : null,
     finance: d?.finance
@@ -95,9 +101,21 @@ async function periodReports(env, from, to, chatId, threadId, onlyActive = false
 }
 /** @param {Env} env @param {string} runId @param {{chatId:string|number,threadId?:string|number|null}} target @param {any} quality */
 export async function prepareWeeklyDelivery(env, runId, target, quality) {
+  if (!env.DB) throw new Error('Weekly report storage unavailable');
   const chatId = String(target.chatId),
     threadId = target.threadId == null ? null : String(target.threadId);
-  const previous = await periodReports(env, quality.periodFrom, quality.periodTo, chatId, threadId);
+  const existing = await env.DB.prepare(
+    "SELECT id,text_md,quality_json FROM reports WHERE id=? AND kind='weekly'",
+  )
+    .bind(`weekly:${runId}`)
+    .first();
+  const sameRun = existing
+    ? {
+        id: String(existing.id),
+        text_md: String(existing.text_md),
+        quality: parse(existing.quality_json),
+      }
+    : null;
   const active = await periodReports(
     env,
     quality.periodFrom,
@@ -111,20 +129,35 @@ export async function prepareWeeklyDelivery(env, runId, target, quality) {
   // A correction A→B→A still needs to update the card displaying B.
   const current =
     active.find((row) => ['ready', 'partial'].includes(row.quality.status)) ?? active[0];
-  const same =
-    previous.find((row) => row.id === `weekly:${runId}`) ??
-    (current?.quality.delivery?.fingerprint === fingerprint ? current : undefined);
+  const matching =
+    sameRun ?? (current?.quality.delivery?.fingerprint === fingerprint ? current : undefined);
+  let same = null;
+  if (matching) {
+    const queued = await env.DB.prepare('SELECT status FROM outbox WHERE id=?')
+      .bind(`${matching.id}:0`)
+      .first();
+    // Saving evidence and accepting an outbox item are separate writes. A
+    // retry must resume the immutable saved text if the second write failed.
+    // A new generation may recover a terminally failed delivery; a repeat of
+    // the same run retains its stable outbox identity.
+    if (
+      matching.quality.delivery?.suppressed ||
+      matching.quality.delivery?.delivered ||
+      (queued && (sameRun || queued.status !== 'failed'))
+    )
+      same = matching;
+  }
   const failedUpdate =
     quality.status === 'failed' &&
     active.some((row) => ['ready', 'partial'].includes(row.quality.status));
   const receipt = active.find((row) => Number.isSafeInteger(row.quality.delivery?.messageId));
   return {
     suppressed: Boolean(same || failedUpdate),
-    previousText: same?.text_md,
+    previousText: sameRun?.text_md ?? same?.text_md,
     delivery: {
       chatId,
       threadId,
-      fingerprint,
+      fingerprint: sameRun?.quality.delivery?.fingerprint ?? fingerprint,
       suppressed: Boolean(same || failedUpdate),
       ...(receipt ? { messageId: receipt.quality.delivery.messageId } : {}),
     },
@@ -164,7 +197,8 @@ export async function recordWeeklyDelivery(env, id, messageId, chatId, threadId)
   if (!env.DB) throw new Error('Weekly report storage unavailable');
   await env.DB.prepare(
     `UPDATE reports SET quality_json=json_set(quality_json,
-    '$.delivery.messageId',?,'$.delivery.chatId',?,'$.delivery.threadId',?) WHERE id=? AND kind='weekly'`,
+    '$.delivery.messageId',?,'$.delivery.chatId',?,'$.delivery.threadId',?,
+    '$.delivery.delivered',json('true')) WHERE id=? AND kind='weekly'`,
   )
     .bind(messageId, chatId, threadId, id)
     .run();
