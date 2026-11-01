@@ -370,7 +370,7 @@ describe('інструкція профілю в /run (PR-5)', () => {
   // шляхом; вхід прогону будує ядро (§0 інструкції), а не текст власника.
   it('«звіт зараз» → /run з profile=weekly-review, інструкцією weekly-review і входом §0 без хеша', async () => {
     const reg = makeRegistryStub();
-    const { brain } = makeFetchStub();
+    const { brain, tg } = makeFetchStub();
     const d1 = d1WithInstructions(['0001_base.sql', '0002_assistant.sql']);
     const body = '# Тижневий звіт';
     d1.db
@@ -397,7 +397,33 @@ describe('інструкція профілю в /run (PR-5)', () => {
       (brain[0]!.body as { instruction: { version_hash: string } }).instruction.version_hash,
     ).toBe(syncInstructionHash(body));
     expect(reg.begins[0]).toMatchObject({ profile: 'weekly-review', model: 'claude-sonnet-5' });
+    expect(tg).toHaveLength(0);
+    expect(brain[0]!.body).not.toHaveProperty('statusMessageId');
   });
+
+  it.each(['queued', 'instruction-unavailable', 'brain-unavailable'])(
+    'weekly generation stays quiet while %s',
+    async (condition) => {
+      const reg = makeRegistryStub();
+      const { tg } = makeFetchStub(condition === 'brain-unavailable' ? 503 : 202);
+      const d1 = d1WithInstructions(['0001_base.sql', '0002_assistant.sql']);
+      if (condition !== 'instruction-unavailable') {
+        const body = '# Тижневий огляд';
+        d1.db
+          .prepare(
+            `INSERT INTO instructions(name,kind,version_hash,body_md,max_chars,deployed_at)
+            VALUES('weekly-review','profile',?,?,12000,'2026-10-26T00:00:00Z')`,
+          )
+          .run(syncInstructionHash(body), body);
+      }
+      if (condition === 'queued')
+        reg.threads.set('dm', { activeRunId: 'other', statusMessageId: 99, queue: [] });
+      expect(await prerouteMessage(makeEnv(reg, d1.stub), parsedMsg('звіт зараз'), NOW)).toBe(true);
+      expect(tg).toHaveLength(0);
+      if (condition === 'queued') expect(reg.threads.get('dm')?.queue).toHaveLength(1);
+      else expect(reg.retries).toHaveLength(1);
+    },
+  );
 
   it('немає рядка в D1 - прогін НЕ стартує, запис у черзі, прогону не заведено', async () => {
     const reg = makeRegistryStub();

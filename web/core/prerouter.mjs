@@ -1254,8 +1254,11 @@ export async function startOrQueueThreadText(
   // Статусник ДО claim (S-0-2, ревʼю PR-3): при старті стає коротким живим
   // статусом прогону, при черзі - редагованим «У черзі: N» (не вічним повідомленням-
   // сиротою), а його id поїде в queue-entry для reuse при підйомі.
-  const statusMessageId = reuseStatusMessageId ?? (await sendStatusDraft(env, target));
-  if (reuseStatusMessageId != null) {
+  const statusMessageId =
+    route === 'weekly-review'
+      ? null
+      : (reuseStatusMessageId ?? (await sendStatusDraft(env, target)));
+  if (route !== 'weekly-review' && reuseStatusMessageId != null) {
     await editStatus(
       env,
       target,
@@ -1278,8 +1281,10 @@ export async function startOrQueueThreadText(
       claim.queued === -1
         ? 'Черга повна - спробуй трохи пізніше.'
         : `⏳ У черзі: перед тобою ${claim.queued}.`;
-    if (statusMessageId != null) await editStatus(env, target, statusMessageId, note, nowMs);
-    else await reply(env, target, note, nowMs);
+    if (route !== 'weekly-review') {
+      if (statusMessageId != null) await editStatus(env, target, statusMessageId, note, nowMs);
+      else await reply(env, target, note, nowMs);
+    }
     if (claim.queued === -1 && rejectOnFull) throw new Error('thread-queue-unavailable');
     return null;
   }
@@ -1451,7 +1456,12 @@ export async function startClaimedRun(env, parsed, threadKey, entry, nowMs, reus
         ? `${decisions}\n\n${entry.text}`
         : entry.text;
 
-  const statusMessageId = reuseStatusId ?? (await sendStatusDraft(env, parsed));
+  const statusMessageId =
+    route === 'weekly-review' ? null : (reuseStatusId ?? (await sendStatusDraft(env, parsed)));
+  const notify = (/** @type {string} */ text) =>
+    route === 'weekly-review'
+      ? Promise.resolve()
+      : editStatus(env, parsed, statusMessageId, text, nowMs);
   const runId = crypto.randomUUID();
   const registered = await registryBegin(env, {
     id: runId,
@@ -1547,7 +1557,7 @@ export async function startClaimedRun(env, parsed, threadKey, entry, nowMs, reus
     // зробив би живому прогону 403 на кожен колбек (ревʼю PR-3). Лишаємо
     // активним: живий - доставить, мертвий - сторож (registrySweep) звільнить
     // тред і чесно скаже власнику.
-    await editStatus(env, parsed, statusMessageId, 'Звʼязок із мозком повільний - чекаю…', nowMs);
+    await notify('Звʼязок із мозком повільний - чекаю…');
     return runId;
   }
 
@@ -1558,24 +1568,12 @@ export async function startClaimedRun(env, parsed, threadKey, entry, nowMs, reus
   if (attempts >= START_MAX_ATTEMPTS) {
     await registryFinish(env, runId, { finishedMs: nowMs, error: `brain-start: ${res.status}` });
     await registryThreadFinishAndKick(env, parsed, threadKey, runId, nowMs);
-    await editStatus(
-      env,
-      parsed,
-      statusMessageId,
-      'Не вдалося - мозок недоступний. Напиши пізніше.',
-      nowMs,
-    );
+    await notify('Не вдалося - мозок недоступний. Напиши пізніше.');
     return null;
   }
   await registryThreadRetry(env, threadKey, { ...entry, attempts, statusMessageId });
   await registryFinish(env, runId, { finishedMs: nowMs, error: `brain-start: ${res.status}` });
-  await editStatus(
-    env,
-    parsed,
-    statusMessageId,
-    'Мозок недоступний - спробую ще раз за ~5 хв.',
-    nowMs,
-  );
+  await notify('Мозок недоступний - спробую ще раз за ~5 хв.');
   return null;
 }
 
@@ -1597,11 +1595,13 @@ async function retryOrGiveUp(env, parsed, threadKey, entry, nowMs, statusMessage
   const attempts = entry.attempts + 1;
   if (attempts >= START_MAX_ATTEMPTS) {
     await registryThreadClear(env, threadKey);
-    await editStatus(env, parsed, statusMessageId, texts.giveUp, nowMs);
+    if (entry.route !== 'weekly-review')
+      await editStatus(env, parsed, statusMessageId, texts.giveUp, nowMs);
     return;
   }
   await registryThreadRetry(env, threadKey, { ...entry, attempts, statusMessageId });
-  await editStatus(env, parsed, statusMessageId, texts.retry, nowMs);
+  if (entry.route !== 'weekly-review')
+    await editStatus(env, parsed, statusMessageId, texts.retry, nowMs);
 }
 
 /**
@@ -1618,7 +1618,7 @@ export async function registryThreadFinishAndKick(env, parsed, threadKey, runId,
   if (!next) return;
   const target = next.chatId != null ? { ...parsed, chatId: next.chatId } : parsed;
   // Черговий статус цього запису стає першим статусом його прогону.
-  if (next.statusMessageId != null) {
+  if (next.route !== 'weekly-review' && next.statusMessageId != null) {
     await editStatus(env, target, next.statusMessageId, statusDraft(target, nowMs), nowMs);
   }
   await startClaimedRun(env, target, threadKey, next, nowMs, next.statusMessageId ?? null);
@@ -1658,7 +1658,7 @@ export async function kickPendingThreads(env, nowMs = Date.now()) {
       const { next } = await registryThreadKickNext(env, threadKey);
       if (!next) continue;
       const parsed = parsedForThread(env, threadKey, next.chatId ?? null);
-      if (next.statusMessageId != null) {
+      if (next.route !== 'weekly-review' && next.statusMessageId != null) {
         await editStatus(env, parsed, next.statusMessageId, statusDraft(parsed, nowMs), nowMs);
       }
       await startClaimedRun(env, parsed, threadKey, next, nowMs, next.statusMessageId ?? null);
