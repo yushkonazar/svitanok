@@ -164,7 +164,7 @@ it.each([false, true])(
     expect(positions.every((top, i) => i === 0 || top <= positions[i - 1]!)).toBe(true);
     if (reduced) expect(positions).toEqual([0]);
     expect(section).toHaveStyle({ minHeight: '' });
-    expect(setVerticalSwipes).toHaveBeenLastCalledWith(true);
+    await waitFor(() => expect(setVerticalSwipes).toHaveBeenLastCalledWith(true));
     expect(api.postEvent).toHaveBeenCalledTimes(1);
   },
 );
