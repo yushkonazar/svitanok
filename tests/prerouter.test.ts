@@ -388,7 +388,8 @@ describe('інструкція профілю в /run (PR-5)', () => {
     };
     expect(sent.profile).toBe('weekly-review');
     expect(sent.instruction.name).toBe('weekly-review');
-    expect(sent.input.text).toContain('period_from: 2026-08-24');
+    expect(sent.input.text).toContain('period_from: 2026-08-17');
+    expect(sent.input.text).toContain('period_to: 2026-08-23');
     // Хеш іде в ТІЛІ /run (instruction.version_hash), а у ВХІДНОМУ ТЕКСТІ
     // його нема: звідти модель тягла його в підпис звіту (скарга 08.09).
     expect(sent.input.text).not.toContain('instruction_hash');

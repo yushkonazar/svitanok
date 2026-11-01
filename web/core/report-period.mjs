@@ -23,3 +23,13 @@ export function shiftReportCutoff(asOfMs, days) {
   const p = kyivParts(asOfMs);
   return kyivInstant(shiftDate(p.date, days), p.hour, p.minute) + (asOfMs % 60_000);
 }
+
+/** Most recent completed calendar week, independent of queue/delivery day.
+ * Kyiv calendar arithmetic preserves the 167/169-hour weeks around DST.
+ * @param {number} asOfMs */
+export function completedWeekPeriod(asOfMs) {
+  const today = kyivParts(asOfMs).date;
+  const sinceMonday = (new Date(`${today}T12:00:00Z`).getUTCDay() + 6) % 7;
+  const from = shiftDate(today, -sinceMonday - 7);
+  return reportPeriod(from, shiftDate(from, 6), asOfMs);
+}

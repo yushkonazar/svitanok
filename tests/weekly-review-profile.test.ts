@@ -18,11 +18,6 @@ import {
   saveWeeklyReport,
   readRunProfile,
 } from '../web/core/brain/weekly-review.mjs';
-import {
-  weeklyReviewTask,
-  WEEKLY_REVIEW_STATE_KEY,
-} from '../web/core/brain/weekly-review-task.mjs';
-import { startOrQueueThreadText } from '../web/core/prerouter.mjs';
 import { handleInternal } from '../web/core/internal/router.mjs';
 import { signInternal } from '../web/core/internal/auth.mjs';
 import { workerEnv } from './helpers/env.js';
@@ -48,10 +43,8 @@ const ALL_MIGRATIONS = [
 ];
 
 // Неділя 06.09.2026: 09:10 Києва = 06:10Z (літній час, UTC+3).
-const SUNDAY_0910 = Date.parse('2026-09-06T06:10:00.000Z');
-const SUNDAY_1210 = Date.parse('2026-09-06T09:10:00.000Z');
-const SUNDAY_1310 = Date.parse('2026-09-06T10:10:00.000Z');
-const WEDNESDAY = Date.parse('2026-09-02T09:00:00.000Z');
+const MONDAY_0810 = Date.parse('2026-09-07T05:10:00.000Z');
+const WEDNESDAY = Date.parse('2026-09-09T09:00:00.000Z');
 const VALID_REPORT =
   '📊 Тиждень 31.08 - 06.09\n\nГРОШІ\n• Немає записів.\n\nСИСТЕМА\n• Дані прочитано.\n\nЩО ЗРОБИТИ\nЦього тижня від тебе нічого не потрібно';
 
@@ -84,7 +77,7 @@ describe('профіль weekly-review у мозку', () => {
   it('контракт /run приймає profile=weekly-review; інструкція - weekly-review; промпт із датою, без згортки', () => {
     expect(RUN_REQUEST_SCHEMA.shape.profile.options).toContain('weekly-review');
     expect(INSTRUCTION_NAME_BY_PROFILE['weekly-review']).toBe('weekly-review');
-    const prompt = buildSystemPrompt(PROFILES['weekly-review'], SUNDAY_0910, {
+    const prompt = buildSystemPrompt(PROFILES['weekly-review'], MONDAY_0810, {
       instruction: '# Тижневий звіт',
       summary: 'згортка, якої тут не має бути',
     });
@@ -161,13 +154,13 @@ describe('вхід прогону (§0) і reports', () => {
 
   it('період пн-нд за Києвом, перша неділя місяця, попередній звіт; хеша у вході НЕМА', async () => {
     const { d1, env } = withDb();
-    const first = await buildWeeklyReviewInput(env, SUNDAY_0910);
+    const first = await buildWeeklyReviewInput(env, MONDAY_0810);
     expect(first).toMatchObject({
       periodFrom: '2026-08-31',
       periodTo: '2026-09-06',
-      firstSunday: true,
+      firstMonday: true,
     });
-    expect(first.text).toContain('first_sunday_of_month: true');
+    expect(first.text).toContain('first_monday_of_month: true');
     // ⚠️ Хеша у вході бути НЕ має: модель ставила його в підпис звіту, і
     // власник бачив у чаті «weekly-review@849bfbb…» (прогін 08.09). У D1 його
     // пише ядро саме - див. saveWeeklyReport нижче.
@@ -185,7 +178,7 @@ describe('вхід прогону (§0) і reports', () => {
     expect(second).toMatchObject({
       periodFrom: '2026-08-31',
       periodTo: '2026-09-06',
-      firstSunday: false,
+      firstMonday: false,
     });
     expect(second.text).toContain('2026-08-24 - 2026-08-30');
     expect(second.text).toContain('минулий звіт про сон');
@@ -212,7 +205,7 @@ describe('вхід прогону (§0) і reports', () => {
          VALUES ('weekly-review', 'profile', 'stale', ?, 12000, '2026-09-01T00:00:00Z')`,
       )
       .run(body);
-    const saved = await saveWeeklyReport(env, 'текст звіту', SUNDAY_0910);
+    const saved = await saveWeeklyReport(env, 'текст звіту', MONDAY_0810);
     expect(saved).toMatchObject({ periodFrom: '2026-08-31', periodTo: '2026-09-06' });
     expect(saved.instructionHash).toBe(instructionHash(body));
     const row = d1.db.prepare('SELECT kind, text_md, instruction_hash FROM reports').get() as {
@@ -228,7 +221,7 @@ describe('вхід прогону (§0) і reports', () => {
 
     d1.db
       .prepare(
-        `INSERT INTO runs (id, trigger, profile, started_at) VALUES ('r-w', 'chat', 'weekly-review', '2026-09-06T06:10:00Z')`,
+        `INSERT INTO runs (id, trigger, profile, started_at) VALUES ('r-w', 'chat', 'weekly-review', '2026-09-07T05:10:00Z')`,
       )
       .run();
     expect(await readRunProfile(env, 'r-w')).toBe('weekly-review');
@@ -239,12 +232,12 @@ describe('вхід прогону (§0) і reports', () => {
     const { d1, env: base } = withDb();
     d1.db
       .prepare(
-        `INSERT INTO runs (id, trigger, profile, started_at) VALUES ('r-w', 'chat', 'weekly-review', '2026-09-06T06:10:00Z')`,
+        `INSERT INTO runs (id, trigger, profile, started_at) VALUES ('r-w', 'chat', 'weekly-review', '2026-09-07T05:10:00Z')`,
       )
       .run();
     d1.db
       .prepare(
-        `INSERT INTO runs (id, trigger, profile, started_at) VALUES ('r-c', 'chat', 'chat', '2026-09-06T06:10:00Z')`,
+        `INSERT INTO runs (id, trigger, profile, started_at) VALUES ('r-c', 'chat', 'chat', '2026-09-07T05:10:00Z')`,
       )
       .run();
     /** @type {Record<string, unknown>[]} */
@@ -285,7 +278,7 @@ describe('вхід прогону (§0) і reports', () => {
       const signature = await signInternal('k', {
         method: 'POST',
         path: '/internal/deliver',
-        timestampMs: SUNDAY_0910,
+        timestampMs: MONDAY_0810,
         runId,
         nonce,
         rawBody,
@@ -294,7 +287,7 @@ describe('вхід прогону (§0) і reports', () => {
         new Request('https://svitanok.test/internal/deliver', {
           method: 'POST',
           headers: {
-            'X-Internal-Timestamp': String(SUNDAY_0910),
+            'X-Internal-Timestamp': String(MONDAY_0810),
             'X-Internal-Run': runId,
             'X-Internal-Nonce': nonce,
             'X-Internal-Signature': signature,
@@ -302,7 +295,7 @@ describe('вхід прогону (§0) і reports', () => {
           body: rawBody,
         }),
         env,
-        SUNDAY_0910,
+        MONDAY_0810,
       );
     };
     const w = await post('r-w', VALID_REPORT, 'n1');
@@ -319,272 +312,5 @@ describe('вхід прогону (§0) і reports', () => {
     expect(JSON.stringify(weekly.reply_markup)).toContain('m:wr:carry');
     const plain = sends.find((b) => String(b.text ?? '').includes('звичайна відповідь'))!;
     expect(JSON.stringify(plain.reply_markup ?? null)).not.toContain('m:wr:');
-  });
-});
-
-describe('задача weekly-review (нд 09:00, повтор 12:00, алерт)', () => {
-  const start = vi.mocked(startOrQueueThreadText);
-
-  function taskEnv(
-    runRows: { id: string; error: string | null; finished: boolean }[] = [],
-    reportToday = false,
-  ) {
-    const d1 = d1FromSqlite([
-      '0003_telemetry.sql',
-      '0002_assistant.sql',
-      '0007_instructions_plans.sql',
-    ]);
-    if (reportToday) {
-      d1.db
-        .prepare(
-          `INSERT INTO reports (id, kind, period_from, period_to, text_md, instruction_hash, created_at, status)
-           VALUES ('rep-today', 'weekly', '2026-08-31', '2026-09-06', ?, 'h', '2026-09-06T06:20:00Z', 'ready')`,
-        )
-        .run(VALID_REPORT);
-    }
-    for (const r of runRows) {
-      d1.db
-        .prepare(
-          `INSERT INTO runs (id, trigger, profile, started_at, finished_at, error) VALUES (?, 'chat', 'weekly-review', '2026-09-06T06:10:00Z', ?, ?)`,
-        )
-        .run(r.id, r.finished ? '2026-09-06T06:12:00Z' : null, r.error);
-    }
-    const kv = new Map<string, string>();
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(
-        async () =>
-          new Response(JSON.stringify({ ok: true, result: { message_id: 1 } }), { status: 200 }),
-      ),
-    );
-    return {
-      kv,
-      d1,
-      env: workerEnv({
-        DB: d1.stub,
-        BRIEFING: memoryKv(kv),
-        TELEGRAM_CHAT_ID: '100',
-        TELEGRAM_BOT_TOKEN: 'tok',
-        TOPIC_ASSISTANT: '6',
-        TOPIC_SYSTEM: '7',
-      }),
-    };
-  }
-
-  it('не неділя або до 09:00 - пропуск без старту', async () => {
-    const { env } = taskEnv();
-    expect(await weeklyReviewTask(env, WEDNESDAY)).toEqual({ skipped: 'not-sunday' });
-    expect(await weeklyReviewTask(env, SUNDAY_0910 - 2 * 3_600_000)).toEqual({ skipped: 'hour' });
-    expect(start).not.toHaveBeenCalled();
-  });
-
-  it('09:10 - старт «звіт зараз» у тему з маршрутом weekly-review; друга поява того ж дня - без старту', async () => {
-    const { env, kv } = taskEnv();
-    expect(await weeklyReviewTask(env, SUNDAY_0910)).toEqual({ started: true, queued: false });
-    expect(start).toHaveBeenCalledWith(
-      env,
-      { chatId: 100, threadId: 6 },
-      '6',
-      'звіт зараз',
-      'weekly-review',
-      SUNDAY_0910,
-    );
-    expect(JSON.parse(kv.get(WEEKLY_REVIEW_STATE_KEY) ?? '{}')).toMatchObject({
-      date: '2026-09-06',
-      attempts: 1,
-      runIds: ['run-w1'],
-    });
-    expect(await weeklyReviewTask(env, SUNDAY_0910 + 5 * 60_000)).toEqual({
-      skipped: 'wait-first',
-    });
-    expect(start).toHaveBeenCalledTimes(1);
-  });
-
-  it('12:10 - звіт уже в reports → нічого; звіту нема → алерт у TOPIC_SYSTEM і повтор; 13:10 після невдалого повтору - алерт, більше спроб немає', async () => {
-    // Успіх - доставлений звіт (рядок у reports), а не «прогін без помилки».
-    const okCase = taskEnv([{ id: 'run-w1', error: null, finished: true }], true);
-    okCase.kv.set(
-      WEEKLY_REVIEW_STATE_KEY,
-      JSON.stringify({ date: '2026-09-06', attempts: 1, runIds: ['run-w1'], alerted: false }),
-    );
-    expect(await weeklyReviewTask(okCase.env, SUNDAY_1210)).toEqual({ skipped: 'ok' });
-    expect(start).not.toHaveBeenCalled();
-
-    const failCase = taskEnv([{ id: 'run-w1', error: 'brain-error', finished: true }]);
-    failCase.kv.set(
-      WEEKLY_REVIEW_STATE_KEY,
-      JSON.stringify({ date: '2026-09-06', attempts: 1, runIds: ['run-w1'], alerted: false }),
-    );
-    expect(await weeklyReviewTask(failCase.env, SUNDAY_1210)).toEqual({
-      started: true,
-      queued: false,
-    });
-    expect(start).toHaveBeenCalledTimes(1);
-    const alerts = failCase.d1.db.prepare('SELECT thread_id, payload_json FROM outbox').all() as {
-      thread_id: string;
-      payload_json: string;
-    }[];
-    expect(
-      alerts.some(
-        (a) => a.thread_id === '7' && a.payload_json.includes('повторюю зараз (12:10, Київ)'),
-      ),
-    ).toBe(true);
-
-    // Повтор теж упав: після 12:00 - алерт «не вдався двічі», стан alerted.
-    const twice = taskEnv([
-      { id: 'run-w1', error: 'brain-error', finished: true },
-      { id: 'run-w2', error: 'timeout', finished: true },
-    ]);
-    twice.kv.set(
-      WEEKLY_REVIEW_STATE_KEY,
-      JSON.stringify({
-        date: '2026-09-06',
-        attempts: 2,
-        runIds: ['run-w1', 'run-w2'],
-        alerted: false,
-      }),
-    );
-    expect(await weeklyReviewTask(twice.env, SUNDAY_1310)).toEqual({ alerted: true });
-    const rows = twice.d1.db.prepare('SELECT payload_json FROM outbox').all() as {
-      payload_json: string;
-    }[];
-    expect(rows.some((r) => r.payload_json.includes('не вдався двічі'))).toBe(true);
-    expect(await weeklyReviewTask(twice.env, SUNDAY_1310 + 60_000)).toEqual({ skipped: 'done' });
-    expect(start).toHaveBeenCalledTimes(1);
-  });
-
-  it.each([SUNDAY_1310 - 10 * 60_000, SUNDAY_0910 + (9 * 60 + 45) * 60_000])(
-    'does not catch up a missed morning run or partial retry after the retry window (%s)',
-    async (now) => {
-      const empty = taskEnv();
-      expect(await weeklyReviewTask(empty.env, now)).toEqual({ skipped: 'outside-window' });
-      const s = taskEnv([{ id: 'run-w1', error: null, finished: true }], true);
-      s.d1.db
-        .prepare('UPDATE reports SET status = ?, text_md = ?')
-        .run('partial', `${VALID_REPORT}\n\nЧОГО Я НЕ БАЧИВ\n• Сон`);
-      s.kv.set(
-        WEEKLY_REVIEW_STATE_KEY,
-        JSON.stringify({
-          date: '2026-09-06',
-          attempts: 1,
-          runIds: ['run-w1'],
-          alerted: false,
-        }),
-      );
-      expect(await weeklyReviewTask(s.env, now)).toEqual({ skipped: 'retry-window-missed' });
-      expect(start).not.toHaveBeenCalled();
-      expect(s.d1.db.prepare('SELECT count(*) AS n FROM outbox').get()?.n).toBe(0);
-      expect(fetch).not.toHaveBeenCalled();
-    },
-  );
-
-  it('allows one partial retry at 12:59 and uses its actual time', async () => {
-    const s = taskEnv([{ id: 'run-w1', error: null, finished: true }], true);
-    s.d1.db.prepare('UPDATE reports SET status = ?').run('partial');
-    s.kv.set(
-      WEEKLY_REVIEW_STATE_KEY,
-      JSON.stringify({
-        date: '2026-09-06',
-        attempts: 1,
-        runIds: ['run-w1'],
-        alerted: false,
-      }),
-    );
-    expect(await weeklyReviewTask(s.env, SUNDAY_1210 + 49 * 60_000)).toEqual({
-      started: true,
-      queued: false,
-    });
-    expect(start).toHaveBeenCalledTimes(1);
-    const alerts = JSON.stringify(s.d1.db.prepare('SELECT payload_json FROM outbox').all());
-    expect(alerts).toContain('повторюю зараз (12:59, Київ)');
-    expect(alerts).not.toContain('повторюю о 12:00');
-  });
-
-  it('втрата стану weekly-review не перетворює кожен 5-хвилинний тік на новий запуск', async () => {
-    // Реальний захист від циклу: state могло не зберегтися, але два запуски
-    // дня вже незворотно є в D1. Без звіряння з runs третя помилка Claude
-    // приходила б через наступні п'ять хвилин.
-    const { env, kv } = taskEnv([
-      { id: 'run-w1', error: 'brain-error', finished: true },
-      { id: 'run-w2', error: 'brain-error', finished: true },
-    ]);
-    expect(await weeklyReviewTask(env, SUNDAY_1210)).toEqual({ skipped: 'state-reconciled' });
-    expect(start).not.toHaveBeenCalled();
-    expect(JSON.parse(kv.get(WEEKLY_REVIEW_STATE_KEY) ?? '{}')).toMatchObject({
-      date: '2026-09-06',
-      attempts: 2,
-      runIds: ['run-w1', 'run-w2'],
-    });
-  });
-
-  it.each(['partial', 'failed'])(
-    '%s не скасовує повтор; частковий огляд не оголошується відсутнім',
-    async (status) => {
-      const s = taskEnv([{ id: 'run-w1', error: null, finished: true }], true);
-      s.d1.db
-        .prepare('UPDATE reports SET status = ?, text_md = ?')
-        .run(
-          status,
-          status === 'failed' ? '⚠️ Немає кредиту' : `${VALID_REPORT}\n\nЧОГО Я НЕ БАЧИВ\n• Сон`,
-        );
-      s.kv.set(
-        WEEKLY_REVIEW_STATE_KEY,
-        JSON.stringify({ date: '2026-09-06', attempts: 1, runIds: ['run-w1'], alerted: false }),
-      );
-      expect(await weeklyReviewTask(s.env, SUNDAY_1210)).toEqual({ started: true, queued: false });
-      if (status === 'partial') {
-        s.d1.db
-          .prepare(
-            "INSERT INTO runs(id,trigger,profile,started_at,finished_at) VALUES('run-w2','chat','weekly-review','2026-09-06T09:10:00Z','2026-09-06T09:11:00Z')",
-          )
-          .run();
-        expect(await weeklyReviewTask(s.env, SUNDAY_1310)).toEqual({ alerted: true });
-        const messages = JSON.stringify(s.d1.db.prepare('SELECT payload_json FROM outbox').all());
-        expect(messages).toContain('залишився частковим');
-        expect(messages).not.toContain('цього тижня без нього');
-      }
-    },
-  );
-
-  it('вимкнений доступ Claude Code не ретраїться о 12:00', async () => {
-    const { env, kv, d1 } = taskEnv([{ id: 'run-w1', error: 'brain-error', finished: true }]);
-    d1.db
-      .prepare(
-        `INSERT INTO run_steps (id, run_id, n, at, kind, name, note)
-         VALUES ('run-w1:1', 'run-w1', 1, '2026-09-06T06:12:00Z', 'error', 'weekly-review', ?)`,
-      )
-      .run(
-        'Claude Code returned an error result: Your organization has disabled Claude subscription access for Claude Code',
-      );
-    kv.set(
-      WEEKLY_REVIEW_STATE_KEY,
-      JSON.stringify({ date: '2026-09-06', attempts: 1, runIds: ['run-w1'], alerted: false }),
-    );
-
-    expect(await weeklyReviewTask(env, SUNDAY_1210)).toEqual({ skipped: 'model-access-disabled' });
-    expect(start).not.toHaveBeenCalled();
-    expect(JSON.parse(kv.get(WEEKLY_REVIEW_STATE_KEY) ?? '{}')).toMatchObject({
-      attempts: 2,
-      alerted: true,
-    });
-  });
-
-  it('прогін у черзі треду (runId null): звіту о 12:00 нема - повтор; звіт з черги ДОСТАВЛЕНО - без повтору (ревʼю: дубль звіту)', async () => {
-    start.mockResolvedValueOnce(null);
-    const { env, kv } = taskEnv();
-    expect(await weeklyReviewTask(env, SUNDAY_0910)).toEqual({ started: false, queued: true });
-    expect(JSON.parse(kv.get(WEEKLY_REVIEW_STATE_KEY) ?? '{}').runIds).toEqual(['queued']);
-    expect(await weeklyReviewTask(env, SUNDAY_1210)).toEqual({ started: true, queued: false });
-
-    // Той самий старт із черги, але прогін із черги встиг доставити звіт:
-    // reports має рядок за сьогодні - другий звіт НЕ стартує.
-    start.mockResolvedValueOnce(null);
-    const delivered = taskEnv([], true);
-    await weeklyReviewTask(delivered.env, SUNDAY_0910);
-    expect(await weeklyReviewTask(delivered.env, SUNDAY_1210)).toEqual({ skipped: 'ok' });
-    expect(await weeklyReviewTask(delivered.env, SUNDAY_1310)).toEqual({ skipped: 'ok' });
-    // Три старти на два середовища: 09:10 + повтор 12:10 у першому, лише
-    // 09:10 у другому - повтору після доставленого звіту немає.
-    expect(start).toHaveBeenCalledTimes(3);
   });
 });

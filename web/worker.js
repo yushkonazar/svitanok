@@ -61,6 +61,7 @@ import { handleMonoWebhook, handleMonoTest, MONO_WEBHOOK_PREFIX } from './core/f
 import { prerouteMessage, handleBrainCallback } from './core/prerouter.mjs';
 import { handleSystem } from './api-system.mjs';
 import { handleAssistantStatus } from './core/assistant-status.mjs';
+import { handleWeeklyReports } from './api-weekly-reports.mjs';
 import { drainOutbox } from './core/tg/outbox.mjs';
 import {
   handleBusinessConnection,
@@ -562,6 +563,7 @@ export default {
     if (url.pathname === '/api/stats') {
       return handleStats(request, env);
     }
+    if (url.pathname === '/api/reports/weekly') return handleWeeklyReports(request, env);
     if (url.pathname === '/api/mail/attention' && request.method === 'GET') {
       return handleMailAttention(request, env);
     }

@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { d1FromSqlite } from './helpers/d1.js';
 import { workerEnv } from './helpers/env.js';
 import { memoryKv } from './helpers/kv.js';
-import { reportPeriod } from '../web/core/report-period.mjs';
+import { reportPeriod, completedWeekPeriod } from '../web/core/report-period.mjs';
 import { recordUsage } from '../web/core/ops/usage-ledger.mjs';
 import {
   readReportCosts,
@@ -59,14 +59,15 @@ function plan(s: ReturnType<typeof setup>) {
     return r.receipt.id;
   }
   act('settings', '2026-10-12T07:00:00Z', { enabled: true });
-  function task(title: string, date: string, dueAt: string) {
+  function task(title: string, date: string, dueAt: string, timeSensitive = false) {
     const id = act('task-save', `${date}T07:00:00Z`, {
       title,
       date,
       dueAt,
       deadlineKind: 'time',
-      criterion: 'Два результати',
-      target: 2,
+      timeSensitive,
+      criterion: timeSensitive ? 'Один результат' : 'Два результати',
+      target: timeSensitive ? 1 : 2,
       xp: 35,
       effort: 1,
       contribution: 1,
@@ -312,6 +313,32 @@ describe('weekly system report, audit block 3', () => {
         s.d1.db.prepare(`SELECT * FROM ${t}`).all(),
       ),
     );
+  });
+
+  it('includes a Sunday result recorded on Monday, but excludes execution that actually happened on Monday', async () => {
+    const s = setup(),
+      p = plan(s);
+    const sunday = p.task('Недільний результат', '2026-10-18', '2026-10-18T15:00:00Z', true);
+    const monday = p.task('Пізніше фактичне виконання', '2026-10-18', '2026-10-18T20:00:00Z');
+    p.act('report', '2026-10-19T03:00:00Z', { units: 1, actualAt: '2026-10-18T20:00:00Z' }, sunday);
+    p.act('report', '2026-10-19T03:01:00Z', { units: 2, actualAt: '2026-10-19T02:00:00Z' }, monday);
+    p.save();
+    const before = s.d1.db.prepare('SELECT * FROM motivation_records ORDER BY id').all();
+    const report = await readPlanReport(
+      s.env,
+      completedWeekPeriod(Date.parse('2026-10-19T05:00:00Z')),
+    );
+    expect(report.summary.completedDistinctResults).toBe(1);
+    expect(report.tasks.find((t) => t.id === sunday)).toMatchObject({
+      lifecycle: 'completed-late',
+      units: 1,
+      eligibleUnits: 0,
+    });
+    expect(report.tasks.find((t) => t.id === monday)).toMatchObject({
+      lifecycle: 'missed',
+      units: 0,
+    });
+    expect(s.d1.db.prepare('SELECT * FROM motivation_records ORDER BY id').all()).toEqual(before);
   });
 
   it('counts one shared result across recommitted promises and excludes reports after the cutoff', async () => {

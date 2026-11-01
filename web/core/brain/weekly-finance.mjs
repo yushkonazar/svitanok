@@ -1,21 +1,23 @@
 import { readFinanceAnalytics } from '../finance/analytics-store.mjs';
 import { kyivParts, shiftDate } from '../finance/planning.mjs';
 import { weekBounds } from '../tools/weekly.mjs';
-import { shiftReportCutoff } from '../report-period.mjs';
+import { reportPeriod, shiftReportCutoff } from '../report-period.mjs';
 
 /** Uses the dashboard reader, classification, source filters and integer amounts.
  * Each baseline stops at the same Kyiv weekday and time as the current slice.
- * @param {Env} env @param {number} asOfMs */
-export async function readWeeklyFinance(env, asOfMs) {
+ * @param {Env} env @param {number} asOfMs
+ * @param {ReturnType<typeof reportPeriod>} [period] */
+export async function readWeeklyFinance(env, asOfMs, period) {
   const today = kyivParts(asOfMs).date;
   const week = weekBounds(today);
+  const selected = period ?? reportPeriod(week.from, today, asOfMs);
   const read = async (/** @type {number} */ offset) => {
     const cutoff = shiftReportCutoff(asOfMs, -offset * 7);
     return readFinanceAnalytics(
       env,
       new URLSearchParams({
-        from: shiftDate(week.from, -offset * 7),
-        to: shiftDate(today, -offset * 7),
+        from: shiftDate(selected.dateFrom, -offset * 7),
+        to: shiftDate(selected.dateTo, -offset * 7),
         source: 'all',
         account: 'all',
         status: 'all',
@@ -44,6 +46,7 @@ export async function readWeeklyFinance(env, asOfMs) {
       expenseMinor: data.summary.expenseMinor,
       count: data.summary.count,
       sourceTotals: data.sourceTotals,
+      categories: data.categories,
       quality: data.quality,
       outflows: data.review?.outflows,
       repayment: data.review?.repayment,
@@ -109,6 +112,34 @@ export async function readWeeklyFinance(env, asOfMs) {
     count: rows.reduce((sum, c) => sum + c.count, 0),
     categories: rows.length,
   });
+  const previous = comparisons[0]?.status === 'fulfilled' ? comparisons[0].value : null;
+  const previousComplete =
+    weeks[0]?.status === 'available' &&
+    !current.quality.unknownCurrencyCount &&
+    !current.quality.unclassifiedCount &&
+    !current.quality.invalidDirectionCount;
+  const previousChanges =
+    previousComplete && previous
+      ? [
+          ...new Set([
+            ...current.categories.map((c) => c.category),
+            ...previous.categories.map((c) => c.category),
+          ]),
+        ]
+          .map((category) => {
+            const amountMinor =
+              current.categories.find((c) => c.category === category)?.amountMinor ?? 0;
+            const previousMinor =
+              previous.categories.find((c) => c.category === category)?.amountMinor ?? 0;
+            return {
+              category,
+              amountMinor,
+              previousMinor,
+              changeMinor: amountMinor - previousMinor,
+            };
+          })
+          .sort((a, b) => Math.abs(b.changeMinor) - Math.abs(a.changeMinor))
+      : [];
   return {
     scope: { account: 'all', source: 'all', status: 'all', currency: 'UAH', unit: 'kopecks' },
     period: current.selection.period,
@@ -143,7 +174,24 @@ export async function readWeeklyFinance(env, asOfMs) {
     quality: current.quality,
     coverage: current.coverage,
     comparison: {
-      method: 'four-matching-weekday-and-time-slices',
+      method: selected.complete
+        ? 'four-completed-calendar-weeks'
+        : 'four-matching-weekday-and-time-slices',
+      previousWeek: {
+        complete: previousComplete,
+        expenseMinor: previous?.summary.expenseMinor ?? null,
+        changeMinor:
+          previousComplete && previous
+            ? current.summary.expenseMinor - previous.summary.expenseMinor
+            : null,
+        changeBps:
+          previousComplete && previous?.summary.expenseMinor
+            ? Math.round(
+                (current.summary.expenseMinor / previous.summary.expenseMinor - 1) * 10_000,
+              )
+            : null,
+        categoryChanges: previousChanges.slice(0, 3),
+      },
       weeks,
       complete: comparisonComplete,
       averageExpenseMinor: average,

@@ -28,7 +28,11 @@ import {
   evaluateWeeklyReport,
   weeklyRunAnchor,
   weeklyPacketQuality,
+  mergeWeeklyEvidence,
 } from '../brain/weekly-report-quality.mjs';
+import { prepareWeeklyDelivery } from '../brain/weekly-delivery.mjs';
+import { weeklyOverviewButtons } from '../brain/weekly-links.mjs';
+import { completedWeekPeriod } from '../report-period.mjs';
 import { ToolArgumentError } from '../tool-arguments.mjs';
 import { reportButtons } from '../links.mjs';
 import { NOTHING_RE, saveInboxDigest } from '../inbox/digest.mjs';
@@ -275,8 +279,23 @@ export async function handleInternal(request, env, nowMs = Date.now(), ctx = und
         name === 'finance.query' &&
         !args.id &&
         !(Array.isArray(args.flags) && args.flags.length)
-          ? { ...args, view: 'analytics' }
-          : args;
+          ? {
+              ...args,
+              view: 'analytics',
+              ...(!args.period || ['тиждень', 'week', '1w'].includes(String(args.period))
+                ? {
+                    period: `${completedWeekPeriod(anchor.asOfMs).dateFrom}..${completedWeekPeriod(anchor.asOfMs).dateTo}`,
+                  }
+                : {}),
+            }
+          : anchor &&
+              name === 'runs.query' &&
+              (!args.period || ['тиждень', 'week', '1w'].includes(String(args.period)))
+            ? {
+                ...args,
+                period: `${completedWeekPeriod(anchor.asOfMs).dateFrom}..${completedWeekPeriod(anchor.asOfMs).dateTo}`,
+              }
+            : args;
       const scopedRun = tool.scoped ? await registryRunInfo(env, auth.runId) : null;
       out = await tool.run(
         env,
@@ -294,6 +313,14 @@ export async function handleInternal(request, env, nowMs = Date.now(), ctx = und
         await env.DB.prepare('UPDATE runs SET weekly_context_json = ? WHERE id = ?')
           .bind(JSON.stringify(quality), auth.runId)
           .run();
+      } else if (anchor?.context && env.DB && ['finance.query', 'runs.query'].includes(name)) {
+        const before = JSON.parse(String(anchor.context));
+        const evidence = typeof out.result === 'string' ? JSON.parse(out.result) : out.result;
+        const after = mergeWeeklyEvidence(before, name, effectiveArgs, evidence);
+        if (after !== before)
+          await env.DB.prepare('UPDATE runs SET weekly_context_json=? WHERE id=?')
+            .bind(JSON.stringify(after), auth.runId)
+            .run();
       }
     } catch (/** @type {any} */ e) {
       if (e instanceof ToolArgumentError)
@@ -399,10 +426,50 @@ async function handleDeliver(env, ctx, runId, body, nowMs) {
   // а не результат для власника: прибираємо чернетку «Беруся…» і не створюємо
   // автоматичний шум. Ручні відповіді власника цим правилом не зачіпаються.
   const profile = await readRunProfile(env, runId).catch(() => null);
+  /** @type {any} */
   const weeklyQuality =
     profile === 'weekly-review'
       ? await evaluateWeeklyReport(env, body.text, nowMs, { runId, failed: body.failed })
       : null;
+  let reportId = null;
+  if (weeklyQuality?.overview) {
+    const delivery = await prepareWeeklyDelivery(
+      env,
+      runId,
+      { chatId: target.chatId, threadId: target.threadId },
+      weeklyQuality,
+    );
+    weeklyQuality.delivery = delivery.delivery;
+    if (delivery.suppressed && delivery.previousText)
+      weeklyQuality.overview.text = String(delivery.previousText);
+    // Save before enqueue: both the details link and the dispatch-time dedupe
+    // need the exact same immutable report version. A failed save never claims success.
+    reportId = (await saveWeeklyReport(env, body.text, nowMs, { runId, quality: weeklyQuality }))
+      .id;
+    if (delivery.suppressed) {
+      if (draftId != null) {
+        await dropPendingEdits(env, target.chatId, draftId);
+        if (draftId !== delivery.delivery.messageId)
+          await enqueueOutbox(
+            env,
+            {
+              chatId: target.chatId,
+              kind: 'delete',
+              dedupeKey: `weekly-delete:${runId}`,
+              payload: { message_id: draftId },
+            },
+            nowMs,
+          );
+        await scheduleDrain(env, ctx, nowMs);
+      }
+      return json({
+        ok: true,
+        queued: 0,
+        report_id: reportId,
+        suppressed: 'unchanged-weekly-evidence',
+      });
+    }
+  }
   if (profile === 'inbox-digest' && NOTHING_RE.test(body.text)) {
     if (draftId != null) {
       await dropPendingEdits(env, target.chatId, draftId);
@@ -479,9 +546,10 @@ async function handleDeliver(env, ctx, runId, body, nowMs) {
       ? await readMailItemIds(env, saved.id).catch(() => new Set())
       : new Set();
   const mailHint = mailItems.length ? '✉️ Обери лист нижче, щоб дія стосувалася саме його.' : '';
-  const weeklyLabel = weeklyQuality
-    ? `${weeklyQuality.status === 'failed' ? 'Не сформовано' : weeklyQuality.status === 'partial' ? 'Частковий звіт' : 'Готовий звіт'} · станом на ${new Intl.DateTimeFormat('uk-UA', { timeZone: 'Europe/Kyiv', dateStyle: 'short', timeStyle: 'short' }).format(new Date(weeklyQuality.period.asOf))} (Київ)\n\n`
-    : '';
+  const weeklyLabel =
+    weeklyQuality && !weeklyQuality.overview
+      ? `${weeklyQuality.status === 'failed' ? 'Не сформовано' : weeklyQuality.status === 'partial' ? 'Частковий звіт' : 'Готовий звіт'} · станом на ${new Intl.DateTimeFormat('uk-UA', { timeZone: 'Europe/Kyiv', dateStyle: 'short', timeStyle: 'short' }).format(new Date(weeklyQuality.period.asOf))} (Київ)\n\n`
+      : '';
   const missingLabels = /** @type {Record<string, string>} */ ({
     stats: 'особиста статистика',
     state: 'прогрес',
@@ -514,21 +582,22 @@ async function handleDeliver(env, ctx, runId, body, nowMs) {
     'prepared-data-not-read': 'підготовлені показники',
   });
   const coverageNotice =
-    weeklyQuality?.status === 'partial' && weeklyQuality.missing.length
+    weeklyQuality?.status === 'partial' && !weeklyQuality.overview && weeklyQuality.missing.length
       ? `Неповні дані: ${weeklyQuality.missing.map((/** @type {string} */ name) => missingLabels[name] ?? 'джерело').join(', ')}.\n\n`
       : '';
   const userText =
     weeklyLabel +
     coverageNotice +
-    (saved?.name === 'tutor' ? renderTutorWorkerText(body.text) : body.text);
+    (weeklyQuality?.overview?.text ??
+      (saved?.name === 'tutor' ? renderTutorWorkerText(body.text) : body.text));
   const deliverText = [factProposalPrompt ?? userText, notice, shopCard, placeHint, mailHint]
     .filter(Boolean)
     .join('\n\n');
   const longWorker = saved != null && saved.text.length > WORKER_CHAT_MAX;
-  // Профіль уже прочитано до відправки: під тижневим звітом мають стояти кнопки
-  // «що з цим робити» (PR-6 §2.5), а прикріпити їх можна лише разом із текстом.
+  // Короткий тижневий огляд отримує посилання на збережений період;
+  // старі профілі зберігають свої кнопки дій.
   const buttons = [
-    ...(body.buttons ?? []),
+    ...(weeklyQuality?.overview ? [] : (body.buttons ?? [])),
     ...(saved ? priceShopButtons(saved.id, shopOptions) : []),
     ...(saved ? placeSearchButtons(saved.id, placeOptionsFound) : []),
     ...(saved?.name === 'mail-secretary'
@@ -554,23 +623,45 @@ async function handleDeliver(env, ctx, runId, body, nowMs) {
               saved.text,
             )
           : []),
-    ...(weeklyQuality && weeklyQuality.status !== 'failed' ? reportButtons() : []),
+    ...(weeklyQuality?.overview
+      ? weeklyOverviewButtons(env, target.chatId, weeklyQuality.periodFrom)
+      : weeklyQuality && weeklyQuality.status !== 'failed'
+        ? reportButtons()
+        : []),
   ];
   // Незіслані партіали цієї ж чернетки більше не потрібні: інакше черга
   // спершу покаже обірваний шматок і лише потім фінал.
   if (draftId != null) await dropPendingEdits(env, target.chatId, draftId);
+  if (
+    weeklyQuality?.overview &&
+    draftId != null &&
+    weeklyQuality.delivery?.messageId != null &&
+    draftId !== weeklyQuality.delivery.messageId
+  )
+    await enqueueOutbox(
+      env,
+      {
+        chatId: target.chatId,
+        kind: 'delete',
+        dedupeKey: `weekly-delete:${runId}`,
+        payload: { message_id: draftId },
+      },
+      nowMs,
+    );
   const { queued } = await enqueueOutbox(
     env,
     {
       chatId: target.chatId,
       threadId: target.threadId,
       kind: 'send',
+      ...(weeklyQuality?.overview ? { dedupeKey: `weekly:${runId}` } : {}),
       editFirstMessageId: draftId,
       // Markdown моделі → HTML Telegram частинами (tg/markdown.mjs); текст у
       // reports/сесії лишається Markdown.
       parts: renderMdParts(deliverText),
       payload: {
         final_run_id: runId,
+        ...(weeklyQuality?.overview && reportId ? { weekly_report_id: reportId } : {}),
         ...(buttons.length ? { reply_markup: { inline_keyboard: buttons } } : {}),
         // Research summaries often contain source URLs; previews can obscure
         // the actual choices (for example, restaurant results).
@@ -598,11 +689,9 @@ async function handleDeliver(env, ctx, runId, body, nowMs) {
     if (ctx?.waitUntil) ctx.waitUntil(drive);
     else await drive;
   }
-  // Звіт профілю weekly-review (S-9-1): текст у reports разом із хешем
-  // інструкції. ПІСЛЯ enqueue: власник має отримати звіт, навіть якщо запис у
-  // базу впав, - тоді про це скаже лог і рядок у відповіді, а не тиша в темі.
-  let reportId = null;
-  if (profile === 'weekly-review') {
+  // Старий текстовий формат зберігається після enqueue. Новий короткий огляд
+  // уже збережено вище, до створення кнопки та перевірки черги.
+  if (profile === 'weekly-review' && !reportId) {
     try {
       reportId = (
         await saveWeeklyReport(env, body.text, nowMs, {
@@ -683,6 +772,14 @@ async function handleTaint(env, runId, body, nowMs) {
  * @param {number} nowMs
  */
 async function handleStatus(env, ctx, runId, body, nowMs) {
+  // Weekly model output is a decision document, never a user-visible draft.
+  // Also protects a cached Brain version that still streams partial text.
+  const statusProfile = await readRunProfile(env, runId).catch((error) => {
+    if (/no such table: runs/iu.test(String(error))) return null;
+    throw error;
+  });
+  if (statusProfile === 'weekly-review')
+    return json({ ok: true, queued: 0, suppressed: 'weekly-decision-document' });
   // Той самий принцип, що в handleDeliver: edit іде в чат ПРОГОНУ, інакше
   // статусник DM-прогону «редагувався» б у чужому чаті (ревʼю PR-3).
   const info = await registryRunInfo(env, runId);

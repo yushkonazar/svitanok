@@ -1,6 +1,6 @@
-import { weekBounds } from '../tools/weekly.mjs';
-import { kyivDateKey } from '../../kyiv-time.mjs';
-import { reportPeriod } from '../report-period.mjs';
+import { completedWeekPeriod } from '../report-period.mjs';
+import { weeklySummary, WEEKLY_REPORT_FORMAT } from '../tools/weekly-summary.mjs';
+import { renderWeeklyOverview, parseWeeklyDecision } from './weekly-report-format.mjs';
 
 /** Conservative classification also protects unmodified historical rows.
  * @param {string} text @returns {'ready'|'partial'|'failed'} */
@@ -9,11 +9,15 @@ export function weeklyTextStatus(text) {
   const hasTitle = /^\s*(?:📊\s*)?(?:Тиждень|Тижневий звіт)(?=\s|$)/iu.test(title);
   const has = (/** @type {string} */ heading) =>
     new RegExp(`^\\s*(?:#{1,4}\\s*|\\*\\*)?${heading}(?:\\*\\*)?\\s*$`, 'mu').test(text);
+  // New reports are rendered by the core from a bounded decision document.
+  // Historical free text still needs the old conservative shape check.
+  if (hasTitle && /\n• (?:Справи|Стан|Гроші): /u.test(text))
+    return /\nДані неповні[.:]/u.test(text) ? 'partial' : 'ready';
   if (!has('ГРОШІ') || !has('СИСТЕМА')) return 'failed';
   return hasTitle && has('ЩО ЗРОБИТИ') && !has('ЧОГО Я НЕ БАЧИВ') ? 'ready' : 'partial';
 }
 
-/** Only metadata is persisted; the prepared personal/financial payload is not.
+/** Persist bounded decision summaries and coverage, never raw answers or inventories.
  * @param {any} packet */
 export function weeklyPacketQuality(packet) {
   const missing = [
@@ -29,7 +33,7 @@ export function weeklyPacketQuality(packet) {
   if (packet.dropped?.length || packet.truncated) missing.push('truncated-data');
   if (packet.compaction?.detailsOmitted?.includes('personalPeriods.olderContextFrequencies'))
     missing.push('personal-context-coverage');
-  if (packet.packetVersion === 2) {
+  if ([2, 3].includes(packet.packetVersion)) {
     for (const [source, field] of /** @type {[string, string][]} */ ([
       ['finance', 'finance'],
       ['system', 'system'],
@@ -117,7 +121,45 @@ export function weeklyPacketQuality(packet) {
       packet.plan.upcomingOutsidePeriod?.truncated)
   )
     missing.push('plan-coverage');
-  return { period: packet.period, sources: packet.sources, missing };
+  const retryable = ['stats', 'plans', 'finance'].filter(
+    (name) => packet.sources?.[name]?.status === 'unavailable',
+  );
+  return {
+    period: packet.period,
+    sources: packet.sources,
+    missing,
+    retryable: packet.truncated || packet.dropped?.length ? [] : retryable,
+    ...(packet.reportFormat === WEEKLY_REPORT_FORMAT
+      ? {
+          reportFormat: WEEKLY_REPORT_FORMAT,
+          details: weeklySummary(packet),
+          overviewMissing: overviewMissing(packet, missing),
+        }
+      : {}),
+  };
+}
+
+/** Optional inventories/price history stay visible in details. Core life facts
+ * retain strict partial/failed status when their actual coverage is incomplete.
+ * @param {any} packet @param {string[]} missing */
+function overviewMissing(packet, missing) {
+  return missing.filter(
+    (code) =>
+      [
+        'stats',
+        'plans',
+        'finance',
+        'truncated-data',
+        'prepared-data-not-read',
+        'personal-summary',
+        'plans-summary',
+        'finance-summary',
+        'finance-conversion',
+        'finance-classification',
+        'personal-time-coverage',
+      ].includes(code) ||
+      (code === 'plan-coverage' && packet.plan?.complete === false),
+  );
 }
 
 /** @param {Env} env @param {string} runId @param {number} fallbackMs */
@@ -150,8 +192,6 @@ export async function weeklyRunAnchor(env, runId, fallbackMs) {
 export async function evaluateWeeklyReport(env, text, nowMs, options = {}) {
   const anchor = options.runId ? await weeklyRunAnchor(env, options.runId, nowMs) : null;
   const asOfMs = anchor?.asOfMs ?? nowMs;
-  const today = kyivDateKey(new Date(asOfMs));
-  const week = weekBounds(today);
   let context = null;
   try {
     context = anchor?.context ? JSON.parse(String(anchor.context)) : null;
@@ -159,21 +199,116 @@ export async function evaluateWeeklyReport(env, text, nowMs, options = {}) {
     /* unverified */
   }
   const missing = Array.isArray(context?.missing) ? context.missing : ['prepared-data-not-read'];
-  const contentStatus = weeklyTextStatus(text);
+  const period = context?.period?.dateFrom ? context.period : completedWeekPeriod(asOfMs);
+  const overview =
+    context?.reportFormat === WEEKLY_REPORT_FORMAT || parseWeeklyDecision(text) != null
+      ? renderWeeklyOverview(
+          text,
+          { ...context, period, missing: context?.overviewMissing ?? missing },
+          options.failed,
+        )
+      : null;
+  const contentStatus = overview ? (overview.valid ? 'ready' : 'failed') : weeklyTextStatus(text);
   const status =
     options.failed || contentStatus === 'failed'
       ? 'failed'
-      : missing.length || contentStatus === 'partial'
+      : (overview ? (context?.overviewMissing ?? missing).length : missing.length) ||
+          contentStatus === 'partial'
         ? 'partial'
         : 'ready';
   return {
     status,
-    periodFrom: week.from,
-    periodTo: week.to,
-    period: reportPeriod(week.from, today, asOfMs),
+    periodFrom: period.dateFrom,
+    periodTo: period.dateTo,
+    period,
     missing,
     sources: context?.sources ?? {},
+    retryable: context?.retryable ?? [],
+    ...(overview
+      ? {
+          reportFormat: WEEKLY_REPORT_FORMAT,
+          details: context?.details,
+          overviewMissing: context?.overviewMissing ?? missing,
+          overview,
+        }
+      : {}),
   };
+}
+
+/** Merge only evidence with the exact frozen report window and all-source scope.
+ * Expense-only fallback queries do not prove balances, repayment or four baselines.
+ * @param {any} context @param {string} tool @param {any} args @param {any} result */
+export function mergeWeeklyEvidence(context, tool, args, result) {
+  if (!context?.period || !context.reportFormat) return context;
+  const period = tool === 'finance.query' ? result?.selection?.period : result?.period;
+  if (period?.from !== context.period.from || period?.to !== context.period.to) return context;
+  const next = structuredClone(context);
+  if (tool === 'finance.query') {
+    if (
+      result.mode !== 'analytics' ||
+      args.id ||
+      args.category ||
+      args.merchant ||
+      args.flags?.length ||
+      ['account', 'source', 'status'].some((key) => (args[key] ?? 'all') !== 'all')
+    )
+      return context;
+    if (!result.summary || !result.sourceTotals || !Array.isArray(result.categories))
+      return context;
+    const existing = next.details?.finance ?? {};
+    next.details ??= {};
+    next.details.finance = {
+      ...existing,
+      period,
+      summary: result.summary,
+      sourceTotals: result.sourceTotals,
+      categories: result.categories,
+      quality: result.quality,
+      coverage: result.coverage,
+    };
+    // The tool deliberately does not return the complete report context.
+    next.missing = [
+      ...new Set(
+        next.missing.filter(
+          (/** @type {string} */ code) =>
+            ![
+              'finance',
+              'finance-summary',
+              'finance-conversion',
+              'finance-classification',
+            ].includes(code),
+        ),
+      ),
+    ];
+    if (result.quality?.unknownCurrencyCount) next.missing.push('finance-conversion');
+    if (result.quality?.unclassifiedCount || result.quality?.invalidDirectionCount)
+      next.missing.push('finance-classification');
+    if (!existing.context) next.missing.push('finance-context-coverage');
+    if (!existing.comparison) next.missing.push('finance-comparison');
+    if (!existing.review) next.missing.push('finance-evidence-coverage');
+    next.sources.finance = { status: 'available', coverage: 'expenses-only' };
+    next.retryable = (next.retryable ?? []).filter(
+      (/** @type {string} */ code) => code !== 'finance',
+    );
+  } else if (tool === 'runs.query' && result.runs && !result.truncated && !result.dropped?.length) {
+    next.details ??= {};
+    next.details.system = result;
+    const check = weeklyPacketQuality({
+      ...next.details,
+      sources: { ...next.sources, system: { status: 'available' } },
+    });
+    next.missing = [
+      ...next.missing.filter(
+        (/** @type {string} */ code) => code !== 'system' && !code.startsWith('system-'),
+      ),
+      ...check.missing.filter((code) => code.startsWith('system-')),
+    ];
+    next.sources.system = { status: 'available' };
+  } else return context;
+  next.details = weeklySummary({ ...next.details, sources: next.sources, period: next.period });
+  next.missing = [...new Set(next.missing)];
+  next.overviewMissing = overviewMissing(next.details, next.missing);
+  return next;
 }
 
 /** Legacy error messages are kept but never returned as a usable review.

@@ -17,6 +17,7 @@ import { renderCheckinNotice } from '../checkin/extensions.mjs';
 import { renderPlanNotice } from '../motivation/jobs.mjs';
 import { credentialNoticeCurrent, googleScopeNoticeCurrent } from '../ops/notices.mjs';
 import { leisureDigestCurrent, leisurePlanAlertCurrent } from '../leisure/notifications.mjs';
+import { weeklyDispatch, recordWeeklyDelivery } from '../brain/weekly-delivery.mjs';
 import {
   splitMessage,
   nextAttemptAt,
@@ -58,7 +59,7 @@ function db(env) {
  * @param {{ chatId: string | number, threadId?: string | number | null,
  *   kind: 'send' | 'edit' | 'delete' | 'document' | 'contact' | 'venue',
  *   payload: Record<string, unknown>, editFirstMessageId?: number | null,
- *   parts?: import('./markdown.mjs').MdPart[] }} item
+ *   parts?: import('./markdown.mjs').MdPart[], dedupeKey?:string }} item
  * @param {number} nowMs
  * @returns {Promise<{ queued: number }>}
  */
@@ -89,13 +90,15 @@ export async function enqueueOutbox(env, item, nowMs) {
     db(env)
       .prepare(
         `INSERT INTO outbox (id, chat_id, thread_id, kind, payload_json, attempts, next_at, status)
-         VALUES (?, ?, ?, ?, ?, 0, ?, 'pending')`,
+         VALUES (?, ?, ?, ?, ?, 0, ?, 'pending') ON CONFLICT(id) DO NOTHING`,
       )
       .bind(
         // Id СОРТОВНИЙ (час + індекс частини + uuid): порядок частин тримає
         // ORDER BY next_at, id, а next_at у всіх той самий - зсув на +i мс
         // робив би пізніші частини «не due» для драйну одразу після enqueue.
-        `${String(nowMs).padStart(15, '0')}-${i}-${crypto.randomUUID()}`,
+        item.dedupeKey
+          ? `${item.dedupeKey}:${i}`
+          : `${String(nowMs).padStart(15, '0')}-${i}-${crypto.randomUUID()}`,
         String(item.chatId),
         item.threadId == null ? null : String(item.threadId),
         row.kind,
@@ -103,8 +106,9 @@ export async function enqueueOutbox(env, item, nowMs) {
         new Date(nowMs).toISOString(),
       ),
   );
-  for (const s of statements) await s.run();
-  return { queued: rows.length };
+  let queued = 0;
+  for (const s of statements) queued += (await s.run()).meta?.changes ?? 1;
+  return { queued };
 }
 
 /**
@@ -329,6 +333,28 @@ async function sendRow(env, row, nowMs) {
     console.error(`outbox: ряд ${row.id} з битим payload_json`);
     return { ok: false, retryAfterSec: null };
   }
+  const weeklyId = typeof payload.weekly_report_id === 'string' ? payload.weekly_report_id : null;
+  if (weeklyId) {
+    const dispatch = await weeklyDispatch(env, weeklyId, row.chat_id, row.thread_id);
+    if (!dispatch) return { ok: true };
+    if (dispatch.messageId != null) {
+      row = { ...row, kind: 'edit' };
+      payload.message_id = dispatch.messageId;
+      payload.fallback_send = true;
+    }
+  }
+  delete payload.weekly_report_id;
+  const recordWeekly = async (/** @type {{text:string}} */ result) => {
+    if (!weeklyId) return;
+    let messageId = payload.message_id;
+    try {
+      messageId = JSON.parse(result.text)?.result?.message_id ?? messageId;
+    } catch {
+      /* edit receipt */
+    }
+    if (typeof messageId === 'number' && Number.isSafeInteger(messageId))
+      await recordWeeklyDelivery(env, weeklyId, messageId, row.chat_id, row.thread_id);
+  };
   const atMostOnce = payload.delivery_safety === 'at-most-once';
   if (payload.trip_chain_notice) {
     const { tripChainNoticeCurrent } = await import('../trips/deletion.mjs');
@@ -438,6 +464,7 @@ async function sendRow(env, row, nowMs) {
     res = await attempt(body);
   }
   if (res.ok) {
+    await recordWeekly(res);
     // Нове повідомлення - у ring-buffer /clear (борг етапу 1: канал outbox не
     // трекався, тож відповіді асистента переживали очищення).
     if (row.kind === 'send' || row.kind === 'contact' || row.kind === 'venue') {
@@ -448,7 +475,10 @@ async function sendRow(env, row, nowMs) {
   // Редагування в той самий текст - уже доставлено, не збій (див.
   // isNotModifiedError): інакше ряд пішов би в ретраї й failed на відповіді,
   // яку власник давно бачить.
-  if (row.kind === 'edit' && isNotModifiedError(res.status, res.text)) return { ok: true };
+  if (row.kind === 'edit' && isNotModifiedError(res.status, res.text)) {
+    await recordWeekly(res);
+    return { ok: true };
+  }
   if (row.kind === 'delete' && isDeleteTargetGone(res.status, res.text)) return { ok: true };
   // Чернетки вже немає (власник стер статусник) - відповідь не сміє зникнути
   // разом із нею: шлемо її новим повідомленням, як робив би deliver без
@@ -463,6 +493,7 @@ async function sendRow(env, row, nowMs) {
       ...asSend,
     });
     if (res.ok) {
+      await recordWeekly(res);
       await trackOutboxSend(env, row, res);
       return { ok: true };
     }

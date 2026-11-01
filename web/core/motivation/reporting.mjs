@@ -8,12 +8,15 @@ import { planTaskState } from './status.mjs';
 export async function readPlanReport(env, period) {
   const source = await readPlanReportSource(env, period);
   const asOfMs = Date.parse(period.asOf);
+  const observedThrough = Math.min(asOfMs, Date.parse(period.to) - 1);
   const within = (/** @type {unknown} */ at) =>
     typeof at === 'string' &&
     Date.parse(at) >= Date.parse(period.from) &&
     Date.parse(at) < Date.parse(period.to);
   const known = (/** @type {unknown} */ at) =>
     typeof at === 'string' && Number.isFinite(Date.parse(at)) && Date.parse(at) <= asOfMs;
+  const occurred = (/** @type {unknown} */ at) =>
+    known(at) && Date.parse(String(at)) <= observedThrough;
   const state = { ...source.state, records: { ...source.state.records } };
   let unknownReportTimingCount = 0;
   for (const row of Object.values(state.records)) {
@@ -24,7 +27,7 @@ export async function readPlanReport(env, period) {
         !Number.isFinite(Date.parse(r.recordedAt)) || !Number.isFinite(Date.parse(r.actualAt)),
     ).length;
     const reports = row.reports.filter(
-      (/** @type {any} */ r) => known(r.recordedAt) && known(r.actualAt),
+      (/** @type {any} */ r) => known(r.recordedAt) && occurred(r.actualAt),
     );
     state.records[row.id] = {
       ...row,
@@ -40,7 +43,7 @@ export async function readPlanReport(env, period) {
   const events = source.events.filter((/** @type {any} */ e) => within(e.at));
   const touched = new Set(events.map((/** @type {any} */ e) => e.taskId ?? e.recordId));
   const tasks = Object.values(state.records)
-    .filter((t) => t.kind === 'task' && known(t.createdAt))
+    .filter((t) => t.kind === 'task' && occurred(t.createdAt))
     .map((t) => {
       const result = state.records[t.resultId];
       const facts = taskFacts(state, t);
@@ -54,7 +57,7 @@ export async function readPlanReport(env, period) {
         date: t.date,
         source: t.source ? 'finance' : 'manual',
         status: t.status,
-        lifecycle: planTaskState({ ...t, facts }, asOfMs),
+        lifecycle: planTaskState({ ...t, facts }, observedThrough),
         dueAt: t.dueAt,
         acceptedAt: t.acceptedAt ?? null,
         criterion: t.criterion,
@@ -86,7 +89,7 @@ export async function readPlanReport(env, period) {
       t.reports.length ||
       touched.has(t.id),
   );
-  const accepted = selected.filter((t) => known(t.acceptedAt));
+  const accepted = selected.filter((t) => occurred(t.acceptedAt));
   const selectedIds = new Set(selected.map((t) => t.id));
   const upcoming = tasks
     .filter(

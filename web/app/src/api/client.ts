@@ -53,6 +53,27 @@ function authHeaders(): Record<string, string> {
   return inTelegram() && tg ? { 'X-Telegram-Init-Data': tg.initData } : {};
 }
 
+export async function fetchWeeklyReports(
+  week?: string,
+): Promise<import('./weekly-report-schema.ts').WeeklyReports> {
+  if (!inTelegram()) return { report: null, history: [] };
+  const response = await fetch(
+    `/api/reports/weekly${week ? `?week=${encodeURIComponent(week)}` : ''}`,
+    {
+      cache: 'no-store',
+      headers: authHeaders(),
+    },
+  ).catch(() => {
+    throw new Error('Не вдалося завантажити огляди. Спробуй ще раз.');
+  });
+  throwIfSessionExpired(response);
+  if (!response.ok) throw new Error('Не вдалося завантажити огляди. Спробуй ще раз.');
+  const { weeklyReportsSchema } = await import('./weekly-report-schema.ts');
+  const parsed = weeklyReportsSchema.safeParse(await response.json().catch(() => null));
+  if (!parsed.success) throw new Error('Формат оглядів змінився. Онови застосунок.');
+  return parsed.data;
+}
+
 export async function fetchMemory(
   offset = 0,
   group = 'all',

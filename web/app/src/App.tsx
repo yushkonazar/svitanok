@@ -16,6 +16,7 @@ import { Fog } from './components/ui/Fog.tsx';
 import { SessionExpired } from './components/ui/SessionExpired.tsx';
 import { NavigationPager } from './components/ui/NavigationPager.tsx';
 import { useInputViewport } from './lib/useInputViewport.ts';
+import { weeklyReportPathForStartParam } from '../../core/brain/weekly-links.mjs';
 
 // Оболонка дашборда (дизайн v2, Svitanok.dc.html): туман-фон, хедер (лого/дата/
 // тема), скрол-контент, таб-бар-пігулка. Кожен таб = маршрут (deep-link
@@ -55,6 +56,11 @@ const TripsScreen = lazy(() =>
 const MemoryScreen = lazy(() =>
   import('./components/settings/MemoryPanel.tsx').then((module) => ({
     default: () => <module.MemoryPanel standalone />,
+  })),
+);
+const WeeklyReportScreen = lazy(() =>
+  import('./components/stats/WeeklyReportScreen.tsx').then((module) => ({
+    default: module.WeeklyReportScreen,
   })),
 );
 
@@ -112,6 +118,7 @@ const FULL: Array<{ path: string; title: string }> = [
   { path: SAVED_PATH, title: 'Збережене' },
   { path: BOOKMARKS_PATH, title: 'Закладки Світанку' },
   { path: '/memory', title: 'Пам’ять асистента' },
+  { path: '/weekly-report', title: 'Тижневі огляди' },
 ];
 
 /** Усі відомі маршрути — і таби, і повноекранні (для редіректу/deep-link). */
@@ -194,6 +201,8 @@ function pathForStartParam(param: string): string | null {
   if (plan) return plan;
   if (param === 'access') return '/settings?panel=access';
   if (param === 'memory') return '/memory';
+  const weekly = weeklyReportPathForStartParam(param);
+  if (weekly) return weekly;
   if (param.startsWith('leisure_')) return `/leisure?item=${encodeURIComponent(param.slice(8))}`;
   const checkin = checkinPathForStartParam(param);
   if (checkin) return checkin;
@@ -487,6 +496,8 @@ export function App() {
                   <SettingsScreen />
                 ) : full.path === '/memory' ? (
                   <MemoryScreen />
+                ) : full.path === '/weekly-report' ? (
+                  <WeeklyReportScreen />
                 ) : full.path === BOOKMARKS_PATH ? (
                   <BookmarksScreen />
                 ) : (

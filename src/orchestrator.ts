@@ -34,13 +34,7 @@ import {
   type Notifier,
   type OutboundMessage,
 } from './core/telegram.js';
-import {
-  formatKyivDateHeader,
-  formatKyivDateLabel,
-  joinSummarySegments,
-  formatWeeklyReviewMessage,
-  type WeeklyReviewData,
-} from './core/render.js';
+import { formatKyivDateHeader, formatKyivDateLabel, joinSummarySegments } from './core/render.js';
 import { buildBriefingData, type BriefingData } from './core/briefing.js';
 import { BRIEFING_FEEDBACK_KEY, briefingBlockPreference } from '../web/core/brief/feedback.mjs';
 import {
@@ -320,20 +314,14 @@ export async function runBriefing(deps: RunDeps, opts: RunOptions = {}): Promise
   // повідомлення (web/worker.js ensureAppWelcomePin, ставиться один раз через
   // /api/telegram/setup), а не щоденний inline-дубль під кожним брифінгом.
   // Усі блоки — лише в briefing.json, дашборд лишається єдиним місцем
-  // перегляду повного вмісту. У неділю додається окреме недільне повідомлення
-  // (Фаза B5, нижче) — messages може містити 1 або 2 елементи. messages — те,
-  // що РЕАЛЬНО йде в чат (і для sent, і для dry-run-превʼю).
+  // перегляду повного вмісту. messages відображає реальне надсилання
+  // щоденного повідомлення і для sent, і для dry-run-превʼю.
   const dailyMessage: OutboundMessage = {
     text: headerFull,
   };
-  // Фаза B5: недільний підсумок тижня — окреме HTML-повідомлення в ТУ САМУ
-  // тему (topicBriefing), одразу після щоденного. weekly-review вже в blocks
-  // (Фаза 2, лише в неділю) — просто читаємо його data, без нового I/O.
-  const weeklyData = clock.isSunday() ? blockData<WeeklyReviewData>('weekly-review') : undefined;
-  const weeklyMessage: OutboundMessage | undefined = weeklyData
-    ? { text: formatWeeklyReviewMessage(weeklyData) }
-    : undefined;
-  const toSend: OutboundMessage[] = weeklyMessage ? [dailyMessage, weeklyMessage] : [dailyMessage];
+  // Weekly life overviews have a single owner: the Monday weekly-review task.
+  // Keep legacy block data readable without sending a second overview.
+  const toSend: OutboundMessage[] = [dailyMessage];
   const messages = toSend.map((m) => m.text);
 
   if (dryRun) {
@@ -349,16 +337,6 @@ export async function runBriefing(deps: RunDeps, opts: RunOptions = {}): Promise
   // транзиєнтна HTTP-помилка чи задовгий текст) не має ретригерити повторну
   // відправку вже доставленого щоденного повідомлення при наступному запуску.
   await deps.notifier.send([dailyMessage]);
-
-  if (weeklyMessage) {
-    try {
-      await deps.notifier.send([weeklyMessage]);
-    } catch (e) {
-      log.warn(
-        `weekly-review: недільний підсумок не надіслано: ${e instanceof Error ? e.message : String(e)}`,
-      );
-    }
-  }
 
   // Запрошення на співбесіду, детектовані mail.ts (Блок P2c) — proposeCalendarChanges-
   // подібна пропозиція (той самий формат `assistantPending`, що агент P2b пише

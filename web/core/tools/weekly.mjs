@@ -15,6 +15,7 @@ import { addDaysToDateKey } from '../../reminders-core.mjs';
 import { weekStartKey } from '../../stats-core.mjs';
 import { ToolArgumentError } from '../tool-arguments.mjs';
 import { compactWeeklyDetails } from './weekly-compaction.mjs';
+import { weeklySummary, WEEKLY_REPORT_FORMAT } from './weekly-summary.mjs';
 
 /** Глибина сирих чек-інів у weekly за замовчуванням = вікно моделі
  *  «Індексу дня» (STATS_WINDOWS.checkinDeep). */
@@ -87,6 +88,7 @@ export function buildWeeklyDigest(input) {
   const week = weekBounds(todayKey);
   const doc = structuredClone({
     packetVersion: 2,
+    reportFormat: WEEKLY_REPORT_FORMAT,
     scope: 'weekly',
     sources: input.sources ?? {},
     period: input.period ?? null,
@@ -159,8 +161,11 @@ export function buildWeeklyDigest(input) {
     const text = JSON.stringify({ ...doc, dropped: [] });
     if (text.length <= input.cap) return { text, dropped: [] };
   }
-  // Never exchange entire business summaries for a misleading partial packet.
-  // A caller with an insufficient cap gets a small, explicitly unusable JSON.
+  // Unbounded maps can survive recursive compaction. Project finite decision
+  // summaries before considering an unusable manifest; one large section must
+  // never displace the other successfully read sections at the profile budget.
+  const summary = JSON.stringify(weeklySummary(doc));
+  if (summary.length <= input.cap) return { text: summary, dropped: [] };
   return shrinkToCap(doc, input.cap, []);
 }
 
