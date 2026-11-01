@@ -82,12 +82,14 @@ export async function main() {
   const savedCandidates = (await read(`dailyContent:candidates:${month}`)) as {
     facts?: unknown;
     quotes?: unknown;
+    editorialRepair?: unknown;
   } | null;
   const candidates =
     Array.isArray(savedCandidates?.facts) &&
     Array.isArray(savedCandidates?.quotes) &&
-    savedCandidates.facts.length >= monthDays(month) &&
-    savedCandidates.quotes.length >= monthDays(month)
+    ((savedCandidates.facts.length >= monthDays(month) &&
+      savedCandidates.quotes.length >= monthDays(month)) ||
+      savedCandidates.editorialRepair != null)
       ? savedCandidates
       : null;
   const attempts = before?.attempts ?? 0;
@@ -150,6 +152,7 @@ export async function main() {
         candidates,
         startDay,
         reviewed,
+        canReplenish: () => paidCalls + 2 <= 6 && searchCalls + 1 <= 3,
         reviewCheckpoint: (value) => write(`dailyContent:review:${month}`, value),
         checkpoint: (value) => write(`dailyContent:candidates:${month}`, value),
         respond: async (request) => {
