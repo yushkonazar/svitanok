@@ -1,0 +1,424 @@
+/* Today: quick actions first; detail and explanations appear on request. */
+.renewal-shell .app-header {
+  gap: 8px;
+  margin-bottom: 14px;
+}
+.app-header-actions {
+  position: relative;
+}
+.app-header-actions > button,
+.app-header-actions > a {
+  min-width: 40px;
+  min-height: 44px;
+  width: 40px;
+  height: 44px;
+  flex-shrink: 0;
+}
+.app-header-actions > span {
+  position: absolute;
+  right: 0;
+  top: -13px;
+  padding: 0 5px;
+  line-height: 13px;
+  font-size: 9px;
+}
+.app-header-actions :is(a, button):focus-visible {
+  outline: 2px solid var(--color-a2);
+  outline-offset: 3px;
+}
+.today-hero::before {
+  content: none;
+}
+.today-hero .renewal-title {
+  font-size: 32px;
+  line-height: 1.12;
+}
+.today-hero .renewal-page-heading .renewal-eyebrow {
+  margin-bottom: 8px;
+}
+.today-overview {
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
+  align-items: stretch;
+}
+.today-overview > a,
+.today-finance-card {
+  min-width: 0;
+  min-height: 124px;
+  padding: 14px;
+  border: 1px solid var(--color-glassb);
+  border-radius: 18px;
+  background: var(--color-glass);
+}
+.today-finance-card {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 13px;
+}
+.today-overview .today-finance-card a {
+  min-height: 0;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  gap: 4px;
+}
+.today-finance-main strong {
+  font:
+    650 clamp(18px, 5.5vw, 25px) 'JetBrains Mono Variable',
+    monospace;
+  letter-spacing: -0.055em;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+.today-finance-main .renewal-eyebrow {
+  display: flex;
+  justify-content: space-between;
+  font-size: 9px;
+}
+.today-last-operation {
+  display: flex;
+  flex-direction: column;
+}
+.today-last-operation small {
+  font-size: 10px;
+}
+.today-last-operation > div {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  min-width: 0;
+}
+.today-operation-description {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10px;
+  color: var(--color-tx2);
+}
+.today-last-operation .finance-transaction-amount {
+  flex-shrink: 0;
+  font-size: 11px;
+}
+.today-quick-action {
+  font-size: 12px;
+}
+.currency-change {
+  display: block;
+  margin-top: 5px;
+  font:
+    550 10px 'JetBrains Mono Variable',
+    monospace;
+  color: var(--color-tx2);
+}
+.currency-change[data-direction='up'] {
+  color: var(--color-a2);
+}
+.currency-change[data-direction='down'] {
+  color: var(--color-info);
+}
+.currency-change small {
+  display: inline;
+  color: var(--color-tx3);
+  font:
+    10px 'Manrope Variable',
+    sans-serif;
+}
+.currency-converter-inputs {
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr);
+  gap: 12px;
+}
+.currency-result-label {
+  display: block;
+  margin-top: 18px;
+  color: var(--color-tx2);
+  font-size: 11px;
+}
+.renewal-converted {
+  overflow-wrap: anywhere;
+}
+.observation-interactive {
+  cursor: crosshair;
+  touch-action: pan-y;
+}
+.renewal-observation > div:first-child {
+  min-height: 25px;
+}
+.weather-metric-help {
+  min-height: 36px;
+  border-bottom: 1px dotted currentColor;
+  border-radius: 5px;
+}
+.weather-metric-help[aria-expanded='true'] {
+  background: var(--color-glass);
+}
+.weather-context {
+  margin-top: -8px;
+  padding: 12px 14px;
+  border-left: 2px solid var(--color-a2);
+  border-radius: 0 12px 12px 0;
+  background: var(--color-glass);
+  color: var(--color-tx2);
+  font-size: 12px;
+  line-height: 1.65;
+}
+.weather-outlook {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px 12px;
+  color: var(--color-tx2);
+  font-size: 12px;
+}
+.renewal-weather {
+  --precip-rain: #8abaff;
+  --precip-snow: #91d9d2;
+  --precip-mixed: #c1a5ed;
+}
+:root[data-theme='light'] .renewal-weather {
+  --precip-rain: #2869b4;
+  --precip-snow: #167c76;
+  --precip-mixed: #8254ac;
+}
+.weather-legend {
+  flex-wrap: wrap;
+  row-gap: 5px;
+}
+.today-news {
+  padding: 18px;
+}
+.today-news-story {
+  display: block;
+}
+.today-news-art {
+  height: 132px;
+  overflow: hidden;
+  border-radius: 14px;
+  margin-bottom: 14px;
+}
+.today-news-art > * {
+  height: 100%;
+  width: 100%;
+}
+.today-news-art img {
+  height: 100%;
+  width: 100%;
+  object-fit: cover;
+}
+.today-news h2 {
+  font-size: 17px;
+}
+.today-news-pager {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 12px;
+}
+.today-news-pager button {
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  font-size: 22px;
+}
+.today-news-pager button:disabled {
+  opacity: 0.3;
+}
+.daily-content-card {
+  position: relative;
+}
+.daily-content-copy {
+  font-size: 15px;
+  line-height: 1.8;
+}
+.daily-content-title {
+  font-size: 22px;
+  line-height: 1.35;
+}
+.daily-content-details {
+  margin-top: 20px;
+  padding-top: 14px;
+  border-top: 1px solid var(--color-hair);
+}
+.daily-content-details summary {
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+}
+.daily-quote-text > p {
+  font-size: 24px;
+  line-height: 1.5;
+  letter-spacing: -0.02em;
+}
+.daily-content-feedback {
+  opacity: 0.85;
+}
+.daily-content-feedback button {
+  font-size: 11px;
+}
+.history-map-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 10px;
+}
+.history-map-controls .renewal-secondary {
+  width: 44px;
+  padding: 0;
+  font-size: 22px;
+}
+.today-focus {
+  padding: 16px 18px;
+}
+.today-focus-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  cursor: pointer;
+  list-style: none;
+  min-height: 44px;
+}
+.today-focus-summary::after {
+  content: '⌄';
+  color: var(--color-tx3);
+  transition: transform 0.2s;
+}
+.today-focus-summary > span:first-child {
+  flex: 1;
+}
+.today-focus[open] .today-focus-summary::after {
+  transform: rotate(180deg);
+}
+.today-focus-summary::-webkit-details-marker {
+  display: none;
+}
+.today-focus-summary > span:first-child {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.today-focus-summary strong {
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.today-focus-summary .renewal-pill {
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+.today-focus[open] .today-focus-summary {
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--color-hair);
+}
+.weekly-report-state {
+  display: flex;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.weekly-insight > h2,
+.weekly-next > h2 {
+  font-size: 21px;
+  line-height: 1.35;
+  font-weight: 750;
+  letter-spacing: -0.035em;
+  margin: 12px 0 16px;
+}
+.weekly-insight-copy {
+  color: var(--color-tx2);
+  font-size: 14px;
+  line-height: 1.8;
+  margin-top: 12px;
+}
+.weekly-insight-personal {
+  border-top: 2px solid var(--color-idx-recovery);
+}
+.weekly-insight-plan {
+  border-top: 2px solid var(--color-a2);
+}
+.weekly-insight-finance {
+  border-top: 2px solid var(--color-info);
+}
+.weekly-insight-evidence {
+  margin-top: 18px;
+  font-size: 11px;
+  color: var(--color-tx3);
+}
+.weekly-insight-evidence summary {
+  cursor: pointer;
+  min-height: 32px;
+}
+.weekly-insight-evidence > div {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(100px, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+.weekly-insight-evidence span {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border-radius: 12px;
+  padding: 10px;
+  background: var(--color-glass);
+}
+.weekly-insight-evidence b {
+  color: var(--color-tx);
+  font-size: 12px;
+}
+.weekly-next > p:not(.renewal-eyebrow) {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  font-size: 14px;
+  line-height: 1.7;
+  margin-top: 16px;
+}
+.weekly-next > p > span {
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  width: 27px;
+  height: 27px;
+  border-radius: 50%;
+  color: var(--color-a2);
+  background: var(--color-glass);
+  font-size: 12px;
+  font-weight: 700;
+}
+.weekly-evidence-root > summary {
+  cursor: pointer;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+}
+@media (max-width: 359px) {
+  .renewal-shell .app-header {
+    padding-left: 12px;
+    padding-right: 12px;
+    gap: 6px;
+  }
+  .app-brand-mark {
+    width: 24px;
+    height: 24px;
+  }
+  .app-brand-title {
+    font-size: 13px;
+  }
+  .app-header-actions {
+    gap: 2px;
+  }
+  .today-hero .renewal-title {
+    font-size: 28px;
+  }
+  .today-overview > a,
+  .today-finance-card {
+    padding: 11px;
+  }
+}

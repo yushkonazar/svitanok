@@ -118,7 +118,8 @@ export const PROFILES: Record<ProfileName, RunProfile> = {
     name: 'weekly-review',
     model: 'claude-sonnet-5',
     openAiModelTier: 'advanced',
-    maxOutputTokens: 3_000,
+    // Telegram excerpt plus the bounded Mini App narrative share one JSON reply.
+    maxOutputTokens: 4_800,
     toolNames: WEEKLY_REVIEW_TOOL_NAMES.filter((n) => TOOL_BY_MCP_NAME.has(n)),
     maxToolCalls: 6,
     maxTurns: 30,

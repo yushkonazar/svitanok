@@ -1,16 +1,24 @@
-import { useState } from 'react';
+import { useId, useState } from 'react';
 import type { OnThisDayData } from '../../api/briefing-schema.ts';
 import { openLink } from '../../telegram.ts';
 import { WORLD_LAND } from '../../lib/worldLand.ts';
+import { fitHistoryMap, mapLongitude, zoomHistoryMap } from '../../lib/historyMap.ts';
+import { Explanation } from '../ui/Explanation.tsx';
+import { pluralUk } from '../../lib/plural.ts';
 
 export function ThisDayBlock({ d }: { d: OnThisDayData }) {
   const [selected, select] = useState(0);
   const [mappedOnly, setMappedOnly] = useState(false);
+  const [zoom, setZoom] = useState(1);
+  const landId = useId();
   const allEvents = [...d.events].sort((a, b) => a.year - b.year);
   const mappedCount = allEvents.filter((e) => e.location).length;
   const events = mappedOnly && mappedCount > 0 ? allEvents.filter((e) => e.location) : allEvents;
   const index = Math.min(selected, Math.max(0, events.length - 1));
   const event = events[index];
+  const fitted = fitHistoryMap(events.flatMap((e) => (e.location ? [e.location] : [])));
+  const box = zoomHistoryMap(fitted, zoom, event?.location);
+  const scale = box.width / 360;
   if (!event) return null;
   return (
     <section className="renewal-card">
@@ -19,27 +27,36 @@ export function ThisDayBlock({ d }: { d: OnThisDayData }) {
           <p className="renewal-eyebrow mb-2">У ЦЕЙ ДЕНЬ</p>
           <h2 className="text-lg font-bold">День на мапі історії</h2>
         </div>
-        <span className="renewal-muted">{events.length} подій</span>
+        <span className="renewal-muted">
+          {events.length} {pluralUk(events.length, ['подія', 'події', 'подій'])}
+        </span>
       </div>
-      <p className="renewal-chart-note mb-3">
+      <Explanation className="mb-3">
         Події цього дня за роками. Обери позначку на мапі або пересунь часову стрічку — опис і
         джерело зміняться разом.
-      </p>
+      </Explanation>
       <div className="relative overflow-hidden rounded-2xl border border-glassb bg-bg">
         <svg
-          viewBox="0 0 360 180"
+          viewBox={`${box.x} ${box.y} ${box.width} ${box.height}`}
+          data-map-width={box.width}
           className="block w-full"
           role="group"
           aria-label="Мапа місць історичних подій"
         >
-          <rect width="360" height="180" fill="var(--color-bg)" />
-          <path
-            d={WORLD_LAND}
-            fill="color-mix(in srgb, var(--color-tx3) 18%, var(--color-bg2))"
-            stroke="color-mix(in srgb, var(--color-tx2) 45%, transparent)"
-            strokeWidth=".25"
-            fillRule="evenodd"
-          />
+          <rect x={box.x} y={box.y} width={box.width} height={box.height} fill="var(--color-bg)" />
+          <defs>
+            <path
+              id={landId}
+              d={WORLD_LAND}
+              fill="color-mix(in srgb, var(--color-tx3) 18%, var(--color-bg2))"
+              stroke="color-mix(in srgb, var(--color-tx2) 45%, transparent)"
+              strokeWidth=".25"
+              fillRule="evenodd"
+            />
+          </defs>
+          {[-360, 0, 360].map((offset) => (
+            <use key={offset} href={`#${landId}`} transform={`translate(${offset},0)`} />
+          ))}
           {events.map(
             (e, i) =>
               e.location && (
@@ -59,26 +76,27 @@ export function ThisDayBlock({ d }: { d: OnThisDayData }) {
                   style={{ cursor: 'pointer' }}
                 >
                   <circle
-                    cx={e.location.lon + 180}
+                    cx={mapLongitude(e.location.lon, box)}
                     cy={90 - e.location.lat}
-                    r="11"
+                    r={13 * scale}
                     fill="transparent"
                   />
                   <circle
-                    cx={e.location.lon + 180}
+                    cx={mapLongitude(e.location.lon, box)}
                     cy={90 - e.location.lat}
-                    r={index === i ? 6 : 3.5}
+                    r={(index === i ? 6 : 3.5) * scale}
                     fill={index === i ? 'var(--color-a2)' : 'var(--color-a1)'}
                     fillOpacity={index === i ? 1 : 0.65}
                   />
                   {index === i && (
                     <circle
-                      cx={e.location.lon + 180}
+                      cx={mapLongitude(e.location.lon, box)}
                       cy={90 - e.location.lat}
-                      r="11"
+                      r={11 * scale}
                       fill="none"
                       stroke="var(--color-a2)"
                       strokeOpacity=".4"
+                      strokeWidth={scale}
                     />
                   )}
                 </g>
@@ -94,6 +112,31 @@ export function ThisDayBlock({ d }: { d: OnThisDayData }) {
           </p>
         )}
       </div>
+      {mappedCount > 0 && (
+        <div className="history-map-controls">
+          <button
+            type="button"
+            className="renewal-secondary"
+            aria-label="Віддалити мапу"
+            disabled={box.width >= 360}
+            onClick={() => setZoom(Math.max(fitted.width / 360, zoom / 1.5))}
+          >
+            −
+          </button>
+          <button type="button" className="renewal-link" onClick={() => setZoom(1)}>
+            Усі події
+          </button>
+          <button
+            type="button"
+            className="renewal-secondary"
+            aria-label="Наблизити мапу"
+            disabled={box.width <= 10}
+            onClick={() => setZoom(Math.min(fitted.width / 10, zoom * 1.5))}
+          >
+            +
+          </button>
+        </div>
+      )}
       <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-xs text-tx2">
         <span>
           З місцем: {mappedCount} / {allEvents.length}
@@ -155,7 +198,13 @@ export function ThisDayBlock({ d }: { d: OnThisDayData }) {
       <p className="text-sm leading-relaxed mt-3" aria-live="polite" aria-atomic="true">
         {event.text}
       </p>
-      <p className="renewal-muted mt-2">
+      {event.location && (
+        <p className="renewal-muted mt-2">
+          {event.location.kind === 'associated_article' ? 'Пов’язане місце' : 'Місце події'} ·{' '}
+          {event.location.label}
+        </p>
+      )}
+      <Explanation className="mt-2">
         {event.location
           ? event.location.kind === 'event_place'
             ? `Місце проведення — ${event.location.label}. Позначка показує місце з джерела, не обов’язково точну адресу.`
@@ -163,7 +212,7 @@ export function ThisDayBlock({ d }: { d: OnThisDayData }) {
               ? event.location.label
               : `Місце зі статті «${event.location.label}». Координати пов’язані зі статтею й можуть відрізнятися від точного місця події.`
           : 'Місце ще не визначено: у доступних даних немає однозначного зв’язку події з координатами.'}
-      </p>
+      </Explanation>
       {event.url && (
         <button className="renewal-link mt-3" onClick={() => openLink(event.url!)}>
           Прочитати джерело ↗

@@ -2,6 +2,23 @@
 
 const KYIV = 'Europe/Kyiv';
 
+/** A forecast beyond midnight must not look like an hour from today. */
+export function forecastTime(point: { h: number; at?: number }, nowMs: number): string {
+  const clock = `${String(point.h % 24).padStart(2, '0')}:00`;
+  if (point.at == null || !Number.isFinite(point.at)) return `о ${clock}`;
+  const day = (ms: number) =>
+    new Intl.DateTimeFormat('en-CA', {
+      timeZone: KYIV,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).format(new Date(ms));
+  const date = day(point.at * 1000),
+    today = day(nowMs);
+  const days = (Date.parse(date) - Date.parse(today)) / 86400000;
+  return `${days === 0 ? 'сьогодні' : days === 1 ? 'завтра' : new Intl.DateTimeFormat('uk-UA', { timeZone: KYIV, day: 'numeric', month: 'short' }).format(new Date(point.at * 1000))} о ${clock}`;
+}
+
 /** unix-секунди → «HH:MM» за київським часом; '—' якщо 0/невідомо. */
 export function fmtClock(unix: number): string {
   return unix

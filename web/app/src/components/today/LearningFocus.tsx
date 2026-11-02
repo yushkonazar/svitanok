@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useTick } from '../../lib/useTick.ts';
 import { haptic } from '../../telegram.ts';
+import { Explanation } from '../ui/Explanation.tsx';
 
 const KEY = 'svitanok:learning-focus';
 function read(): { task?: string; minutes?: number; until?: number } {
@@ -29,16 +30,28 @@ export function LearningFocus() {
     }
   };
   return (
-    <section>
-      <div className="renewal-section-label">
-        Час на важливе<span className="renewal-pill">Фокус-таймер</span>
-      </div>
-      <div className="renewal-card">
-        <h2 className="text-lg font-semibold">{plan.task || 'Одна справа без поспіху'}</h2>
-        <p className="renewal-muted mt-2">
+    <details className="renewal-card today-focus">
+      <summary className="today-focus-summary">
+        <span>
+          <span className="renewal-eyebrow">Час на важливе</span>
+          <strong>{plan.task || 'Одна справа. Твій ритм.'}</strong>
+        </span>
+        <span
+          className="renewal-pill"
+          role={remaining != null && remaining > 0 ? 'timer' : undefined}
+        >
+          {remaining != null && remaining > 0
+            ? `${String(Math.floor(remaining / 60)).padStart(2, '0')}:${String(remaining % 60).padStart(2, '0')}`
+            : remaining === 0
+              ? 'Завершено'
+              : `${plan.minutes ?? 25} хв`}
+        </span>
+      </summary>
+      <div className="mt-4">
+        <Explanation className="mt-2">
           Обери справу та виділи 15–60 хвилин. Це твій таймер, а не автоматична рекомендація
           асистента. План зберігається лише на цьому пристрої.
-        </p>
+        </Explanation>
         {remaining != null && (
           <div className="renewal-focus-clock" role="timer">
             {String(Math.floor(remaining / 60)).padStart(2, '0')}:
@@ -99,6 +112,6 @@ export function LearningFocus() {
           </button>
         </div>
       </div>
-    </section>
+    </details>
   );
 }

@@ -60,6 +60,9 @@ export const weatherLocationSchema = z.object({
         at: z.number().optional(),
         popPercent: z.number().min(0).max(100).optional(),
         precipMm: z.number().nonnegative().optional(),
+        rainMm: z.number().nonnegative().optional(),
+        snowMm: z.number().nonnegative().optional(),
+        precipType: z.enum(['rain', 'snow', 'mixed']).optional(),
       }),
     )
     .optional(),

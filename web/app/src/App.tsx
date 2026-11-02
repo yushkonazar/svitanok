@@ -323,7 +323,7 @@ function AppShell() {
 
       <div className="relative z-[1] flex-1">
         {/* HEADER — у налаштуваннях перетворюється на «‹ Налаштування» */}
-        <header className="flex items-center gap-2.5 px-5 pb-1.5 pt-2.5">
+        <header className="app-header flex items-center gap-2.5 px-5 pb-1.5 pt-2.5">
           {full ? (
             <>
               <button
@@ -353,7 +353,7 @@ function AppShell() {
           ) : (
             <>
               <div
-                className="sheen grid h-[30px] w-[30px] place-items-center rounded-[9px]"
+                className="app-brand-mark sheen grid h-[30px] w-[30px] shrink-0 place-items-center rounded-[9px]"
                 style={{ background: 'var(--grad)' }}
               >
                 <svg
@@ -369,13 +369,15 @@ function AppShell() {
                   <path d="M3 20h18M12 4v3M5.6 8.6 7 10M18.4 8.6 17 10" />
                 </svg>
               </div>
-              <div className="flex flex-col">
-                <div className="text-[15px] font-extrabold tracking-[-0.01em]">Svitanok</div>
+              <div className="app-brand-name flex min-w-0 flex-col">
+                <div className="app-brand-title text-[15px] font-extrabold tracking-[-0.01em]">
+                  Svitanok
+                </div>
                 <div className="font-mono text-[9.5px] font-medium text-tx3">{headerDate}</div>
               </div>
             </>
           )}
-          <div className="ml-auto flex gap-2">
+          <div className="app-header-actions ml-auto flex shrink-0 gap-1">
             {badge && (
               <span
                 title={badge.hint}
@@ -384,6 +386,30 @@ function AppShell() {
               >
                 {badge.text}
               </span>
+            )}
+            {!full && (
+              <Link
+                to="/weekly-report"
+                aria-label="Тижневі огляди"
+                title="Тижневі огляди"
+                className="app-header-report grid h-10 w-10 place-items-center rounded-xl border border-glassb bg-glass"
+                onClick={() => haptic('light')}
+              >
+                <svg
+                  width="18"
+                  height="18"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="var(--color-tx2)"
+                  strokeWidth="1.7"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
+                >
+                  <rect x="4" y="4" width="16" height="17" rx="3" />
+                  <path d="M8 2v4M16 2v4M8 16v-3M12 16v-6M16 16v-4" />
+                </svg>
+              </Link>
             )}
             <button
               type="button"
@@ -495,17 +521,6 @@ function AppShell() {
               : 'px-5 pb-[calc(144px_+_env(safe-area-inset-bottom))] pt-1.5'
           }
         >
-          {!full && active.id === 'today' && (
-            <div className="mb-2 flex justify-end">
-              <Link
-                to="/weekly-report"
-                className="inline-flex min-h-11 items-center gap-2 rounded-lg px-2 text-[13px] font-medium text-tx2 transition-colors hover:bg-glass hover:text-tx focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-a2 active:bg-glass"
-              >
-                <span>Тижневі огляди</span>
-                <span aria-hidden="true">→</span>
-              </Link>
-            </div>
-          )}
           {/* Межа помилок — саме ТУТ, навколо вмісту, а не навколо застосунку:
               шапка, таб-бар і навігація мусять пережити падіння екрана, інакше з
               розбитої вкладки нікуди піти. resetKey — поточний шлях: перехід на

@@ -1,9 +1,13 @@
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { savePresentation } from '../../lib/presentation.ts';
 import { afterEach, expect, it } from 'vitest';
 import { ThisDayBlock } from './ThisDayBlock.tsx';
 import type { OnThisDayData } from '../../api/briefing-schema.ts';
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  savePresentation({ explanations: false });
+});
 const data: OnThisDayData = {
   events: [
     {
@@ -50,7 +54,8 @@ it('updates the selected description and map while dragging, including unmapped 
     'aria-pressed',
     'true',
   );
-  expect(screen.getByText(/Місце зі статті/)).toHaveTextContent('можуть відрізнятися');
+  expect(screen.getByText(/Пов’язане місце/)).toHaveTextContent('Чорне море');
+  expect(screen.queryByText(/Місце зі статті/)).not.toBeInTheDocument();
   fireEvent.click(screen.getByRole('button', { name: 'Попередня історична подія' }));
   fireEvent.click(screen.getByRole('button', { name: 'Попередня історична подія' }));
   expect(screen.getByRole('status')).toHaveTextContent('1535');
@@ -108,6 +113,7 @@ it('shows a verified event place without presenting its point as an exact addres
     'true',
   );
   expect(screen.queryByRole('status')).not.toBeInTheDocument();
+  act(() => savePresentation({ explanations: true }));
   expect(screen.getByText(/Місце проведення — Токіо/)).toHaveTextContent(
     'не обов’язково точну адресу',
   );

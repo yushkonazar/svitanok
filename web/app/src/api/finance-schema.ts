@@ -137,6 +137,7 @@ export const financeSchema = z.object({
   display: z
     .object({
       expenseThresholds: z.array(money),
+      paletteVersion: z.literal(2).optional(),
       currencyCycle: z.boolean(),
       animations: z.boolean(),
       expenseForecast: z.enum(['history', 'plan']),

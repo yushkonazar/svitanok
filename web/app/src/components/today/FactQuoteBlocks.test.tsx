@@ -72,9 +72,10 @@ it('keeps legacy saved IDs, shows readable copy and identifies paraphrases witho
     textHash(`«${quote.text}» — ${quote.author}`),
   );
   expect(screen.getByText('Несподіване відкриття')).toBeVisible();
-  expect(screen.getByText('Власний український переказ')).toBeVisible();
+  expect(screen.getByText('Український переказ')).toBeVisible();
+  expect(screen.queryByText(/формулювання відрізняється/)).not.toBeInTheDocument();
   expect(screen.getByText(fact.context)).not.toBeVisible();
-  const details = screen.getByText('Чому це цікаво та джерело').closest('details')!;
+  const details = screen.getByText('Більше про відкриття').closest('details')!;
   details.open = true;
   fireEvent(details, new Event('toggle'));
   expect(screen.getByText(fact.context)).toBeVisible();

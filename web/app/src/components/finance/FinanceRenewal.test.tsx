@@ -103,6 +103,14 @@ it('uses disjoint editable boundaries and regenerates an ordered palette for eve
 it('validates custom boundaries before saving and keeps all settings explicit', async () => {
   const f = readFinanceDemo(),
     close = vi.fn();
+  f.display = {
+    paletteVersion: 2,
+    expenseThresholds: [20000, 100000, 300000],
+    currencyCycle: true,
+    animations: true,
+    expenseForecast: 'history',
+    savingWeekday: 2,
+  };
   mount(<FinanceDisplaySettings finance={f} onClose={close} />);
   const inputs = screen.getAllByLabelText('До суми, ₴');
   fireEvent.change(inputs[1]!, { target: { value: '200' } });

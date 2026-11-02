@@ -13,7 +13,7 @@ import { NewsItem } from './NewsItem.tsx';
 import { LoadingSkeleton, ErrorState } from '../ui/states.tsx';
 import { newsSource } from '../../lib/newsSource.ts';
 import { newsFeed } from '../../lib/newsFeed.ts';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { PageHeading } from '../ui/PageHeading.tsx';
 import { NewsArt } from './NewsArt.tsx';
 import { useReading, markRead } from '../../lib/reading.ts';
@@ -25,7 +25,18 @@ export function NewsScreen() {
   const nowMs = useTick(60000);
   const read = useReading();
   const { isSaved } = useSaved();
-  const [selected, setSelected] = useState<string | null>(null);
+  const [params, setParams] = useSearchParams();
+  const selected = params.get('article');
+  const setSelected = (value: string | null) =>
+    setParams(
+      (current) => {
+        const next = new URLSearchParams(current);
+        if (value) next.set('article', value);
+        else next.delete('article');
+        return next;
+      },
+      { replace: true },
+    );
   const feedScroll = useRef(0);
   useLayoutEffect(() => {
     window.scrollTo(0, selected ? 0 : feedScroll.current);
@@ -41,6 +52,16 @@ export function NewsScreen() {
     live = useNewsSnapshot(),
     refresh = useRefreshNews();
   const { mutate: markSeen } = useNewsSeen();
+  useEffect(() => {
+    if (!selected) return;
+    const groups =
+      applied?.groups ??
+      live.data?.groups ??
+      readBlock(brief.data?.brief.blocks ?? [], 'news', newsDataSchema)?.groups ??
+      [];
+    const item = groups.flatMap((group) => group.items).find((item) => item.url === selected);
+    if (item) markRead(item.changeAt ? `${item.url}#${item.changeAt}` : item.url);
+  }, [selected, applied, live.data, brief.data]);
   const recordedSeen = useRef(false);
   useEffect(() => {
     if (recordedSeen.current || !live.data?.generatedAt) return;

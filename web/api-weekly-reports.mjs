@@ -3,6 +3,10 @@ import { checkPrimaryOwner } from './auth-core.mjs';
 import { weeklyTextStatus } from './core/brain/weekly-report-quality.mjs';
 import { weeklySummary } from './core/tools/weekly-summary.mjs';
 import { validDate } from './core/ops/system-period.mjs';
+import { interpretWeeklyReport } from './core/brain/weekly-interpretation.mjs';
+import { weeklyPersonalPeriods } from './core/brain/weekly-personal.mjs';
+import { reportPeriod } from './core/report-period.mjs';
+import { STATE_STORE_DO_NAME } from './core/state-store/contract.mjs';
 
 const LABELS = /** @type {Record<string,string>} */ ({
   stats: 'Особисті спостереження не прочитано',
@@ -38,9 +42,54 @@ const LABELS = /** @type {Record<string,string>} */ ({
 /** @param {unknown} value */
 function parsed(value) {
   try {
-    return JSON.parse(String(value ?? '{}'));
+    const result = JSON.parse(String(value ?? '{}'));
+    return result && typeof result === 'object' && !Array.isArray(result) ? result : {};
   } catch {
     return {};
+  }
+}
+/** Older projections omitted reasons. Reconstruct only from the same immutable,
+ * confirmed answers, cutoff and matching saved metrics. Never seed or write a
+ * store from this GET; an old DO without peek simply retains saved evidence.
+ * @param {Env} env @param {any} details @param {any} row */
+async function restorePersonalPatterns(env, details, row) {
+  const current = details?.personalPeriods?.current;
+  const metrics = current?.observationsV3;
+  if (
+    current?.patterns ||
+    row.status === 'failed' ||
+    (metrics?.['morning.energy']?.numericN ?? metrics?.['morning.energy']?.n ?? 0) < 3 ||
+    (metrics?.['evening.energy']?.numericN ?? metrics?.['evening.energy']?.n ?? 0) < 3
+  )
+    return;
+  const saved = current.period;
+  const asOf = Date.parse(saved?.asOf ?? '');
+  if (!Number.isFinite(asOf) || saved.dateFrom !== row.from || saved.dateTo !== row.to) return;
+  try {
+    const period = reportPeriod(row.from, row.to, asOf);
+    if (period.from !== saved.from || period.to !== saved.to) return;
+    let stats;
+    if (env.STATE_STORE) {
+      const stub = env.STATE_STORE.getByName(STATE_STORE_DO_NAME);
+      if (typeof stub.peek !== 'function') return;
+      const record = /** @type {{value?:Record<string,any>} | null} */ (await stub.peek('stats'));
+      stats = record?.value;
+    } else {
+      stats = parsed(await env.BRIEFING.get('stats'));
+    }
+    if (!stats?.checkins) return;
+    const rebuilt = weeklySummary({
+      personalPeriods: weeklyPersonalPeriods(stats.checkins, asOf, period),
+    }).personalPeriods?.current;
+    if (!rebuilt) return;
+    if (
+      JSON.stringify(rebuilt.observationsV3) !== JSON.stringify(metrics) ||
+      JSON.stringify(rebuilt.coverage.v3) !== JSON.stringify(current.coverage.v3)
+    )
+      return;
+    current.patterns = rebuilt.patterns;
+  } catch {
+    // Archived answers can be unavailable. The saved report remains usable.
   }
 }
 /** Read-only saved evidence; opening this endpoint never generates a report or
@@ -97,6 +146,8 @@ export async function readWeeklyReports(env, week = null) {
   const selected = week ? periods.get(week) : periods.values().next().value;
   if (!selected) return { history, report: null };
   const quality = parsed(selected.quality_json);
+  const details = quality.details ? weeklySummary(quality.details) : null;
+  await restorePersonalPatterns(env, details, selected);
   return {
     history,
     report: {
@@ -113,7 +164,11 @@ export async function readWeeklyReports(env, week = null) {
       missing: (Array.isArray(quality.missing) ? quality.missing : ['prepared-data-not-read'])
         .slice(0, 40)
         .map((/** @type {string} */ code) => LABELS[code] ?? 'Частина даних не перевірена'),
-      details: quality.details ? weeklySummary(quality.details) : null,
+      details,
+      analysis:
+        selected.status !== 'failed' && quality.details
+          ? interpretWeeklyReport(details, quality.overview?.decision)
+          : null,
     },
   };
 }

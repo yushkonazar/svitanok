@@ -39,7 +39,28 @@ export function parseWeeklyDecision(text) {
       actions.some((/** @type {any} */ a) => !a)
     )
       return null;
-    return { highlights, actions };
+    const sections =
+      Array.isArray(doc.sections) && doc.sections.length <= 3
+        ? doc.sections.map((/** @type {any} */ section) => ({
+            kind: section?.kind,
+            title: line(section?.title, 100),
+            paragraphs: Array.isArray(section?.paragraphs)
+              ? section.paragraphs.map((/** @type {any} */ p) => line(p, 700))
+              : [],
+          }))
+        : [];
+    const validSections =
+      sections.length &&
+      new Set(sections.map((/** @type {any} */ s) => s.kind)).size === sections.length &&
+      sections.every(
+        (/** @type {any} */ section) =>
+          Object.hasOwn(LABELS, section.kind) &&
+          section.title &&
+          section.paragraphs.length >= 1 &&
+          section.paragraphs.length <= 2 &&
+          section.paragraphs.every(Boolean),
+      );
+    return { highlights, actions, ...(validSections ? { sections } : {}) };
   } catch {
     return null;
   }
@@ -147,5 +168,14 @@ export function renderWeeklyOverview(raw, quality, failed = false) {
   const text = lines.join('\n');
   if (text.length > WEEKLY_OVERVIEW_MAX_CHARS)
     throw new Error('Weekly overview exceeds its bounded contract');
-  return { text, valid: true, fallback, decision: { highlights, actions: decision.actions } };
+  return {
+    text,
+    valid: true,
+    fallback,
+    decision: {
+      highlights,
+      actions: decision.actions,
+      ...('sections' in decision ? { sections: decision.sections } : {}),
+    },
+  };
 }

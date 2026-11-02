@@ -5,6 +5,7 @@ import { useTick } from '../../lib/useTick.ts';
 import { kyivParts } from '../../../../core/finance/planning.mjs';
 import { financeView, moneyLabel } from '../../lib/financeView.ts';
 import { PageHeading } from '../ui/PageHeading.tsx';
+import { TransactionAmount } from '../finance/TransactionAmount.tsx';
 
 export function TodayAttention() {
   const nowMs = useTick(30_000);
@@ -22,34 +23,59 @@ export function TodayAttention() {
           ? 'День триває.'
           : 'Час сповільнитися.';
   const view = money ? financeView(money.finance, 7) : null;
+  const latest = money?.finance.transactions
+    .filter(
+      (t) =>
+        ['expense', 'income'].includes(t.kind) &&
+        !t.bankMissingFromStatement &&
+        Date.parse(t.at) <= nowMs,
+    )
+    .sort((a, b) => Date.parse(b.at) - Date.parse(a.at))[0];
   return (
-    <div className="renewal-hero" data-night={now.hour < 6 || now.hour >= 20}>
-      <PageHeading
-        eyebrow={greeting}
-        title="Твій день,"
-        accent="у фокусі."
-        description="Кілька важливих речей. І трохи простору для себе."
-      />
-      <div className="renewal-actions">
+    <div className="renewal-hero today-hero" data-night={now.hour < 6 || now.hour >= 20}>
+      <PageHeading eyebrow={greeting} title="Твій день," accent="у фокусі." />
+      <div className="renewal-actions today-overview">
+        <div className="today-finance-card">
+          <Link to="/finance" className="today-finance-main">
+            <span className="renewal-eyebrow">
+              Вільні кошти <span aria-hidden="true">↗</span>
+            </span>
+            <strong>
+              {view && !view.unknownBalances ? moneyLabel(view.available) : 'Мої рахунки'}
+            </strong>
+          </Link>
+          {latest ? (
+            <Link
+              className="today-last-operation"
+              to={`/finance?transaction=${encodeURIComponent(latest.id)}`}
+            >
+              <small>
+                {latest.kind === 'income' ? 'Останнє надходження' : 'Остання витрата'}
+                {latest.bankHold ? ' · очікує' : ''}
+              </small>
+              <div>
+                <span className="today-operation-description">
+                  {latest.description || latest.category}
+                </span>
+                <TransactionAmount transaction={latest} display={money?.finance.display} />
+              </div>
+            </Link>
+          ) : (
+            <small className="text-tx3 text-xs">Рахунки та останні операції →</small>
+          )}
+        </div>
         <Link to="/checkin">
           <span>{confirmed ? '✓ Чек-ін підтверджено' : 'Як ти зараз?'}</span>
           <small>
             {confirmed
               ? 'Наступний слот з’явиться за розкладом'
               : slot
-                ? 'Коротка зупинка для себе'
+                ? {
+                    morning: 'Ранковий чек-ін',
+                    afternoon: 'Денний чек-ін',
+                    evening: 'Вечірній чек-ін',
+                  }[slot]
                 : 'Переглянути ритм і наступний чек-ін'}
-          </small>
-        </Link>
-        <Link to="/finance">
-          <span className="renewal-pill">Фінанси</span>
-          <strong>
-            {view && !view.unknownBalances ? moneyLabel(view.available) : 'Мої рахунки'}
-          </strong>
-          <small>
-            {view && !view.unknownBalances
-              ? `Вільно ${moneyLabel(view.available)}`
-              : 'Швидкий запис до фінансів'}
           </small>
         </Link>
       </div>
@@ -72,7 +98,11 @@ export function TodayAttention() {
             </Link>
           </div>
           {view.reminders.slice(0, 3).map((p) => (
-            <Link key={p.id} to="/finance" className="today-payment-row">
+            <Link
+              key={p.id}
+              to={`/finance?payment=${encodeURIComponent(p.id)}`}
+              className="today-payment-row"
+            >
               <span className="today-payment-date">
                 <b>{Number(p.nextDate.slice(8))}</b>
                 <small>

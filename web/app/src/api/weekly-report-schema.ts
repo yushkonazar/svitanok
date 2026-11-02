@@ -152,6 +152,19 @@ export const weeklyReportsSchema = z.object({
       text: z.string(),
       missing: z.array(z.string()),
       details: details.nullable(),
+      analysis: z
+        .object({
+          sections: z.array(
+            z.object({
+              kind: z.enum(['personal', 'plan', 'finance']),
+              title: z.string(),
+              paragraphs: z.array(z.string()),
+              evidence: z.array(z.object({ label: z.string(), value: z.string() })),
+            }),
+          ),
+          actions: z.array(z.string()),
+        })
+        .nullish(),
     })
     .nullable(),
 });
