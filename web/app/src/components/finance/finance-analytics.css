@@ -515,17 +515,30 @@
   max-width: 55%;
   overflow-wrap: anywhere;
 }
-.finance-transaction-amount {
-  max-width: 52%;
-  min-inline-size: 0;
-  white-space: normal;
+.renewal-list-row.finance-operation-row,
+.analytics-operation.finance-operation-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) max-content;
+  gap: 4px 12px;
+  align-items: start;
 }
-.finance-currency-stack {
+.finance-operation-row > .finance-operation-title {
+  grid-column: 1;
+  grid-row: 1;
   min-width: 0;
-  max-width: 100%;
+  max-width: none;
+  text-align: start;
+  overflow-wrap: anywhere;
 }
-.finance-currency-value {
-  min-inline-size: 0;
-  max-width: 100%;
+.finance-operation-row > .finance-transaction-amount {
+  grid-column: 2;
+  grid-row: 1;
+  max-width: none;
+  white-space: nowrap;
+}
+.finance-operation-row > .finance-operation-meta {
+  grid-column: 1 / -1;
+  margin-top: 0;
+  min-width: 0;
   overflow-wrap: anywhere;
 }

@@ -77,8 +77,9 @@ export function TransactionAmount({
           </span>
         </span>
       ) : (
-        <span aria-hidden="true" className="finance-currency-value">
-          {both}
+        <span className="finance-currency-static" aria-hidden="true">
+          <span className="finance-currency-value">{moneyLabel(t.amountMinor, t.currency)}</span>
+          {foreign && <span className="finance-currency-value">{moneyLabel(t.amountUah!)}</span>}
         </span>
       )}
     </span>

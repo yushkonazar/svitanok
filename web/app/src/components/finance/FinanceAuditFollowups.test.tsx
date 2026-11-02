@@ -119,6 +119,15 @@ it('keeps exact seven-day amounts and dates visible without hovering or selectin
   ).toBeVisible();
 });
 
+it('shows all seven exact daily amounts with cents and positive zero for empty known days', () => {
+  const { container } = provider(<BudgetPlan finance={finance} nowMs={NOW} />);
+  const amounts = [...container.querySelectorAll('.finance-spark-exact dd')].map((node) =>
+    node.textContent?.replace(/\s/g, ' '),
+  );
+  expect(amounts).toEqual(['0', '0', '0', '0', '1 234,56', '0', '0']);
+  expect(container.querySelector('.finance-budget-mini')).not.toHaveTextContent('-0');
+});
+
 it('keeps the chosen budget period, account, source and confirmation filter in the explorer', async () => {
   provider(
     <FinanceAnalytics

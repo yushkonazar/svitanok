@@ -15,7 +15,8 @@
   display: inline-flex;
   flex-direction: column;
   align-items: flex-end;
-  min-inline-size: 8.5ch;
+  flex-shrink: 0;
+  min-inline-size: 0;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
   font-family: var(--font-mono, monospace);
@@ -29,7 +30,8 @@ html[data-theme='light'] .finance-expense-tone {
 }
 .finance-currency-value {
   display: inline-block;
-  min-inline-size: 9ch;
+  min-inline-size: 0;
+  white-space: nowrap;
   text-align: end;
   transition:
     opacity 0.45s ease-in-out,
@@ -38,6 +40,11 @@ html[data-theme='light'] .finance-expense-tone {
 .finance-currency-stack {
   display: inline-grid;
   align-items: center;
+}
+.finance-currency-static {
+  display: inline-grid;
+  justify-items: end;
+  gap: 3px;
 }
 .finance-currency-stack .finance-currency-value {
   grid-area: 1 / 1;
@@ -433,7 +440,13 @@ html[data-finance-motion='off'] .finance-rank-track > span {
   min-height: 30px;
   font-size: 10px;
   line-height: 1.3;
-  overflow-wrap: anywhere;
+  white-space: nowrap;
+  overflow-wrap: normal;
+}
+.finance-spark-compact,
+.finance-spark-exact,
+.finance-spark-narrow-note {
+  display: none;
 }
 .finance-spark-track {
   display: flex;
@@ -461,6 +474,49 @@ html[data-finance-motion='off'] .finance-rank-track > span {
 }
 .finance-budget-mini {
   margin-top: 10px;
+  container-type: inline-size;
+}
+@container (max-width: 440px) {
+  .finance-spark-full,
+  .finance-spark-wide-note {
+    display: none;
+  }
+  .finance-spark-compact {
+    display: flex;
+    flex-direction: column;
+    line-height: 1.15;
+  }
+  .finance-spark-compact > span + span {
+    font-size: 8px;
+    color: var(--color-tx2);
+  }
+  .finance-spark-narrow-note {
+    display: inline;
+  }
+  .finance-spark-exact {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px 16px;
+    margin: 12px 0;
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+  }
+  .finance-spark-exact > div {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    gap: 2px 8px;
+    min-width: 0;
+  }
+  .finance-spark-exact dt {
+    color: var(--color-tx2);
+  }
+  .finance-spark-exact dd {
+    margin: 0;
+    margin-inline-start: auto;
+    white-space: nowrap;
+    font-weight: 700;
+  }
 }
 .analytics-calendar .finance-calendar-incomplete {
   border-style: dashed;
