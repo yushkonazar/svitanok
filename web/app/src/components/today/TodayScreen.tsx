@@ -17,11 +17,9 @@ import { FactBlock, QuoteBlock } from './FactQuoteBlocks.tsx';
 import { DailyContentTools } from './DailyContentTools.tsx';
 import { ThisDayBlock } from './ThisDayBlock.tsx';
 import { LearningFocus } from './LearningFocus.tsx';
-import { NewsPreview } from './NewsPreview.tsx';
 import { usePresentation } from '../../lib/presentation.ts';
 
 // Щоденні дії → погода → валюта → добірка для читання → фокус-таймер.
-// Валюта перед новинами відповідає частоті використання власником.
 
 /** Роздільник-«горизонт»: дві волосінки з градієнтною крапкою-сонцем.
  *  Крапка дихає гало (haloPulse) — розрахунок видимості в index.css біля
@@ -110,8 +108,6 @@ export function TodayScreen() {
       key: 'currency',
       node: <CurrencyBlock d={currency} date={shortDateFromIso(data.brief.generatedAt)} />,
     });
-  if (preferences.newsPreview && enabled('news'))
-    sections.push({ key: 'news-preview', node: <NewsPreview /> });
   if (fact) sections.push({ key: 'fact', node: <FactBlock d={fact} /> });
   if (stoic) sections.push({ key: 'stoic', node: <QuoteBlock d={stoic} /> });
   if (fact || stoic) sections.push({ key: 'content-tools', node: <DailyContentTools /> });

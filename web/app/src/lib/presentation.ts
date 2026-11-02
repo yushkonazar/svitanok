@@ -4,14 +4,12 @@ export type Presentation = {
   calm: boolean;
   haptics: boolean;
   learning: boolean;
-  newsPreview: boolean;
   explanations: boolean;
 };
 const DEFAULT: Presentation = {
   calm: false,
   haptics: true,
   learning: true,
-  newsPreview: true,
   explanations: false,
 };
 const KEY = 'svitanok:presentation:v1';

@@ -41,7 +41,6 @@ beforeEach(() => {
     calm: false,
     haptics: true,
     learning: true,
-    newsPreview: true,
     explanations: false,
   });
   data = {
@@ -102,6 +101,7 @@ it('shows optional explanations immediately when enabled and hides them without 
 });
 it('shows current topics without an old briefing and links directly to feature settings', async () => {
   await setup();
+  expect(screen.queryByRole('switch', { name: 'Новина на «Сьогодні»' })).not.toBeInTheDocument();
   expect(screen.getByRole('switch', { name: 'Наука' })).toBeInTheDocument();
   expect(screen.getByRole('switch', { name: 'CS2' })).toBeInTheDocument();
   expect(screen.getByRole('link', { name: /Фінанси й нагадування/ })).toHaveAttribute(
