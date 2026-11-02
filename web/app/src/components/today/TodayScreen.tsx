@@ -20,10 +20,8 @@ import { LearningFocus } from './LearningFocus.tsx';
 import { NewsPreview } from './NewsPreview.tsx';
 import { usePresentation } from '../../lib/presentation.ts';
 
-// Вкладка «Сьогодні» (дизайн v2, Svitanok.dc.html). Порядок макета:
-// погода (з циферблатом і графіком) → горизонт-роздільник → курс → питання →
-// факт → думка → у цей день. Секції течуть одна за одною (без карток), розділені
-// вертикальним ритмом 18px — як у макеті.
+// Щоденні дії → погода → валюта → добірка для читання → фокус-таймер.
+// Валюта перед новинами відповідає частоті використання власником.
 
 /** Роздільник-«горизонт»: дві волосінки з градієнтною крапкою-сонцем.
  *  Крапка дихає гало (haloPulse) — розрахунок видимості в index.css біля
@@ -107,18 +105,18 @@ export function TodayScreen() {
       ),
     });
   if (weather && currency) sections.push({ key: 'divider', node: <HorizonDivider /> });
-  if (preferences.learning) sections.push({ key: 'learning', node: <LearningFocus /> });
-  if (preferences.newsPreview && enabled('news'))
-    sections.push({ key: 'news-preview', node: <NewsPreview /> });
   if (currency)
     sections.push({
       key: 'currency',
       node: <CurrencyBlock d={currency} date={shortDateFromIso(data.brief.generatedAt)} />,
     });
+  if (preferences.newsPreview && enabled('news'))
+    sections.push({ key: 'news-preview', node: <NewsPreview /> });
   if (fact) sections.push({ key: 'fact', node: <FactBlock d={fact} /> });
   if (stoic) sections.push({ key: 'stoic', node: <QuoteBlock d={stoic} /> });
   if (fact || stoic) sections.push({ key: 'content-tools', node: <DailyContentTools /> });
   if (onthisday) sections.push({ key: 'onthisday', node: <ThisDayBlock d={onthisday} /> });
+  if (preferences.learning) sections.push({ key: 'learning', node: <LearningFocus /> });
 
   return (
     <div className="flex flex-col gap-[18px]">

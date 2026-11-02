@@ -1,8 +1,21 @@
-export const DEFAULT_THRESHOLDS = [20000, 100000, 300000];
+export const DEFAULT_THRESHOLDS = [
+  5000, 10000, 20000, 35000, 50000, 75000, 100000, 150000, 250000, 500000,
+];
+const LEGACY_THRESHOLDS = [20000, 100000, 300000];
 /** @param {any} value */
 export function financeDisplay(value) {
   const x = value && typeof value === 'object' ? value : {};
-  const thresholds = Array.isArray(x.expenseThresholds) ? x.expenseThresholds : DEFAULT_THRESHOLDS;
+  const previousDefault =
+    x.paletteVersion !== 2 &&
+    Array.isArray(x.expenseThresholds) &&
+    x.expenseThresholds.length === LEGACY_THRESHOLDS.length &&
+    x.expenseThresholds.every(
+      (/** @type {number} */ n, /** @type {number} */ i) => n === LEGACY_THRESHOLDS[i],
+    );
+  const thresholds =
+    Array.isArray(x.expenseThresholds) && !previousDefault
+      ? x.expenseThresholds
+      : DEFAULT_THRESHOLDS;
   if (
     thresholds.length > 20 ||
     thresholds.some(
@@ -12,6 +25,7 @@ export function financeDisplay(value) {
   )
     throw new Error('Межі витрат мають зростати, бути додатними та не повторюватися (до 20 меж).');
   return {
+    paletteVersion: 2,
     expenseThresholds: [...thresholds],
     currencyCycle: x.currencyCycle !== false,
     animations: x.animations !== false,

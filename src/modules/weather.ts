@@ -10,6 +10,7 @@ import type { AppConfig, LocationConfig } from '../core/config.js';
 import { optionalSecret } from '../core/secrets.js';
 import { canonicalizeUrl } from '../core/url.js';
 import { fetchJsonWithTimeout } from '../core/google-auth.js';
+import { precipitationFields } from '../../web/precipitation.mjs';
 
 // Пороги дії — явні константи (§6).
 export const COLD_THRESHOLD_C = 10; // willBeCold = tempC < 10
@@ -63,7 +64,16 @@ export interface WeatherToday {
   sunset: number; // unix сек, захід сонця (0 якщо невідомо)
   dayLenDeltaMin?: number; // зміна довжини дня vs учора, хв (обчислюється в run зі стану)
   hourlyTemp?: number[]; // денна температура по годинах (для спарклайна дашборда)
-  hourly?: { h: number; t: number; at?: number; popPercent?: number; precipMm?: number }[];
+  hourly?: {
+    h: number;
+    t: number;
+    at?: number;
+    popPercent?: number;
+    precipMm?: number;
+    rainMm?: number;
+    snowMm?: number;
+    precipType?: string;
+  }[];
   alerts?: string[]; // офіційні попередження негоди (One Call alerts[].event)
   summary?: string; // людиночитне резюме дня (One Call daily[0].summary)
 }
@@ -255,9 +265,7 @@ export function parseOneCall(json: unknown, name: string, todayKey: string): Wea
       t: round(h.temp as number),
       at: h.dt,
       ...(isNum(h.pop) ? { popPercent: round(Math.max(0, Math.min(1, h.pop)) * 100) } : {}),
-      ...(isNum(h.rain?.['1h']) || isNum(h.snow?.['1h'])
-        ? { precipMm: Math.max(0, h.rain?.['1h'] ?? 0) + Math.max(0, h.snow?.['1h'] ?? 0) }
-        : {}),
+      ...precipitationFields(h),
     }));
 
   const alerts = (Array.isArray(oc.alerts) ? oc.alerts : [])

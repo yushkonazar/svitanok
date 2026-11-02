@@ -1,11 +1,27 @@
 import { useId, useState } from 'react';
 import type { WeatherLocation } from '../../api/briefing-schema.ts';
+import { Explanation } from '../ui/Explanation.tsx';
+
+const PRECIPITATION = {
+  rain: { label: 'Дощ', color: 'var(--precip-rain)' },
+  snow: { label: 'Сніг', color: 'var(--precip-snow)' },
+  mixed: { label: 'Змішані опади', color: 'var(--precip-mixed)' },
+  unknown: { label: 'Опади', color: 'var(--color-info)' },
+};
 /** Both provider measurements are visible; missing data is not a zero. */
 export function PrecipitationChart({ hourly }: { hourly: NonNullable<WeatherLocation['hourly']> }) {
-  const [index, setIndex] = useState(0);
+  const [index, setIndex] = useState<number | null>(null);
   const points = hourly.filter((p) => p.popPercent != null || p.precipMm != null);
-  if (!points.length) return null;
-  const i = Math.min(index, points.length - 1),
+  const firstWet = points.findIndex((p) => (p.precipMm ?? 0) > 0 || (p.popPercent ?? 0) > 0);
+  if (firstWet < 0) return null;
+  const kinds = [
+    ...new Set(
+      points
+        .filter((p) => (p.precipMm ?? 0) > 0 || (p.popPercent ?? 0) > 0)
+        .map((p) => p.precipType ?? 'unknown'),
+    ),
+  ];
+  const i = Math.min(index ?? firstWet, points.length - 1),
     selected = points[i],
     max = Math.max(1, ...points.map((p) => p.precipMm ?? 0));
   const x = (n: number) => 18 + (n / Math.max(1, points.length - 1)) * 324,
@@ -22,13 +38,17 @@ export function PrecipitationChart({ hourly }: { hourly: NonNullable<WeatherLoca
     <section className="renewal-rain" aria-label="Погодинний прогноз опадів">
       <div className="renewal-section-head">
         <span className="renewal-eyebrow">ОПАДИ ПО ГОДИНАХ</span>
-        <b className="text-xs text-info">{hour(selected.h)}</b>
+        <b className="text-xs text-info">
+          {PRECIPITATION[selected.precipType ?? 'unknown'].label} · {hour(selected.h)}
+        </b>
       </div>
       <div className="weather-legend">
-        <span>
-          <i style={{ background: 'var(--color-info)' }} />
-          Стовпчики · мм
-        </span>
+        {kinds.map((kind) => (
+          <span key={kind}>
+            <i style={{ background: PRECIPITATION[kind].color }} />
+            {PRECIPITATION[kind].label} · мм
+          </span>
+        ))}
         <span>
           <i style={{ background: 'var(--color-a2)' }} />
           Лінія · імовірність
@@ -58,14 +78,15 @@ export function PrecipitationChart({ hourly }: { hourly: NonNullable<WeatherLoca
                 width={Math.min(16, 260 / points.length)}
                 height={Math.max(p.precipMm > 0 ? 2 : 0, (p.precipMm / max) * 82)}
                 rx="3"
-                fill="var(--color-info)"
+                fill={PRECIPITATION[p.precipType ?? 'unknown'].color}
+                data-precipitation={p.precipType ?? 'unknown'}
                 fillOpacity={i === n ? 1 : 0.6}
               />
             )}
             <rect
               role="button"
               tabIndex={0}
-              aria-label={`${hour(p.h)}: ${p.popPercent == null ? 'імовірність невідома' : p.popPercent + '%'}, ${p.precipMm == null ? 'кількість невідома' : p.precipMm.toFixed(1) + ' мм'}`}
+              aria-label={`${hour(p.h)}, ${PRECIPITATION[p.precipType ?? 'unknown'].label}: ${p.popPercent == null ? 'імовірність невідома' : p.popPercent + '%'}, ${p.precipMm == null ? 'кількість невідома' : p.precipMm.toFixed(1) + ' мм'}`}
               aria-pressed={i === n}
               onClick={() => setIndex(n)}
               onKeyDown={(e) => {
@@ -133,9 +154,9 @@ export function PrecipitationChart({ hourly }: { hourly: NonNullable<WeatherLoca
           <b>{selected.precipMm == null ? 'Немає даних' : `${selected.precipMm.toFixed(1)} мм`}</b>
         </div>
       </div>
-      <p className="renewal-chart-note mt-2">
+      <Explanation className="mt-2">
         Ліва шкала — мм, права — %. Це погодинний, а не хвилинний прогноз.
-      </p>
+      </Explanation>
     </section>
   );
 }
@@ -149,8 +170,19 @@ export function HourlyChart({ hourly }: { hourly: { h: number; t: number; at?: n
     max = Math.max(...pts.map((p) => p.t)),
     pad = Math.max(1, (max - min) * 0.2);
   // Provider order spans midnight: next-day 00:00 never jumps before 23:00.
-  const timestamps = pts.map((p, n) =>
-    p.at != null && Number.isFinite(p.at) ? p.at * 1000 : n * 3600000,
+  const timed = pts.every(
+    (p, n) => p.at != null && Number.isFinite(p.at) && (!n || p.at > pts[n - 1].at!),
+  );
+  const timestamps = pts.reduce<number[]>(
+    (times, p, n) =>
+      times.concat(
+        timed
+          ? p.at! * 1000
+          : n
+            ? times[n - 1] + ((p.h - pts[n - 1].h + 24) % 24 || 1) * 3600000
+            : 0,
+      ),
+    [],
   );
   const span = timestamps.at(-1)! - timestamps[0];
   const x = (n: number) =>
@@ -218,8 +250,9 @@ export function HourlyChart({ hourly }: { hourly: { h: number; t: number; at?: n
         aria-valuetext={`${time(pts[i])}: ${format(pts[i].t)}`}
       />
       <p className="renewal-chart-note">
-        Від {format(min)} до {format(max)} · обери годину на повзунку.
+        Від {format(min)} до {format(max)}
       </p>
+      <Explanation>Рухай повзунок, щоб обрати годину.</Explanation>
     </section>
   );
 }

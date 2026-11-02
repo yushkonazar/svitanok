@@ -105,3 +105,33 @@ it('renders saved model text as text, including strings that resemble HTML', asy
   await screen.findByText('<script>untrusted report text</script>');
   expect(document.querySelector('script')).toBeNull();
 });
+it('leads with interpretations and keeps source numbers hidden until requested', async () => {
+  const result = data();
+  result.report!.analysis = {
+    sections: [
+      {
+        kind: 'personal',
+        title: 'До вечора запас сил зменшується',
+        paragraphs: [
+          'У п’яти зіставлених днях енергія спадала.',
+          'Ти пов’язував нестачу сил із довгою роботою без перерв.',
+        ],
+        evidence: [{ label: 'Ранок', value: '4 / 5' }],
+      },
+    ],
+    actions: ['Спробуй коротку перерву до вечірнього спаду.'],
+  };
+  vi.mocked(fetchWeeklyReports).mockResolvedValue(result);
+  renderScreen();
+  expect(
+    await screen.findByRole('heading', { name: 'До вечора запас сил зменшується' }),
+  ).toBeVisible();
+  expect(screen.getByText(/Ти пов’язував/)).toBeVisible();
+  expect(screen.queryByText(/Обліковано 100 грн/)).not.toBeInTheDocument();
+  expect(screen.getByText('4 / 5')).not.toBeVisible();
+  expect(screen.getByText('Обліковані витрати')).not.toBeVisible();
+  const evidence = screen.getByText('На чому ґрунтується висновок').closest('details')!;
+  evidence.open = true;
+  fireEvent(evidence, new Event('toggle'));
+  expect(screen.getByText('4 / 5')).toBeVisible();
+});

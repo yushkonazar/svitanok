@@ -1,5 +1,7 @@
 // A finite projection, rather than recursive truncation of an unbounded object.
 // No raw answers, ledger events, credentials or provider inventories are retained.
+import { summarizeWeeklyPatterns } from '../brain/weekly-patterns.mjs';
+
 export const WEEKLY_REPORT_FORMAT = 'compact-weekly-v1';
 const PERIOD = ['from', 'to', 'dateFrom', 'dateTo', 'asOf', 'timeZone', 'complete'];
 const MONEY = ['expenseMinor', 'incomeMinor', 'netMinor', 'count', 'amountMinor', 'categories'];
@@ -87,6 +89,7 @@ function personalPeriod(p) {
   return {
     period: pick(p.period, PERIOD),
     unknownTimingSlots: p.unknownTimingSlots,
+    patterns: summarizeWeeklyPatterns(p.patterns),
     legacy: metrics(p.legacy, [
       'sleepHours',
       'sleepQuality',

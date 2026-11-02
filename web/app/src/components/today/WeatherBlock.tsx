@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 import type { WeatherLocation, Settlement } from '../../api/briefing-schema.ts';
 import { has } from '../../lib/format.ts';
-import { dayLen, fmtClock, signTemp } from '../../lib/weather.ts';
+import { dayLen, fmtClock, signTemp, forecastTime } from '../../lib/weather.ts';
 import { SunDial } from '../charts/SunDial.tsx';
 import { HourlyChart } from '../charts/HourlyChart.tsx';
 import { PrecipitationChart } from '../charts/PrecipitationChart.tsx';
@@ -125,6 +125,7 @@ export function WeatherBlock({
   const locatePrompt = useRequestLocatePrompt();
   const [city, setCity] = useState('');
   const [err, setErr] = useState<string | null>(null);
+  const [metricHelp, setMetricHelp] = useState<'uv' | 'aqi' | null>(null);
 
   // Життєвий цикл редактора з анімацією виходу (фідбек власника — той самий
   // shown/leaving патерн, що StageCelebration.tsx): formOpen тримає <form>
@@ -212,6 +213,14 @@ export function WeatherBlock({
       : '';
   const uv = has(l.uv) ? uvMeta(l.uv!) : null;
   const aqi = has(l.aqi) ? AQI_META[l.aqi!] : null;
+  const upcoming = (l.hourly ?? []).filter((p) => p.at == null || p.at * 1000 >= nowMs - 3600000);
+  const wet = upcoming.find((p) => (p.precipMm ?? 0) > 0 || (p.popPercent ?? 0) >= 50);
+  const peak = upcoming.reduce<(typeof upcoming)[number] | null>(
+    (best, p) => (!best || p.t > best.t ? p : best),
+    null,
+  );
+  const dry =
+    upcoming.length > 0 && upcoming.every((p) => p.popPercent === 0 && (p.precipMm ?? 0) === 0);
 
   return (
     <div
@@ -387,6 +396,29 @@ export function WeatherBlock({
         </form>
       )}
 
+      {(wet || dry || (peak && peak.t - l.tempC >= 2)) && (
+        <div className="weather-outlook">
+          {wet ? (
+            <span>
+              {wet.precipType === 'snow'
+                ? 'Можливий сніг'
+                : wet.precipType === 'mixed'
+                  ? 'Можливі змішані опади'
+                  : wet.precipType === 'rain'
+                    ? 'Можливий дощ'
+                    : 'Можливі опади'}{' '}
+              · {forecastTime(wet, nowMs)}
+            </span>
+          ) : dry ? (
+            <span>За погодинним прогнозом без опадів</span>
+          ) : null}
+          {peak && peak.t - l.tempC >= 2 && (
+            <span>
+              Найтепліше · {forecastTime(peak, nowMs)} · {signTemp(peak.t)}
+            </span>
+          )}
+        </div>
+      )}
       {/* циферблат між лініями сходу/заходу */}
       <div className="renewal-sun-row flex items-center gap-3">
         <div className="renewal-sun-label flex flex-1 translate-y-3 flex-col gap-1.5">
@@ -431,17 +463,31 @@ export function WeatherBlock({
       {(uv || aqi || second) && (
         <div className="flex items-center justify-center gap-[13px] font-mono text-[10.5px] font-semibold">
           {uv && (
-            <span style={{ color: uv.color }}>
+            <button
+              type="button"
+              className="weather-metric-help"
+              style={{ color: uv.color }}
+              aria-expanded={metricHelp === 'uv'}
+              aria-controls="weather-metric-context"
+              onClick={() => setMetricHelp(metricHelp === 'uv' ? null : 'uv')}
+            >
               UV {l.uv}
               <span className="text-tx3"> {uv.label}</span>
-            </span>
+            </button>
           )}
           {uv && (aqi || second) && <span className="text-tx3">|</span>}
           {aqi && (
-            <span style={{ color: aqi.color }}>
+            <button
+              type="button"
+              className="weather-metric-help"
+              style={{ color: aqi.color }}
+              aria-expanded={metricHelp === 'aqi'}
+              aria-controls="weather-metric-context"
+              onClick={() => setMetricHelp(metricHelp === 'aqi' ? null : 'aqi')}
+            >
               AQI {l.aqi}
               <span className="text-tx3"> {aqi.label}</span>
-            </span>
+            </button>
           )}
           {aqi && second && <span className="text-tx3">|</span>}
           {second && (
@@ -450,6 +496,14 @@ export function WeatherBlock({
             </span>
           )}
         </div>
+      )}
+
+      {metricHelp && (
+        <p id="weather-metric-context" className="weather-context" role="status">
+          {metricHelp === 'uv'
+            ? 'UV — індекс ультрафіолетового випромінювання: що більше значення, то інтенсивніше випромінювання сонця.'
+            : 'AQI — якість повітря за шкалою OpenWeather від 1 до 5: 1 — добре, 3 — помірно, 5 — дуже погано.'}
+        </p>
       )}
 
       {/* графік по годинах */}

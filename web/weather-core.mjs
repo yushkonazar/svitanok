@@ -11,6 +11,8 @@
 // «вчора», який має сенс лише для ОДНОГО щоденного зрізу, не для живих запитів
 // упродовж дня).
 
+import { precipitationFields } from './precipitation.mjs';
+
 export const COLD_THRESHOLD_C = 10;
 export const RAIN_POP_THRESHOLD = 0.5;
 const DAY_START_HOUR = 6;
@@ -165,9 +167,7 @@ export function parseOneCall(json, name, todayKey) {
       t: round(h.temp),
       at: h.dt,
       ...(isNum(h.pop) ? { popPercent: round(Math.max(0, Math.min(1, h.pop)) * 100) } : {}),
-      ...(isNum(h.rain?.['1h']) || isNum(h.snow?.['1h'])
-        ? { precipMm: Math.max(0, h.rain?.['1h'] ?? 0) + Math.max(0, h.snow?.['1h'] ?? 0) }
-        : {}),
+      ...precipitationFields(h),
     }));
 
   return {

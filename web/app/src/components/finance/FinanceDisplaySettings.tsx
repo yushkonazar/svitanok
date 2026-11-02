@@ -1,6 +1,10 @@
 import { useState } from 'react';
 import type { Finance } from '../../api/finance-schema.ts';
-import { financeDisplay, recommendThresholds } from '../../../../core/finance/display.mjs';
+import {
+  financeDisplay,
+  recommendThresholds,
+  DEFAULT_THRESHOLDS,
+} from '../../../../core/finance/display.mjs';
 import { parseMoney } from '../../../../core/finance/planning.mjs';
 import { expensePalette } from '../../lib/expensePalette.ts';
 import { Sheet } from './FinanceSheet.tsx';
@@ -40,6 +44,13 @@ export function FinanceDisplaySettings({
           className="border-0 p-0 flex flex-col gap-4"
         >
           <h3 className="font-bold">Ваші межі витрат</h3>
+          <button
+            type="button"
+            className="renewal-secondary"
+            onClick={() => setBounds(DEFAULT_THRESHOLDS.map((n) => String(n / 100)))}
+          >
+            Детальна шкала · 11 відтінків
+          </button>
           <p className="renewal-chart-note">
             Від найменшої до найбільшої, у гривнях. Гранична сума входить у нижній діапазон.
             Відтінки перебудовуються автоматично.
@@ -97,7 +108,7 @@ export function FinanceDisplaySettings({
               checked={display.currencyCycle}
               onChange={(e) => setDisplay({ ...display, currencyCycle: e.target.checked })}
             />
-            Перемикати валюту й гривню кожні 3 секунди
+            Перемикати валюту й гривню кожні 1,5 секунди
           </label>
           <label className="flex gap-3">
             <input

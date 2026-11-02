@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { SettingsScreen } from './SettingsScreen.tsx';
 import { ThemeProvider } from '../../theme.tsx';
 import { savePresentation } from '../../lib/presentation.ts';
+import { Explanation } from '../ui/Explanation.tsx';
 import type { Settings, SettingsResponse } from '../../api/settings-schema.ts';
 const api = vi.hoisted(() => ({
   fetchSettings: vi.fn(),
@@ -36,7 +37,13 @@ beforeEach(() => {
     removeItem: (key: string) => storage.delete(key),
     clear: () => storage.clear(),
   });
-  savePresentation({ calm: false, haptics: true, learning: true, newsPreview: true });
+  savePresentation({
+    calm: false,
+    haptics: true,
+    learning: true,
+    newsPreview: true,
+    explanations: false,
+  });
   data = {
     settings: {
       quiet: { enabled: false, from: '22:00', to: '08:00' },
@@ -75,12 +82,24 @@ async function setup() {
       <MemoryRouter>
         <ThemeProvider>
           <SettingsScreen />
+          <Explanation>Приклад необов’язкового пояснення</Explanation>
         </ThemeProvider>
       </MemoryRouter>
     </QueryClientProvider>,
   );
   await screen.findByRole('heading', { name: 'Вигляд і відчуття' });
 }
+it('shows optional explanations immediately when enabled and hides them without changing server settings', async () => {
+  await setup();
+  const toggle = screen.getByRole('switch', { name: 'Пояснення в блоках' });
+  expect(toggle).toHaveAttribute('aria-checked', 'false');
+  expect(screen.queryByText('Приклад необов’язкового пояснення')).not.toBeInTheDocument();
+  fireEvent.click(toggle);
+  expect(screen.getByText('Приклад необов’язкового пояснення')).toBeInTheDocument();
+  fireEvent.click(toggle);
+  expect(screen.queryByText('Приклад необов’язкового пояснення')).not.toBeInTheDocument();
+  expect(api.postSettings).not.toHaveBeenCalled();
+});
 it('shows current topics without an old briefing and links directly to feature settings', async () => {
   await setup();
   expect(screen.getByRole('switch', { name: 'Наука' })).toBeInTheDocument();

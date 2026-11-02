@@ -77,6 +77,19 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.clearAllMocks();
 });
+it('opens the exact story linked from Today and returns to the feed', () => {
+  render(
+    <MemoryRouter
+      initialEntries={['/news?article=' + encodeURIComponent('https://www.bbc.com/news/1')]}
+    >
+      <NewsScreen />
+    </MemoryRouter>,
+  );
+  expect(screen.getByText('Подія крупним планом.')).toBeVisible();
+  expect(screen.getByRole('button', { name: 'Читати в BBC ↗' })).toBeVisible();
+  fireEvent.click(screen.getByRole('button', { name: '← До стрічки' }));
+  expect(screen.getByRole('heading', { name: 'Головне зараз' })).toBeVisible();
+});
 it('uses text cards without a placeholder and records an explicit less-like-this signal', () => {
   const view = render(
     <NewsItem item={{ title: 'Подія', url: 'https://www.bbc.com/news/a' }} topic="Головне" />,

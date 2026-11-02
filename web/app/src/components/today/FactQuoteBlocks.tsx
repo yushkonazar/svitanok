@@ -22,7 +22,7 @@ export function FactBlock({ d }: { d: FactData }) {
       {d.title && <h3 className="daily-content-title">{d.title}</h3>}
       <p className="daily-content-copy">{d.fact}</p>
       <details className="daily-content-details">
-        <summary>Чому це цікаво та джерело</summary>
+        <summary>Більше про відкриття</summary>
         {d.context && <p>{d.context}</p>}
         {d.sourceUrl?.startsWith('https://') && (
           <a className="renewal-link" href={d.sourceUrl} target="_blank" rel="noopener noreferrer">
@@ -55,12 +55,13 @@ export function QuoteBlock({ d }: { d: StoicData }) {
       </div>
       <p className="daily-quote-author">{d.author}</p>
       <p className="daily-quote-reference">{d.reference}</p>
-      {d.translation && <span className="daily-content-provenance">{d.translation}</span>}
+      {d.translation && (
+        <span className="daily-content-provenance" title={d.translation}>
+          {paraphrase ? 'Український переказ' : d.translation}
+        </span>
+      )}
       <details className="daily-content-details">
-        <summary>Контекст і оригінал</summary>
-        {paraphrase && (
-          <p>Це український переказ думки автора; формулювання відрізняється від оригіналу.</p>
-        )}
+        <summary>Контекст</summary>
         {d.context && <p>{d.context}</p>}
         {d.sourceUrl?.startsWith('https://') && (
           <a className="renewal-link" href={d.sourceUrl} target="_blank" rel="noopener noreferrer">

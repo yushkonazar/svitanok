@@ -1,4 +1,4 @@
-import { useId, useState } from 'react';
+import { useId, useState, type PointerEvent } from 'react';
 
 export interface Observation {
   date: string;
@@ -61,6 +61,17 @@ export function ObservationChart({
     });
   const fmt = (n: number) =>
     n.toLocaleString('uk-UA', { maximumFractionDigits: unit === 'год' || unit === '/5' ? 1 : 4 });
+  const selectAt = (event: PointerEvent<SVGSVGElement>) => {
+    const bounds = event.currentTarget.getBoundingClientRect();
+    if (!bounds.width) return;
+    const px = Math.max(12, Math.min(348, ((event.clientX - bounds.left) / bounds.width) * 360));
+    const nearest = valid.reduce(
+      (best, _, i) => (Math.abs(x(i) - px) < Math.abs(x(best) - px) ? i : best),
+      0,
+    );
+    setSelected(nearest);
+    onSelect?.(valid[nearest].date);
+  };
   return (
     <div className="renewal-observation">
       <div className="flex items-baseline justify-between gap-2" aria-live="polite">
@@ -72,8 +83,18 @@ export function ObservationChart({
       </div>
       <svg
         viewBox="0 0 360 128"
-        className="w-full"
         role="img"
+        className="w-full observation-interactive"
+        onPointerDown={(event) => {
+          event.currentTarget.setPointerCapture?.(event.pointerId);
+          selectAt(event);
+        }}
+        onPointerMove={(event) => {
+          if (event.currentTarget.hasPointerCapture?.(event.pointerId)) selectAt(event);
+        }}
+        onPointerUp={(event) => {
+          event.currentTarget.releasePointerCapture?.(event.pointerId);
+        }}
         aria-label={`${label}: мінімум ${fmt(lo)}, максимум ${fmt(hi)}. ${valid.length} спостережень.`}
       >
         <defs>

@@ -47,6 +47,82 @@ const lifecycleLabels: Record<string, string> = {
   draft: 'Чернетка',
 };
 type Report = NonNullable<WeeklyReports['report']>;
+const sectionNames = {
+  personal: 'ТВІЙ СТАН',
+  plan: 'СПРАВИ Й РЕЗУЛЬТАТИ',
+  finance: 'ГРОШІ Й РІШЕННЯ',
+};
+function ReportAnalysis({ report }: { report: Report }) {
+  const analysis = report.analysis;
+  if (!analysis?.sections.length)
+    return (
+      <section className="renewal-card">
+        <p className="whitespace-pre-wrap text-sm leading-relaxed [overflow-wrap:anywhere]">
+          {report.text}
+        </p>
+      </section>
+    );
+  return (
+    <>
+      {analysis.sections.map((section) => (
+        <section
+          key={section.kind}
+          className={`renewal-card weekly-insight weekly-insight-${section.kind}`}
+        >
+          <p className="renewal-eyebrow">{sectionNames[section.kind]}</p>
+          <h2>{section.title}</h2>
+          {section.paragraphs.map((paragraph, i) => (
+            <p key={i} className="weekly-insight-copy">
+              {paragraph}
+            </p>
+          ))}
+          {section.evidence.length > 0 && (
+            <details className="weekly-insight-evidence">
+              <summary>На чому ґрунтується висновок</summary>
+              <div>
+                {section.evidence.map((item, i) => (
+                  <span key={i}>
+                    <small>{item.label}</small>
+                    <b>{item.value}</b>
+                  </span>
+                ))}
+              </div>
+            </details>
+          )}
+          <Link
+            className="renewal-link mt-4 inline-block"
+            to={
+              section.kind === 'finance'
+                ? `/finance?analytics=expenses&from=${report.from}&to=${report.to}`
+                : section.kind === 'personal'
+                  ? '/stats'
+                  : '/plan'
+            }
+          >
+            {section.kind === 'finance'
+              ? 'Операції цього тижня'
+              : section.kind === 'personal'
+                ? 'Мій стан'
+                : 'Переглянути План'}{' '}
+            →
+          </Link>
+        </section>
+      ))}
+      {analysis.actions.length > 0 && (
+        <section className="renewal-card weekly-next">
+          <p className="renewal-eyebrow">НА НАСТУПНИЙ ТИЖДЕНЬ</p>
+          <h2>Що варто спробувати</h2>
+          {analysis.actions.map((action, i) => (
+            <p key={i}>
+              <span aria-hidden="true">{i + 1}</span>
+              {action}
+            </p>
+          ))}
+        </section>
+      )}
+    </>
+  );
+}
 function Value({ label, value }: { label: string; value: string | number | null | undefined }) {
   return (
     <div className="flex min-w-0 flex-wrap justify-between gap-x-4 gap-y-1 py-1 text-sm">
@@ -296,8 +372,7 @@ export function WeeklyReportScreen() {
       <PageHeading
         eyebrow="РЕЗУЛЬТАТИ Й РІШЕННЯ"
         title="Твій тиждень."
-        accent="Важливе поруч."
-        description="Короткий огляд і деталі, коли вони потрібні."
+        accent="Що за ним стоїть."
       />
       {!!history.length && (
         <label className="flex min-w-0 flex-col gap-2 text-sm text-tx2">
@@ -320,16 +395,19 @@ export function WeeklyReportScreen() {
       )}
       {report ? (
         <>
-          <section className="renewal-card min-w-0">
+          <div className="weekly-report-state">
             <p className="text-xs font-semibold text-a2">{statusLabels[report.status]}</p>
-            <p className="mb-4 mt-1 text-xs text-tx3">
+            <p className="text-xs text-tx3">
               Сформовано {time(report.asOf ?? report.createdAt)} · Київ
             </p>
-            <p className="whitespace-pre-wrap text-sm leading-relaxed [overflow-wrap:anywhere]">
-              {report.text}
-            </p>
-          </section>
-          <ReportDetails report={report} />
+          </div>
+          <ReportAnalysis report={report} />
+          <details className="weekly-evidence-root">
+            <summary className="renewal-link">Цифри та джерела огляду</summary>
+            <div className="mt-4">
+              <ReportDetails report={report} />
+            </div>
+          </details>
           {!!report.missing.length && (
             <details className="renewal-card">
               <summary className="cursor-pointer font-bold">Повнота даних</summary>
