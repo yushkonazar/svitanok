@@ -460,10 +460,7 @@ export async function handleCommand(
     }
     case 'settings':
       return sendText(
-        // Кнопка веде на головну Mini App (Direct Link ?startapp без параметра —
-        // deep-link у розділ вимагав би зміни спільної buildMiniAppButton, яка
-        // дзеркалиться в src/core/telegram.ts). Тож просто кажемо, куди тиснути.
-        '⚙️ Налаштування — у Mini App, шестерня вгорі праворуч: тихі години, тижнева ціль подач, модулі брифінгу, конектори.',
+        '⚙️ Налаштування Світанку: тихі години, тижнева ціль подач, модулі брифінгу, конектори.',
         {
           reply_markup: {
             // TELEGRAM_BOT_USERNAME (Direct Link Mini App) заданий -> initData
@@ -472,10 +469,11 @@ export async function handleCommand(
             inline_keyboard: [
               [
                 buildMiniAppButton(
-                  '📊 Відкрити Mini App',
-                  origin,
+                  'Відкрити налаштування',
+                  new URL('/app/#/settings', origin).href,
                   parsed.chatId,
                   env.TELEGRAM_BOT_USERNAME,
+                  'settings',
                 ),
               ],
             ],

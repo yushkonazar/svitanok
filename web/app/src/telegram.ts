@@ -105,11 +105,27 @@ export function haptic(kind: 'light' | 'success' | 'warning' | 'error' = 'light'
 
 /**
  * Deep-link параметр Telegram Mini App: t.me/Bot/app?startapp=stats -> 'stats'.
- * Апка мапить його на початкову вкладку (App). Поза Telegram — undefined.
+ * Selects a screen only; it is never authentication or permission to mutate.
+ * Telegram also supplies tgWebAppStartParam in the launch URL. Read a fresh
+ * URL before SDK state, which may belong to an earlier WebView launch.
  */
 export function startParam(): string | undefined {
+  const bounded = (value: string): string | undefined =>
+    value.length > 0 && value.length <= 512 ? value : undefined;
+  const fragment = window.location.hash.slice(1);
+  const fragmentQuery = fragment.startsWith('/')
+    ? fragment.slice(fragment.indexOf('?') >= 0 ? fragment.indexOf('?') + 1 : fragment.length)
+    : fragment.replace(/^\?/u, '');
+  for (const query of [fragmentQuery, window.location.search]) {
+    const value = new URLSearchParams(query).get('tgWebAppStartParam');
+    // An explicitly empty/invalid transport value must not resurrect an old
+    // SDK target. The router will use its ordinary home/unknown-route handling.
+    if (value !== null) return bounded(value);
+  }
   const p = tg?.initDataUnsafe?.start_param;
-  return typeof p === 'string' && p.length > 0 ? p : undefined;
+  if (typeof p === 'string') return bounded(p);
+  const raw = new URLSearchParams(tg?.initData ?? '').get('start_param');
+  return raw === null ? undefined : bounded(raw);
 }
 
 /**

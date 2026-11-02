@@ -1,5 +1,5 @@
-import { lazy, Suspense, useEffect, useLayoutEffect } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { lazy, Suspense, useEffect, useLayoutEffect, useState } from 'react';
+import { Link, Navigate, useLocation, useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { inTelegram, haptic, startParam, setBackButton } from './telegram.ts';
 import { demoBadge } from './lib/demoBadge.ts';
@@ -197,6 +197,7 @@ function TabIcon({ id, active }: { id: string; active: boolean }) {
 
 // start_param -> шлях. Приймаємо і id ('stats'), і шлях ('/stats').
 function pathForStartParam(param: string): string | null {
+  if (!param) return null;
   const plan = planPathForStartParam(param);
   if (plan) return plan;
   if (param === 'access') return '/settings?panel=access';
@@ -214,6 +215,29 @@ function pathForStartParam(param: string): string | null {
 }
 
 export function App() {
+  const location = useLocation();
+  const [initialLaunch] = useState(() => ({
+    key: location.key,
+    from: `${location.pathname}${location.search}`,
+    path: pathForStartParam(startParam() ?? ''),
+  }));
+  // Telegram can put its launch envelope in the same fragment HashRouter uses.
+  // Resolve it before mounting the shell: its unknown-route guard must never
+  // compete with notification navigation, including StrictMode's second setup.
+  // A fresh envelope can also arrive while the existing WebView is open.
+  const envelope = /^#\??tgWebApp[A-Za-z]+=/u.test(window.location.hash);
+  const target = envelope
+    ? pathForStartParam(startParam() ?? '')
+    : location.key === initialLaunch.key &&
+        `${location.pathname}${location.search}` === initialLaunch.from
+      ? initialLaunch.path
+      : null;
+  if (target && target !== `${location.pathname}${location.search}`)
+    return <Navigate to={target} replace />;
+  return <AppShell />;
+}
+
+function AppShell() {
   const location = useLocation();
   const navigate = useNavigate();
   const { theme, toggle } = useTheme();
@@ -241,15 +265,6 @@ export function App() {
 
   const full = FULL.find((f) => f.path === location.pathname);
   const active = TABS.find((t) => t.path === location.pathname) ?? TABS[0];
-
-  // Deep-link: один раз на старті мапимо Telegram start_param на вкладку.
-  useEffect(() => {
-    const param = startParam();
-    if (!param) return;
-    const path = pathForStartParam(param);
-    if (path && path !== location.pathname) navigate(path, { replace: true });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   // Подія «відкрито» — раз на завантаження. Стрік «днів поспіль», тижневі
   // стовпчики, теплокарта і «час до відкриття» ЖИВЛЯТЬСЯ з days.opens,
@@ -480,6 +495,20 @@ export function App() {
               : 'px-5 pb-[calc(144px_+_env(safe-area-inset-bottom))] pt-1.5'
           }
         >
+          {!full && active.id === 'today' && (
+            <Link
+              to="/weekly-report"
+              className="renewal-card mb-4 flex items-center justify-between gap-4"
+            >
+              <span>
+                <span className="block text-sm font-bold">Тижневі огляди</span>
+                <span className="mt-1 block text-xs text-tx3">
+                  Висновки за тиждень і попередні огляди
+                </span>
+              </span>
+              <span aria-hidden="true">→</span>
+            </Link>
+          )}
           {/* Межа помилок — саме ТУТ, навколо вмісту, а не навколо застосунку:
               шапка, таб-бар і навігація мусять пережити падіння екрана, інакше з
               розбитої вкладки нікуди піти. resetKey — поточний шлях: перехід на
