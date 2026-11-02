@@ -35,7 +35,7 @@ export function ThisDayBlock({ d }: { d: OnThisDayData }) {
         Події цього дня за роками. Обери позначку на мапі або пересунь часову стрічку — опис і
         джерело зміняться разом.
       </Explanation>
-      <div className="relative overflow-hidden rounded-2xl border border-glassb bg-bg">
+      <div className="history-map relative overflow-hidden rounded-2xl border border-glassb">
         <svg
           viewBox={`${box.x} ${box.y} ${box.width} ${box.height}`}
           data-map-width={box.width}
@@ -43,14 +43,21 @@ export function ThisDayBlock({ d }: { d: OnThisDayData }) {
           role="group"
           aria-label="Мапа місць історичних подій"
         >
-          <rect x={box.x} y={box.y} width={box.width} height={box.height} fill="var(--color-bg)" />
+          <rect
+            x={box.x}
+            y={box.y}
+            width={box.width}
+            height={box.height}
+            fill="var(--history-map-water)"
+          />
           <defs>
             <path
               id={landId}
               d={WORLD_LAND}
-              fill="color-mix(in srgb, var(--color-tx3) 18%, var(--color-bg2))"
-              stroke="color-mix(in srgb, var(--color-tx2) 45%, transparent)"
-              strokeWidth=".25"
+              fill="var(--history-map-land)"
+              stroke="var(--history-map-shore)"
+              strokeWidth=".7"
+              vectorEffect="non-scaling-stroke"
               fillRule="evenodd"
             />
           </defs>

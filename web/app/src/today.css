@@ -187,45 +187,6 @@
   flex-wrap: wrap;
   row-gap: 5px;
 }
-.today-news {
-  padding: 18px;
-}
-.today-news-story {
-  display: block;
-}
-.today-news-art {
-  height: 132px;
-  overflow: hidden;
-  border-radius: 14px;
-  margin-bottom: 14px;
-}
-.today-news-art > * {
-  height: 100%;
-  width: 100%;
-}
-.today-news-art img {
-  height: 100%;
-  width: 100%;
-  object-fit: cover;
-}
-.today-news h2 {
-  font-size: 17px;
-}
-.today-news-pager {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-top: 12px;
-}
-.today-news-pager button {
-  width: 44px;
-  height: 44px;
-  border-radius: 12px;
-  font-size: 22px;
-}
-.today-news-pager button:disabled {
-  opacity: 0.3;
-}
 .daily-content-card {
   position: relative;
 }
@@ -257,6 +218,12 @@
 }
 .daily-content-feedback button {
   font-size: 11px;
+}
+.history-map {
+  --history-map-water: color-mix(in srgb, var(--color-tx) 2%, var(--color-bg2));
+  --history-map-land: color-mix(in srgb, var(--color-tx) 6%, var(--color-bg2));
+  --history-map-shore: color-mix(in srgb, var(--color-tx3) 26%, var(--color-bg2));
+  background: var(--history-map-water);
 }
 .history-map-controls {
   display: flex;
