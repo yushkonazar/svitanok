@@ -496,18 +496,15 @@ function AppShell() {
           }
         >
           {!full && active.id === 'today' && (
-            <Link
-              to="/weekly-report"
-              className="renewal-card mb-4 flex items-center justify-between gap-4"
-            >
-              <span>
-                <span className="block text-sm font-bold">Тижневі огляди</span>
-                <span className="mt-1 block text-xs text-tx3">
-                  Висновки за тиждень і попередні огляди
-                </span>
-              </span>
-              <span aria-hidden="true">→</span>
-            </Link>
+            <div className="mb-2 flex justify-end">
+              <Link
+                to="/weekly-report"
+                className="inline-flex min-h-11 items-center gap-2 rounded-lg px-2 text-[13px] font-medium text-tx2 transition-colors hover:bg-glass hover:text-tx focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-a2 active:bg-glass"
+              >
+                <span>Тижневі огляди</span>
+                <span aria-hidden="true">→</span>
+              </Link>
+            </div>
           )}
           {/* Межа помилок — саме ТУТ, навколо вмісту, а не навколо застосунку:
               шапка, таб-бар і навігація мусять пережити падіння екрана, інакше з
