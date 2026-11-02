@@ -384,7 +384,7 @@ export function resolveCallback(briefing, code, idx) {
 }
 
 /**
- * Дзеркало buildMiniAppButton з src/core/telegram.ts. Пріоритет:
+ * Кнопка запуску Mini App з optional startParam для конкретної сторінки. Пріоритет:
  * 1. botUsername заданий -> Direct Link Mini App (t.me/<username>?startapp) —
  *    завжди launch-ить повноцінний Mini App з initData, і з групи, і з
  *    приватного чату (обходить обмеження web_app-кнопки нижче). Потребує
@@ -398,10 +398,15 @@ export function resolveCallback(briefing, code, idx) {
  * @param {string} url
  * @param {string|number|null} [chatId]
  * @param {string|null} [botUsername] не заданий -> фолбек за chatId
+ * @param {string} [startParam] вибір конкретної сторінки Mini App
  */
-export function buildMiniAppButton(text, url, chatId, botUsername) {
+export function buildMiniAppButton(text, url, chatId, botUsername, startParam) {
   const username = botUsername ? String(botUsername).trim().replace(/^@/, '') : '';
-  if (username) return { text, url: `https://t.me/${username}?startapp` };
+  if (username)
+    return {
+      text,
+      url: `https://t.me/${username}?startapp${startParam ? `=${encodeURIComponent(startParam)}` : ''}`,
+    };
   const isGroup = chatId != null && Number(chatId) < 0;
   return isGroup ? { text, url } : { text, web_app: { url } };
 }

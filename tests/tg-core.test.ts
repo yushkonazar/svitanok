@@ -615,6 +615,17 @@ describe('tg-core — buildMiniAppButton (дзеркало src/core/telegram.ts,
       buildMiniAppButton('📊 Відкрити Mini App', 'https://x/app', null, '@svitanok_bot'),
     ).toEqual({ text: '📊 Відкрити Mini App', url: 'https://t.me/svitanok_bot?startapp' });
   });
+  it('preserves the settings destination in Telegram and private web_app buttons', () => {
+    const url = 'https://svitanok.example/app/#/settings';
+    expect(buildMiniAppButton('Налаштування', url, -100123, 'svitanok_bot', 'settings')).toEqual({
+      text: 'Налаштування',
+      url: 'https://t.me/svitanok_bot?startapp=settings',
+    });
+    expect(buildMiniAppButton('Налаштування', url, 123, null, 'settings')).toEqual({
+      text: 'Налаштування',
+      web_app: { url },
+    });
+  });
 });
 
 describe('briefCooldownRemainingMs (SL2)', () => {
