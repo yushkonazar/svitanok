@@ -217,6 +217,14 @@ it('opens the exact payment ID, even when two records have the same owner name',
   expect(screen.getByTestId('payment-detail')).toHaveTextContent('home-b · LoveYouHome · 8000');
   expect(screen.getByTestId('payment-detail')).not.toHaveTextContent('home-a');
 });
+
+it('opens a new payment directly from the empty Today card and returns to finance on close', async () => {
+  renderFinance('/finance?action=payment');
+  expect(await screen.findByRole('heading', { name: 'Додати платіж' })).toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: 'Закрити' }));
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Записати витрату' })).toBeInTheDocument();
+});
 it('opens the exact bank record and shows the shared owner response, not a new expense form', () => {
   const finance = readFinanceDemo();
   const tx = {

@@ -32,6 +32,12 @@ export function financeView(f: Finance, days: number, nowMs = Date.now()) {
     f.goalMoves.filter((m) => m.movementKind !== 'external').map((m) => m.amountMinor),
   );
   const available = sumMoney([owned, -allocated, -f.reserveMinor]);
+  const externalSavings = sumMoney(
+    f.goalMoves.filter((m) => m.movementKind === 'external').map((m) => m.amountMinor),
+  );
+  const savings = sumMoney([allocated, externalSavings]);
+  // Reserves are already in account balances; transferred savings have left them.
+  const totalWithSavings = sumMoney([available, savings]);
   const unknownBalances =
     f.accounts.some((a) => a.currency === 'UAH' && a.balanceMinor === null) ||
     f.taxiWeeks.some((w) => !w.settled && !w.complete);
@@ -63,6 +69,9 @@ export function financeView(f: Finance, days: number, nowMs = Date.now()) {
     owned,
     allocated,
     available,
+    externalSavings,
+    savings,
+    totalWithSavings,
     unknownBalances,
     unclassified,
     budgets,
