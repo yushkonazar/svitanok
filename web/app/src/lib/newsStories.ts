@@ -3,6 +3,8 @@ import { newsFeed } from './newsFeed.ts';
 import { newsStoryId, newsStoryVersion } from '../../../core/brief/news-reader.mjs';
 import { canonicalNewsText, newsContext } from '../../../core/brief/news-content.mjs';
 export { newsStoryId, newsStoryVersion, newsContext };
+export const newsTopicLabel = (topic: string) =>
+  topic === 'Головне' ? 'Світ' : topic === 'Винаходи й технології' ? 'Технології' : topic;
 export const EMPTY_NEWS_READER: NewsReaderData = {
   following: {},
   mutedUntil: {},
@@ -75,7 +77,7 @@ export function newsSnapshotKey(groups: NewsGroup[]) {
     .join('|');
 }
 export type NewsView = {
-  mode: 'main' | 'interests' | 'following';
+  mode: 'all' | 'main' | 'interests' | 'following';
   filter: 'all' | 'new' | 'saved';
   topic: string;
   search: string;
@@ -83,10 +85,10 @@ export type NewsView = {
   snapshot: string;
   limit: number;
 };
-const VIEW_KEY = 'svitanok:news-view:v2';
+const VIEW_KEY = 'svitanok:news-view:v3';
 export function readNewsView(): NewsView {
   const initial: NewsView = {
-    mode: 'main',
+    mode: 'all',
     filter: 'all',
     topic: 'Усе',
     search: '',
@@ -98,7 +100,7 @@ export function readNewsView(): NewsView {
     const v = JSON.parse(sessionStorage.getItem(VIEW_KEY) ?? '{}');
     return {
       ...initial,
-      mode: ['main', 'interests', 'following'].includes(v.mode) ? v.mode : 'main',
+      mode: ['all', 'main', 'interests', 'following'].includes(v.mode) ? v.mode : 'all',
       filter: ['all', 'new', 'saved'].includes(v.filter) ? v.filter : 'all',
       topic: typeof v.topic === 'string' ? v.topic.slice(0, 100) : 'Усе',
       search: typeof v.search === 'string' ? v.search.slice(0, 200) : '',

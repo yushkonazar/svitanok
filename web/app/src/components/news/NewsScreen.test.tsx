@@ -1,10 +1,11 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { NewsScreen } from './NewsScreen.tsx';
 import { NewsStoryCard } from './NewsStoryCard.tsx';
 import { NewsItem } from './NewsItem.tsx';
+import { SavedProvider } from '../../saved.tsx';
 import { markRead } from '../../lib/reading.ts';
 import { newsReadKey } from '../../lib/newsStories.ts';
 import type { NewsSnapshot } from '../../api/briefing-schema.ts';
@@ -18,6 +19,7 @@ const mocks = vi.hoisted(() => ({
   archive: [] as SavedPage[],
   explanations: false,
   expired: false,
+  save: vi.fn(),
 }));
 vi.mock('../../api/hooks.ts', () => ({
   useBriefing: () => ({ data: undefined, isLoading: false, refetch: vi.fn() }),
@@ -34,7 +36,7 @@ vi.mock('../../api/hooks.ts', () => ({
   useNewsStoryAction: () => ({ mutate: mocks.story, error: null, isPending: false }),
   useSavedArchive: () => ({ data: { pages: mocks.archive }, isLoading: false, error: null }),
   useNewsFeedback: () => ({ mutate: mocks.feedback, error: null, isPending: false }),
-  useToggleSaveNews: () => ({ mutate: vi.fn() }),
+  useToggleSaveNews: () => ({ mutate: mocks.save, mutateAsync: mocks.save }),
 }));
 vi.mock('../../api/client.ts', () => ({
   isSessionExpired: () => mocks.expired,
@@ -75,9 +77,11 @@ function mount(path = '/news') {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const tree = () => (
     <QueryClientProvider client={client}>
-      <MemoryRouter initialEntries={[path]}>
-        <NewsScreen />
-      </MemoryRouter>
+      <SavedProvider>
+        <MemoryRouter initialEntries={[path]}>
+          <NewsScreen />
+        </MemoryRouter>
+      </SavedProvider>
     </QueryClientProvider>
   );
   const result = render(tree());
@@ -93,6 +97,7 @@ beforeEach(() => {
   vi.spyOn(window, 'scrollTo').mockImplementation(() => {});
 });
 afterEach(() => {
+  vi.unstubAllGlobals();
   vi.restoreAllMocks();
   vi.clearAllMocks();
 });
@@ -112,14 +117,26 @@ it('starts with compact unduplicated stories and opens the real headline with on
   fireEvent.click(screen.getByRole('button', { name: 'До стрічки' }));
   expect(screen.getByText('Переглянуто')).toBeVisible();
 });
-it('separates interests from the main feed without repeating headlines', () => {
+it('defaults to all themes by publication time and keeps the two narrower modes', () => {
   mocks.live!.groups.push({
     scope: 'world',
     topic: 'Наука',
-    items: [{ title: 'Місія NASA', url: 'https://www.nasa.gov/mission', priority: 1 }],
+    items: [
+      {
+        title: 'Місія NASA',
+        url: 'https://www.nasa.gov/mission',
+        priority: 1,
+        publishedAt: '2026-11-03T10:30:00Z',
+      },
+    ],
     more: [],
   });
   mount();
+  expect(screen.getByRole('button', { name: 'Стрічка' })).toHaveAttribute('aria-pressed', 'true');
+  expect(
+    screen.getAllByRole('button', { name: /^Відкрити:/ }).map((button) => button.textContent),
+  ).toEqual([expect.stringContaining('Місія NASA'), expect.stringContaining('Перша подія')]);
+  fireEvent.click(screen.getByRole('button', { name: 'Головне' }));
   expect(screen.queryByText('Місія NASA')).not.toBeInTheDocument();
   fireEvent.click(screen.getByRole('button', { name: 'За інтересами' }));
   expect(screen.getAllByText('Місія NASA')).toHaveLength(1);
@@ -241,7 +258,7 @@ it('lets the reader find and unmute a hidden story', () => {
   mount();
   expect(screen.queryByText('Перша подія')).not.toBeInTheDocument();
   expect(screen.getByText('Події тимчасово приглушені.')).toBeVisible();
-  fireEvent.click(screen.getByText('Пошук і фільтри'));
+  fireEvent.click(screen.getByText('Пошук і джерела'));
   fireEvent.click(screen.getByRole('checkbox', { name: 'Показати приглушені · 1' }));
   fireEvent.click(screen.getByRole('button', { name: 'Відкрити: Перша подія' }));
   fireEvent.click(screen.getByRole('button', { name: 'Повернути у стрічку' }));
@@ -300,7 +317,7 @@ it('keeps source errors separate from an expired private session', () => {
 });
 it('searches the current mode and starts an explicit collection request', () => {
   mount();
-  fireEvent.click(screen.getByText('Пошук і фільтри'));
+  fireEvent.click(screen.getByText('Пошук і джерела'));
   fireEvent.change(screen.getByRole('textbox', { name: 'Пошук у новинах' }), {
     target: { value: 'невідоме' },
   });
@@ -339,4 +356,149 @@ it('removes an unavailable photo and can show a replacement', () => {
   expect(view.container.querySelector('.news-story-thumbnail')).toBeNull();
   view.rerender(card('/api/news/image/b'));
   expect(view.container.querySelector('img')).toHaveAttribute('src', '/api/news/image/b');
+});
+
+it('shows categories without opening search, scopes counters and clears the category on a mode change', () => {
+  mocks.live!.groups.push({
+    scope: 'world',
+    topic: 'Наука',
+    more: [],
+    items: [
+      {
+        title: 'Місія NASA',
+        url: 'https://www.nasa.gov/mission',
+        priority: 1,
+        firstSeenAt: '2026-11-03T10:30:00Z',
+      },
+    ],
+  });
+  mount();
+  const topics = screen.getByRole('group', { name: 'Категорії новин' });
+  expect(within(topics).getByRole('button', { name: 'Світ' })).toBeVisible();
+  expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
+  fireEvent.click(within(topics).getByRole('button', { name: 'Наука' }));
+  expect(screen.queryByText('Перша подія')).not.toBeInTheDocument();
+  expect(screen.getByText('Місія NASA')).toBeVisible();
+  expect(screen.getByRole('button', { name: '1 нова' })).toBeVisible();
+  fireEvent.click(screen.getByRole('button', { name: 'Головне' }));
+  expect(within(topics).getByRole('button', { name: 'Усе' })).toHaveAttribute(
+    'aria-pressed',
+    'true',
+  );
+  expect(within(topics).queryByRole('button', { name: 'Наука' })).not.toBeInTheDocument();
+  expect(screen.getByText('Перша подія')).toBeVisible();
+});
+
+it('keeps a disappeared category visible when a new collection is explicitly applied', () => {
+  const view = mount();
+  const topics = screen.getByRole('group', { name: 'Категорії новин' });
+  fireEvent.click(within(topics).getByRole('button', { name: 'Світ' }));
+  mocks.live = snapshot('Інша тема', 2);
+  mocks.live.groups[0]!.topic = 'Наука';
+  view.rerenderNews();
+  fireEvent.click(screen.getByRole('button', { name: /Оновлена добірка/ }));
+  expect(within(topics).getByRole('button', { name: 'Світ' })).toHaveAttribute(
+    'aria-pressed',
+    'true',
+  );
+  expect(screen.queryByText('Інша тема')).not.toBeInTheDocument();
+  fireEvent.click(within(topics).getByRole('button', { name: 'Усе' }));
+  expect(screen.getByText('Інша тема')).toBeVisible();
+});
+
+it('saves directly from a card without marking it read and rolls back a failed save', async () => {
+  mount();
+  const save = screen.getByRole('button', { name: 'Зберегти: Перша подія' });
+  mocks.save.mockRejectedValueOnce(new Error('offline'));
+  fireEvent.click(save);
+  await waitFor(() => expect(save).toHaveAttribute('aria-pressed', 'false'));
+  fireEvent.click(save);
+  expect(save).toHaveAttribute('aria-pressed', 'true');
+  expect(mocks.save).toHaveBeenLastCalledWith({
+    save: true,
+    url: 'https://www.bbc.com/news/1',
+    title: 'Перша подія',
+    category: 'Головне',
+  });
+  expect(screen.getByRole('heading', { name: 'Новини' })).toBeVisible();
+  expect(mocks.story).not.toHaveBeenCalled();
+  expect(mocks.feedback).not.toHaveBeenCalled();
+});
+
+it('follows directly from a card only after acknowledgement without opening or reading it', () => {
+  const view = mount();
+  const follow = screen.getByRole('button', { name: 'Стежити за подією: Перша подія' });
+  fireEvent.click(follow);
+  expect(follow).toHaveAttribute('aria-pressed', 'false');
+  expect(mocks.story).toHaveBeenLastCalledWith(
+    { type: 'story', storyId: 'event-1', action: 'follow' },
+    expect.any(Object),
+  );
+  mocks.live!.reader!.following['event-1'] = {
+    item: mocks.live!.groups[0]!.items[0]!,
+    topic: 'Головне',
+    scope: 'world',
+    followedAt: '2026-11-03T12:00:00Z',
+  };
+  view.rerenderNews();
+  expect(screen.getByRole('button', { name: 'Не стежити за подією: Перша подія' })).toHaveAttribute(
+    'aria-pressed',
+    'true',
+  );
+  expect(screen.getByRole('heading', { name: 'Новини' })).toBeVisible();
+  expect(mocks.story).toHaveBeenCalledTimes(1);
+});
+
+it('rolls back a failed card save after the reader has already opened the article', async () => {
+  let rejectSave!: (error: Error) => void;
+  mocks.save.mockImplementationOnce(
+    () =>
+      new Promise((_resolve, reject) => {
+        rejectSave = reject;
+      }),
+  );
+  mount();
+  fireEvent.click(screen.getByRole('button', { name: 'Зберегти: Перша подія' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Відкрити: Перша подія' }));
+  expect(screen.getByRole('button', { name: 'Збережено' })).toHaveAttribute('aria-pressed', 'true');
+  await act(async () => rejectSave(new Error('offline')));
+  expect(screen.getByRole('button', { name: 'Зберегти' })).toHaveAttribute('aria-pressed', 'false');
+});
+
+it('reveals every available story in batches and ignores callbacks from old observers', () => {
+  const callbacks: ((entries: { isIntersecting: boolean }[]) => void)[] = [];
+  vi.stubGlobal(
+    'IntersectionObserver',
+    class {
+      constructor(callback: (entries: { isIntersecting: boolean }[]) => void) {
+        callbacks.push(callback);
+      }
+      observe() {}
+      disconnect() {}
+    },
+  );
+  mocks.live!.groups[0]!.items = Array.from({ length: 19 }, (_, index) => ({
+    title: `Подія ${index + 1}`,
+    url: `https://www.bbc.com/news/batch-${index}`,
+    storyId: `batch-${index}`,
+  }));
+  const view = mount();
+  const count = () => view.container.querySelectorAll('.news-story-card').length;
+  expect(count()).toBe(6);
+  act(() => callbacks[0]!([{ isIntersecting: true }]));
+  expect(count()).toBe(12);
+  act(() => callbacks[0]!([{ isIntersecting: true }]));
+  expect(count()).toBe(12);
+  const more = screen.getByRole('button', { name: 'Ще події · 7' });
+  more.focus();
+  fireEvent.click(more);
+  expect(count()).toBe(18);
+  expect(more).toHaveFocus();
+  act(() => callbacks[1]!([{ isIntersecting: true }]));
+  expect(count()).toBe(18);
+  act(() => callbacks.at(-1)!([{ isIntersecting: true }]));
+  expect(count()).toBe(19);
+  expect(screen.queryByRole('button', { name: /Ще події/ })).not.toBeInTheDocument();
+  act(() => callbacks.at(-1)!([{ isIntersecting: true }]));
+  expect(count()).toBe(19);
 });

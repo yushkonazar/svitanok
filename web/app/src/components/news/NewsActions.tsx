@@ -1,9 +1,9 @@
 import { useState } from 'react';
-import { useNewsFeedback, useToggleSaveNews, useStats, useNewsSnapshot } from '../../api/hooks.ts';
-import { useSaved } from '../../saved.tsx';
+import { useNewsFeedback, useStats, useNewsSnapshot } from '../../api/hooks.ts';
 import type { NewsStory } from '../../lib/newsStories.ts';
 import { haptic } from '../../telegram.ts';
 import { NewsIcon } from './NewsIcon.tsx';
+import { NewsSaveButton } from './NewsSaveButton.tsx';
 export function NewsActions({
   story,
   following,
@@ -21,18 +21,14 @@ export function NewsActions({
   onFollow: () => void;
   onMute: () => void;
 }) {
-  const { item, topic } = story,
-    { isSaved, setSaved } = useSaved(),
-    save = useToggleSaveNews(),
+  const { item } = story,
     feedback = useNewsFeedback(),
     live = useNewsSnapshot(),
     stats = useStats();
   const [localVote, setVote] = useState<'like' | 'less' | 'clear' | null>(null),
-    [localSaved, setLocalSaved] = useState<boolean | null>(null),
     [reason, setReason] = useState<string | null>(null);
   const vote = localVote ?? live.data?.feedback?.[item.url],
     liked = vote ? vote === 'like' : stats.data?.stats.votes?.[item.url] === 'up';
-  const saved = localSaved ?? (isSaved('news', item.url) || !!story.knownSaved);
   const react = (kind: 'like' | 'less' | 'clear', why?: 'topic' | 'repeat' | 'weak' | 'source') => {
     if (feedback.isPending) return;
     const old = localVote;
@@ -51,30 +47,7 @@ export function NewsActions({
         </p>
       )}
       <div className="news-action-grid">
-        <button
-          className="news-action"
-          type="button"
-          disabled={save.isPending}
-          aria-pressed={saved}
-          onClick={() => {
-            const next = !saved;
-            setLocalSaved(next);
-            setSaved('news', item.url, next);
-            save.mutate(
-              { save: next, url: item.url, title: item.title, category: topic },
-              {
-                onError: () => {
-                  setLocalSaved(saved);
-                  setSaved('news', item.url, saved);
-                },
-              },
-            );
-            haptic('light');
-          }}
-        >
-          <NewsIcon name="bookmark" />
-          {saved ? 'Збережено' : 'Зберегти'}
-        </button>
+        <NewsSaveButton story={story} />
         {canFollow && (
           <button
             className="news-action"
@@ -151,7 +124,7 @@ export function NewsActions({
           </div>
         </details>
       )}
-      {(save.error || feedback.error) && (
+      {feedback.error && (
         <p role="alert" className="news-action-error">
           Не вдалося зберегти дію. Спробуй ще раз.
         </p>
