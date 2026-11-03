@@ -11,15 +11,16 @@ import { TodaySpendingPulse } from './TodaySpendingPulse.tsx';
 import { TodayPayment } from './TodayPayment.tsx';
 import { TodayMoneySummary } from './TodayMoneySummary.tsx';
 import { isSessionExpired } from '../../api/client.ts';
+import { useCheckinProgress } from '../../lib/useCheckinProgress.ts';
+import { CheckinDayProgress, checkinProgressLabel } from '../checkin/CheckinDayProgress.tsx';
 
 export function TodayAttention() {
   const nowMs = useTick(30_000);
-  const { data: stats } = useStats();
+  const stats = useStats();
+  const { progress } = useCheckinProgress(stats, nowMs);
   const finance = useFinance();
   const money = isSessionExpired(finance.error) ? undefined : finance.data;
   const now = kyivParts(nowMs);
-  const slot = stats?.stats.checkinSlot;
-  const confirmed = slot ? stats?.stats.checkinToday?.[slot]?.confirmed : false;
   const greeting =
     now.hour < 6
       ? 'Тиха ніч.'
@@ -33,13 +34,6 @@ export function TodayAttention() {
     !!view &&
     !view.unknownBalances &&
     !!money?.finance.accounts.some((account) => account.currency === 'UAH');
-  const slotLabel = slot
-    ? {
-        morning: 'Ранковий чек-ін',
-        afternoon: 'Денний чек-ін',
-        evening: 'Вечірній чек-ін',
-      }[slot]
-    : 'Чек-ін';
   const latest = money?.finance.transactions
     .filter(
       (t) =>
@@ -98,12 +92,18 @@ export function TodayAttention() {
         </div>
         <div className="today-side-stack">
           <Link
-            to="/checkin"
+            to={progress?.href ?? '/checkin'}
             className="today-side-card today-checkin-card"
-            aria-label={slotLabel + (confirmed ? ': підтверджено' : ': відкрити')}
+            aria-label={`Чек-іни${progress?.previousDay ? ` за ${progress.date}` : ''}. ${checkinProgressLabel(progress)}. Відкрити чек-ін`}
           >
-            <span>{confirmed ? '✓ Готово' : 'Як ти зараз?'}</span>
-            <small>{slotLabel}</small>
+            <span>
+              {progress?.previousDay
+                ? `За ${progress.date.slice(8)}.${progress.date.slice(5, 7)}`
+                : progress?.completed === 3
+                  ? '✓ Усі три'
+                  : 'Як ти зараз?'}
+            </span>
+            <CheckinDayProgress progress={progress} compact />
           </Link>
           <TodayPayment
             finance={money?.finance}

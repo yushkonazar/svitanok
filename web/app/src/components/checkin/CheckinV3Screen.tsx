@@ -36,6 +36,14 @@ import {
 } from '../../../../core/checkin/catalog.mjs';
 import { BLOCKS as LEGACY_BLOCKS } from './questions.ts';
 import { AdaptivePreferences } from './AdaptivePreferences.tsx';
+import { useCheckinProgress } from '../../lib/useCheckinProgress.ts';
+import {
+  checkinDayProgress,
+  checkinDayRecord,
+  openCheckinWindows,
+  preferredCheckinWindow,
+} from '../../lib/checkinProgress.ts';
+import { CheckinDayProgress } from './CheckinDayProgress.tsx';
 
 type Answers = Record<string, unknown>;
 type Completion = {
@@ -318,6 +326,7 @@ export function CheckinV3Screen({
     save = useSaveCheckin(),
     extend = useExtendCheckin(),
     now = useTick(1000);
+  const checkin = useCheckinProgress(query, now);
   const [preview, setPreview] = useState<CheckinSlot>('morning'),
     [drafts, setDrafts] = useState<Record<string, Answers>>({}),
     [early, setEarly] = useState<string | null>(null),
@@ -386,25 +395,6 @@ export function CheckinV3Screen({
     },
     [],
   );
-  // Re-read server authority on boundaries, including a one-time extension.
-  useEffect(() => {
-    if (!inTelegram() || !query.data?.stats.checkinWindows) return;
-    const s = query.data.stats;
-    const serverNow =
-      Date.parse(s.checkinServerTime ?? '') +
-      Math.max(0, Date.now() - (query.data.receivedAtMs ?? query.dataUpdatedAt));
-    if (!Number.isFinite(serverNow)) return;
-    const next = s
-      .checkinWindows!.flatMap((w) => [Date.parse(w.startAt), Date.parse(w.endAt)])
-      .filter((ms) => ms > serverNow)
-      .sort((a, b) => a - b)[0];
-    if (!next) return;
-    const refresh = setTimeout(
-      () => void query.refetch(),
-      Math.min(2147483647, next - serverNow + 100),
-    );
-    return () => clearTimeout(refresh);
-  }, [query]);
   if (query.isLoading) return <LoadingSkeleton />;
   if (!query.data || isSessionExpired(query.error))
     return (
@@ -439,16 +429,9 @@ export function CheckinV3Screen({
   const s = query.data.stats,
     demo = !inTelegram();
   const elapsedMs = Math.max(0, now - (query.data.receivedAtMs ?? query.dataUpdatedAt));
-  const serverNow =
-    (s.checkinServerTime
-      ? Date.parse(s.checkinServerTime)
-      : (query.data.receivedAtMs ?? query.dataUpdatedAt)) + elapsedMs;
-  const openWindows = (s.checkinWindows ?? []).filter(
-    (w) => w.open && serverNow < Date.parse(w.endAt),
-  );
-  const defaultWindow =
-    openWindows.find((w) => w.dateKey === s.checkinDate && w.slot === s.checkinSlot) ??
-    openWindows[0];
+  const serverNow = checkin.serverNow;
+  const openWindows = openCheckinWindows(s, serverNow);
+  const defaultWindow = preferredCheckinWindow(s, serverNow);
   const selected =
     selection ??
     (target?.date && slots.includes(target.slot as CheckinSlot)
@@ -472,7 +455,8 @@ export function CheckinV3Screen({
         : s.checkinWindows
           ? null
           : s.checkinSlot;
-  const day = date === s.checkinDate ? s.checkinToday : s.checkinRaw.records[date];
+  const day = checkinDayRecord(s, date, kyivParts(serverNow).date);
+  const dayProgress = checkinDayProgress(s, serverNow, date, checkin.pending);
   const answers = (slot: CheckinSlot): Answers => {
     const stored = day?.[slot] ?? {};
     const prior = stored.confirmed || stored.questionVersion === 3 ? stored : {};
@@ -495,6 +479,15 @@ export function CheckinV3Screen({
       (s.checkinNextIn ?? checkinClock(kyivParts(now).hour * 60).nextIn) * 60 - elapsedMs / 1000,
     ),
   );
+  function selectWindow(dateKey: string, slot: CheckinSlot) {
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = null;
+    const draft = pendingDraft.current;
+    pendingDraft.current = null;
+    if (draft) save.mutate(draft);
+    setSelection({ date: dateKey, slot });
+    extend.reset();
+  }
   function change(slot: CheckinSlot, key: string, value: unknown) {
     const old = answers(slot);
     const changed = { ...old, [key]: value, questionVersion: 3 };
@@ -568,6 +561,25 @@ export function CheckinV3Screen({
         accent="У своєму ритмі."
         description="Три пов’язані записи. Чіткі питання й уточнення лише за потреби."
       />
+      <section>
+        <p className="renewal-chart-note mb-2">
+          {date === kyivParts(serverNow).date
+            ? 'Чек-іни за сьогодні'
+            : `Чек-іни за ${date.slice(8)}.${date.slice(5, 7)}`}
+        </p>
+        <CheckinDayProgress
+          progress={dayProgress}
+          selectedSlot={active}
+          onSelect={(slot) => {
+            if (demo) setPreview(slot);
+            else if (openWindows.some((w) => w.dateKey === date && w.slot === slot))
+              selectWindow(date, slot);
+            requestAnimationFrame(() =>
+              slotNodes.current[slot]?.scrollIntoView?.({ block: 'start', behavior: 'auto' }),
+            );
+          }}
+        />
+      </section>
       {demo && (
         <section className="renewal-inset">
           <p className="renewal-chart-note mb-3">
@@ -609,15 +621,7 @@ export function CheckinV3Screen({
               <button
                 key={`${w.dateKey}:${w.slot}`}
                 aria-pressed={date === w.dateKey && active === w.slot}
-                onClick={() => {
-                  if (timer.current) clearTimeout(timer.current);
-                  timer.current = null;
-                  const draft = pendingDraft.current;
-                  pendingDraft.current = null;
-                  if (draft) save.mutate(draft); // save the original date/slot before switching
-                  setSelection({ date: w.dateKey, slot: w.slot });
-                  extend.reset();
-                }}
+                onClick={() => selectWindow(w.dateKey, w.slot)}
               >
                 {names[w.slot]} · {w.dateKey.slice(8)}.{w.dateKey.slice(5, 7)}
               </button>
@@ -731,7 +735,7 @@ export function CheckinV3Screen({
                     ? demo
                       ? 'Демо проходження'
                       : `Чернетка · ще ${left} хв`
-                    : `Від ${p.schedule[slot]}`}
+                    : dayProgress.items.find((item) => item.slot === slot)?.description}
               </span>
             </div>
             {finishing && finishing.phase !== 'saving' ? (
@@ -805,9 +809,8 @@ export function CheckinV3Screen({
         </p>
         <div className="renewal-week-grid mt-4">
           {Array.from({ length: 7 }, (_, i) => {
-            const d = shiftDate(date, i - 6),
-              rec = d === date ? s.checkinToday : s.checkinRaw.records[d];
-            const count = slots.filter((slot) => rec?.[slot]?.confirmed).length;
+            const d = shiftDate(date, i - 6);
+            const count = checkinDayProgress(s, serverNow, d, checkin.pending).completed;
             return (
               <div key={d}>
                 <small>
