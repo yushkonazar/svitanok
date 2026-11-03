@@ -22,7 +22,7 @@ export function NewsLoadMore({ remaining, onMore }: { remaining: number; onMore:
       active = false;
       observer.disconnect();
     };
-  }, [onMore]);
+  }, [onMore, remaining]);
   return (
     <div ref={sentinel} className="news-load-more">
       <button type="button" className="renewal-secondary" onClick={onMore}>

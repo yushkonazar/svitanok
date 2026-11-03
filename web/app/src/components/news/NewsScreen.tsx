@@ -677,7 +677,7 @@ export function NewsScreen() {
       )}
       {matches.length > limit && (
         <NewsLoadMore
-          key={`${view.mode}:${view.filter}:${view.topic}:${view.search}:${limit}`}
+          key={`${view.mode}:${view.filter}:${view.topic}:${view.search}`}
           remaining={matches.length - limit}
           onMore={loadMore}
         />

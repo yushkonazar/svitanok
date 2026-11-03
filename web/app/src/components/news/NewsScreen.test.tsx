@@ -489,9 +489,14 @@ it('reveals every available story in batches and ignores callbacks from old obse
   expect(count()).toBe(12);
   act(() => callbacks[0]!([{ isIntersecting: true }]));
   expect(count()).toBe(12);
-  act(() => callbacks.at(-1)!([{ isIntersecting: true }]));
+  const more = screen.getByRole('button', { name: 'Ще події · 7' });
+  more.focus();
+  fireEvent.click(more);
   expect(count()).toBe(18);
-  fireEvent.click(screen.getByRole('button', { name: 'Ще події · 1' }));
+  expect(more).toHaveFocus();
+  act(() => callbacks[1]!([{ isIntersecting: true }]));
+  expect(count()).toBe(18);
+  act(() => callbacks.at(-1)!([{ isIntersecting: true }]));
   expect(count()).toBe(19);
   expect(screen.queryByRole('button', { name: /Ще події/ })).not.toBeInTheDocument();
   act(() => callbacks.at(-1)!([{ isIntersecting: true }]));
