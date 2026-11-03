@@ -78,3 +78,36 @@ it('keeps a partly timestamped forecast in time order instead of drawing backwar
   expect(xs).toEqual([...xs].sort((a, b) => a - b));
   expect(xs[2]! - xs[1]!).toBeCloseTo((xs[1]! - xs[0]!) * 2);
 });
+
+it.each([
+  { temperatures: [5, 6], labels: ['+4,8°', '+5,5°', '+6,2°'] },
+  { temperatures: [6, 6], labels: ['+5,8°', '+6°', '+6,2°'] },
+  { temperatures: [0, 0], labels: ['-0,2°', '0°', '+0,2°'] },
+  { temperatures: [-6, -5], labels: ['-6,2°', '-5,5°', '-4,8°'] },
+  { temperatures: [-0.1, 0.1], labels: ['-0,3°', '0°', '+0,3°'] },
+  { temperatures: [5.01, 5.02], labels: ['+4,8°', '+5,1°', '+5,3°'] },
+])('keeps the temperature axis readable for $temperatures', ({ temperatures, labels }) => {
+  render(<HourlyChart hourly={temperatures.map((t, index) => ({ h: 10 + index, t }))} />);
+  const chart = screen.getByRole('img', { name: 'температура по годинах' });
+  const ticks = [...chart.querySelectorAll('[data-temperature-axis] text')];
+  expect(ticks.map((text) => text.textContent)).toEqual(labels);
+  expect(new Set(ticks.map((text) => text.textContent)).size).toBe(3);
+  const positions = ticks.map((text) => Number(text.getAttribute('y')));
+  expect(Math.abs(positions[1]! - positions[0]!)).toBeGreaterThanOrEqual(30);
+  expect(Math.abs(positions[2]! - positions[1]!)).toBeGreaterThanOrEqual(30);
+  const points = [...chart.querySelectorAll('circle')];
+  expect(
+    Number(points[0]!.getAttribute('cx')) - Number(ticks[0]!.getAttribute('x')),
+  ).toBeGreaterThan(5);
+  expect(points.every((point) => Number.isFinite(Number(point.getAttribute('cy'))))).toBe(true);
+  if (temperatures[0] === temperatures[1]) {
+    expect(points[0]).toHaveAttribute('cy', points[1]!.getAttribute('cy'));
+    expect(screen.getByText(/^Без змін ·/)).toBeInTheDocument();
+  }
+  if (temperatures[0] === 5 && temperatures[1] === 6) {
+    expect(
+      Math.abs(Number(points[0]!.getAttribute('cy')) - Number(points[1]!.getAttribute('cy'))),
+    ).toBeGreaterThan(50);
+    expect(screen.getByText('Від +5° до +6°')).toBeInTheDocument();
+  }
+});
