@@ -18,6 +18,7 @@ import { DailyContentTools } from './DailyContentTools.tsx';
 import { ThisDayBlock } from './ThisDayBlock.tsx';
 import { LearningFocus } from './LearningFocus.tsx';
 import { usePresentation } from '../../lib/presentation.ts';
+import { useTodayOrder } from '../../lib/todayLayout.ts';
 
 // Щоденні дії → погода → валюта → добірка для читання → фокус-таймер.
 
@@ -55,6 +56,7 @@ function HorizonDivider() {
 
 export function TodayScreen() {
   const preferences = usePresentation();
+  const order = useTodayOrder();
   const { data: ownerSettings } = useSettings();
   const { data, isLoading, isError, error, refetch } = useBriefing();
   // Жива погода (PR-7, фідбек власника) — м'який шар поверх снапшоту брифінгу:
@@ -102,7 +104,6 @@ export function TodayScreen() {
         />
       ),
     });
-  if (weather && currency) sections.push({ key: 'divider', node: <HorizonDivider /> });
   if (currency)
     sections.push({
       key: 'currency',
@@ -110,15 +111,28 @@ export function TodayScreen() {
     });
   if (fact) sections.push({ key: 'fact', node: <FactBlock d={fact} /> });
   if (stoic) sections.push({ key: 'stoic', node: <QuoteBlock d={stoic} /> });
-  if (fact || stoic) sections.push({ key: 'content-tools', node: <DailyContentTools /> });
   if (onthisday) sections.push({ key: 'onthisday', node: <ThisDayBlock d={onthisday} /> });
-  if (preferences.learning) sections.push({ key: 'learning', node: <LearningFocus /> });
+  const ordered = order.flatMap((key) => sections.filter((section) => section.key === key));
+  const readingIndex = ordered.reduce(
+    (last, section, index) => (['fact', 'stoic'].includes(section.key) ? index : last),
+    -1,
+  );
+  if (readingIndex >= 0)
+    ordered.splice(readingIndex + 1, 0, { key: 'content-tools', node: <DailyContentTools /> });
+  const weatherIndex = ordered.findIndex((section) => section.key === 'weather');
+  const currencyIndex = ordered.findIndex((section) => section.key === 'currency');
+  if (weatherIndex >= 0 && currencyIndex >= 0 && Math.abs(weatherIndex - currencyIndex) === 1)
+    ordered.splice(Math.max(weatherIndex, currencyIndex), 0, {
+      key: 'divider',
+      node: <HorizonDivider />,
+    });
+  if (preferences.learning) ordered.push({ key: 'learning', node: <LearningFocus /> });
 
   return (
     <div className="flex flex-col gap-[18px]">
       <TodayAttention />
-      {sections.map((s, i) => (
-        <div key={s.key} style={cascade(i, 55, 6)}>
+      {ordered.map((s, i) => (
+        <div key={s.key} data-today-block={s.key} style={cascade(i, 55, 6)}>
           {s.node}
         </div>
       ))}

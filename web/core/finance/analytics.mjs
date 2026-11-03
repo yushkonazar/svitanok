@@ -59,11 +59,16 @@ export function analyticsSelection(params, nowMs = Date.now()) {
     merchant.length > 500 ||
     !['all', 'mono', 'manual'].includes(source) ||
     !['all', 'confirmed', 'pending'].includes(status) ||
-    !['adjacent', 'month'].includes(comparison)
+    !['adjacent', 'month', 'week'].includes(comparison)
   )
     throw new Error('Некоректні фільтри аналітики');
   let previousFrom = shiftDate(from, -range.days),
     previousTo = shiftDate(from, -1);
+  if (comparison === 'week') {
+    if (range.days > 7) throw new Error('Тижневе порівняння охоплює до семи днів');
+    previousFrom = shiftDate(from, -7);
+    previousTo = shiftDate(to, -7);
+  }
   if (comparison === 'month' && from.slice(8) === '01' && from.slice(0, 7) === to.slice(0, 7)) {
     const last = shiftDate(from, -1);
     previousFrom = `${last.slice(0, 7)}-01`;
@@ -125,6 +130,7 @@ export function analyticsAccumulator(selection, aliases = {}, catalog = false) {
   const merchants = new Map();
   /** @type {number[]} */ const amounts = [];
   const quality = {
+    ...(s.comparison === 'week' ? { comparisonIncomplete: false } : {}),
     unclassifiedCount: 0,
     unclassifiedOutflowMinor: 0,
     unclassifiedInflowMinor: 0,
@@ -157,6 +163,14 @@ export function analyticsAccumulator(selection, aliases = {}, catalog = false) {
         date <= s.previousTo &&
         (!s.previousPeriod || at < Date.parse(s.previousPeriod.to));
     if ((!current && !previous) || !matchesAnalytics(tx, s, aliases)) return;
+    if (
+      s.comparison === 'week' &&
+      (tx.kind === 'unclassified' ||
+        (tx.kind === 'expense' && (tx.amountUah == null || tx.amountUah >= 0)) ||
+        (tx.duplicateSuspected && tx.attention?.status !== 'different') ||
+        tx.bankAmountChanged)
+    )
+      quality.comparisonIncomplete = true;
     if (current) {
       operationCount++;
       if (tx.kind === 'unclassified') {

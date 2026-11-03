@@ -9,7 +9,7 @@ export interface AnalyticsRequest {
   merchant?: string;
   source?: 'all' | 'mono' | 'manual';
   status?: 'all' | 'confirmed' | 'pending';
-  comparison?: 'adjacent' | 'month';
+  comparison?: 'adjacent' | 'month' | 'week';
 }
 export const financeAnalyticsSchema = z.object({
   ok: z.literal(true),
@@ -97,6 +97,7 @@ export const financeAnalyticsSchema = z.object({
     }),
   ),
   quality: z.object({
+    comparisonIncomplete: z.boolean().optional(),
     unclassifiedCount: z.number().int(),
     unknownCurrencyCount: z.number().int(),
     pendingCount: z.number().int(),

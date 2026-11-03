@@ -10,6 +10,7 @@ import {
 } from '../../../../core/brief/news-catalog.mjs';
 import { PageHeading } from '../ui/PageHeading.tsx';
 import { usePresentation, savePresentation } from '../../lib/presentation.ts';
+import { TodayOrder } from './TodayOrder.tsx';
 import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { useSettings, useSaveSettings, useNewsSnapshot } from '../../api/hooks.ts';
@@ -316,6 +317,7 @@ export function SettingsScreen() {
             />
           </SettingRow>
         ))}
+        <TodayOrder />
       </section>
       <section className="renewal-card">
         <h2 className="text-lg font-semibold mb-4">Твої джерела новин</h2>

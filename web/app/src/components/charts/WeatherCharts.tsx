@@ -1,6 +1,22 @@
 import { useId, useState } from 'react';
 import type { WeatherLocation } from '../../api/briefing-schema.ts';
 import { Explanation } from '../ui/Explanation.tsx';
+import type { ForecastHighlight } from '../../lib/weatherWindow.ts';
+
+type ForecastPoint = { at?: number };
+function windowBand(
+  points: ForecastPoint[],
+  highlight: ForecastHighlight | undefined,
+  x: (n: number) => number,
+) {
+  if (!highlight) return null;
+  const matching = points.flatMap((p, n) =>
+    p.at != null && p.at >= highlight.from && p.at <= highlight.to ? [n] : [],
+  );
+  if (!matching.length) return null;
+  const left = Math.max(18, x(matching[0]) - 5);
+  return { x: left, width: Math.min(342, x(matching.at(-1)!) + 5) - left };
+}
 
 const PRECIPITATION = {
   rain: { label: 'Дощ', color: 'var(--precip-rain)' },
@@ -9,8 +25,16 @@ const PRECIPITATION = {
   unknown: { label: 'Опади', color: 'var(--color-info)' },
 };
 /** Both provider measurements are visible; missing data is not a zero. */
-export function PrecipitationChart({ hourly }: { hourly: NonNullable<WeatherLocation['hourly']> }) {
-  const [index, setIndex] = useState<number | null>(null);
+export function PrecipitationChart({
+  hourly,
+  highlight,
+}: {
+  hourly: NonNullable<WeatherLocation['hourly']>;
+  highlight?: ForecastHighlight;
+}) {
+  const [selection, setSelection] = useState<{ index: number; window: string | null } | null>(null);
+  const windowKey = highlight ? highlight.from + ':' + highlight.to : null;
+  const setIndex = (index: number) => setSelection({ index, window: windowKey });
   const points = hourly.filter((p) => p.popPercent != null || p.precipMm != null);
   const firstWet = points.findIndex((p) => (p.precipMm ?? 0) > 0 || (p.popPercent ?? 0) > 0);
   if (firstWet < 0) return null;
@@ -21,7 +45,15 @@ export function PrecipitationChart({ hourly }: { hourly: NonNullable<WeatherLoca
         .map((p) => p.precipType ?? 'unknown'),
     ),
   ];
-  const i = Math.min(index ?? firstWet, points.length - 1),
+  const highlightedIndex = highlight ? points.findIndex((p) => p.at === highlight.from) : -1;
+  const i = Math.min(
+      selection?.window === windowKey
+        ? selection.index
+        : highlightedIndex >= 0
+          ? highlightedIndex
+          : firstWet,
+      points.length - 1,
+    ),
     selected = points[i],
     max = Math.max(1, ...points.map((p) => p.precipMm ?? 0));
   const x = (n: number) => 18 + (n / Math.max(1, points.length - 1)) * 324,
@@ -34,6 +66,7 @@ export function PrecipitationChart({ hourly }: { hourly: NonNullable<WeatherLoca
     )
     .join(' ');
   const hour = (h: number) => String(h).padStart(2, '0') + ':00';
+  const band = windowBand(points, highlight, x);
   return (
     <section className="renewal-rain" aria-label="Погодинний прогноз опадів">
       <div className="renewal-section-head">
@@ -60,6 +93,16 @@ export function PrecipitationChart({ hourly }: { hourly: NonNullable<WeatherLoca
         role="img"
         aria-label="Кількість опадів у міліметрах та імовірність у відсотках"
       >
+        {band && (
+          <rect
+            {...band}
+            y="18"
+            height="96"
+            rx="5"
+            className="weather-window-band"
+            data-forecast-window="true"
+          />
+        )}
         <text x="6" y="12" fill="var(--color-info)" fontSize="10">
           {max.toFixed(1)} мм
         </text>
@@ -160,12 +203,27 @@ export function PrecipitationChart({ hourly }: { hourly: NonNullable<WeatherLoca
     </section>
   );
 }
-export function HourlyChart({ hourly }: { hourly: { h: number; t: number; at?: number }[] }) {
+export function HourlyChart({
+  hourly,
+  highlight,
+}: {
+  hourly: { h: number; t: number; at?: number }[];
+  highlight?: ForecastHighlight;
+}) {
   const uid = useId(),
-    [selected, setSelected] = useState(0);
+    [selection, setSelection] = useState<{ index: number; window: string | null } | null>(null);
+  const windowKey = highlight ? highlight.from + ':' + highlight.to : null;
   const pts = hourly.filter((p) => Number.isFinite(p.t));
   if (!pts.length) return <p className="renewal-muted">Температурний прогноз недоступний.</p>;
-  const i = Math.min(selected, pts.length - 1),
+  const highlightedIndex = highlight ? pts.findIndex((p) => p.at === highlight.from) : -1;
+  const i = Math.min(
+      selection?.window === windowKey
+        ? selection.index
+        : highlightedIndex >= 0
+          ? highlightedIndex
+          : 0,
+      pts.length - 1,
+    ),
     min = Math.min(...pts.map((p) => p.t)),
     max = Math.max(...pts.map((p) => p.t)),
     pad = Math.max(1, (max - min) * 0.2);
@@ -193,6 +251,7 @@ export function HourlyChart({ hourly }: { hourly: { h: number; t: number; at?: n
   const format = (t: number) =>
     `${t > 0 ? '+' : ''}${t.toLocaleString('uk-UA', { maximumFractionDigits: 1 })}°`;
   const time = (p: (typeof pts)[number]) => `${String(p.h).padStart(2, '0')}:00`;
+  const band = windowBand(pts, highlight, x);
   return (
     <section className="weather-temperature">
       <div className="renewal-section-head">
@@ -202,6 +261,16 @@ export function HourlyChart({ hourly }: { hourly: { h: number; t: number; at?: n
         </b>
       </div>
       <svg viewBox="0 0 360 135" className="w-full" role="img" aria-label="температура по годинах">
+        {band && (
+          <rect
+            {...band}
+            y="18"
+            height="96"
+            rx="5"
+            className="weather-window-band"
+            data-forecast-window="true"
+          />
+        )}
         <defs>
           <linearGradient id={uid} x1="0" y1="0" x2="0" y2="1">
             <stop stopColor="var(--color-a2)" stopOpacity=".3" />
@@ -245,7 +314,7 @@ export function HourlyChart({ hourly }: { hourly: { h: number; t: number; at?: n
         min={0}
         max={pts.length - 1}
         value={i}
-        onChange={(e) => setSelected(Number(e.target.value))}
+        onChange={(e) => setSelection({ index: Number(e.target.value), window: windowKey })}
         aria-label="Година прогнозу температури"
         aria-valuetext={`${time(pts[i])}: ${format(pts[i].t)}`}
       />

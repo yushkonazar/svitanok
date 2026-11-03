@@ -103,6 +103,7 @@ export interface ExpenseAnalytics {
   }[];
   weekdays: { day: number; days: number; amountMinor: number; averageMinor: number }[];
   quality: {
+    comparisonIncomplete?: boolean;
     unclassifiedCount: number;
     unclassifiedOutflowMinor: number;
     unclassifiedInflowMinor: number;

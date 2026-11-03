@@ -106,6 +106,122 @@
 .today-quick-action {
   font-size: 12px;
 }
+.today-updated-value {
+  display: inline-block;
+  max-width: 100%;
+  border-radius: 4px;
+  font-variant-numeric: tabular-nums;
+}
+.today-spending-pulse {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 5px;
+  min-height: 44px;
+  padding: 5px 0;
+  border-block: 1px solid var(--color-hair);
+  color: var(--color-tx2);
+  font-size: 10px;
+  text-align: left;
+  cursor: pointer;
+}
+.today-spending-pulse b {
+  color: var(--color-a2);
+  font-variant-numeric: tabular-nums;
+  font-size: 10px;
+}
+.today-spending-pulse:focus-visible,
+.history-timeline-input:focus-visible {
+  outline: 2px solid var(--color-a2);
+  outline-offset: 4px;
+  border-radius: 5px;
+}
+.today-pulse-detail {
+  padding: 22px;
+}
+.today-pulse-totals {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin: 20px 0;
+}
+.today-pulse-totals > div {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+.today-pulse-totals span {
+  color: var(--color-tx2);
+  font-size: 12px;
+}
+.today-pulse-totals strong {
+  font:
+    600 20px 'JetBrains Mono Variable',
+    monospace;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+.today-pulse-totals small {
+  color: var(--color-tx3);
+  font-size: 10px;
+  line-height: 1.7;
+}
+.today-pulse-conclusion {
+  font-size: 18px;
+  line-height: 1.6;
+  margin-bottom: 16px;
+}
+.today-order-settings > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 44px;
+  cursor: pointer;
+}
+.today-order-settings > summary::after {
+  content: '+';
+}
+.today-order-settings[open] > summary::after {
+  content: '−';
+}
+.today-order-list {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin: 14px 0;
+}
+.today-order-list > li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-block: 4px;
+  border-bottom: 1px solid var(--color-hair);
+}
+.today-order-number {
+  color: var(--color-tx3);
+  font: 12px monospace;
+}
+.today-order-label {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+}
+.today-order-list .renewal-secondary {
+  width: 44px;
+  min-height: 44px;
+  padding: 0;
+  flex-shrink: 0;
+}
+:root[data-theme='light']
+  :is(
+    .today-spending-pulse b,
+    .weather-window-heading,
+    .today-order-settings > summary,
+    .history-timeline-tooltip
+  ) {
+  color: color-mix(in srgb, var(--color-a2) 72%, #000);
+}
 .currency-change {
   display: block;
   margin-top: 5px;
@@ -173,6 +289,51 @@
   color: var(--color-tx2);
   font-size: 12px;
 }
+.weather-going-out {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px 16px;
+  border: 1px solid var(--color-glassb);
+  border-radius: 15px;
+  background: var(--color-glass);
+  text-align: left;
+  color: var(--color-tx2);
+  cursor: pointer;
+}
+.weather-going-out[aria-pressed='true'] {
+  border-color: var(--color-a2);
+}
+.weather-window-heading {
+  display: flex;
+  justify-content: space-between;
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  color: var(--color-a2);
+}
+.weather-going-out strong {
+  font-size: 15px;
+  color: var(--color-tx);
+}
+.weather-going-out > span:last-child {
+  font-size: 11px;
+  line-height: 1.5;
+}
+.weather-window-charts {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  scroll-margin-top: 24px;
+}
+.weather-window-band {
+  fill: var(--color-a2);
+  fill-opacity: 0.12;
+  stroke: var(--color-a2);
+  stroke-opacity: 0.4;
+  stroke-dasharray: 3 3;
+  pointer-events: none;
+}
 .renewal-weather {
   --precip-rain: #8abaff;
   --precip-snow: #91d9d2;
@@ -236,6 +397,137 @@
   width: 44px;
   padding: 0;
   font-size: 22px;
+}
+.history-timeline {
+  position: relative;
+  padding-bottom: 18px;
+}
+.history-timeline-input {
+  display: block;
+  appearance: none;
+  -webkit-appearance: none;
+  width: 100%;
+  height: 44px;
+  margin: 0;
+  background: transparent;
+  cursor: ew-resize;
+}
+.history-timeline-input::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 4px;
+  background: linear-gradient(
+    to right,
+    var(--color-a2) 0 var(--timeline-progress),
+    var(--color-hair) var(--timeline-progress) 100%
+  );
+}
+.history-timeline-input::-moz-range-track {
+  height: 4px;
+  border-radius: 4px;
+  background: var(--color-hair);
+}
+.history-timeline-input::-moz-range-progress {
+  height: 4px;
+  border-radius: 4px;
+  background: var(--color-a2);
+}
+.history-timeline-input::-webkit-slider-thumb {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 20px;
+  height: 20px;
+  margin-top: -8px;
+  border: 3px solid var(--color-bg2);
+  border-radius: 50%;
+  background: var(--color-a2);
+  box-shadow: 0 0 0 1px var(--color-a2);
+}
+.history-timeline-input::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border: 3px solid var(--color-bg2);
+  border-radius: 50%;
+  background: var(--color-a2);
+  box-shadow: 0 0 0 1px var(--color-a2);
+}
+.history-timeline-input:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.history-timeline-ticks {
+  position: absolute;
+  inset: 38px 8px auto;
+  pointer-events: none;
+}
+.history-timeline-ticks > span {
+  position: absolute;
+  font:
+    9px 'JetBrains Mono Variable',
+    monospace;
+  color: var(--color-tx3);
+}
+.history-timeline-ticks > span::before {
+  content: '';
+  display: block;
+  width: 1px;
+  height: 4px;
+  margin: -6px auto 4px;
+  background: var(--color-hair);
+}
+.history-timeline-tooltip {
+  position: absolute;
+  top: -21px;
+  padding: 4px 7px;
+  border: 1px solid var(--color-glassb);
+  border-radius: 7px;
+  background: var(--color-bg2);
+  color: var(--color-a2);
+  font:
+    11px 'JetBrains Mono Variable',
+    monospace;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+.history-content-enter {
+  display: inline-block;
+  animation: historyContentIn 0.22s ease-out;
+}
+.history-pin-pulse {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: historyPinOnce 0.55s ease-out forwards;
+  pointer-events: none;
+}
+@keyframes historyContentIn {
+  from {
+    opacity: 0.3;
+    transform: translateY(3px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@keyframes historyPinOnce {
+  from {
+    opacity: 0.65;
+    transform: scale(0.85);
+  }
+  to {
+    opacity: 0;
+    transform: scale(1.8);
+  }
+}
+[data-history-motion='false'] .history-content-enter {
+  animation: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .history-content-enter {
+    animation: none;
+  }
+  .history-pin-pulse {
+    display: none;
+  }
 }
 .today-focus {
   padding: 16px 18px;

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type CSSProperties } from 'react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import type { WeatherLocation, Settlement } from '../../api/briefing-schema.ts';
 import { has } from '../../lib/format.ts';
 import { dayLen, fmtClock, signTemp, forecastTime } from '../../lib/weather.ts';
@@ -6,6 +6,7 @@ import { SunDial } from '../charts/SunDial.tsx';
 import { HourlyChart } from '../charts/HourlyChart.tsx';
 import { PrecipitationChart } from '../charts/PrecipitationChart.tsx';
 import { Ph } from '../ui/primitives.tsx';
+import { Explanation } from '../ui/Explanation.tsx';
 import {
   useSetWeatherLocation,
   useSetWeatherLocationExact,
@@ -15,6 +16,9 @@ import {
 } from '../../api/hooks.ts';
 import { haptic, closeApp } from '../../telegram.ts';
 import { useTick } from '../../lib/useTick.ts';
+import { findWeatherWindow, weatherWindowLabel } from '../../lib/weatherWindow.ts';
+import { usePresentation } from '../../lib/presentation.ts';
+import { useReducedMotion } from '../../lib/useReducedMotion.ts';
 
 // Скільки варіантів показуємо в списку — досить, щоб знайти потрібне місто
 // серед однойменних, не захаращуючи невеликий інлайн-редактор.
@@ -126,6 +130,10 @@ export function WeatherBlock({
   const [city, setCity] = useState('');
   const [err, setErr] = useState<string | null>(null);
   const [metricHelp, setMetricHelp] = useState<'uv' | 'aqi' | null>(null);
+  const [selectedWindow, setSelectedWindow] = useState<string | null>(null);
+  const charts = useRef<HTMLDivElement>(null);
+  const { calm } = usePresentation();
+  const reducedMotion = useReducedMotion();
 
   // Життєвий цикл редактора з анімацією виходу (фідбек власника — той самий
   // shown/leaving патерн, що StageCelebration.tsx): formOpen тримає <form>
@@ -203,6 +211,9 @@ export function WeatherBlock({
   const l = locations[0];
   if (!l) return <Ph>Дані про погоду з’являться в найближчому брифінгу</Ph>;
   const second = locations[1];
+  const window = findWeatherWindow(l.hourly ?? [], nowMs);
+  const windowKey = window ? l.name + ':' + window.from + ':' + window.to : null;
+  const highlighted = window && selectedWindow === windowKey ? window : undefined;
 
   const dl = dayLen(l.sunrise, l.sunset);
   // «−2ХВ ДО ВЧОРА» читалось як загадка: незрозуміло, що з чим порівняли.
@@ -409,7 +420,7 @@ export function WeatherBlock({
                     : 'Можливі опади'}{' '}
               · {forecastTime(wet, nowMs)}
             </span>
-          ) : dry ? (
+          ) : dry && !window ? (
             <span>За погодинним прогнозом без опадів</span>
           ) : null}
           {peak && peak.t - l.tempC >= 2 && (
@@ -418,6 +429,31 @@ export function WeatherBlock({
             </span>
           )}
         </div>
+      )}
+      {window && (
+        <button
+          type="button"
+          className="weather-going-out"
+          aria-pressed={!!highlighted}
+          onClick={() => {
+            setSelectedWindow(highlighted ? null : windowKey);
+            haptic('light');
+            if (!highlighted)
+              charts.current?.scrollIntoView?.({
+                behavior: calm || reducedMotion ? 'instant' : 'smooth',
+                block: 'start',
+              });
+          }}
+        >
+          <span className="weather-window-heading">
+            Вікно для виходу <span aria-hidden="true">{highlighted ? '✓' : '↗'}</span>
+          </span>
+          <strong>{weatherWindowLabel(window, nowMs)}</strong>
+          <span>
+            Імовірність опадів до {window.probability}% · {signTemp(window.minC)}
+            {window.minC !== window.maxC ? '…' + signTemp(window.maxC) : ''}
+          </span>
+        </button>
       )}
       {/* циферблат між лініями сходу/заходу */}
       <div className="renewal-sun-row flex items-center gap-3">
@@ -508,10 +544,14 @@ export function WeatherBlock({
 
       {/* графік по годинах */}
       {Array.isArray(l.hourly) && l.hourly.length >= 2 && (
-        <>
-          <HourlyChart hourly={l.hourly} />
-          <PrecipitationChart hourly={l.hourly} />
-        </>
+        <div ref={charts} className="weather-window-charts">
+          <HourlyChart hourly={l.hourly} highlight={highlighted} />
+          <PrecipitationChart hourly={l.hourly} highlight={highlighted} />
+          <Explanation>
+            Вікно обране за найменшою ймовірністю опадів у найближчі 24 години. Значення «до» —
+            найбільша ймовірність серед точок інтервалу; прогноз не гарантує сухої погоди.
+          </Explanation>
+        </div>
       )}
     </div>
   );

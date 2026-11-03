@@ -6,6 +6,7 @@ import { amountInput } from '../../lib/amountInput.ts';
 import { ObservationChart } from '../charts/ObservationChart.tsx';
 import { SectionLabel, Ph } from '../ui/primitives.tsx';
 import { Explanation } from '../ui/Explanation.tsx';
+import { UpdatedValue } from '../ui/UpdatedValue.tsx';
 
 const DEFAULTS = ['USD', 'EUR', 'PLN', 'GBP'];
 const WATCH_KEY = 'svitanok:currency-watch:v1';
@@ -177,7 +178,11 @@ export function CurrencyBlock({ d, date }: { d: CurrencyData | null; date: strin
                   <span className="renewal-muted">
                     {SYMBOLS[r.code] ?? '¤'} {r.code}
                   </span>
-                  <strong>{r.rate.toLocaleString('uk-UA', { maximumFractionDigits: 4 })}</strong>
+                  <strong>
+                    <UpdatedValue value={r.rate} identity={r.code}>
+                      {r.rate.toLocaleString('uk-UA', { maximumFractionDigits: 4 })}
+                    </UpdatedValue>
+                  </strong>
                   <small>{r.name}</small>
                   {change && (
                     <span

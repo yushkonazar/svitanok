@@ -1,27 +1,61 @@
-import { useId, useState } from 'react';
+import { useId, useRef, useState, type CSSProperties } from 'react';
 import type { OnThisDayData } from '../../api/briefing-schema.ts';
-import { openLink } from '../../telegram.ts';
+import { openLink, haptic } from '../../telegram.ts';
 import { WORLD_LAND } from '../../lib/worldLand.ts';
-import { fitHistoryMap, mapLongitude, zoomHistoryMap } from '../../lib/historyMap.ts';
+import {
+  fitHistoryMap,
+  mapLongitude,
+  zoomHistoryMap,
+  historyPlaceVisible,
+} from '../../lib/historyMap.ts';
+import { usePresentation } from '../../lib/presentation.ts';
+import { useReducedMotion } from '../../lib/useReducedMotion.ts';
+import { useMapCamera } from '../../lib/useMapCamera.ts';
 import { Explanation } from '../ui/Explanation.tsx';
 import { pluralUk } from '../../lib/plural.ts';
 
 export function ThisDayBlock({ d }: { d: OnThisDayData }) {
-  const [selected, select] = useState(0);
+  const [selection, setSelection] = useState({ index: 0, revision: 0 });
+  const [scrubbing, setScrubbing] = useState(false);
+  const [anchor, setAnchor] = useState<{ lat: number; lon: number } | undefined>();
+  const lastHaptic = useRef<number | null>(null);
+  const { calm } = usePresentation();
+  const reducedMotion = useReducedMotion();
+  const motion = !calm && !reducedMotion;
   const [mappedOnly, setMappedOnly] = useState(false);
   const [zoom, setZoom] = useState(1);
   const landId = useId();
   const allEvents = [...d.events].sort((a, b) => a.year - b.year);
   const mappedCount = allEvents.filter((e) => e.location).length;
   const events = mappedOnly && mappedCount > 0 ? allEvents.filter((e) => e.location) : allEvents;
-  const index = Math.min(selected, Math.max(0, events.length - 1));
+  const index = Math.min(selection.index, Math.max(0, events.length - 1));
   const event = events[index];
   const fitted = fitHistoryMap(events.flatMap((e) => (e.location ? [e.location] : [])));
-  const box = zoomHistoryMap(fitted, zoom, event?.location);
+  const validAnchor = events.some(
+    (e) => e.location?.lat === anchor?.lat && e.location?.lon === anchor?.lon,
+  )
+    ? anchor
+    : undefined;
+  const box = zoomHistoryMap(fitted, zoom, validAnchor);
+  const camera = useMapCamera(box, motion);
   const scale = box.width / 360;
+  function handleSelect(next: number, timeStamp: number) {
+    if (next === index || next < 0 || next >= events.length) return;
+    setSelection((current) =>
+      current.index === next ? current : { index: next, revision: current.revision + 1 },
+    );
+    const place = events[next].location;
+    if (place && zoom > 1 && !historyPlaceVisible(box, place)) setAnchor(place);
+    if (lastHaptic.current == null || timeStamp - lastHaptic.current >= 100) {
+      haptic('light');
+      lastHaptic.current = timeStamp;
+    }
+  }
+  const progress = events.length > 1 ? (index / (events.length - 1)) * 100 : 0;
+  const tickIndices = [...new Set([0, Math.floor((events.length - 1) / 2), events.length - 1])];
   if (!event) return null;
   return (
-    <section className="renewal-card">
+    <section className="renewal-card" data-history-motion={motion}>
       <div className="renewal-section-head">
         <div>
           <p className="renewal-eyebrow mb-2">У ЦЕЙ ДЕНЬ</p>
@@ -37,19 +71,13 @@ export function ThisDayBlock({ d }: { d: OnThisDayData }) {
       </Explanation>
       <div className="history-map relative overflow-hidden rounded-2xl border border-glassb">
         <svg
+          ref={camera}
           viewBox={`${box.x} ${box.y} ${box.width} ${box.height}`}
           data-map-width={box.width}
           className="block w-full"
           role="group"
           aria-label="Мапа місць історичних подій"
         >
-          <rect
-            x={box.x}
-            y={box.y}
-            width={box.width}
-            height={box.height}
-            fill="var(--history-map-water)"
-          />
           <defs>
             <path
               id={landId}
@@ -64,51 +92,70 @@ export function ThisDayBlock({ d }: { d: OnThisDayData }) {
           {[-360, 0, 360].map((offset) => (
             <use key={offset} href={`#${landId}`} transform={`translate(${offset},0)`} />
           ))}
-          {events.map(
-            (e, i) =>
-              e.location && (
+          {events.map((e, i) => {
+            const place = e.location;
+            return (
+              place && (
                 <g
                   key={`${e.year}-${i}`}
                   role="button"
                   tabIndex={0}
-                  aria-label={`${e.year}: ${e.location.label}`}
+                  aria-label={`${e.year}: ${place.label}`}
                   aria-pressed={index === i}
-                  onClick={() => select(i)}
+                  onClick={(e) => handleSelect(i, e.timeStamp)}
                   onKeyDown={(key) => {
                     if (key.key === 'Enter' || key.key === ' ') {
                       key.preventDefault();
-                      select(i);
+                      handleSelect(i, key.timeStamp);
                     }
                   }}
                   style={{ cursor: 'pointer' }}
                 >
-                  <circle
-                    cx={mapLongitude(e.location.lon, box)}
-                    cy={90 - e.location.lat}
-                    r={13 * scale}
-                    fill="transparent"
-                  />
-                  <circle
-                    cx={mapLongitude(e.location.lon, box)}
-                    cy={90 - e.location.lat}
-                    r={(index === i ? 6 : 3.5) * scale}
-                    fill={index === i ? 'var(--color-a2)' : 'var(--color-a1)'}
-                    fillOpacity={index === i ? 1 : 0.65}
-                  />
-                  {index === i && (
-                    <circle
-                      cx={mapLongitude(e.location.lon, box)}
-                      cy={90 - e.location.lat}
-                      r={11 * scale}
-                      fill="none"
-                      stroke="var(--color-a2)"
-                      strokeOpacity=".4"
-                      strokeWidth={scale}
-                    />
-                  )}
+                  {[-360, 0, 360].map((offset) => (
+                    <g key={offset} transform={'translate(' + offset + ',0)'}>
+                      <circle
+                        cx={mapLongitude(place.lon, box)}
+                        cy={90 - place.lat}
+                        r={13 * scale}
+                        fill="transparent"
+                      />
+                      <circle
+                        cx={mapLongitude(place.lon, box)}
+                        cy={90 - place.lat}
+                        r={(index === i ? 6 : 3.5) * scale}
+                        fill={index === i ? 'var(--color-a2)' : 'var(--color-a1)'}
+                        fillOpacity={index === i ? 1 : 0.65}
+                      />
+                      {index === i && (
+                        <circle
+                          cx={mapLongitude(place.lon, box)}
+                          cy={90 - place.lat}
+                          r={11 * scale}
+                          fill="none"
+                          stroke="var(--color-a2)"
+                          strokeOpacity=".4"
+                          strokeWidth={scale}
+                        />
+                      )}
+                      {index === i && selection.revision > 0 && motion && (
+                        <circle
+                          key={selection.revision}
+                          cx={mapLongitude(place.lon, box)}
+                          cy={90 - place.lat}
+                          r={11 * scale}
+                          fill="none"
+                          stroke="var(--color-a2)"
+                          strokeWidth={scale}
+                          className="history-pin-pulse"
+                          aria-hidden="true"
+                        />
+                      )}
+                    </g>
+                  ))}
                 </g>
-              ),
-          )}
+              )
+            );
+          })}
         </svg>
         {!event.location && (
           <p
@@ -126,11 +173,21 @@ export function ThisDayBlock({ d }: { d: OnThisDayData }) {
             className="renewal-secondary"
             aria-label="Віддалити мапу"
             disabled={box.width >= 360}
-            onClick={() => setZoom(Math.max(fitted.width / 360, zoom / 1.5))}
+            onClick={() => {
+              setAnchor(event.location);
+              setZoom(Math.max(fitted.width / 360, zoom / 1.5));
+            }}
           >
             −
           </button>
-          <button type="button" className="renewal-link" onClick={() => setZoom(1)}>
+          <button
+            type="button"
+            className="renewal-link"
+            onClick={() => {
+              setZoom(1);
+              setAnchor(undefined);
+            }}
+          >
             Усі події
           </button>
           <button
@@ -138,7 +195,10 @@ export function ThisDayBlock({ d }: { d: OnThisDayData }) {
             className="renewal-secondary"
             aria-label="Наблизити мапу"
             disabled={box.width <= 10}
-            onClick={() => setZoom(Math.min(fitted.width / 10, zoom * 1.5))}
+            onClick={() => {
+              setAnchor(event.location);
+              setZoom(Math.min(fitted.width / 10, zoom * 1.5));
+            }}
           >
             +
           </button>
@@ -156,7 +216,9 @@ export function ThisDayBlock({ d }: { d: OnThisDayData }) {
               checked={mappedOnly}
               onChange={(e) => {
                 setMappedOnly(e.target.checked);
-                select(0);
+                setSelection({ index: 0, revision: 0 });
+                setZoom(1);
+                setAnchor(undefined);
               }}
             />
             Лише події з місцем
@@ -164,7 +226,14 @@ export function ThisDayBlock({ d }: { d: OnThisDayData }) {
         )}
       </div>
       <div className="renewal-section-head mt-4">
-        <strong className="font-mono text-3xl text-a2">{event.year}</strong>
+        <strong
+          key={selection.revision}
+          className={
+            'font-mono text-3xl text-a2' + (selection.revision ? ' history-content-enter' : '')
+          }
+        >
+          {event.year}
+        </strong>
         <span className="renewal-muted">
           {index + 1} / {events.length}
         </span>
@@ -174,14 +243,17 @@ export function ThisDayBlock({ d }: { d: OnThisDayData }) {
           className="renewal-button shrink-0"
           aria-label="Попередня історична подія"
           disabled={index === 0}
-          onClick={() => select(index - 1)}
+          onClick={(e) => handleSelect(index - 1, e.timeStamp)}
         >
           ‹
         </button>
-        <label className="block flex-1 min-w-0">
+        <label
+          className="history-timeline flex-1 min-w-0"
+          style={{ '--timeline-progress': progress + '%' } as CSSProperties}
+        >
           <span className="sr-only">Подія на часовій стрічці</span>
           <input
-            className="w-full accent-a2"
+            className="history-timeline-input"
             type="range"
             min="0"
             max={events.length - 1}
@@ -189,21 +261,53 @@ export function ThisDayBlock({ d }: { d: OnThisDayData }) {
             value={index}
             disabled={events.length < 2}
             aria-valuetext={`${event.year}: ${event.text}`}
-            onInput={(e) => select(Number(e.currentTarget.value))}
-            onChange={(e) => select(Number(e.target.value))}
+            onFocus={() => setScrubbing(true)}
+            onBlur={() => setScrubbing(false)}
+            onPointerDown={() => setScrubbing(true)}
+            onPointerUp={() => setScrubbing(false)}
+            onPointerCancel={() => setScrubbing(false)}
+            onKeyDown={() => setScrubbing(true)}
+            onInput={(e) => handleSelect(Number(e.currentTarget.value), e.timeStamp)}
+            onChange={(e) => handleSelect(Number(e.target.value), e.timeStamp)}
           />
+          {scrubbing && (
+            <span
+              className="history-timeline-tooltip"
+              aria-hidden="true"
+              style={{ left: progress + '%', transform: 'translateX(-' + progress + '%)' }}
+            >
+              {event.year}
+            </span>
+          )}
+          {events.length > 1 && (
+            <span className="history-timeline-ticks" aria-hidden="true">
+              {tickIndices.map((i) => {
+                const at = (i / (events.length - 1)) * 100;
+                return (
+                  <span key={i} style={{ left: at + '%', transform: 'translateX(-' + at + '%)' }}>
+                    {events[i].year}
+                  </span>
+                );
+              })}
+            </span>
+          )}
         </label>
         <button
           className="renewal-button shrink-0"
           aria-label="Наступна історична подія"
           disabled={index === events.length - 1}
-          onClick={() => select(index + 1)}
+          onClick={(e) => handleSelect(index + 1, e.timeStamp)}
         >
           ›
         </button>
       </div>
       <p className="text-sm leading-relaxed mt-3" aria-live="polite" aria-atomic="true">
-        {event.text}
+        <span
+          key={selection.revision}
+          className={selection.revision ? 'history-content-enter' : undefined}
+        >
+          {event.text}
+        </span>
       </p>
       {event.location && (
         <p className="renewal-muted mt-2">
@@ -236,7 +340,7 @@ export function ThisDayBlock({ d }: { d: OnThisDayData }) {
           <button
             key={`${e.year}-${i}`}
             className="renewal-list-row w-full text-left"
-            onClick={() => select(i)}
+            onClick={(event) => handleSelect(i, event.timeStamp)}
             aria-pressed={i === index}
           >
             <b className="font-mono text-a2">{e.year}</b>

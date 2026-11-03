@@ -59,7 +59,7 @@ function savedContext() {
     )
       return null;
     analyticsSelection(new URLSearchParams({ from: saved.range.from, to: saved.range.to }));
-    if (!['adjacent', 'month'].includes(saved.range.comparison)) return null;
+    if (!['adjacent', 'month', 'week'].includes(saved.range.comparison)) return null;
     const f = saved.filters;
     if (
       !f ||
@@ -70,7 +70,7 @@ function savedContext() {
       return null;
     return saved as {
       tab: AnalyticsTab;
-      range: { from: string; to: string; comparison: 'adjacent' | 'month' };
+      range: { from: string; to: string; comparison: 'adjacent' | 'month' | 'week' };
       filters: {
         account: string;
         category: string;
