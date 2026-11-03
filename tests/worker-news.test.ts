@@ -5,6 +5,98 @@ import { workerEnv } from './helpers/env.js';
 import { buildInitData } from './helpers/init-data.js';
 import { memoryKv } from './helpers/kv.js';
 describe('news API ownership and publisher photo proxy', () => {
+  it('returns private reader state but omits editorial source buffers and public history', async () => {
+    const e = workerEnv({
+      TELEGRAM_BOT_TOKEN: 'token',
+      TELEGRAM_OWNER_USER_ID: '42',
+      NEWS_REFRESH: {
+        getByName: () => ({
+          getSnapshot: async () => ({
+            generatedAt: '2026-11-03T10:00:00Z',
+            history: [{ sourceText: 'old' }],
+            groups: [
+              {
+                items: [
+                  {
+                    title: 'Подія',
+                    url: 'https://example.test/a',
+                    sourceExcerpt: 'raw',
+                    excerpt: 'buffer',
+                    historyStoryId: 'internal',
+                  },
+                ],
+              },
+            ],
+          }),
+          getFeedback: async () => ({}),
+          getLastSeen: async () => null,
+          getReader: async () => ({
+            following: {},
+            mutedUntil: {},
+            readVersions: { event: ['v1'] },
+          }),
+        }),
+      },
+    });
+    const response = await worker.fetch(
+      new Request('https://example.test/api/news', {
+        headers: { 'X-Telegram-Init-Data': await buildInitData(42, 'token') },
+      }),
+      e,
+      { waitUntil() {} },
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers.get('cache-control')).toBe('private, no-store');
+    const result = (await response.json()) as {
+      history?: unknown;
+      groups: { items: unknown[] }[];
+      reader: unknown;
+    };
+    expect(result.history).toBeUndefined();
+    expect(result.groups[0]?.items[0]).toEqual({ title: 'Подія', url: 'https://example.test/a' });
+    expect(result.reader).toMatchObject({ readVersions: { event: ['v1'] } });
+  });
+  it('protects reader state and validates explicit story operations before the Durable Object', async () => {
+    const storyAction = vi.fn(async () => ({
+      ok: true,
+      reader: { following: {}, readVersions: {}, mutedUntil: {} },
+    }));
+    const e = workerEnv({
+      TELEGRAM_BOT_TOKEN: 'token',
+      TELEGRAM_OWNER_USER_ID: '42',
+      TELEGRAM_COOWNER_USER_IDS: '43',
+      NEWS_REFRESH: { getByName: () => ({ storyAction }) },
+    });
+    const send = async (user: number | null, body: unknown) =>
+      worker.fetch(
+        new Request('https://example.test/api/news', {
+          method: 'POST',
+          headers: {
+            'X-Telegram-Init-Data': user ? await buildInitData(user, 'token') : '',
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify(body),
+        }),
+        e,
+        { waitUntil() {} },
+      );
+    for (const user of [null, 43])
+      expect([401, 403]).toContain(
+        (await send(user, { type: 'story', storyId: 'event', action: 'follow' })).status,
+      );
+    for (const body of [
+      { storyId: '', action: 'follow' },
+      { storyId: 'event', action: 'toggle' },
+      { storyId: 'event', action: 'read' },
+      { storyId: 'event', action: 'read', version: 3 },
+    ])
+      expect((await send(42, { type: 'story', ...body })).status).toBe(400);
+    expect(storyAction).not.toHaveBeenCalled();
+    expect((await send(42, { type: 'story', storyId: 'event', action: 'follow' })).status).toBe(
+      200,
+    );
+    expect(storyAction).toHaveBeenCalledWith('event', 'follow', undefined);
+  });
   it('requires the primary owner before starting collection or recording preferences', async () => {
     const refresh = vi.fn(async () => ({ updated: true }));
     const e = workerEnv({

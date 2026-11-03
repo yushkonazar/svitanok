@@ -35,7 +35,33 @@ const {
   fetchWorkerQuality,
   fetchSaved,
   postFinance,
+  postNewsAction,
 } = await import('./client.ts');
+it('requires a validated acknowledgement for a news reader action and sends auth only in headers', async () => {
+  fetchMock.mockResolvedValueOnce(Response.json({ ok: true }));
+  await expect(
+    postNewsAction({ type: 'story', storyId: 'event', action: 'follow' }),
+  ).rejects.toThrow('Не вдалося підтвердити збереження');
+  fetchMock.mockResolvedValueOnce(
+    Response.json({
+      ok: true,
+      reader: { following: {}, mutedUntil: {}, readVersions: { event: ['v1'] } },
+    }),
+  );
+  await expect(
+    postNewsAction({ type: 'story', storyId: 'event', version: 'v1', action: 'read' }),
+  ).resolves.toMatchObject({ reader: { readVersions: { event: ['v1'] } } });
+  expect(lastCall()).toMatchObject({
+    url: '/api/news',
+    method: 'POST',
+    headers: { 'x-telegram-init-data': tg.initData },
+    body: { type: 'story', storyId: 'event', version: 'v1', action: 'read' },
+  });
+  fetchMock.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+  await expect(
+    postNewsAction({ type: 'story', storyId: 'event', action: 'follow' }),
+  ).rejects.toThrow('Не вдалося зв’язатися із сервером новин');
+});
 const { readFinanceDemo } = await import('./finance-demo.ts');
 
 const SETTINGS = {

@@ -1,10 +1,17 @@
 import { canonicalNewsTopic } from './news-catalog.mjs';
-// Six default public RSS feeds, one cached selection and one translation batch per cycle.
+// Fixed public RSS catalog, one cached selection and one translation batch per cycle.
 // This snapshot is separate from the morning briefing and never overwrites it.
 import { localizeNewsGroups } from './news-localization.mjs';
 import { normalizeSettings } from '../../settings-core.mjs';
-import { DEFAULT_NEWS_SOURCES, NEWS_FEEDS } from './news-catalog.mjs';
-import { cleanNewsText, decodeNewsText, safeNewsImage, newsFingerprint } from './news-content.mjs';
+import { DEFAULT_NEWS_SOURCES, NEWS_FEEDS, NEWS_CATALOG_VERSION } from './news-catalog.mjs';
+import {
+  cleanNewsText,
+  decodeNewsText,
+  safeNewsImage,
+  newsFingerprint,
+  newsContext,
+  newsSourceExcerpt,
+} from './news-content.mjs';
 import { curateNewsGroups } from './news-curation.mjs';
 import { evolveNews } from './news-evolution.mjs';
 import { kyivDateKey } from '../../kyiv-time.mjs';
@@ -23,7 +30,7 @@ const SOURCES = NEWS_FEEDS;
 const clean = cleanNewsText;
 /** @param {string} xml @param {number} nowMs @param {{limit?:number,britishTime?:boolean}} [options] */
 export function parseNewsFeed(xml, nowMs, options = {}) {
-  /** @type {{title: string, url: string, publishedAt: string, image?: string, excerpt?: string}[]} */ const items =
+  /** @type {{title: string, url: string, publishedAt: string, image?: string, excerpt?: string,sourceExcerpt?:string}[]} */ const items =
     [];
   const seen = new Set();
   for (const block of xml.match(/<(item|entry)\b[\s\S]*?<\/\1>/gi) ?? []) {
@@ -64,9 +71,13 @@ export function parseNewsFeed(xml, nowMs, options = {}) {
     }
     if (seen.has(url)) continue;
     seen.add(url);
-    const excerpt = clean(
-      block.match(/<(description|summary)\b[^>]*>([\s\S]*?)<\/\1>/i)?.[2] ?? '',
-    ).slice(0, 400);
+    const descriptionRaw =
+      block.match(/<(description|summary)\b[^>]*>([\s\S]*?)<\/\1>/i)?.[2] ?? '';
+    const full = block.match(/<content:encoded\b[^>]*>([\s\S]*?)<\/content:encoded>/i)?.[1] ?? '';
+    const sourceExcerpt = newsSourceExcerpt(
+      full.length > descriptionRaw.length ? full : descriptionRaw,
+    ).slice(0, 2400);
+    const excerpt = newsContext(title, sourceExcerpt, 700);
     let image;
     const attrs = (/** @type {string} */ tag) =>
       Object.fromEntries(
@@ -80,9 +91,7 @@ export function parseNewsFeed(xml, nowMs, options = {}) {
       .map(attrs)
       .filter((a) => !a.type || a.type.startsWith('image/'))
       .map((a) => a.url ?? '');
-    const description = decodeNewsText(
-      block.match(/<(description|summary)\b[^>]*>([\s\S]*?)<\/\1>/i)?.[2] ?? '',
-    );
+    const description = decodeNewsText(descriptionRaw + ' ' + full);
     for (const tag of description.match(/<img\b[^>]*>/gi) ?? [])
       candidates.push(attrs(tag).src ?? '');
     image = candidates.map(safeNewsImage).find(Boolean) ?? undefined;
@@ -91,6 +100,7 @@ export function parseNewsFeed(xml, nowMs, options = {}) {
       url,
       publishedAt: new Date(at).toISOString(),
       ...(excerpt ? { excerpt } : {}),
+      ...(sourceExcerpt ? { sourceExcerpt } : {}),
       ...(image ? { image } : {}),
     });
   }
@@ -113,7 +123,7 @@ export async function buildNewsSnapshot(env, nowMs, fetchImpl, options = {}) {
   const interval = (settings.news?.intervalHours ?? 3) * 3600000;
   const allowed = settings.news?.sources ?? DEFAULT_NEWS_SOURCES;
   const configKey = JSON.stringify({
-    catalogVersion: 4,
+    catalogVersion: NEWS_CATALOG_VERSION,
     editorService: env.OPENAI_API_KEY ? 'openai' : 'gemini',
     translationService: env.GOOGLE_TRANSLATE_API_KEY
       ? 'google'
@@ -140,7 +150,7 @@ export async function buildNewsSnapshot(env, nowMs, fetchImpl, options = {}) {
       /* Rebuild malformed cache. */
     }
   const elapsed = old?.attemptedAt ? nowMs - Date.parse(String(old.attemptedAt)) : Infinity;
-  if (options.force && old?.catalogVersion === 4 && elapsed < 10 * 60000)
+  if (options.force && old?.catalogVersion === NEWS_CATALOG_VERSION && elapsed < 10 * 60000)
     return { skipped: 'cooldown', retryAfterSeconds: Math.ceil((10 * 60000 - elapsed) / 1000) };
   if (
     old?.attemptedAt &&
@@ -198,6 +208,7 @@ export async function buildNewsSnapshot(env, nowMs, fetchImpl, options = {}) {
         sourceId: source.id,
         scope: source.scope,
         topic: source.topic,
+        language: source.language,
         items: result.value.items,
         more: [],
       });
@@ -215,6 +226,7 @@ export async function buildNewsSnapshot(env, nowMs, fetchImpl, options = {}) {
         sourceId: source.id,
         scope: source.scope,
         topic: source.topic,
+        language: source.language,
         items,
         more: [],
       });
@@ -236,7 +248,11 @@ export async function buildNewsSnapshot(env, nowMs, fetchImpl, options = {}) {
     !SOURCES.some(enabled) ||
     results.some((r, i) => r.status === 'fulfilled' && SOURCES[i] && enabled(SOURCES[i]));
   const localization = await localizeNewsGroups(env, groups, old, undefined, nowMs);
-  const history = await evolveNews(groups, priorHistory, nowMs);
+  const history = await evolveNews(groups, priorHistory, nowMs, {
+    followed: Object.keys(options.preferences ?? {})
+      .filter((k) => k.startsWith('story:'))
+      .map((k) => k.slice(6)),
+  });
   for (const g of groups)
     for (const item of g.items) {
       if (item.image) {
@@ -261,7 +277,7 @@ export async function buildNewsSnapshot(env, nowMs, fetchImpl, options = {}) {
   await env.BRIEFING.put('miniAppNewsUsage', JSON.stringify(usage));
   const snapshot = {
     configKey,
-    catalogVersion: 4,
+    catalogVersion: NEWS_CATALOG_VERSION,
     intervalHours: settings.news?.intervalHours ?? 3,
     groups,
     history,

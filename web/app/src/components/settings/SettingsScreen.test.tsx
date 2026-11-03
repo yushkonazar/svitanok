@@ -112,7 +112,9 @@ it('shows current topics without an old briefing and links directly to feature s
     'href',
     '/leisure?action=settings',
   );
-  expect(screen.getByText(/До 30 відібраних/)).toBeInTheDocument();
+  expect(screen.getByText(/До 18 відібраних/)).toBeInTheDocument();
+  for (const source of ['Суспільне', 'DOU', 'NASA'])
+    expect(screen.getByRole('switch', { name: `Джерело ${source}` })).toBeInTheDocument();
   expect(screen.queryByText('Синхронізовано')).not.toBeInTheDocument();
   expect(screen.getAllByText('Невідомо')).toHaveLength(3);
 });

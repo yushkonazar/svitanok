@@ -15,6 +15,9 @@ const LABELS: [RegExp, string][] = [
   [/(^|\.)pravda\.com\.ua$/i, 'Українська правда'],
   [/(^|\.)skysports\.com$/i, 'Sky Sports'],
   [/(hnrss\.org|news\.ycombinator\.com)$/i, 'Hacker News'],
+  [/(^|\.)suspilne\.media$/i, 'Суспільне'],
+  [/(^|\.)dou\.ua$/i, 'DOU'],
+  [/(^|\.)nasa\.gov$/i, 'NASA'],
 ];
 
 /** Джерело для тегу під заголовком — куратований лейбл або підчищений хостнейм. */

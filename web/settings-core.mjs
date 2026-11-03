@@ -1,4 +1,9 @@
-import { DEFAULT_NEWS_SOURCES, NEWS_SOURCE_IDS } from './core/brief/news-catalog.mjs';
+import {
+  DEFAULT_NEWS_SOURCES,
+  NEWS_SOURCE_IDS,
+  LEGACY_NEWS_SOURCES,
+  NEWS_CATALOG_VERSION,
+} from './core/brief/news-catalog.mjs';
 import { normalizeCheckinPreferences } from './core/checkin/catalog.mjs';
 import { parseGrantedScopes, hasFeatureScope } from './core/google-scopes.mjs';
 // Чиста логіка налаштувань власника (роадмеп v3, F2). Worker читає/пише
@@ -38,7 +43,7 @@ export const TOGGLEABLE_MODULE_IDS = [
  * Форма блоба `settings`.
  * @typedef {{ enabled: boolean, from: string, to: string }} QuietHours
  * @typedef {{ quiet: QuietHours, modules: Record<string, boolean>,
- *             mutedTopics: string[], checkin?: import('./core/checkin/catalog.mjs').CheckinPreferences, news?: {sources: string[], intervalHours: number} }} Settings
+ *             mutedTopics: string[], checkin?: import('./core/checkin/catalog.mjs').CheckinPreferences, news?: {sources: string[], intervalHours: number, catalogVersion?:number} }} Settings
  */
 
 const DEFAULT_QUIET = { enabled: false, from: '22:00', to: '08:00' };
@@ -120,11 +125,16 @@ export function normalizeSettings(rawSettings) {
     ...(raw.news && typeof raw.news === 'object'
       ? {
           news: {
+            catalogVersion: NEWS_CATALOG_VERSION,
             sources: [
               ...new Set(
-                (Array.isArray(raw.news.sources) ? raw.news.sources : DEFAULT_NEWS_SOURCES).filter(
-                  (/** @type {string} */ v) => NEWS_SOURCE_IDS.some((name) => name === v),
-                ),
+                (Array.isArray(raw.news.sources)
+                  ? !raw.news.catalogVersion &&
+                    LEGACY_NEWS_SOURCES.every((s) => raw.news.sources.includes(s))
+                    ? [...raw.news.sources, ...DEFAULT_NEWS_SOURCES]
+                    : raw.news.sources
+                  : DEFAULT_NEWS_SOURCES
+                ).filter((/** @type {string} */ v) => NEWS_SOURCE_IDS.some((name) => name === v)),
               ),
             ],
             intervalHours: [3, 6, 12].includes(raw.news.intervalHours) ? raw.news.intervalHours : 3,

@@ -1,4 +1,4 @@
-import { cleanNewsText, newsFingerprint } from './news-content.mjs';
+import { cleanNewsText, newsFingerprint, newsContext } from './news-content.mjs';
 import { callNewsEditor } from './news-editor.mjs';
 import { recordUsage } from '../ops/usage-ledger.mjs';
 export const NEWS_TRANSLATION_CACHE = 'miniAppNewsTranslationCache';
@@ -149,20 +149,20 @@ export async function localizeNewsGroups(
       );
       item.originalTitle = originalTitle;
       item.translationKey = key;
-      if (group.scope === 'ua' && ukrainianText(originalTitle, 300)) {
+      if ((group.scope === 'ua' || group.language === 'uk') && ukrainianText(originalTitle, 300)) {
         item.title = originalTitle;
         item.translated = false;
         item.translationStatus = 'native';
         native++;
         const excerpt = ukrainianText(item.excerpt, 700);
-        if (excerpt) item.why = excerpt;
+        if (excerpt) item.why = newsContext(item.title, excerpt, 600);
         else delete item.why;
         continue;
       }
       const cached = previous.get(key);
       if (cached && ukrainianText(cached.title, 300)) {
         item.title = cached.title;
-        item.why = cached.why;
+        item.why = newsContext(item.title, cached.why ?? '', 600);
         item.translated = true;
         item.translationStatus = 'ready';
         cache[key] = { title: cached.title, why: cached.why, at: nowMs };

@@ -1,12 +1,26 @@
 // One small, shared catalogue for RSS collection and Mini App settings.
-export const NEWS_SOURCE_IDS = ['Українська правда', 'BBC', 'Sky Sports', 'HLTV', 'The Guardian'];
-export const DEFAULT_NEWS_SOURCES = ['Українська правда', 'BBC', 'Sky Sports', 'HLTV'];
+export const NEWS_CATALOG_VERSION = 5;
+export const NEWS_SOURCE_IDS = [
+  'Українська правда',
+  'BBC',
+  'Sky Sports',
+  'HLTV',
+  'The Guardian',
+  'Суспільне',
+  'DOU',
+  'NASA',
+];
+export const LEGACY_NEWS_SOURCES = ['Українська правда', 'BBC', 'Sky Sports', 'HLTV'];
+export const DEFAULT_NEWS_SOURCES = [...NEWS_SOURCE_IDS];
 export const NEWS_SOURCE_CATALOG = [
   { id: 'Українська правда', hint: 'Україна: головні суспільні події' },
   { id: 'BBC', hint: 'Світ, наука та технології' },
   { id: 'Sky Sports', hint: 'Футбол: збірні, клуби й турніри' },
   { id: 'HLTV', hint: 'Counter-Strike 2 та кіберспорт' },
-  { id: 'The Guardian', hint: 'Додаткове світове джерело, вимкнене за замовчуванням' },
+  { id: 'The Guardian', hint: 'Світ: міжнародні події та ширший контекст' },
+  { id: 'Суспільне', hint: 'Україна: друге видання з власною редакцією' },
+  { id: 'DOU', hint: 'Українські технології та IT-спільнота' },
+  { id: 'NASA', hint: 'Наука й космос: повідомлення першоджерела' },
 ];
 export const NEWS_FEEDS = [
   {
@@ -64,6 +78,32 @@ export const NEWS_FEEDS = [
     scope: 'world',
     topic: 'Головне',
     url: 'https://www.theguardian.com/world/rss',
+  },
+  {
+    id: 'suspilne',
+    name: 'Суспільне',
+    source: 'Суспільне',
+    scope: 'ua',
+    topic: 'Україна',
+    language: 'uk',
+    url: 'https://suspilne.media/rss/all.rss',
+  },
+  {
+    id: 'dou',
+    name: 'DOU',
+    source: 'DOU',
+    scope: 'world',
+    topic: 'Винаходи й технології',
+    language: 'uk',
+    url: 'https://dou.ua/feed/',
+  },
+  {
+    id: 'nasa',
+    name: 'NASA',
+    source: 'NASA',
+    scope: 'world',
+    topic: 'Наука',
+    url: 'https://www.nasa.gov/feed/',
   },
 ];
 

@@ -87,6 +87,22 @@ export function useNewsFeedback() {
   });
 }
 
+export function useNewsStoryAction() {
+  const qc = useQueryClient();
+  return useMutation({
+    scope: { id: 'news-reader' },
+    networkMode: 'always',
+    mutationFn: (input: Extract<Parameters<typeof postNewsAction>[0], { type: 'story' }>) =>
+      postNewsAction(input),
+    onSuccess: (result) => {
+      if (result.reader)
+        qc.setQueryData<Awaited<ReturnType<typeof fetchNewsSnapshot>>>(['newsSnapshot'], (old) =>
+          old ? { ...old, reader: result.reader } : old,
+        );
+    },
+  });
+}
+
 /**
  * Історія по місяцях (холодний архів).
  *
@@ -562,9 +578,10 @@ export function useJobDismiss() {
  * зʼїхало на одиницю, тож наївний дозапис пропустив би сусіда. Тому видалення
  * інвалідує ['saved'] цілком (TanStack перетягує ВСІ набрані сторінки).
  */
-export function useSavedArchive() {
+export function useSavedArchive(enabled = true) {
   return useInfiniteQuery({
     queryKey: ['saved'],
+    enabled,
     queryFn: ({ pageParam }) => fetchSaved(pageParam, SAVED_PAGE),
     initialPageParam: 0,
     // Правило гортання — чиста nextSavedOffset (тести: tests/saved-paging.test.ts).
