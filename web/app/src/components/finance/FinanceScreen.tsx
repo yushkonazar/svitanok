@@ -196,7 +196,9 @@ export function FinanceScreen() {
           ? { kind: 'taxi-personal' as const }
           : params.get('action') === 'settings'
             ? { kind: 'settings' as const }
-            : null);
+            : params.get('action') === 'payment'
+              ? { kind: 'payment' as const }
+              : null);
   const nowMs = useTick(30_000);
   if (isSessionExpired(error)) return <SessionExpired />;
   if (isLoading) return <LoadingSkeleton />;

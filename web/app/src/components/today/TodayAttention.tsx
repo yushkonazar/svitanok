@@ -8,11 +8,15 @@ import { PageHeading } from '../ui/PageHeading.tsx';
 import { TransactionAmount } from '../finance/TransactionAmount.tsx';
 import { UpdatedValue } from '../ui/UpdatedValue.tsx';
 import { TodaySpendingPulse } from './TodaySpendingPulse.tsx';
+import { TodayPayment } from './TodayPayment.tsx';
+import { TodayMoneySummary } from './TodayMoneySummary.tsx';
+import { isSessionExpired } from '../../api/client.ts';
 
 export function TodayAttention() {
   const nowMs = useTick(30_000);
   const { data: stats } = useStats();
-  const { data: money } = useFinance();
+  const finance = useFinance();
+  const money = isSessionExpired(finance.error) ? undefined : finance.data;
   const now = kyivParts(nowMs);
   const slot = stats?.stats.checkinSlot;
   const confirmed = slot ? stats?.stats.checkinToday?.[slot]?.confirmed : false;
@@ -24,7 +28,18 @@ export function TodayAttention() {
         : now.hour < 18
           ? 'День триває.'
           : 'Час сповільнитися.';
-  const view = money ? financeView(money.finance, 7) : null;
+  const view = money ? financeView(money.finance, 7, nowMs) : null;
+  const complete =
+    !!view &&
+    !view.unknownBalances &&
+    !!money?.finance.accounts.some((account) => account.currency === 'UAH');
+  const slotLabel = slot
+    ? {
+        morning: 'Ранковий чек-ін',
+        afternoon: 'Денний чек-ін',
+        evening: 'Вечірній чек-ін',
+      }[slot]
+    : 'Чек-ін';
   const latest = money?.finance.transactions
     .filter(
       (t) =>
@@ -45,13 +60,21 @@ export function TodayAttention() {
             <strong>
               <UpdatedValue
                 identity="available"
-                value={view && !view.unknownBalances ? view.available : null}
+                value={view && complete ? view.available : null}
                 enabled={money?.finance.display?.animations !== false}
               >
-                {view && !view.unknownBalances ? moneyLabel(view.available) : 'Мої рахунки'}
+                {view && complete ? moneyLabel(view.available).replace(/\s/g, ' ') : 'Мої рахунки'}
               </UpdatedValue>
             </strong>
           </Link>
+          {money && view && (
+            <TodayMoneySummary
+              finance={money.finance}
+              view={view}
+              complete={complete}
+              failed={finance.isError}
+            />
+          )}
           {money && <TodaySpendingPulse finance={money.finance} nowMs={nowMs} demo={money.demo} />}
           {latest ? (
             <Link
@@ -73,20 +96,22 @@ export function TodayAttention() {
             <small className="text-tx3 text-xs">Рахунки та останні операції →</small>
           )}
         </div>
-        <Link to="/checkin">
-          <span>{confirmed ? '✓ Чек-ін підтверджено' : 'Як ти зараз?'}</span>
-          <small>
-            {confirmed
-              ? 'Наступний слот з’явиться за розкладом'
-              : slot
-                ? {
-                    morning: 'Ранковий чек-ін',
-                    afternoon: 'Денний чек-ін',
-                    evening: 'Вечірній чек-ін',
-                  }[slot]
-                : 'Переглянути ритм і наступний чек-ін'}
-          </small>
-        </Link>
+        <div className="today-side-stack">
+          <Link
+            to="/checkin"
+            className="today-side-card today-checkin-card"
+            aria-label={slotLabel + (confirmed ? ': підтверджено' : ': відкрити')}
+          >
+            <span>{confirmed ? '✓ Готово' : 'Як ти зараз?'}</span>
+            <small>{slotLabel}</small>
+          </Link>
+          <TodayPayment
+            finance={money?.finance}
+            today={now.date}
+            loading={finance.isLoading}
+            failed={finance.isError}
+          />
+        </div>
       </div>
       <div className="renewal-form-grid mb-4">
         <Link className="renewal-button today-quick-action" to="/finance?action=expense">
@@ -96,45 +121,6 @@ export function TodayAttention() {
           ＋ Особистий дохід
         </Link>
       </div>
-      {view && view.reminders.length > 0 && (
-        <div className="today-payment-preview">
-          <div className="renewal-section-head">
-            <span className="text-a2 text-sm font-semibold">
-              Найближчі платежі{money?.demo ? ' · демо' : ''}
-            </span>
-            <Link className="renewal-link" to="/finance">
-              Усі →
-            </Link>
-          </div>
-          {view.reminders.slice(0, 3).map((p) => (
-            <Link
-              key={p.id}
-              to={`/finance?payment=${encodeURIComponent(p.id)}`}
-              className="today-payment-row"
-            >
-              <span className="today-payment-date">
-                <b>{Number(p.nextDate.slice(8))}</b>
-                <small>
-                  {new Date(p.nextDate + 'T12:00:00Z').toLocaleDateString('uk-UA', {
-                    month: 'short',
-                  })}
-                </small>
-              </span>
-              <span className="min-w-0">
-                <b className="block text-sm">{p.name}</b>
-                <small className={p.nextDate < now.date ? 'text-neg' : 'text-tx2'}>
-                  {p.nextDate < now.date
-                    ? 'Строк минув'
-                    : p.nextDate === now.date
-                      ? 'Сьогодні'
-                      : 'Заплановано'}
-                </small>
-              </span>
-              <strong className="text-sm">{moneyLabel(p.amountMinor)}</strong>
-            </Link>
-          ))}
-        </div>
-      )}
       {money && money.finance.reserveMinor > 0 && (
         <Link to="/finance" className="mt-3 block text-xs text-tx2">
           Для розрахунку з парком залишити {moneyLabel(money.finance.reserveMinor)}

@@ -40,7 +40,6 @@
   grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
   align-items: stretch;
 }
-.today-overview > a,
 .today-finance-card {
   min-width: 0;
   min-height: 124px;
@@ -53,7 +52,143 @@
   display: flex;
   flex-direction: column;
   justify-content: space-between;
-  gap: 13px;
+  gap: 8px;
+}
+.today-side-stack {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 10px;
+  min-width: 0;
+}
+.today-overview .today-side-card {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+  gap: 6px;
+  min-width: 0;
+  min-height: 76px;
+  padding: 12px;
+  border: 1px solid var(--color-glassb);
+  border-radius: 18px;
+  background: var(--color-glass);
+  font-size: 12px;
+  line-height: 1.35;
+}
+.today-overview .today-checkin-card {
+  justify-content: center;
+}
+.today-overview a.today-side-card {
+  background: var(--color-glass);
+}
+.today-side-card small {
+  font-size: 10px;
+  line-height: 1.4;
+}
+.today-overview .today-payment-card {
+  gap: 7px;
+}
+.today-side-eyebrow {
+  display: flex;
+  justify-content: space-between;
+  gap: 5px;
+  font-size: 9px;
+  font-weight: 600;
+  color: var(--color-tx3);
+}
+.today-payment-name {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  font-size: 11px;
+}
+.today-side-card strong {
+  font:
+    600 clamp(13px, 3.5vw, 16px) 'JetBrains Mono Variable',
+    monospace;
+  overflow-wrap: anywhere;
+  color: var(--color-a2);
+}
+.today-payment-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: auto;
+}
+.today-payment-card[data-overdue='true'] .today-payment-meta > span:first-child {
+  color: var(--color-neg);
+}
+.today-money-summary {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 5px;
+  min-height: 44px;
+  padding: 4px 0;
+  font-size: 10px;
+  text-align: left;
+  color: var(--color-tx2);
+  cursor: pointer;
+}
+.today-money-summary > span {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 3px 6px;
+  min-width: 0;
+}
+.today-money-summary b {
+  min-width: 0;
+  margin-left: auto;
+  overflow-wrap: anywhere;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-tx);
+}
+.today-money-summary i {
+  font-style: normal;
+  font-size: 9px;
+  color: var(--color-tx3);
+}
+.today-money-summary:focus-visible {
+  outline: 2px solid var(--color-a2);
+  outline-offset: 3px;
+  border-radius: 5px;
+}
+.today-money-detail {
+  padding: 10px 0 0;
+}
+.today-money-formula {
+  margin-top: 18px;
+}
+.today-money-formula > div,
+.today-goal-saving {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 11px 0;
+  border-bottom: 1px solid var(--color-hair);
+  font-size: 12px;
+}
+.today-money-formula dt,
+.today-goal-saving > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--color-tx2);
+}
+.today-money-formula dd,
+.today-goal-saving b {
+  min-width: 0;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+.today-money-total {
+  color: var(--color-a2);
+  font-weight: 700;
 }
 .today-overview .today-finance-card a {
   min-height: 0;
@@ -676,7 +811,7 @@
   .today-hero .renewal-title {
     font-size: 28px;
   }
-  .today-overview > a,
+  .today-overview .today-side-card,
   .today-finance-card {
     padding: 11px;
   }
