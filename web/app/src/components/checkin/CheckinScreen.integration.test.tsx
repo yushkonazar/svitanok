@@ -141,6 +141,8 @@ it.each([false, true])(
     const { view, data, button } = await readyToConfirm();
     fireEvent.click(button);
     await screen.findByRole('button', { name: 'Зберігаю…' });
+    expect(await screen.findByRole('button', { name: 'Вечір: Зберігається' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Вечір: Підтверджено' })).not.toBeInTheDocument();
     const section = view.container.querySelector('[data-checkin-slot="evening"]')!;
     expect(section).toHaveStyle({ minHeight: '1800px' });
     expect(screen.queryByRole('timer')).not.toBeInTheDocument();
@@ -153,6 +155,7 @@ it.each([false, true])(
       },
     });
     await act(async () => resolve());
+    expect(await screen.findByRole('button', { name: 'Вечір: Підтверджено' })).toBeInTheDocument();
     if (!reduced) {
       expect(screen.getByText('Чек-ін збережено')).toBeInTheDocument();
       expect(section).toHaveStyle({ minHeight: '1800px' });
@@ -176,6 +179,7 @@ it('keeps the review open without success animation or scrolling when confirmati
   await screen.findByRole('alert');
   expect(screen.getByRole('button', { name: 'Підтвердити чек-ін' })).toBeEnabled();
   expect(screen.queryByText('Чек-ін збережено')).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Вечір: Підтверджено' })).not.toBeInTheDocument();
   expect(scroll).not.toHaveBeenCalled();
 });
 it('extends the chosen slot once, with a pending state and a server-confirmed new deadline', async () => {

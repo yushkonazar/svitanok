@@ -1,6 +1,7 @@
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { beforeEach, afterEach, expect, it, vi } from 'vitest';
 import { MemoryRouter } from 'react-router-dom';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { TodayAttention } from './TodayAttention.tsx';
 import { readFinanceDemo, resetFinanceDemo } from '../../api/finance-demo.ts';
 import { moneyLabel } from '../../lib/financeView.ts';
@@ -27,7 +28,11 @@ vi.mock('../../api/finance-hooks.ts', () => ({
 vi.mock('../../api/hooks.ts', () => ({
   useStats: () => ({
     data: {
-      stats: { checkinSlot: 'morning', checkinToday: { morning: { confirmed: state.confirmed } } },
+      stats: {
+        checkinDate: '2026-11-03',
+        checkinSlot: 'morning',
+        checkinToday: { morning: { confirmed: state.confirmed } },
+      },
     },
   }),
 }));
@@ -35,7 +40,9 @@ vi.mock('./TodaySpendingPulse.tsx', () => ({
   TodaySpendingPulse: () => <button>Витрати тижня</button>,
 }));
 let f: Finance;
+let cache: QueryClient;
 beforeEach(() => {
+  cache = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
   resetFinanceDemo();
   f = readFinanceDemo();
   f.accounts = [
@@ -78,23 +85,26 @@ beforeEach(() => {
 });
 afterEach(() => {
   cleanup();
+  cache.clear();
   resetFinanceDemo();
   vi.restoreAllMocks();
 });
 const setup = () =>
   render(
-    <MemoryRouter>
-      <TodayAttention />
-    </MemoryRouter>,
+    <QueryClientProvider client={cache}>
+      <MemoryRouter>
+        <TodayAttention />
+      </MemoryRouter>
+    </QueryClientProvider>,
   );
 
 it('stacks a compact check-in and exact nearest payment, without duplicating the old list', () => {
   const { container } = setup();
   const stack = container.querySelector('.today-side-stack')!;
   expect(within(stack as HTMLElement).getAllByRole('link')).toHaveLength(2);
-  expect(screen.getByRole('link', { name: 'Ранковий чек-ін: відкрити' })).toHaveAttribute(
+  expect(screen.getByRole('link', { name: /Чек-іни\. Ранок: є чернетка/ })).toHaveAttribute(
     'href',
-    '/checkin',
+    '/checkin?date=2026-11-03&slot=morning',
   );
   const payment = screen.getByRole('link', { name: /Платіж Інтернет/ });
   expect(payment).toHaveAttribute('href', '/finance?payment=nearest%2Fid');
@@ -144,8 +154,8 @@ it('offers the creation form for an empty schedule and a compact confirmed check
     'href',
     '/finance?action=payment',
   );
-  expect(screen.getByRole('link', { name: 'Ранковий чек-ін: підтверджено' })).toHaveTextContent(
-    '✓ Готово',
+  expect(screen.getByRole('link', { name: /Чек-іни\. Ранок: підтверджено/ })).toHaveTextContent(
+    '✓',
   );
   expect(screen.queryByText('Наступний слот з’явиться за розкладом')).not.toBeInTheDocument();
 });
@@ -159,9 +169,11 @@ it('does not replace loading or expired data with a zero balance or an empty pay
   state.loading = false;
   state.error = new SessionExpiredError(401);
   rerender(
-    <MemoryRouter>
-      <TodayAttention />
-    </MemoryRouter>,
+    <QueryClientProvider client={cache}>
+      <MemoryRouter>
+        <TodayAttention />
+      </MemoryRouter>
+    </QueryClientProvider>,
   );
   expect(screen.queryByRole('button', { name: /У цілях/ })).not.toBeInTheDocument();
   expect(screen.queryByRole('link', { name: /Платіж Інтернет/ })).not.toBeInTheDocument();
