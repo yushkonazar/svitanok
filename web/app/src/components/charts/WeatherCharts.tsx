@@ -226,7 +226,12 @@ export function HourlyChart({
     ),
     min = Math.min(...pts.map((p) => p.t)),
     max = Math.max(...pts.map((p) => p.t)),
-    pad = Math.max(1, (max - min) * 0.2);
+    pad = Math.max(0.2, (max - min) * 0.2),
+    lower = Math.floor((min - pad) * 10 + 1e-9) / 10,
+    upper = Math.ceil((max + pad) * 10 - 1e-9) / 10;
+  // Axis bounds, rather than the data extrema, keep labels evenly separated.
+  // A 5–6° forecast uses 4.8–6.2°; constant and near-constant data still have a real scale.
+  const axisTicks = [lower, Math.round(((lower + upper) / 2) * 10) / 10, upper];
   // Provider order spans midnight: next-day 00:00 never jumps before 23:00.
   const timed = pts.every(
     (p, n) => p.at != null && Number.isFinite(p.at) && (!n || p.at > pts[n - 1].at!),
@@ -244,12 +249,14 @@ export function HourlyChart({
   );
   const span = timestamps.at(-1)! - timestamps[0];
   const x = (n: number) =>
-    18 +
-    (span > 0 ? (timestamps[n] - timestamps[0]) / span : n / Math.max(1, pts.length - 1)) * 324;
-  const y = (v: number) => 104 - ((v - min + pad) / (max - min + 2 * pad)) * 78;
+    58 +
+    (span > 0 ? (timestamps[n] - timestamps[0]) / span : n / Math.max(1, pts.length - 1)) * 284;
+  const y = (v: number) => 104 - ((v - lower) / (upper - lower)) * 78;
   const line = pts.map((p, n) => `${n ? 'L' : 'M'}${x(n)} ${y(p.t)}`).join(' ');
-  const format = (t: number) =>
-    `${t > 0 ? '+' : ''}${t.toLocaleString('uk-UA', { maximumFractionDigits: 1 })}°`;
+  const format = (t: number) => {
+    const rounded = Number(t.toFixed(1)) || 0;
+    return `${rounded > 0 ? '+' : ''}${rounded.toLocaleString('uk-UA', { maximumFractionDigits: 1 })}°`;
+  };
   const time = (p: (typeof pts)[number]) => `${String(p.h).padStart(2, '0')}:00`;
   const band = windowBand(pts, highlight, x);
   return (
@@ -277,16 +284,23 @@ export function HourlyChart({
             <stop offset="1" stopColor="var(--color-a1)" stopOpacity="0" />
           </linearGradient>
         </defs>
-        {[min, (min + max) / 2, max]
-          .filter((v, n, a) => a.indexOf(v) === n)
-          .map((v) => (
+        <g data-temperature-axis aria-hidden="true">
+          {axisTicks.map((v) => (
             <g key={v}>
-              <line x1="18" x2="342" y1={y(v)} y2={y(v)} stroke="var(--color-hair)" />
-              <text x="18" y={y(v) - 5} fontSize="10" fill="var(--color-tx2)">
+              <line x1="58" x2="342" y1={y(v)} y2={y(v)} stroke="var(--color-hair)" />
+              <text
+                x="46"
+                y={y(v)}
+                textAnchor="end"
+                dominantBaseline="middle"
+                fontSize="12"
+                fill="var(--color-tx2)"
+              >
                 {format(v)}
               </text>
             </g>
           ))}
+        </g>
         <path d={`${line} L${x(pts.length - 1)} 112 L${x(0)} 112 Z`} fill={`url(#${uid})`} />
         <path
           d={line}
@@ -319,7 +333,7 @@ export function HourlyChart({
         aria-valuetext={`${time(pts[i])}: ${format(pts[i].t)}`}
       />
       <p className="renewal-chart-note">
-        Від {format(min)} до {format(max)}
+        {min === max ? 'Без змін · ' + format(min) : 'Від ' + format(min) + ' до ' + format(max)}
       </p>
       <Explanation>Рухай повзунок, щоб обрати годину.</Explanation>
     </section>
