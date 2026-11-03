@@ -59,8 +59,17 @@ it('restores bounded reading controls and rejects malformed session preferences'
   });
   expect(readNewsView()).toMatchObject({ mode: 'following', scroll: 250, search: 'місія' });
   sessionStorage.setItem(
-    'svitanok:news-view:v2',
+    'svitanok:news-view:v3',
     JSON.stringify({ mode: 'bogus', scroll: -100, search: 3 }),
   );
-  expect(readNewsView()).toMatchObject({ mode: 'main', scroll: 0, search: '' });
+  expect(readNewsView()).toMatchObject({ mode: 'all', scroll: 0, search: '' });
+});
+it('starts the new navigation on the combined feed without restoring an old hidden filter', () => {
+  sessionStorage.setItem(
+    'svitanok:news-view:v2',
+    JSON.stringify({ mode: 'main', topic: 'Головне' }),
+  );
+  expect(readNewsView()).toMatchObject({ mode: 'all', topic: 'Усе' });
+  saveNewsView({ ...readNewsView(), mode: 'interests', topic: 'Наука' });
+  expect(readNewsView()).toMatchObject({ mode: 'interests', topic: 'Наука' });
 });

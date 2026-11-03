@@ -1,4 +1,4 @@
-import { useState, useRef, useLayoutEffect, useEffect } from 'react';
+import { useState, useRef, useLayoutEffect, useEffect, useCallback } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { Link, useSearchParams } from 'react-router-dom';
 import {
@@ -28,6 +28,7 @@ import {
   newsSnapshotKey,
   readNewsView,
   saveNewsView,
+  newsTopicLabel,
   type NewsStory,
   type NewsView,
 } from '../../lib/newsStories.ts';
@@ -42,6 +43,7 @@ import { NewsStoryCard } from './NewsStoryCard.tsx';
 import { NewsActions } from './NewsActions.tsx';
 import { NewsComparison } from './NewsComparison.tsx';
 import { NewsIcon } from './NewsIcon.tsx';
+import { NewsLoadMore } from './NewsLoadMore.tsx';
 import './news-reader.css';
 
 const dateLabel = (iso?: string | null) =>
@@ -55,11 +57,13 @@ const dateLabel = (iso?: string | null) =>
       })
     : '';
 const modes = [
+  ['all', 'Стрічка'],
   ['main', 'Головне'],
   ['interests', 'За інтересами'],
   ['following', 'Стежу'],
 ] as const;
 const newLabel = (count: number) => `${count} ${pluralUk(count, ['нова', 'нові', 'нових'])}`;
+const topicOrder = ['Україна', 'Світ', 'Технології', 'Наука', 'CS2', 'Футбол'];
 
 export function NewsScreen() {
   const nowMs = useTick(60000),
@@ -72,7 +76,8 @@ export function NewsScreen() {
   const [view, setView] = useState(readNewsView),
     [limit, setLimit] = useState(view.limit);
   const [showMuted, setShowMuted] = useState(false);
-  const [filtersOpen, setFiltersOpen] = useState(false);
+  const loadMore = useCallback(() => setLimit((value) => value + 6), []);
+  const [filtersOpen, setFiltersOpen] = useState(!!view.search);
   const [applied, setApplied] = useState<NewsSnapshot | null>(
     () => qc.getQueryData<NewsSnapshot>(['newsDisplayed']) ?? null,
   );
@@ -176,24 +181,42 @@ export function NewsScreen() {
       ? [...saved.values()]
       : view.mode === 'following'
         ? followed
-        : feed.filter((story) => story.priority === (view.mode === 'main' ? 0 : 1));
+        : view.mode === 'all'
+          ? [...feed].sort(
+              (a, b) =>
+                (Date.parse(b.item.publishedAt ?? '') || 0) -
+                (Date.parse(a.item.publishedAt ?? '') || 0),
+            )
+          : feed.filter((story) => story.priority === (view.mode === 'main' ? 0 : 1));
   const isMuted = (story: NewsStory) =>
     Date.parse(reader.mutedUntil[newsStoryId(story.item)] ?? '') > nowMs;
   const isRead = (story: NewsStory) => newsWasRead(story.item, reader, localRead);
   const change = (story: NewsStory) => newsChange(story.item, visit.since, isRead(story));
   const mutedCount = stories.filter(isMuted).length;
   const topics = [...new Set(stories.map((story) => story.topic))];
-  const matches = stories.filter(
+  // A refreshed collection may no longer contain the previous category. Keep it visible
+  // until the reader chooses another one, rather than leaving an invisible active filter.
+  if (view.topic !== 'Усе' && !topics.includes(view.topic)) topics.push(view.topic);
+  topics.sort((a, b) => {
+    const order = (topic: string) => {
+      const index = topicOrder.indexOf(newsTopicLabel(topic));
+      return index < 0 ? topicOrder.length : index;
+    };
+    return order(a) - order(b) || a.localeCompare(b, 'uk-UA');
+  });
+  const filteredStories = stories.filter(
     (story) =>
       (showMuted || !isMuted(story)) &&
-      (view.filter !== 'new' || !!change(story)) &&
       (view.topic === 'Усе' || story.topic === view.topic) &&
-      `${story.topic} ${story.item.title} ${story.item.why ?? ''} ${newsSource(story.item.url)}`
+      `${story.topic} ${newsTopicLabel(story.topic)} ${story.item.title} ${story.item.why ?? ''} ${newsSource(story.item.url)}`
         .toLocaleLowerCase('uk-UA')
         .includes(view.search.trim().toLocaleLowerCase('uk-UA')),
   );
-  const newCount = stories.filter((story) => !isMuted(story) && change(story) === 'new').length;
-  const updateCount = stories.filter(
+  const matches = filteredStories.filter((story) => view.filter !== 'new' || !!change(story));
+  const newCount = filteredStories.filter(
+    (story) => !isMuted(story) && change(story) === 'new',
+  ).length;
+  const updateCount = filteredStories.filter(
     (story) => !isMuted(story) && change(story) === 'updated',
   ).length;
   const currentArticle = [...all, ...followed, ...saved.values()].find(
@@ -252,6 +275,9 @@ export function NewsScreen() {
     setSelected(story.item.url);
   };
   const changeView = (patch: Partial<NewsView>) => {
+    setMessage('');
+    feedScroll.current = 0;
+    window.scrollTo(0, 0);
     setView((current) => ({ ...current, ...patch }));
     setLimit(6);
   };
@@ -330,7 +356,7 @@ export function NewsScreen() {
                 · <time dateTime={item.publishedAt}>{dateLabel(item.publishedAt)}</time>
               </>
             )}
-            <span>{topic}</span>
+            <span>{newsTopicLabel(topic)}</span>
           </p>
           <h1>{item.title}</h1>
           {item.translationStatus === 'pending' && (
@@ -472,7 +498,8 @@ export function NewsScreen() {
       </header>
       {explanations && (
         <p className="news-explanation">
-          Головні події — окремо від інтересів. Стеж за історіями, до яких хочеш повертатися.
+          Стрічка об’єднує всі твої теми за часом публікації. У «Головне» — пріоритетні події, в
+          «Інтереси» — тематичні матеріали.
         </p>
       )}
       <div className="news-modes" aria-label="Режим новин">
@@ -486,8 +513,20 @@ export function NewsScreen() {
             aria-pressed={view.mode === id && view.filter !== 'saved'}
             onClick={() => changeView({ mode: id, filter: 'all', topic: 'Усе' })}
           >
-            {label}
+            {id === 'interests' ? 'Інтереси' : label}
             {id === 'following' && followed.length > 0 && <span> {followed.length}</span>}
+          </button>
+        ))}
+      </div>
+      <div className="news-topic-filters" role="group" aria-label="Категорії новин">
+        {['Усе', ...topics].map((topic) => (
+          <button
+            type="button"
+            key={topic}
+            aria-pressed={view.topic === topic}
+            onClick={() => changeView({ topic })}
+          >
+            {newsTopicLabel(topic)}
           </button>
         ))}
       </div>
@@ -519,11 +558,11 @@ export function NewsScreen() {
           className="news-search-toggle"
           aria-expanded={filtersOpen}
           aria-controls="news-filters"
-          data-active={!!view.search || view.topic !== 'Усе'}
+          data-active={!!view.search}
           onClick={() => setFiltersOpen((value) => !value)}
         >
           <NewsIcon name={filtersOpen ? 'close' : 'search'} />
-          <span className="sr-only">Пошук і фільтри</span>
+          <span className="sr-only">Пошук і джерела</span>
         </button>
       </div>
       {incoming && (
@@ -563,18 +602,6 @@ export function NewsScreen() {
               placeholder="Знайти у стрічці…"
             />
           </label>
-          <div className="news-topic-filters">
-            {['Усе', ...topics].map((topic) => (
-              <button
-                type="button"
-                key={topic}
-                aria-pressed={view.topic === topic}
-                onClick={() => changeView({ topic })}
-              >
-                {topic}
-              </button>
-            ))}
-          </div>
           {mutedCount > 0 && (
             <label className="news-muted-control">
               <input
@@ -606,6 +633,16 @@ export function NewsScreen() {
               read={isRead(story)}
               change={view.filter === 'saved' ? null : change(story)}
               following={!!reader.following[newsStoryId(story.item)]}
+              busy={action.isPending}
+              onFollow={
+                !story.archived || reader.following[newsStoryId(story.item)]
+                  ? () =>
+                      storyAction(
+                        story,
+                        reader.following[newsStoryId(story.item)] ? 'unfollow' : 'follow',
+                      )
+                  : undefined
+              }
               onOpen={() => openArticle(story)}
             />
           ))}
@@ -622,7 +659,7 @@ export function NewsScreen() {
                 : mutedCount > 0 && !showMuted
                   ? 'Події тимчасово приглушені.'
                   : view.mode === 'following'
-                    ? 'Відкрий подію й натисни «Стежити за подією». Її оновлення збиратимуться тут.'
+                    ? 'Натисни «Стежити» на картці події. Її оновлення збиратимуться тут.'
                     : 'Тут поки немає матеріалів. Зміни фільтр або перевір оновлення.'}
           {!view.search && mutedCount > 0 && !showMuted && (
             <button
@@ -639,13 +676,11 @@ export function NewsScreen() {
         </p>
       )}
       {matches.length > limit && (
-        <button
-          type="button"
-          className="renewal-secondary"
-          onClick={() => setLimit((value) => value + 6)}
-        >
-          Ще події · {matches.length - limit}
-        </button>
+        <NewsLoadMore
+          key={`${view.mode}:${view.filter}:${view.topic}:${view.search}:${limit}`}
+          remaining={matches.length - limit}
+          onMore={loadMore}
+        />
       )}
       {view.filter === 'saved' && archive.hasNextPage && (
         <button

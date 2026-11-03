@@ -1,23 +1,28 @@
 import { useState } from 'react';
 import type { NewsStory } from '../../lib/newsStories.ts';
-import { newsContext } from '../../lib/newsStories.ts';
+import { newsContext, newsTopicLabel } from '../../lib/newsStories.ts';
 import { newsSource } from '../../lib/newsSource.ts';
 import { timeAgo } from '../../lib/timeAgo.ts';
 import { pluralUk } from '../../lib/plural.ts';
 import { NewsArt } from './NewsArt.tsx';
 import { NewsIcon } from './NewsIcon.tsx';
+import { NewsSaveButton } from './NewsSaveButton.tsx';
 export function NewsStoryCard({
   story,
   read,
   change,
   following,
   onOpen,
+  busy = false,
+  onFollow,
 }: {
   story: NewsStory;
   read: boolean;
   change: 'new' | 'updated' | null;
   following: boolean;
   onOpen: () => void;
+  busy?: boolean;
+  onFollow?: () => void;
 }) {
   const [failed, setFailed] = useState<string | null>(null),
     item = story.item,
@@ -38,16 +43,11 @@ export function NewsStoryCard({
             {item.publishedAt && (
               <time dateTime={item.publishedAt}>{timeAgo(item.publishedAt)}</time>
             )}
-            {following && (
-              <span className="news-follow-mark" title="Стежиш за подією">
-                <NewsIcon name="follow" />
-              </span>
-            )}
           </span>
           <span className="news-story-title">{item.title}</span>
           {summary && <span className="news-story-summary">{summary}</span>}
           <span className="news-story-tags">
-            <span>{story.topic}</span>
+            <span>{newsTopicLabel(story.topic)}</span>
             {change && (
               <b className="news-change-badge" data-kind={change}>
                 {change === 'updated' ? 'Оновлено' : 'Нове'}
@@ -78,6 +78,22 @@ export function NewsStoryCard({
           </span>
         )}
       </button>
+      <div className="news-card-actions">
+        <NewsSaveButton story={story} compact />
+        {onFollow && (
+          <button
+            type="button"
+            className="news-action"
+            aria-pressed={following}
+            aria-label={`${following ? 'Не стежити за подією' : 'Стежити за подією'}: ${item.title}`}
+            disabled={busy}
+            onClick={onFollow}
+          >
+            <NewsIcon name="follow" />
+            {following ? 'Стежу' : 'Стежити'}
+          </button>
+        )}
+      </div>
     </article>
   );
 }
