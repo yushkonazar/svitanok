@@ -3,6 +3,7 @@ import type { NewsStory } from '../../lib/newsStories.ts';
 import { newsContext } from '../../lib/newsStories.ts';
 import { newsSource } from '../../lib/newsSource.ts';
 import { timeAgo } from '../../lib/timeAgo.ts';
+import { pluralUk } from '../../lib/plural.ts';
 import { NewsArt } from './NewsArt.tsx';
 import { NewsIcon } from './NewsIcon.tsx';
 export function NewsStoryCard({
@@ -18,7 +19,7 @@ export function NewsStoryCard({
   following: boolean;
   onOpen: () => void;
 }) {
-  const [failed, setFailed] = useState(false),
+  const [failed, setFailed] = useState<string | null>(null),
     item = story.item,
     image = item.imageProxy ?? item.image;
   const summary = newsContext(item.title, item.why ?? '', 220),
@@ -52,8 +53,12 @@ export function NewsStoryCard({
                 {change === 'updated' ? 'Оновлено' : 'Нове'}
               </b>
             )}
-            {publishers.size > 1 && <span>{publishers.size} видання</span>}
-            {story.archived && <span>Збережена історія</span>}
+            {publishers.size > 1 && (
+              <span>
+                {publishers.size} {pluralUk(publishers.size, ['видання', 'видання', 'видань'])}
+              </span>
+            )}
+            {story.archived && <span>Раніше у стрічці</span>}
             {read && (
               <span className="news-read-mark">
                 <NewsIcon name="check" />
@@ -62,13 +67,13 @@ export function NewsStoryCard({
             )}
           </span>
         </span>
-        {image && !failed && (
+        {image && failed !== image && (
           <span className="news-story-thumbnail">
             <NewsArt
               image={image}
               topic={story.topic}
               compact
-              onUnavailable={() => setFailed(true)}
+              onUnavailable={() => setFailed(image)}
             />
           </span>
         )}

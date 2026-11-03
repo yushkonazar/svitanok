@@ -3,7 +3,7 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { NewsScreen } from './NewsScreen.tsx';
-import { NewsArt } from './NewsArt.tsx';
+import { NewsStoryCard } from './NewsStoryCard.tsx';
 import { NewsItem } from './NewsItem.tsx';
 import { markRead } from '../../lib/reading.ts';
 import { newsReadKey } from '../../lib/newsStories.ts';
@@ -137,6 +137,43 @@ it('keeps the applied stream stable and announces actual versions instead of col
   fireEvent.click(screen.getByRole('button', { name: /Оновлена добірка/ }));
   expect(screen.getByText('Друга подія')).toBeVisible();
   expect(screen.queryByText('Перша подія')).not.toBeInTheDocument();
+});
+it('keeps a followed archive stable when that story returns in an unapplied snapshot', () => {
+  const archived = {
+    storyId: 'archived',
+    contentVersion: 'v1',
+    title: 'Давня історія про місію',
+    url: 'https://www.bbc.com/news/archive',
+  };
+  mocks.live!.reader!.following.archived = {
+    item: archived,
+    topic: 'Головне',
+    scope: 'world',
+    followedAt: '2026-11-02T12:00:00Z',
+  };
+  const view = mount();
+  fireEvent.click(screen.getByRole('button', { name: 'Стежу 1' }));
+  expect(screen.getByText('Давня історія про місію')).toBeVisible();
+  const updated = {
+    ...archived,
+    contentVersion: 'v2',
+    displayVersion: 'new-text',
+    title: 'Продовження історії',
+  };
+  mocks.live = {
+    ...snapshot(),
+    groups: [{ scope: 'world', topic: 'Головне', items: [updated], more: [] }],
+    reader: {
+      ...mocks.live!.reader!,
+      following: { archived: { ...mocks.live!.reader!.following.archived!, item: updated } },
+    },
+  };
+  view.rerenderNews();
+  expect(screen.getByText('Давня історія про місію')).toBeVisible();
+  expect(screen.queryByText('Продовження історії')).not.toBeInTheDocument();
+  expect(screen.getByRole('button', { name: /Оновлена добірка · 1 оновлено/ })).toBeVisible();
+  fireEvent.click(screen.getByRole('button', { name: /Оновлена добірка/ }));
+  expect(screen.getByText('Продовження історії')).toBeVisible();
 });
 it('compares the actual before/after descriptions and includes titles of related reports', () => {
   Object.assign(mocks.live!.groups[0]!.items[0]!, {
@@ -283,9 +320,23 @@ it('uses text cards without fake art and records an explicit less-like-this pref
   );
 });
 it('removes an unavailable photo and can show a replacement', () => {
-  const view = render(<NewsArt image="/api/news/image/a" topic="Головне" />);
+  const card = (image: string) => (
+    <NewsStoryCard
+      story={{
+        topic: 'Головне',
+        priority: 0,
+        item: { title: 'Подія з фотографією', url: 'https://www.bbc.com/news/photo', image },
+      }}
+      read={false}
+      change={null}
+      following={false}
+      onOpen={() => {}}
+    />
+  );
+  const view = render(card('/api/news/image/a'));
   fireEvent.error(view.container.querySelector('img')!);
   expect(view.container.querySelector('.renewal-news-art')).toBeNull();
-  view.rerender(<NewsArt image="/api/news/image/b" topic="Головне" />);
+  expect(view.container.querySelector('.news-story-thumbnail')).toBeNull();
+  view.rerender(card('/api/news/image/b'));
   expect(view.container.querySelector('img')).toHaveAttribute('src', '/api/news/image/b');
 });

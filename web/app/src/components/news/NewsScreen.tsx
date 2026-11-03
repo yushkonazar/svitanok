@@ -140,15 +140,17 @@ export function NewsScreen() {
       settings.data?.settings.news?.sources,
     );
   const byId = new Map(all.map((story) => [newsStoryId(story.item), story]));
-  const followed = Object.entries(reader.following).map(
-    ([id, saved]): NewsStory =>
+  const followed = Object.entries(reader.following).map(([id, saved]): NewsStory => {
+    const frozen = displayed?.reader?.following[id] ?? saved;
+    return (
       byId.get(id) ?? {
-        item: saved.item,
-        topic: saved.topic,
-        priority: saved.item.priority ?? 1,
+        item: frozen.item,
+        topic: frozen.topic,
+        priority: frozen.item.priority ?? 1,
         archived: true,
-      },
-  );
+      }
+    );
+  });
   const saved = new Map(
     all.filter((story) => isSaved('news', story.item.url)).map((story) => [story.item.url, story]),
   );
@@ -402,11 +404,19 @@ export function NewsScreen() {
     );
   }
   const incoming = !!live.data?.generatedAt && newsSnapshotKey(live.data.groups) !== signature;
+  const knownStories = new Map(
+    [...all, ...followed].map((story) => [newsStoryId(story.item), story]),
+  );
   const incomingCounts = newsStories(live.data?.groups ?? []).reduce(
     (counts, story) => {
-      const old = byId.get(newsStoryId(story.item));
-      if (!old) counts.added++;
-      else if (newsStoryVersion(old.item) !== newsStoryVersion(story.item)) counts.updated++;
+      const old = knownStories.get(newsStoryId(story.item));
+      if (!old) {
+        const boundary = Date.parse(displayed?.generatedAt ?? ''),
+          first = Date.parse(story.item.firstSeenAt ?? '');
+        if (!Number.isFinite(first) || !Number.isFinite(boundary) || first > boundary)
+          counts.added++;
+        else if (Date.parse(story.item.changeAt ?? '') > boundary) counts.updated++;
+      } else if (newsStoryVersion(old.item) !== newsStoryVersion(story.item)) counts.updated++;
       return counts;
     },
     { added: 0, updated: 0 },
