@@ -67,6 +67,35 @@ const params = (extra: Record<string, string | undefined> = {}) =>
     ...Object.fromEntries(Object.entries(extra).filter((entry) => typeof entry[1] === 'string')),
   });
 describe('private finance analytics', () => {
+  it('keeps the Today week comparison and its previous-operation list aligned through DST', async () => {
+    const { env, d1, add } = setup();
+    const now = Date.parse('2026-10-27T10:30:00Z');
+    add('oldest', -100, { at: '2026-10-01T08:00:00Z' });
+    add('current-week', -10000, { at: '2026-10-27T10:29:00Z' });
+    add('previous-week', -20000, { at: '2026-10-20T09:29:00Z' });
+    add('previous-later', -60000, { at: '2026-10-20T09:31:00Z' });
+    const selection = new URLSearchParams({
+      from: '2026-10-26',
+      to: '2026-10-27',
+      comparison: 'week',
+      status: 'confirmed',
+    });
+    try {
+      const summary = await readFinanceAnalytics(env, selection, now);
+      expect(summary.summary.expenseMinor).toBe(10000);
+      expect(summary.summary.previousExpenseMinor).toBe(20000);
+      expect(summary.summary.changeBps).toBe(-5000);
+      expect(summary.coverage.previousBeforeFirstRecord).toBe(false);
+      selection.set('series', 'previous');
+      const rows = await readAnalyticsOperations(env, selection, now);
+      expect(rows.items.map((tx) => tx.id)).toEqual(['previous-week']);
+      expect(rows.items.reduce((sum, tx) => sum - tx.amountUah!, 0)).toBe(
+        summary.summary.previousExpenseMinor,
+      );
+    } finally {
+      d1.db.close();
+    }
+  });
   it('filters quality issues and exact records, excluding owner-resolved duplicate flags', async () => {
     const { env, d1, add } = setup();
     add('normal', -100);

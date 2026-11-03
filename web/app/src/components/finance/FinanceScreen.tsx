@@ -145,7 +145,12 @@ export function FinanceScreen() {
           account: params.get('account') ?? 'all',
           category: params.get('category') ?? '',
           merchant: params.get('merchant') ?? '',
-          comparison: params.get('comparison') === 'month' ? 'month' : 'adjacent',
+          comparison:
+            params.get('comparison') === 'month'
+              ? 'month'
+              : params.get('comparison') === 'week'
+                ? 'week'
+                : 'adjacent',
           source:
             params.get('source') === 'mono'
               ? 'mono'

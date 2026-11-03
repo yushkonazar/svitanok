@@ -7,6 +7,63 @@ import type { OnThisDayData } from '../../api/briefing-schema.ts';
 afterEach(() => {
   cleanup();
   savePresentation({ explanations: false });
+  savePresentation({ calm: false });
+});
+
+it('moves the zoomed camera only when the next event is outside it, and resets the full view', () => {
+  savePresentation({ calm: true });
+  const events = [
+    {
+      year: 1000,
+      text: 'Київ',
+      location: {
+        lat: 50,
+        lon: 30,
+        label: 'Київ',
+        sourceUrl: 'https://example.com/1',
+        kind: 'event' as const,
+      },
+    },
+    {
+      year: 1100,
+      text: 'Поруч',
+      location: {
+        lat: 51,
+        lon: 31,
+        label: 'Поруч',
+        sourceUrl: 'https://example.com/2',
+        kind: 'event' as const,
+      },
+    },
+    {
+      year: 1200,
+      text: 'Токіо',
+      location: {
+        lat: 35,
+        lon: 139,
+        label: 'Токіо',
+        sourceUrl: 'https://example.com/3',
+        kind: 'event' as const,
+      },
+    },
+  ];
+  const { container } = render(<ThisDayBlock d={{ events }} />);
+  const map = screen.getByRole('group', { name: 'Мапа місць історичних подій' });
+  const fitted = map.getAttribute('viewBox');
+  fireEvent.click(screen.getByRole('button', { name: 'Наблизити мапу' }));
+  const zoomed = map.getAttribute('viewBox');
+  fireEvent.click(screen.getByRole('button', { name: 'Наступна історична подія' }));
+  expect(map).toHaveAttribute('viewBox', zoomed);
+  fireEvent.click(screen.getByRole('button', { name: 'Наступна історична подія' }));
+  expect(map.getAttribute('viewBox')).not.toBe(zoomed);
+  expect(screen.getByRole('slider')).toHaveAttribute('aria-valuetext', '1200: Токіо');
+  expect(container.querySelector('.history-pin-pulse')).not.toBeInTheDocument();
+  fireEvent.focus(screen.getByRole('slider'));
+  expect(container.querySelector('.history-timeline-tooltip')).toHaveTextContent('1200');
+  fireEvent.blur(screen.getByRole('slider'));
+  expect(container.querySelector('.history-timeline-tooltip')).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: 'Усі події' }));
+  expect(map).toHaveAttribute('viewBox', fitted);
 });
 const data: OnThisDayData = {
   events: [

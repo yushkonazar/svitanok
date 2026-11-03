@@ -6,6 +6,8 @@ import { kyivParts } from '../../../../core/finance/planning.mjs';
 import { financeView, moneyLabel } from '../../lib/financeView.ts';
 import { PageHeading } from '../ui/PageHeading.tsx';
 import { TransactionAmount } from '../finance/TransactionAmount.tsx';
+import { UpdatedValue } from '../ui/UpdatedValue.tsx';
+import { TodaySpendingPulse } from './TodaySpendingPulse.tsx';
 
 export function TodayAttention() {
   const nowMs = useTick(30_000);
@@ -41,9 +43,16 @@ export function TodayAttention() {
               Вільні кошти <span aria-hidden="true">↗</span>
             </span>
             <strong>
-              {view && !view.unknownBalances ? moneyLabel(view.available) : 'Мої рахунки'}
+              <UpdatedValue
+                identity="available"
+                value={view && !view.unknownBalances ? view.available : null}
+                enabled={money?.finance.display?.animations !== false}
+              >
+                {view && !view.unknownBalances ? moneyLabel(view.available) : 'Мої рахунки'}
+              </UpdatedValue>
             </strong>
           </Link>
+          {money && <TodaySpendingPulse finance={money.finance} nowMs={nowMs} demo={money.demo} />}
           {latest ? (
             <Link
               className="today-last-operation"

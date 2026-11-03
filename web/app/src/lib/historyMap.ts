@@ -1,5 +1,15 @@
 export type MapBox = { x: number; y: number; width: number; height: number };
 type Place = { lat: number; lon: number };
+export function historyPlaceVisible(box: MapBox, place: Place) {
+  const x = mapLongitude(place.lon, box),
+    y = 90 - place.lat;
+  return (
+    x >= box.x + box.width * 0.12 &&
+    x <= box.x + box.width * 0.88 &&
+    y >= box.y + box.height * 0.12 &&
+    y <= box.y + box.height * 0.88
+  );
+}
 const world: MapBox = { x: 0, y: 0, width: 360, height: 180 };
 /** Smallest longitude arc, including events on either side of the date line. */
 export function fitHistoryMap(places: Place[]): MapBox {
@@ -13,12 +23,12 @@ export function fitHistoryMap(places: Place[]): MapBox {
   if (!valid.length) return world;
   const xs = valid.map((p) => p.lon + 180).sort((a, b) => a - b);
   let gap = -1,
-    start = xs[0];
+    start = xs[0]!;
   xs.forEach((x, i) => {
-    const next = xs[(i + 1) % xs.length] + (i === xs.length - 1 ? 360 : 0);
+    const next = xs[(i + 1) % xs.length]! + (i === xs.length - 1 ? 360 : 0);
     if (next - x > gap) {
       gap = next - x;
-      start = xs[(i + 1) % xs.length];
+      start = xs[(i + 1) % xs.length]!;
     }
   });
   const unwrapped = xs.map((x) => (x < start ? x + 360 : x));
