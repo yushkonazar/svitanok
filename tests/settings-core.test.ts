@@ -4,6 +4,21 @@ import { parseHhmm, fmtHhmm, isQuietMinute, connectorStatus } from '../web/setti
 import { TOGGLEABLE_MODULE_IDS } from '../web/settings-core.mjs';
 
 const at = (h: number, m = 0) => h * 60 + m;
+it('upgrades the legacy news default once while respecting custom or explicitly disabled sources', () => {
+  const legacy = ['Українська правда', 'BBC', 'Sky Sports', 'HLTV'];
+  const upgraded = normalizeSettings({ news: { sources: legacy, intervalHours: 6 } }).news!;
+  expect(upgraded).toMatchObject({ catalogVersion: 5, intervalHours: 6 });
+  expect(upgraded.sources).toEqual(
+    expect.arrayContaining(['The Guardian', 'Суспільне', 'DOU', 'NASA']),
+  );
+  expect(normalizeSettings({ news: { sources: ['BBC'], intervalHours: 3 } }).news?.sources).toEqual(
+    ['BBC'],
+  );
+  expect(normalizeSettings({ news: { sources: [], intervalHours: 3 } }).news?.sources).toEqual([]);
+  expect(normalizeSettings({ news: { ...upgraded, sources: legacy } }).news?.sources).toEqual(
+    legacy,
+  );
+});
 
 describe('settings-core — parseHhmm / fmtHhmm', () => {
   it('парсить валідний час, включно з однознаковою годиною', () => {

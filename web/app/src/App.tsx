@@ -306,6 +306,8 @@ function AppShell() {
   // useLayoutEffect, а не useEffect: скидання має статись ДО кадру, інакше
   // видно стрибок уже намальованого контенту.
   useLayoutEffect(() => {
+    // News owns restoration for its applied snapshot and article back navigation.
+    if (location.pathname === '/news') return;
     window.scrollTo(0, 0);
   }, [location.pathname]);
 

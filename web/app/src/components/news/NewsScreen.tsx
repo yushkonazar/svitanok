@@ -1,78 +1,283 @@
 import { useState, useRef, useLayoutEffect, useEffect } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
+import { Link, useSearchParams } from 'react-router-dom';
 import {
   useBriefing,
   useSettings,
   useNewsSnapshot,
   useRefreshNews,
   useNewsSeen,
+  useNewsStoryAction,
+  useSavedArchive,
 } from '../../api/hooks.ts';
 import { isSessionExpired } from '../../api/client.ts';
-import { SessionExpired } from '../ui/SessionExpired.tsx';
 import { readBlock, newsDataSchema, type NewsSnapshot } from '../../api/briefing-schema.ts';
-import { NewsItem } from './NewsItem.tsx';
+import { SessionExpired } from '../ui/SessionExpired.tsx';
 import { LoadingSkeleton, ErrorState } from '../ui/states.tsx';
+import { UpdatedValue } from '../ui/UpdatedValue.tsx';
 import { newsSource } from '../../lib/newsSource.ts';
-import { newsFeed } from '../../lib/newsFeed.ts';
-import { Link, useSearchParams } from 'react-router-dom';
-import { PageHeading } from '../ui/PageHeading.tsx';
-import { NewsArt } from './NewsArt.tsx';
+import {
+  EMPTY_NEWS_READER,
+  newsStories,
+  newsStoryId,
+  newsStoryVersion,
+  newsWasRead,
+  newsChange,
+  newsContext,
+  newsReadKey,
+  newsSnapshotKey,
+  readNewsView,
+  saveNewsView,
+  type NewsStory,
+  type NewsView,
+} from '../../lib/newsStories.ts';
 import { useReading, markRead } from '../../lib/reading.ts';
+import { usePresentation } from '../../lib/presentation.ts';
 import { useSaved } from '../../saved.tsx';
 import { openLink } from '../../telegram.ts';
 import { useTick } from '../../lib/useTick.ts';
+import { pluralUk } from '../../lib/plural.ts';
+import { NewsArt } from './NewsArt.tsx';
+import { NewsStoryCard } from './NewsStoryCard.tsx';
+import { NewsActions } from './NewsActions.tsx';
+import { NewsComparison } from './NewsComparison.tsx';
+import { NewsIcon } from './NewsIcon.tsx';
+import './news-reader.css';
+
+const dateLabel = (iso?: string | null) =>
+  iso && Number.isFinite(Date.parse(iso))
+    ? new Date(iso).toLocaleString('uk-UA', {
+        timeZone: 'Europe/Kyiv',
+        day: 'numeric',
+        month: 'short',
+        hour: '2-digit',
+        minute: '2-digit',
+      })
+    : '';
+const modes = [
+  ['main', 'Головне'],
+  ['interests', 'За інтересами'],
+  ['following', 'Стежу'],
+] as const;
+const newLabel = (count: number) => `${count} ${pluralUk(count, ['нова', 'нові', 'нових'])}`;
 
 export function NewsScreen() {
-  const nowMs = useTick(60000);
-  const read = useReading();
-  const { isSaved } = useSaved();
-  const [params, setParams] = useSearchParams();
-  const selected = params.get('article');
-  const setSelected = (value: string | null) =>
-    setParams(
-      (current) => {
-        const next = new URLSearchParams(current);
-        if (value) next.set('article', value);
-        else next.delete('article');
-        return next;
-      },
-      { replace: true },
-    );
-  const feedScroll = useRef(0);
-  useLayoutEffect(() => {
-    window.scrollTo(0, selected ? 0 : feedScroll.current);
-  }, [selected]);
-  const [readingFilter, setReadingFilter] = useState('Усе');
-  const [filter, setFilter] = useState('Усе');
-  const [search, setSearch] = useState('');
-  const [limit, setLimit] = useState(8);
-  const [applied, setApplied] = useState<NewsSnapshot | null>(null);
-  const [refreshMessage, setRefreshMessage] = useState('');
+  const nowMs = useTick(60000),
+    localRead = useReading(),
+    { explanations } = usePresentation();
+  const qc = useQueryClient(),
+    { isSaved } = useSaved();
+  const [params, setParams] = useSearchParams(),
+    selected = params.get('article');
+  const [view, setView] = useState(readNewsView),
+    [limit, setLimit] = useState(view.limit);
+  const [showMuted, setShowMuted] = useState(false);
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const [applied, setApplied] = useState<NewsSnapshot | null>(
+    () => qc.getQueryData<NewsSnapshot>(['newsDisplayed']) ?? null,
+  );
+  const [opened, setOpened] = useState<NewsStory | null>(null);
+  const [message, setMessage] = useState(''),
+    [syncError, setSyncError] = useState(false);
   const brief = useBriefing(),
     settings = useSettings(),
     live = useNewsSnapshot(),
     refresh = useRefreshNews();
+  const archive = useSavedArchive(view.filter === 'saved'),
+    action = useNewsStoryAction(),
+    readAction = useNewsStoryAction();
+  const { mutate: mutateStory } = readAction;
   const { mutate: markSeen } = useNewsSeen();
+  const [visit, setVisit] = useState<{ captured: boolean; since: string | null }>({
+    captured: false,
+    since: null,
+  });
+  if (!visit.captured && live.data?.generatedAt)
+    setVisit({ captured: true, since: live.data.lastSeenAt ?? null });
+  // Initial data becomes the displayed snapshot once. Later data needs an explicit apply.
+  if (!applied && live.data?.generatedAt) setApplied(live.data);
   useEffect(() => {
-    if (!selected) return;
-    const groups =
-      applied?.groups ??
-      live.data?.groups ??
-      readBlock(brief.data?.brief.blocks ?? [], 'news', newsDataSchema)?.groups ??
-      [];
-    const item = groups.flatMap((group) => group.items).find((item) => item.url === selected);
-    if (item) markRead(item.changeAt ? `${item.url}#${item.changeAt}` : item.url);
-  }, [selected, applied, live.data, brief.data]);
+    if (applied) qc.setQueryData(['newsDisplayed'], applied);
+  }, [applied, qc]);
   const recordedSeen = useRef(false);
   useEffect(() => {
     if (recordedSeen.current || !live.data?.generatedAt) return;
     recordedSeen.current = true;
     markSeen();
   }, [live.data?.generatedAt, markSeen]);
-  // A refreshed snapshot is announced, never inserted beneath a reading finger.
-  if (!applied && live.data?.generatedAt) setApplied(live.data);
-  const displayed = applied ?? live.data;
-  if (isSessionExpired(live.error) || isSessionExpired(refresh.error)) return <SessionExpired />;
-  const fallback = readBlock(brief.data?.brief.blocks ?? [], 'news', newsDataSchema);
+  const displayed = applied ?? live.data,
+    fallback = readBlock(brief.data?.brief.blocks ?? [], 'news', newsDataSchema);
+  const groups = displayed?.groups ?? fallback?.groups ?? [];
+  const signature = newsSnapshotKey(groups),
+    feedScroll = useRef(view.scroll),
+    lastSignature = useRef(view.snapshot);
+  useLayoutEffect(() => {
+    if (!signature) {
+      window.scrollTo(0, 0);
+      return;
+    }
+    if (lastSignature.current !== signature && signature) feedScroll.current = 0;
+    lastSignature.current = signature;
+    window.scrollTo(0, selected ? 0 : feedScroll.current);
+  }, [selected, signature]);
+  useEffect(() => {
+    if (!signature) return;
+    const persist = () => {
+      if (!selected) feedScroll.current = window.scrollY;
+      saveNewsView({ ...view, limit, snapshot: signature, scroll: feedScroll.current });
+    };
+    window.addEventListener('scroll', persist, { passive: true });
+    persist();
+    return () => {
+      window.removeEventListener('scroll', persist);
+    };
+  }, [view, limit, selected, signature]);
+  const reader = live.data?.reader ?? displayed?.reader ?? EMPTY_NEWS_READER;
+  const all = newsStories(groups),
+    feed = newsStories(
+      groups,
+      settings.data?.settings.mutedTopics,
+      settings.data?.settings.news?.sources,
+    );
+  const byId = new Map(all.map((story) => [newsStoryId(story.item), story]));
+  const followed = Object.entries(reader.following).map(
+    ([id, saved]): NewsStory =>
+      byId.get(id) ?? {
+        item: saved.item,
+        topic: saved.topic,
+        priority: saved.item.priority ?? 1,
+        archived: true,
+      },
+  );
+  const saved = new Map(
+    all.filter((story) => isSaved('news', story.item.url)).map((story) => [story.item.url, story]),
+  );
+  for (const page of archive.data?.pages ?? [])
+    for (const item of page.items) {
+      if (item.kind !== 'news' || !item.url || saved.has(item.url)) continue;
+      const current = all.find((story) => story.item.url === item.url);
+      saved.set(
+        item.url,
+        current
+          ? { ...current, knownSaved: true }
+          : {
+              item: { title: item.title, url: item.url },
+              topic: 'Збережене',
+              priority: 1,
+              archived: true,
+              knownSaved: true,
+            },
+      );
+    }
+  const stories =
+    view.filter === 'saved'
+      ? [...saved.values()]
+      : view.mode === 'following'
+        ? followed
+        : feed.filter((story) => story.priority === (view.mode === 'main' ? 0 : 1));
+  const isMuted = (story: NewsStory) =>
+    Date.parse(reader.mutedUntil[newsStoryId(story.item)] ?? '') > nowMs;
+  const isRead = (story: NewsStory) => newsWasRead(story.item, reader, localRead);
+  const change = (story: NewsStory) => newsChange(story.item, visit.since, isRead(story));
+  const mutedCount = stories.filter(isMuted).length;
+  const topics = [...new Set(stories.map((story) => story.topic))];
+  const matches = stories.filter(
+    (story) =>
+      (showMuted || !isMuted(story)) &&
+      (view.filter !== 'new' || !!change(story)) &&
+      (view.topic === 'Усе' || story.topic === view.topic) &&
+      `${story.topic} ${story.item.title} ${story.item.why ?? ''} ${newsSource(story.item.url)}`
+        .toLocaleLowerCase('uk-UA')
+        .includes(view.search.trim().toLocaleLowerCase('uk-UA')),
+  );
+  const newCount = stories.filter((story) => !isMuted(story) && change(story) === 'new').length;
+  const updateCount = stories.filter(
+    (story) => !isMuted(story) && change(story) === 'updated',
+  ).length;
+  const currentArticle = [...all, ...followed, ...saved.values()].find(
+    (story) => story.item.url === selected,
+  );
+  const article = currentArticle ?? (opened?.item.url === selected ? opened : null);
+  const setSelected = (url: string | null) =>
+    setParams(
+      (current) => {
+        const next = new URLSearchParams(current);
+        if (url) next.set('article', url);
+        else next.delete('article');
+        return next;
+      },
+      { replace: true },
+    );
+  const syncRead = (story: NewsStory) => {
+    markRead(newsReadKey(story.item));
+    setSyncError(false);
+    mutateStory(
+      {
+        type: 'story',
+        storyId: newsStoryId(story.item),
+        version: newsStoryVersion(story.item),
+        action: 'read',
+      },
+      {
+        onError: () => setSyncError(true),
+      },
+    );
+  };
+  const syncedArticle = useRef('');
+  useEffect(() => {
+    if (!article || !selected) {
+      syncedArticle.current = '';
+      return;
+    }
+    const key = newsReadKey(article.item);
+    if (syncedArticle.current === key) return;
+    syncedArticle.current = key;
+    markRead(key);
+    mutateStory(
+      {
+        type: 'story',
+        storyId: newsStoryId(article.item),
+        version: newsStoryVersion(article.item),
+        action: 'read',
+      },
+      { onError: () => setSyncError(true) },
+    );
+  }, [selected, article, mutateStory]);
+  const openArticle = (story: NewsStory) => {
+    feedScroll.current = window.scrollY;
+    setOpened(story);
+    setSyncError(false);
+    setSelected(story.item.url);
+  };
+  const changeView = (patch: Partial<NewsView>) => {
+    setView((current) => ({ ...current, ...patch }));
+    setLimit(6);
+  };
+  const storyAction = (story: NewsStory, kind: 'follow' | 'unfollow' | 'mute' | 'unmute') => {
+    setMessage('');
+    action.mutate(
+      { type: 'story', storyId: newsStoryId(story.item), action: kind },
+      {
+        onSuccess: () =>
+          setMessage(
+            kind === 'mute'
+              ? 'Подію приховано на 24 години.'
+              : kind === 'unmute'
+                ? 'Подію повернуто у стрічку.'
+                : kind === 'follow'
+                  ? 'Подію додано до «Стежу».'
+                  : 'Стеження вимкнено.',
+          ),
+        onError: (error) => setMessage(error.message),
+      },
+    );
+  };
+  if (
+    [live.error, refresh.error, action.error, readAction.error, archive.error].some(
+      isSessionExpired,
+    )
+  )
+    return <SessionExpired />;
   if (!displayed && !fallback && (brief.isLoading || live.isLoading)) return <LoadingSkeleton />;
   if (!displayed && !fallback)
     return (
@@ -84,376 +289,371 @@ export function NewsScreen() {
         }}
       />
     );
-  const feed = newsFeed(
-    displayed?.groups ?? fallback?.groups ?? [],
-    settings.data?.settings.mutedTopics,
-    settings.data?.settings.news?.sources,
-  );
-  const topics = [...new Set(feed.map((n) => n.topic))];
-  const highlights =
-    !search.trim() && readingFilter === 'Усе' && filter === 'Усе'
-      ? feed.filter((n) => n.priority === 0).slice(0, 5)
-      : [];
-  const highlightedUrls = new Set(highlights.map((n) => n.item.url));
-  const matches = feed.filter(
-    (n) =>
-      !highlightedUrls.has(n.item.url) &&
-      (readingFilter === 'Усе' ||
-        (readingFilter === 'Непрочитане' &&
-          !read.includes(n.item.changeAt ? `${n.item.url}#${n.item.changeAt}` : n.item.url)) ||
-        (readingFilter === 'Збережене' && isSaved('news', n.item.url))) &&
-      (filter === 'Усе' || filter === n.topic) &&
-      `${n.topic} ${n.item.title} ${n.item.why ?? ''} ${newsSource(n.item.url)}`
-        .toLocaleLowerCase('uk-UA')
-        .includes(search.trim().toLocaleLowerCase('uk-UA')),
-  );
-  const article = feed.find((n) => n.item.url === selected);
-  const openArticle = (item: (typeof feed)[number]['item']) => {
-    feedScroll.current = window.scrollY;
-    markRead(item.changeAt ? `${item.url}#${item.changeAt}` : item.url);
-    setSelected(item.url);
-  };
-  if (article)
+  if (selected && !article)
     return (
-      <div className="flex flex-col gap-5">
-        <button className="renewal-link self-start" onClick={() => setSelected(null)}>
-          ← До стрічки
+      <div className="news-reader">
+        <button type="button" className="news-back" onClick={() => setSelected(null)}>
+          <NewsIcon name="back" />
+          До стрічки
         </button>
-        <PageHeading
-          eyebrow={article.topic}
-          title="Подія крупним планом."
-          accent="Деталі й джерело."
-        />
-        <article className="renewal-card">
-          <NewsArt image={article.item.imageProxy ?? article.item.image} topic={article.topic} />
-          <p className="renewal-eyebrow mt-4">
-            {newsSource(article.item.url)} ·{' '}
-            {article.item.publishedAt
-              ? new Date(article.item.publishedAt).toLocaleString('uk-UA', {
-                  timeZone: 'Europe/Kyiv',
-                  day: 'numeric',
-                  month: 'short',
-                  hour: '2-digit',
-                  minute: '2-digit',
-                })
-              : 'Час не вказано'}
+        <p className="renewal-card renewal-muted">
+          Цього матеріалу вже немає в поточній добірці. Перевір збережене або повернися до стрічки.
+        </p>
+      </div>
+    );
+  if (article) {
+    const { item, topic } = article,
+      id = newsStoryId(item),
+      context = newsContext(item.title, item.why ?? '', 700);
+    const canFollow = !article.archived || !!reader.following[id];
+    return (
+      <div className="news-reader news-detail">
+        <button
+          type="button"
+          className="news-back"
+          onClick={() => {
+            setMessage('');
+            setSelected(null);
+          }}
+        >
+          <NewsIcon name="back" />
+          До стрічки
+        </button>
+        <article className="news-detail-article">
+          <p className="news-detail-meta">
+            {newsSource(item.url)}
+            {dateLabel(item.publishedAt) && (
+              <>
+                {' '}
+                · <time dateTime={item.publishedAt}>{dateLabel(item.publishedAt)}</time>
+              </>
+            )}
+            <span>{topic}</span>
           </p>
-          <h2 className="renewal-article-title">{article.item.title}</h2>
-          {article.item.updated && <span className="renewal-pill mt-3">Оновлено джерелом</span>}
-          {article.item.translationStatus === 'pending' && (
-            <p className="renewal-muted mt-3">
-              Переклад тимчасово недоступний · оригінальний заголовок.
-            </p>
+          <h1>{item.title}</h1>
+          {item.translationStatus === 'pending' && (
+            <p className="news-notice">Переклад поки недоступний — показано оригінал.</p>
           )}
-          <p className="renewal-news-detail mt-4">
-            {article.item.why ||
-              'Короткого опису немає. Деталі доступні в оригінальному матеріалі.'}
-          </p>
-          {article.item.updated && article.item.previousTitle && (
-            <details className="renewal-inset mt-4">
-              <summary className="font-semibold cursor-pointer">Що змінилося в матеріалі?</summary>
-              <p className="renewal-chart-note mt-3">
-                {article.item.changeLabel ?? 'Оновлення джерела'}. Порівняння доступних заголовків і
-                описів.
-              </p>
-              <p className="renewal-muted mt-3">Раніше: {article.item.previousTitle}</p>
-              {article.item.previousSummary && (
-                <p className="renewal-chart-note mt-2">{article.item.previousSummary}</p>
-              )}
-              <p className="mt-3">Тепер: {article.item.title}</p>
-              <p className="renewal-chart-note mt-2">
-                {article.item.why ?? 'Новий опис не наданий джерелом.'}
-              </p>
-            </details>
-          )}
-          {article.item.originalTitle && (
-            <details className="mt-4 renewal-muted">
-              <summary>Оригінальний заголовок</summary>
-              <p className="mt-2">{article.item.originalTitle}</p>
-            </details>
-          )}
-          {!!article.item.related?.length && (
-            <details className="renewal-inset mt-4">
-              <summary className="font-semibold cursor-pointer">
-                Ще джерела цієї події · {article.item.related.length}
-              </summary>
-              <div className="flex flex-col gap-3 mt-3">
-                {article.item.related.map((n) => (
-                  <button
-                    key={n.url}
-                    className="renewal-link text-left"
-                    onClick={() => openLink(n.url)}
-                  >
-                    {newsSource(n.url)} · відкрити матеріал ↗
+          <NewsArt image={item.imageProxy ?? item.image} topic={topic} />
+          {context && <p className="news-detail-context">{context}</p>}
+          <NewsComparison item={item} />
+          {!!item.related?.length && (
+            <details className="news-secondary-detail">
+              <summary>Інші матеріали про подію · {item.related.length}</summary>
+              <div className="news-related">
+                {item.related.map((related) => (
+                  <button key={related.url} type="button" onClick={() => openLink(related.url)}>
+                    <span>{related.title}</span>{' '}
+                    <small>
+                      {newsSource(related.url)}
+                      {dateLabel(related.publishedAt) ? ` · ${dateLabel(related.publishedAt)}` : ''}
+                      <NewsIcon name="arrow" />
+                    </small>
                   </button>
                 ))}
               </div>
             </details>
           )}
-          <p className="renewal-chart-note mt-4">
-            Огляд із заголовка й доступного опису джерела. Повна стаття — на сайті видавця.
-          </p>
-          <button className="renewal-button w-full mt-4" onClick={() => openLink(article.item.url)}>
-            Читати в {newsSource(article.item.url)} ↗
+          {item.originalTitle && item.translated && item.originalTitle !== item.title && (
+            <details className="news-secondary-detail">
+              <summary>Оригінальний заголовок</summary>
+              <p className="news-original">{item.originalTitle}</p>
+            </details>
+          )}
+          {explanations && (
+            <p className="news-explanation">
+              Короткий зміст із доступного опису джерела. Повний матеріал — на сайті видання.
+              Відкриття не впливає на твої вподобання.
+            </p>
+          )}
+          <button
+            type="button"
+            className="renewal-button news-source-button"
+            onClick={() => openLink(item.url)}
+          >
+            Читати в {newsSource(item.url)}
+            <NewsIcon name="arrow" />
           </button>
         </article>
-        <div className="renewal-news-footer">
-          <NewsItem item={article.item} topic={article.topic} />
-        </div>
+        <NewsActions
+          key={id}
+          story={article}
+          following={!!reader.following[id]}
+          muted={isMuted(article)}
+          busy={action.isPending}
+          canFollow={canFollow}
+          onFollow={() => storyAction(article, reader.following[id] ? 'unfollow' : 'follow')}
+          onMute={() => storyAction(article, isMuted(article) ? 'unmute' : 'mute')}
+        />
+        {message && (
+          <p className="news-notice" role="status">
+            {message}
+          </p>
+        )}
+        {syncError && (
+          <p className="news-notice" role="status">
+            Прочитання збережено на цьому пристрої.{' '}
+            <button type="button" className="renewal-link" onClick={() => syncRead(article)}>
+              Повторити синхронізацію
+            </button>
+          </p>
+        )}
       </div>
     );
-  const newSnapshot = !!live.data?.generatedAt && live.data.attemptedAt !== displayed?.attemptedAt;
-  const knownUrls = new Set(feed.map((n) => n.item.url));
-  const added =
-    live.data?.groups.flatMap((g) => g.items).filter((n) => !knownUrls.has(n.url)).length ?? 0;
-  const generatedAt = displayed?.generatedAt ?? brief.data?.brief.generatedAt;
-  const sinceLastVisit = displayed?.lastSeenAt
-    ? feed.filter(
-        (n) =>
-          Date.parse(n.item.changeAt ?? n.item.publishedAt ?? '') >
-          Date.parse(displayed.lastSeenAt!),
-      ).length
-    : 0;
-  const pending =
-    displayed?.localization?.pending ??
-    feed.filter((n) => n.item.translationStatus === 'pending').length;
-  const dateLabel = generatedAt
-    ? new Date(generatedAt).toLocaleString('uk-UA', {
-        timeZone: 'Europe/Kyiv',
-        day: 'numeric',
-        month: 'short',
-        hour: '2-digit',
-        minute: '2-digit',
-      })
-    : 'ще не зібрана';
+  }
+  const incoming = !!live.data?.generatedAt && newsSnapshotKey(live.data.groups) !== signature;
+  const incomingCounts = newsStories(live.data?.groups ?? []).reduce(
+    (counts, story) => {
+      const old = byId.get(newsStoryId(story.item));
+      if (!old) counts.added++;
+      else if (newsStoryVersion(old.item) !== newsStoryVersion(story.item)) counts.updated++;
+      return counts;
+    },
+    { added: 0, updated: 0 },
+  );
+  const metadata =
+    live.data && newsSnapshotKey(live.data.groups) === signature ? live.data : displayed;
+  const generated = metadata?.generatedAt ?? brief.data?.brief.generatedAt;
   const applyIncoming = () => {
     if (live.data) {
+      feedScroll.current = 0;
       setApplied(live.data);
-      setLimit(8);
+      setLimit(6);
     }
   };
+  const refreshFeed = () => {
+    setMessage('');
+    refresh.mutate(undefined, {
+      onSuccess: (result) => {
+        setMessage(
+          result.demo
+            ? 'Демо-добірка. Живі новини доступні в Telegram.'
+            : result.skipped === 'cooldown'
+              ? `Джерела щойно перевірено. Наступна перевірка — через ${Math.ceil((result.retryAfterSeconds ?? 0) / 60)} хв.`
+              : result.skipped === 'disabled'
+                ? 'Збір новин вимкнено в налаштуваннях.'
+                : result.updated === false
+                  ? 'Джерела недоступні. Показано попередню добірку.'
+                  : 'Джерела перевірено.',
+        );
+        void live.refetch();
+      },
+    });
+  };
   return (
-    <div className="news-screen flex flex-col gap-4">
-      <PageHeading
-        eyebrow="ТВОЯ СТРІЧКА"
-        title="Варто"
-        accent="знати."
-        description="Головні події України й світу. Цікаве — поруч."
-        action={
-          <button
-            className="renewal-secondary"
-            disabled={refresh.isPending || live.isFetching}
-            aria-label="Оновити новини"
-            onClick={() => {
-              setRefreshMessage('');
-              refresh.mutate(undefined, {
-                onSuccess: (result) => {
-                  if (result.demo) {
-                    setRefreshMessage('Демо-добірка. Живі новини доступні в Telegram.');
-                    return;
-                  }
-                  setRefreshMessage(
-                    result.skipped === 'cooldown'
-                      ? `Джерела щойно перевірено. Повторний збір — через ${Math.ceil((result.retryAfterSeconds ?? 0) / 60)} хв.`
-                      : result.skipped === 'disabled'
-                        ? 'Збір новин вимкнено в налаштуваннях.'
-                        : result.updated === false
-                          ? 'Джерела тимчасово недоступні. Збережено попередню добірку.'
-                          : 'Джерела перевірено.',
-                  );
-                  void live.refetch().then((result) => {
-                    if (result.data) setApplied(result.data);
-                  });
-                },
-              });
-            }}
-          >
-            {refresh.isPending ? '…' : '↻'}
-          </button>
-        }
-      />
-      <p className="renewal-muted">
-        Остання добірка: {dateLabel}. Оновлення кожні{' '}
-        {settings.data?.settings.news?.intervalHours ?? 3} год.
-      </p>
-      {sinceLastVisit > 0 && (
-        <p className="renewal-chart-note">{sinceLastVisit} матеріалів від попереднього перегляду</p>
-      )}
-      {(refreshMessage || refresh.error) && (
-        <p role="status" className="renewal-inset renewal-muted">
-          {refresh.error?.message ?? refreshMessage}
+    <div className="news-reader">
+      <header className="news-reader-heading">
+        <div>
+          <h1>Новини</h1>
+          <p>
+            {brief.data?.demo ? 'Демо · ' : ''}
+            {generated ? `Добірка · ${dateLabel(generated)}` : 'Остання доступна добірка'}
+          </p>
+        </div>
+        <button
+          type="button"
+          className="news-refresh"
+          aria-label="Оновити новини"
+          disabled={refresh.isPending || live.isFetching}
+          onClick={refreshFeed}
+        >
+          <NewsIcon name="refresh" />
+        </button>
+      </header>
+      {explanations && (
+        <p className="news-explanation">
+          Головні події — окремо від інтересів. Стеж за історіями, до яких хочеш повертатися.
         </p>
       )}
-      {newSnapshot && (
-        <button className="renewal-button" onClick={applyIncoming}>
-          Оновлена добірка{added ? ` · ${added} нових` : ''} ↓
+      <div className="news-modes" aria-label="Режим новин">
+        {modes.map(([id, label]) => (
+          <button
+            type="button"
+            key={id}
+            aria-label={
+              id === 'following' && followed.length ? `${label} ${followed.length}` : label
+            }
+            aria-pressed={view.mode === id && view.filter !== 'saved'}
+            onClick={() => changeView({ mode: id, filter: 'all', topic: 'Усе' })}
+          >
+            {label}
+            {id === 'following' && followed.length > 0 && <span> {followed.length}</span>}
+          </button>
+        ))}
+      </div>
+      <div className="news-toolbar">
+        <button
+          type="button"
+          className="news-unread-filter"
+          aria-pressed={view.filter === 'new'}
+          onClick={() => changeView({ filter: view.filter === 'new' ? 'all' : 'new' })}
+        >
+          <UpdatedValue value={newCount + updateCount} identity={view.mode}>
+            {newCount > 0 ? newLabel(newCount) : 'Нове'}
+            {updateCount > 0 ? ` · ${updateCount} оновлено` : ''}
+          </UpdatedValue>
+        </button>
+        <button
+          type="button"
+          className="news-saved-filter"
+          aria-pressed={view.filter === 'saved'}
+          onClick={() =>
+            changeView({ filter: view.filter === 'saved' ? 'all' : 'saved', topic: 'Усе' })
+          }
+        >
+          <NewsIcon name="bookmark" />
+          Збережене
+        </button>
+        <button
+          type="button"
+          className="news-search-toggle"
+          aria-expanded={filtersOpen}
+          aria-controls="news-filters"
+          data-active={!!view.search || view.topic !== 'Усе'}
+          onClick={() => setFiltersOpen((value) => !value)}
+        >
+          <NewsIcon name={filtersOpen ? 'close' : 'search'} />
+          <span className="sr-only">Пошук і фільтри</span>
+        </button>
+      </div>
+      {incoming && (
+        <button type="button" className="news-incoming" onClick={applyIncoming}>
+          Оновлена добірка{incomingCounts.added ? ` · ${newLabel(incomingCounts.added)}` : ''}
+          {incomingCounts.updated ? ` · ${incomingCounts.updated} оновлено` : ''}
+          <span>Показати ↓</span>
         </button>
       )}
-      {brief.data?.demo && (
-        <p className="renewal-inset renewal-muted">
-          Демо-добірка. Особисті налаштування й живі новини доступні в Telegram.
+      {(message || refresh.error) && (
+        <p className="news-notice" role="status">
+          {refresh.error?.message ?? message}
+        </p>
+      )}
+      {live.error && (
+        <p className="news-notice" role="status">
+          Не вдалося перевірити нові події. Показано останню добірку.
         </p>
       )}
       {settings.data?.settings.modules.news === false && (
-        <p className="renewal-inset renewal-muted">
-          Збір новин вимкнено. Можна читати збережену добірку.
-        </p>
-      )}
-      {pending > 0 && (
-        <p className="renewal-muted">
-          Переклад очікується для {pending} матеріалів. Вони позначені окремо.
-        </p>
-      )}
-      {displayed?.sources.some((s) => s.enabled !== false && !s.ok) && (
-        <p className="renewal-muted">
-          Частина джерел тимчасово недоступна; час матеріалів вказано в картках.
-        </p>
+        <p className="news-notice">Збір вимкнено. Доступна попередня добірка.</p>
       )}
       {!brief.data?.demo &&
-        generatedAt &&
-        nowMs - Date.parse(generatedAt) >
+        generated &&
+        nowMs - Date.parse(generated) >
           (settings.data?.settings.news?.intervalHours ?? 3) * 2 * 3600000 && (
-          <p className="renewal-inset renewal-muted">
-            Добірка застаріла. Нові події можуть ще не потрапити до стрічки.
-          </p>
+          <p className="news-notice">Добірка застаріла — перевір оновлення.</p>
         )}
-      {live.error && <p className="renewal-muted">{live.error.message}</p>}
-      {highlights.length > 0 && (
-        <section className="renewal-card">
-          <p className="renewal-eyebrow">ШВИДКО ЗРОЗУМІТИ ДЕНЬ</p>
-          <h2 className="text-lg font-semibold mt-2">Головне зараз</h2>
-          <p className="renewal-chart-note mt-2">
-            До п’яти подій із поточної добірки. Деталі — за натисканням.
-          </p>
-          <div className="flex flex-col gap-4 mt-4">
-            {highlights.map(({ item }, i) => (
-              <button
-                key={item.url}
-                className="text-left border-b border-glassb pb-4 last:border-0"
-                aria-label={`Коротко: ${item.title}`}
-                onClick={() => {
-                  openArticle(item);
-                }}
-              >
-                <span className="font-semibold block">
-                  {i + 1}. {item.title}
-                </span>
-                {item.why && (
-                  <span className="renewal-muted text-sm block mt-2">
-                    {item.why.length > 180
-                      ? item.why.slice(0, 177).replace(/\s+\S*$/, '') + '…'
-                      : item.why}
-                  </span>
-                )}
-                <span className="renewal-chart-note block mt-2">
-                  {newsSource(item.url)}
-                  {item.updated ? ' · Оновлення події' : ''}
-                </span>
-              </button>
-            ))}
-          </div>
-        </section>
-      )}
-      <div className="flex items-center justify-between gap-3">
-        <div className="renewal-segments">
-          {['Усе', 'Непрочитане', 'Збережене'].map((v) => (
-            <button
-              key={v}
-              className={readingFilter === v ? 'is-active' : ''}
-              aria-pressed={readingFilter === v}
-              onClick={() => {
-                setReadingFilter(v);
-                setLimit(8);
-              }}
-            >
-              {v}
-            </button>
-          ))}
-        </div>
-        <Link to="/settings" className="renewal-link" aria-label="Налаштувати джерела новин">
-          ⚙
-        </Link>
-      </div>
-      <details className="renewal-inset">
-        <summary className="cursor-pointer font-semibold text-sm">Пошук і фільтри</summary>
-        <div className="flex flex-col gap-3 mt-4">
+      {filtersOpen && (
+        <div id="news-filters" className="news-filter-content">
           <label className="renewal-field">
             <span className="sr-only">Пошук у новинах</span>
             <input
-              value={search}
-              onChange={(e) => {
-                setSearch(e.target.value);
-                setLimit(8);
-              }}
+              value={view.search}
+              maxLength={200}
+              onChange={(event) => changeView({ search: event.target.value })}
               placeholder="Знайти у стрічці…"
             />
           </label>
-          <div className="flex flex-wrap gap-2">
-            {['Усе', ...topics].map((t) => (
+          <div className="news-topic-filters">
+            {['Усе', ...topics].map((topic) => (
               <button
-                key={t}
-                className="renewal-secondary"
-                aria-pressed={filter === t}
-                style={
-                  filter === t
-                    ? { color: 'var(--color-a2)', borderColor: 'var(--color-a2)' }
-                    : undefined
-                }
-                onClick={() => {
-                  setFilter(t);
-                  setLimit(8);
-                }}
+                type="button"
+                key={topic}
+                aria-pressed={view.topic === topic}
+                onClick={() => changeView({ topic })}
               >
-                {t}
+                {topic}
               </button>
             ))}
           </div>
+          {mutedCount > 0 && (
+            <label className="news-muted-control">
+              <input
+                type="checkbox"
+                checked={showMuted}
+                onChange={(event) => setShowMuted(event.target.checked)}
+              />
+              Показати приглушені · {mutedCount}
+            </label>
+          )}
+          <Link to="/settings" className="renewal-link">
+            Налаштувати джерела →
+          </Link>
+          {displayed?.sources.some((source) => source.enabled !== false && !source.ok) && (
+            <p className="news-explanation">
+              Частина джерел тимчасово недоступна. Добірка містить доступні матеріали.
+            </p>
+          )}
         </div>
-      </details>
-      {matches.slice(0, limit).map(({ item, topic, priority }, i) => (
-        <article
-          key={item.url}
-          className="renewal-card"
-          style={
-            i === 0
-              ? {
-                  background:
-                    'radial-gradient(ellipse at 100% 0%,rgba(255,164,92,.10),transparent 70%),var(--color-bg2)',
-                }
-              : undefined
-          }
-        >
-          <div className="renewal-section-head mb-3">
-            <span className="renewal-eyebrow">{topic}</span>
-            {i === 0 && (
-              <span className="text-[10px] text-a2">
-                {priority === 0 ? 'ВАРТО ЗНАТИ' : 'ЗА ІНТЕРЕСАМИ'}
-              </span>
-            )}
-          </div>
-          <NewsItem
-            item={item}
-            topic={topic}
-            featured={i === 0}
-            onOpen={() => {
-              feedScroll.current = window.scrollY;
-              setSelected(item.url);
-              markRead(item.changeAt ? `${item.url}#${item.changeAt}` : item.url);
-            }}
-          />
-        </article>
-      ))}
-      {!matches.length && !highlights.length && (
-        <p className="renewal-card renewal-muted">
-          {search
+      )}
+      {view.filter === 'saved' && archive.isLoading && !matches.length ? (
+        <LoadingSkeleton />
+      ) : (
+        <div className="news-story-list">
+          {matches.slice(0, limit).map((story) => (
+            <NewsStoryCard
+              key={newsStoryId(story.item)}
+              story={story}
+              read={isRead(story)}
+              change={view.filter === 'saved' ? null : change(story)}
+              following={!!reader.following[newsStoryId(story.item)]}
+              onOpen={() => openArticle(story)}
+            />
+          ))}
+        </div>
+      )}
+      {!matches.length && !(view.filter === 'saved' && archive.isLoading) && (
+        <p className="news-empty">
+          {view.search
             ? 'Нічого не знайдено. Спробуй інше слово.'
-            : 'Тут поки немає матеріалів. Зміни фільтр або онови добірку.'}
+            : view.filter === 'new'
+              ? 'Нових подій у цьому режимі немає.'
+              : view.filter === 'saved'
+                ? 'Збережи матеріал, щоб повернутися до нього.'
+                : mutedCount > 0 && !showMuted
+                  ? 'Події тимчасово приглушені.'
+                  : view.mode === 'following'
+                    ? 'Відкрий подію й натисни «Стежити за подією». Її оновлення збиратимуться тут.'
+                    : 'Тут поки немає матеріалів. Зміни фільтр або перевір оновлення.'}
+          {!view.search && mutedCount > 0 && !showMuted && (
+            <button
+              type="button"
+              className="renewal-link block mt-2 min-h-11"
+              onClick={() => {
+                setFiltersOpen(true);
+                setShowMuted(true);
+              }}
+            >
+              Показати приглушені події
+            </button>
+          )}
         </p>
       )}
       {matches.length > limit && (
-        <button className="renewal-secondary" onClick={() => setLimit((n) => n + 10)}>
-          Ще новини · {matches.length - limit}
+        <button
+          type="button"
+          className="renewal-secondary"
+          onClick={() => setLimit((value) => value + 6)}
+        >
+          Ще події · {matches.length - limit}
         </button>
+      )}
+      {view.filter === 'saved' && archive.hasNextPage && (
+        <button
+          type="button"
+          className="renewal-secondary"
+          disabled={archive.isFetchingNextPage}
+          onClick={() => void archive.fetchNextPage()}
+        >
+          {archive.isFetchingNextPage ? 'Завантаження…' : 'Завантажити давніші збереження'}
+        </button>
+      )}
+      {view.filter === 'saved' && archive.error && (
+        <p className="news-notice">
+          Не вдалося завантажити архів.{' '}
+          <button type="button" className="renewal-link" onClick={() => void archive.refetch()}>
+            Спробувати ще раз
+          </button>
+        </p>
       )}
     </div>
   );

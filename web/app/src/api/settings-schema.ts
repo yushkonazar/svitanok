@@ -34,6 +34,7 @@ export const settingsSchema = z.object({
   news: z
     .object({
       sources: z.array(z.enum(NEWS_SOURCE_IDS)),
+      catalogVersion: z.number().optional(),
       intervalHours: z.union([z.literal(3), z.literal(6), z.literal(12)]),
     })
     .optional(),

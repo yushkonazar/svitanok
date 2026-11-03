@@ -202,6 +202,10 @@ export const newsItemSchema = z.object({
   rank: z.number().optional(),
   updated: z.boolean().optional(),
   storyId: z.string().optional(),
+  contentVersion: z.string().optional(),
+  displayVersion: z.string().optional(),
+  changeKind: z.enum(['facts', 'coverage']).optional(),
+  previousChangeAt: z.string().optional(),
   firstSeenAt: z.string().optional(),
   changeAt: z.string().optional(),
   changeLabel: z.string().optional(),
@@ -225,7 +229,24 @@ export const newsGroupSchema = z.object({
 export const newsDataSchema = z.object({
   groups: z.array(newsGroupSchema).default([]),
 });
+export const newsReaderSchema = z.object({
+  following: z
+    .record(
+      z.string(),
+      z.object({
+        followedAt: z.string(),
+        topic: z.string(),
+        scope: z.enum(['ua', 'world']),
+        item: newsItemSchema,
+      }),
+    )
+    .default({}),
+  mutedUntil: z.record(z.string(), z.string()).default({}),
+  readVersions: z.record(z.string(), z.array(z.string())).default({}),
+});
+export type NewsReaderData = z.infer<typeof newsReaderSchema>;
 export const newsSnapshotSchema = newsDataSchema.extend({
+  reader: newsReaderSchema.optional(),
   localization: z
     .object({
       translated: z.number(),

@@ -53,9 +53,9 @@ describe('fresh RSS snapshot', () => {
       skipped: 'cooldown',
       retryAfterSeconds: 540,
     });
-    expect(fetcher).toHaveBeenCalledTimes(6);
+    expect(fetcher).toHaveBeenCalledTimes(10);
     await refreshNewsSnapshot(env, now + 11 * 60000, fetcher, true);
-    expect(fetcher).toHaveBeenCalledTimes(12);
+    expect(fetcher).toHaveBeenCalledTimes(20);
   });
   it('curates default sources, deduplicates feeds and caps the balanced selection at eighteen', async () => {
     const kv = memoryKv(new Map());
@@ -78,7 +78,10 @@ describe('fresh RSS snapshot', () => {
     const urls = fetcher.mock.calls.map(([url]) => String(url));
     expect(urls).toContain('https://www.pravda.com.ua/rss/');
     expect(urls).toContain('https://www.skysports.com/rss/11095');
-    expect(urls.some((url) => url.includes('guardian'))).toBe(false);
+    expect(urls).toContain('https://www.theguardian.com/world/rss');
+    expect(urls).toContain('https://suspilne.media/rss/all.rss');
+    expect(urls).toContain('https://dou.ua/feed/');
+    expect(urls).toContain('https://www.nasa.gov/feed/');
     const saved = JSON.parse((await kv.get(NEWS_SNAPSHOT_KEY))!);
     const items = saved.groups.flatMap((g: { items: { url: string }[] }) => g.items);
     expect(items.length).toBeLessThanOrEqual(18);
@@ -194,6 +197,7 @@ describe('fresh RSS snapshot', () => {
         url: 'https://www.bbc.co.uk/news/a',
         publishedAt: '2026-10-04T08:00:00.000Z',
         excerpt: 'One finding & another.',
+        sourceExcerpt: 'One finding & another.',
       },
     ]);
   });
@@ -208,12 +212,12 @@ describe('fresh RSS snapshot', () => {
           : new Response(item('https://example.test/a', '2026-10-04T08:00:00Z')),
       );
     await refreshNewsSnapshot(env, now, fetcher);
-    expect(fetcher).toHaveBeenCalledTimes(6);
+    expect(fetcher).toHaveBeenCalledTimes(10);
     const saved = JSON.parse((await kv.get(NEWS_SNAPSHOT_KEY)) as string);
-    expect(saved.groups).toHaveLength(7);
+    expect(saved.groups).toHaveLength(10);
     expect(saved.sources.filter((s: { ok: boolean }) => !s.ok)).toHaveLength(1);
     expect(saved.groups[0].items).toHaveLength(1);
     await refreshNewsSnapshot(env, now + 60000, fetcher);
-    expect(fetcher).toHaveBeenCalledTimes(6);
+    expect(fetcher).toHaveBeenCalledTimes(10);
   });
 });

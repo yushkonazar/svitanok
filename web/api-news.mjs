@@ -18,7 +18,7 @@ export async function handleNews(request, env) {
     let body;
     try {
       const text = await request.text();
-      if (text.length > 4000) throw new Error('size');
+      if (text.length > 6000) throw new Error('size');
       body = JSON.parse(text);
       if (!body || typeof body !== 'object' || Array.isArray(body)) throw new Error('shape');
     } catch {
@@ -41,6 +41,21 @@ export async function handleNews(request, env) {
       const result = await target.feedback(body.url, body.kind, body.reason);
       return json(result, result.ok ? 200 : 404);
     }
+    if (body.type === 'story') {
+      if (
+        typeof body.storyId !== 'string' ||
+        !body.storyId.trim() ||
+        body.storyId.length > 2000 ||
+        !['read', 'unread', 'follow', 'unfollow', 'mute', 'unmute'].includes(body.action) ||
+        (body.version != null &&
+          (typeof body.version !== 'string' || body.version.length > 2000)) ||
+        (['read', 'unread'].includes(body.action) && !body.version)
+      )
+        return json({ ok: false, error: 'Некоректна дія з подією' }, 400);
+      if (!target) return json({ ok: false, error: 'Стеження тимчасово недоступне' }, 503);
+      const result = await target.storyAction(body.storyId, body.action, body.version);
+      return json(result, result.ok ? 200 : 409);
+    }
     if (body.type !== 'refresh') return json({ ok: false, error: 'Невідома дія' }, 400);
     const result = await refreshNewsSnapshot(env, Date.now(), fetch, true);
     return json({ ok: true, ...result });
@@ -52,6 +67,24 @@ export async function handleNews(request, env) {
   // Public article history stays server-side; the UI needs only current item metadata.
   const visibleSnapshot = { ...snapshot };
   delete visibleSnapshot.history;
+  const visibleItem = (/** @type {KvBlob} */ item) => {
+    const visible = { ...item };
+    for (const key of [
+      'sourceExcerpt',
+      'excerpt',
+      'translationKey',
+      'historyStoryId',
+      'development',
+      'eventId',
+    ])
+      delete visible[key];
+    return visible;
+  };
+  visibleSnapshot.groups = (snapshot.groups ?? []).map((/** @type {KvBlob} */ group) => ({
+    ...group,
+    items: (group.items ?? []).map(visibleItem),
+    more: (group.more ?? []).map(visibleItem),
+  }));
   return new Response(
     JSON.stringify({
       ...visibleSnapshot,
@@ -59,6 +92,8 @@ export async function handleNews(request, env) {
       feedback: Object.fromEntries(
         Object.entries(profile).map(([key, value]) => [key, /** @type {KvBlob} */ (value).kind]),
       ),
+      reader:
+        target && typeof target.getReader === 'function' ? await target.getReader() : undefined,
     }),
     {
       headers: {

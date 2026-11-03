@@ -10,6 +10,74 @@ const entry = (id: string, title: string, at = '2026-10-06T10:00:00Z') => ({
 });
 const offline = vi.fn(async () => ({ ok: false, error: 'offline' }));
 describe('news editorial selection', () => {
+  it('leads a known thread with its new facts and retains the former article as related coverage', async () => {
+    const editor = async () => ({
+      ok: true,
+      structured: {
+        items: [
+          { id: '0', importance: 4, sameEvent: '', previousEvent: 'known', development: false },
+          { id: '1', importance: 4, sameEvent: '0', previousEvent: 'known', development: true },
+        ],
+      },
+    });
+    const groups = [
+      {
+        sourceId: 'bbc-world',
+        scope: 'world',
+        topic: 'Головне',
+        items: [entry('old', 'Officials confirm 50 payments')],
+      },
+      {
+        sourceId: 'suspilne',
+        scope: 'ua',
+        topic: 'Україна',
+        items: [entry('new', 'Officials confirm 60 payments')],
+      },
+    ];
+    const result = await curateNewsGroups(workerEnv(), groups, now, {}, editor, [
+      {
+        storyId: 'known',
+        observedAt: new Date(now).toISOString(),
+        title: 'Officials confirm 50 payments',
+      },
+    ]);
+    const picked = result.groups.flatMap((g) => g.items);
+    expect(picked).toHaveLength(1);
+    expect(picked[0]).toMatchObject({
+      url: 'https://example.test/new',
+      historyStoryId: 'known',
+      development: true,
+      related: [expect.objectContaining({ url: 'https://example.test/old' })],
+    });
+  });
+  it('considers late DOU and NASA feeds while keeping primary news ahead of all six interest feeds', async () => {
+    const groups = [
+      {
+        sourceId: 'bbc-world',
+        scope: 'world',
+        topic: 'Головне',
+        items: Array.from({ length: 15 }, (_, i) =>
+          entry(`main${i}`, `Main world event number ${i}`),
+        ),
+      },
+      ...['bbc-tech', 'bbc-science', 'hltv', 'sky-football', 'dou', 'nasa'].map((id) => ({
+        sourceId: id,
+        scope: 'world',
+        topic: id,
+        items: Array.from({ length: 5 }, (_, i) =>
+          entry(`${id}${i}`, `${id} distinct report number ${i}`),
+        ),
+      })),
+    ];
+    const editor = vi.fn(async () => ({ ok: false, error: 'offline' }));
+    const result = await curateNewsGroups(workerEnv(), groups, now, {}, editor);
+    expect(editor.mock.calls).toHaveLength(1);
+    for (const id of ['dou', 'nasa'])
+      expect(result.groups.find((g) => g.sourceId === id)?.items.length).toBeGreaterThan(0);
+    const chosen = result.groups.flatMap((g) => g.items);
+    expect(chosen.filter((n) => n.priority === 1)).toHaveLength(6);
+    expect(chosen.length).toBeLessThanOrEqual(18);
+  });
   it('allows only known recent event IDs from the history supplied to the editor', async () => {
     const history = [
       {

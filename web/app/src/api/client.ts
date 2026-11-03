@@ -10,12 +10,15 @@ import {
   liveWeatherResponseSchema,
   settlementsSchema,
   newsSnapshotSchema,
+  newsReaderSchema,
+  type NewsReaderData,
   type Brief,
   type LiveWeatherResponse,
   type Settlement,
   type SettlementTuple,
 } from './briefing-schema.ts';
 import { SAMPLE_BRIEF } from './briefing-sample.ts';
+import { newsDemoSnapshot, newsDemoStory } from './news-demo.ts';
 import { settingsResponseSchema, type SettingsResponse, type Settings } from './settings-schema.ts';
 import { savedPageSchema, type SavedPage } from './schema.ts';
 import { workerQualityResponseSchema, type WorkerQuality } from './worker-quality-schema.ts';
@@ -186,7 +189,7 @@ export async function fetchCurrencyHistory(
   );
 }
 export async function fetchNewsSnapshot() {
-  if (!inTelegram()) return null;
+  if (!inTelegram()) return newsDemoSnapshot();
   const res = await fetch('/api/news', { headers: authHeaders() });
   throwIfSessionExpired(res);
   if (!res.ok) throw new Error('Не вдалося оновити стрічку. Показано останній брифінг.');
@@ -196,21 +199,54 @@ export async function postNewsAction(
   action:
     | { type: 'refresh' | 'seen' }
     | {
+        type: 'story';
+        storyId: string;
+        action: 'read' | 'unread' | 'follow' | 'unfollow' | 'mute' | 'unmute';
+        version?: string;
+      }
+    | {
         type: 'feedback';
         url: string;
         kind: 'like' | 'less' | 'clear';
         reason?: 'topic' | 'repeat' | 'weak' | 'source';
       },
-) {
-  if (!inTelegram()) return { ok: true, demo: true };
+): Promise<{
+  ok: boolean;
+  skipped?: string;
+  updated?: boolean;
+  retryAfterSeconds?: number;
+  feedback?: Record<string, 'like' | 'less' | 'clear'>;
+  lastSeenAt?: string;
+  demo?: boolean;
+  reader?: NewsReaderData;
+}> {
+  if (!inTelegram())
+    return action.type === 'story'
+      ? newsDemoStory(action.storyId, action.action, action.version)
+      : { ok: true, demo: true };
   const response = await fetch('/api/news', {
     method: 'POST',
+    signal: AbortSignal.timeout(action.type === 'refresh' ? 90000 : 15000),
     headers: { ...authHeaders(), 'Content-Type': 'application/json' },
     body: JSON.stringify(action),
+  }).catch(() => {
+    throw new Error('Не вдалося зв’язатися із сервером новин. Спробуй ще раз.');
   });
   throwIfSessionExpired(response);
-  if (!response.ok) throw new Error('Не вдалося оновити новини. Спробуй ще раз.');
-  return (await response.json()) as {
+  const data = await response.json().catch(() => null);
+  if (!response.ok)
+    throw new Error(
+      typeof data?.error === 'string' ? data.error : 'Не вдалося оновити новини. Спробуй ще раз.',
+    );
+  if (!data || data.ok !== true)
+    throw new Error('Не вдалося підтвердити дію з новинами. Спробуй ще раз.');
+  if (action.type === 'story') {
+    const reader = newsReaderSchema.safeParse(data.reader);
+    if (!reader.success)
+      throw new Error('Не вдалося підтвердити збереження. Онови стрічку й спробуй ще раз.');
+    data.reader = reader.data;
+  }
+  return data as {
     ok: boolean;
     skipped?: string;
     updated?: boolean;
@@ -218,6 +254,7 @@ export async function postNewsAction(
     feedback?: Record<string, 'like' | 'less' | 'clear'>;
     lastSeenAt?: string;
     demo?: boolean;
+    reader?: NewsReaderData;
   };
 }
 
