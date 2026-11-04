@@ -1,5 +1,5 @@
 import { adaptiveModel } from './core/checkin/model.mjs';
-import { currentPlanV4, nextSleepDateV4 } from './core/checkin/adaptive-v4.mjs';
+import { currentPlanV4, nextSleepDateV4, choiceSnapshotV4 } from './core/checkin/adaptive-v4.mjs';
 // Чиста логіка статистики дашборда (F1): запис подій + агрегація для /api/stats.
 // Без залежностей і без I/O — щоб покрити тестами (worker.js імпортує це, KV-I/O
 // робить Worker). Стор — один JSON-блоб у KV (ключ `stats`).
@@ -600,7 +600,8 @@ export function staleSleepNudges(
  * обʼєкт), `clear` — ключі, які треба ВИДАЛИТИ з існуючого блоку.
  */
 function cleanCheckin(/** @type {string} */ slot, /** @type {KvBlob} */ ev) {
-  if ([3, 4].includes(ev.questionVersion)) return adaptiveModel(ev).clean(slot, ev);
+  if ([3, 4].includes(ev.questionVersion))
+    return adaptiveModel(ev, ev.checkinChoicesV4).clean(slot, ev);
   if (ev.questionVersion === 2) return cleanCheckinV2(slot, ev);
   // Приведення CHECKIN_FIELDS до блоба: точна форма реєстру потрібна тестам
   // (enum ⊆ levels), а тут по ньому ходять довільним рядком-слотом.
@@ -1254,11 +1255,12 @@ export function recordEvent(store, ev, dateKey, nowMin = null, nowIso = null) {
       // (questions.ts) працювало тільки локально, до першого дебаунсу.
       for (const k of clear) delete merged[k];
       if ([3, 4].includes(merged.questionVersion)) {
-        const model = adaptiveModel(merged);
+        const model = adaptiveModel(merged, ev.checkinChoicesV4);
         const context = model.context(s.checkins, dateKey, ev.slot);
         merged = model.clearHidden(ev.slot, merged, context);
         merged.timezoneV3 = 'Europe/Kyiv';
         if (merged.questionVersion === 4) {
+          Object.assign(merged, choiceSnapshotV4(ev.slot, merged, context));
           const plan = currentPlanV4(context);
           merged.planSourceV4 = plan.source;
           merged.planTextV4 = plan.text;
@@ -1351,7 +1353,7 @@ export function recordEvent(store, ev, dateKey, nowMin = null, nowIso = null) {
       if (confirming) {
         if (
           [3, 4].includes(merged.questionVersion) &&
-          !adaptiveModel(merged).complete(ev.slot, merged)
+          !adaptiveModel(merged, ev.checkinChoicesV4).complete(ev.slot, merged)
         )
           break;
         if (merged.questionVersion === 2 && !coreCompleteV2(ev.slot, merged)) break;

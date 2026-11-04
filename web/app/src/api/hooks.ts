@@ -21,6 +21,8 @@ import {
   fetchSaved,
   postEvent,
   postSettings,
+  postCheckinChoice,
+  CheckinChoiceError,
   postVote,
   setWeatherLocation,
   setWeatherLocationExact,
@@ -36,6 +38,7 @@ import type { Settlement } from './briefing-schema.ts';
 import { nextSavedOffset } from './paging.ts';
 import { mergeSettingsPatch } from './settings-patch.ts';
 import type { SettingsPatch, SettingsResponse } from './settings-schema.ts';
+import type { ChoiceCommand } from '../../../core/checkin/choices.mjs';
 import type { FunnelStage } from '../components/jobs/stages.ts';
 
 // TanStack Query хуки даних дашборда (роадмеп v3, E1+E2). Дефолти (staleTime 60с,
@@ -685,6 +688,35 @@ export function useSaveSettings() {
   });
 }
 
+export function useSaveCheckinChoice() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationKey: SETTINGS_SAVE_KEY,
+    scope: { id: 'settings' },
+    mutationFn: (command: ChoiceCommand) => postCheckinChoice(command),
+    retry: (count, error) =>
+      count < 2 &&
+      (error instanceof TypeError || (error instanceof CheckinChoiceError && error.status >= 500)),
+    onMutate: () => qc.cancelQueries({ queryKey: ['settings'] }),
+    onSuccess: (choices) => {
+      const queue = settingsQueues.get(qc);
+      if (queue) {
+        queue.base = {
+          ...queue.base,
+          settings: { ...queue.base.settings, checkinChoices: choices },
+        };
+        showSettingsQueue(qc, queue);
+      } else
+        qc.setQueryData<SettingsResponse>(['settings'], (old) =>
+          old ? { ...old, settings: { ...old.settings, checkinChoices: choices } } : old,
+        );
+    },
+    onSettled: () => {
+      if (inTelegram()) qc.invalidateQueries({ queryKey: ['settings'] });
+    },
+  });
+}
+
 /**
  * Тижнева ціль подач (слайдер). Свідомо НЕ через /api/settings: ціль живе в
  * блобі `stats` поруч із weeklyApplied, тож це подія set_goal, як і решта
@@ -743,6 +775,7 @@ export function useSaveCheckin() {
     },
     onSettled: (_data, _error, vars) => {
       if (inTelegram() || vars.answers.confirmed) qc.invalidateQueries({ queryKey: ['stats'] });
+      if (inTelegram() && _error) qc.invalidateQueries({ queryKey: ['settings'] });
     },
   });
 }

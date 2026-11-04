@@ -1,7 +1,10 @@
 import type { Card } from './catalog.mjs';
 import type { AdaptiveContext } from './adaptive-v4.mjs';
 type Answers = Record<string, unknown>;
-export function adaptiveModel(a: Answers): {
+export function adaptiveModel(
+  a: Answers,
+  choices?: unknown,
+): {
   cards: Record<string, Card[]>;
   details: Card[];
   clean(slot: string, raw: Answers): { set: Answers; clear: string[] };
