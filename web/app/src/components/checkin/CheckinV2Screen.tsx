@@ -84,26 +84,39 @@ export function FieldInput({
   const { explanations } = usePresentation();
   const modern = answers.questionVersion === 4;
   const adaptive = modern || answers.questionVersion === 3;
-  const [pins, setPins] = useState<string[]>(() => {
-    try {
-      const saved: unknown = JSON.parse(
-        localStorage.getItem('svitanok:checkin:mood-pins:v1') ?? '[]',
-      );
-      return Array.isArray(saved)
-        ? saved.filter((x): x is string => typeof x === 'string').slice(0, 6)
-        : [];
-    } catch {
-      return [];
-    }
-  });
-  const [displayPins] = useState(pins);
-  const [suggestedMood] = useState(() =>
+  const [pinSets, setPinSets] = useState<Record<'positive' | 'negative' | 'mixed', string[]>>(
+    () => {
+      const empty = { positive: [], negative: [], mixed: [] };
+      try {
+        const legacy: unknown = JSON.parse(
+          localStorage.getItem('svitanok:checkin:mood-pins:v1') ?? '[]',
+        );
+        const saved = JSON.parse(localStorage.getItem('svitanok:checkin:mood-pins:v2') ?? '{}');
+        const read = (value: unknown) =>
+          Array.isArray(value)
+            ? [...new Set(value.filter((x): x is string => typeof x === 'string'))].slice(0, 6)
+            : [];
+        return {
+          positive: read(saved?.positive ?? legacy),
+          negative: read(saved?.negative ?? legacy),
+          mixed: read(saved?.mixed ?? legacy),
+        };
+      } catch {
+        return empty;
+      }
+    },
+  );
+  const [displayPinSets] = useState(pinSets);
+  const moodScope =
+    Number(answers.mood) <= 2 ? 'negative' : answers.mood === 3 ? 'mixed' : 'positive';
+  const pins = pinSets[moodScope].filter((id) => field.options?.some(([, v]) => v === id));
+  const displayPins = displayPinSets[moodScope];
+  const suggestedMood =
     Number(answers.mood) <= 2
       ? ['poor_sleep', 'fatigue', 'little_time', 'partner_hard', 'money', 'hard_no_event']
       : answers.mood === 3
         ? ['weather_good', 'partner_good', 'rest', 'fatigue', 'little_time', 'success']
-        : ['weather_good', 'partner_good', 'slept_well', 'rest', 'success', 'calm_day'],
-  );
+        : ['weather_good', 'partner_good', 'slept_well', 'rest', 'success', 'calm_day'];
 
   if (
     !(modern
@@ -173,6 +186,11 @@ export function FieldInput({
             .map((h) => [h.name, h.id] as [string, string]),
         ]
       : (field.options ?? []);
+  const currentPins = options.filter(([, v]) => displayPins.includes(String(v)));
+  const firstMood = currentPins.length
+    ? currentPins
+    : options.filter(([, v]) => suggestedMood.includes(String(v)));
+  const firstMoodIds = new Set(firstMood.map(([, v]) => v));
   return (
     <div className="flex flex-col gap-2">
       <label id={`${id}-label`} htmlFor={id} className="text-sm font-semibold text-tx2">
@@ -185,10 +203,7 @@ export function FieldInput({
       {modern && field.id === 'moodFactorsV4' ? (
         <div className="flex flex-col gap-3" aria-labelledby={`${id}-label`}>
           <div className="flex flex-wrap gap-2">
-            {(displayPins.length
-              ? options.filter(([, v]) => displayPins.includes(String(v)))
-              : options.filter(([, v]) => suggestedMood.includes(String(v)))
-            ).map(([label, v]) => option(label, v))}
+            {firstMood.map(([label, v]) => option(label, v))}
           </div>
           <details className="checkin-option-group">
             <summary>Ще причини</summary>
@@ -207,10 +222,7 @@ export function FieldInput({
                       .filter(
                         ([label, v]) =>
                           (label.includes(' :: ') ? label.split(' :: ')[0] : 'Інші причини') ===
-                            group &&
-                          !(displayPins.length
-                            ? displayPins.includes(String(v))
-                            : suggestedMood.includes(String(v))),
+                            group && !firstMoodIds.has(v),
                       )
                       .map(([label, v]) => option(label, v))}
                   </div>
@@ -229,14 +241,22 @@ export function FieldInput({
                       type="checkbox"
                       checked={pins.includes(String(v))}
                       onChange={() => {
+                        if (!pins.includes(String(v)) && pins.length >= 6) {
+                          setLimitMessage(
+                            'До шести закріплених причин для цього настрою. Зніми одну, щоб додати іншу.',
+                          );
+                          return;
+                        }
                         const next = pins.includes(String(v))
                           ? pins.filter((x) => x !== v)
-                          : [...pins, String(v)].slice(0, 6);
-                        setPins(next);
+                          : [...pins, String(v)];
+                        setLimitMessage('');
+                        const nextSets = { ...pinSets, [moodScope]: next };
+                        setPinSets(nextSets);
                         try {
                           localStorage.setItem(
-                            'svitanok:checkin:mood-pins:v1',
-                            JSON.stringify(next),
+                            'svitanok:checkin:mood-pins:v2',
+                            JSON.stringify(nextSets),
                           );
                         } catch {
                           /* Optional device preference. */
@@ -247,8 +267,8 @@ export function FieldInput({
                   </label>
                 ))}
               <p className="renewal-chart-note">
-                До шести причин на цьому пристрої. Новий порядок — із наступного відкриття; під час
-                відповіді кнопки залишаються на місцях.
+                До шести причин окремо для кожного настрою на цьому пристрої. Новий порядок — із
+                наступного відкриття; під час відповіді кнопки залишаються на місцях.
               </p>
             </div>
           </details>

@@ -67,9 +67,11 @@ describe('explicit v4 observations', () => {
     expect(coreCompleteV4('morning', morning)).toBe(true);
     expect(coreCompleteV4('evening', evening)).toBe(true);
   });
-  it('suggests at most two topics but retains every manually added relevant answer', () => {
+  it('shows every relevant automatic topic and retains manually added details', () => {
     const initial = followupsV4('morning', morning, context);
-    expect(initial).toHaveLength(2);
+    expect(initial.map((c) => c.id)).toEqual(
+      expect.arrayContaining(['bedtime', 'sleep-good', 'mood-context', 'energy-context']),
+    );
     expect(eligibleFollowupsV4('morning', morning, context).map((c) => c.id)).toContain(
       'energy-context',
     );
@@ -84,14 +86,14 @@ describe('explicit v4 observations', () => {
       },
       context,
     );
-    expect(a.moodFactorsV4).toHaveLength(3);
+    expect(a.moodFactorsV4).toEqual(['weather_good', 'partner_good']);
     expect(a.energyFactorsV4).toHaveLength(3);
     expect(followupsV4('morning', a, context).length).toBeGreaterThan(2);
     expect(clearHiddenV4('morning', { ...a, sleepQualityV4: 1 }, context).moodFactorsV4).toEqual(
       a.moodFactorsV4,
     );
   });
-  it.each([1, 2, 3, 4, 5])('allows mixed mood reasons for rating %s', (mood) => {
+  it.each([1, 2, 3, 4, 5])('keeps only mood reasons appropriate to rating %s', (mood) => {
     const a = clearHiddenV4('afternoon', {
       questionVersion: 4,
       mood,
@@ -99,7 +101,13 @@ describe('explicit v4 observations', () => {
       priorityPaceV4: 'later',
       moodFactorsV4: ['weather_good', 'partner_hard'],
     });
-    expect(a.moodFactorsV4).toEqual(['weather_good', 'partner_hard']);
+    expect(a.moodFactorsV4).toEqual(
+      mood <= 2
+        ? ['partner_hard']
+        : mood >= 4
+          ? ['weather_good']
+          : ['weather_good', 'partner_hard'],
+    );
     expect(eligibleFollowupsV4('afternoon', a).map((c) => c.id)).toContain('mood-context');
   });
   it('clears Other text when its controlling choice is removed, on client and server', () => {
@@ -167,6 +175,8 @@ describe('explicit v4 observations', () => {
       clearHiddenV4('evening', { ...evening, studyRangeV4: '30_59' }, context).studyRangeV4,
     ).toBeUndefined();
     expect(followupsV4('evening', evening, context).map((c) => c.id)).toEqual([
+      'plan-blocked',
+      'energy-context',
       'development-course',
       'missing-read',
     ]);
@@ -221,7 +231,7 @@ describe('explicit v4 observations', () => {
       workLoadV4: 1,
       workFactorsV4: ['few_orders', 'income', 'no_breaks'],
     });
-    expect(a.workFactorsV4).toHaveLength(3);
+    expect(a.workFactorsV4).toEqual(['few_orders', 'income']);
     expect(followupsV4('evening', a).some((c) => c.id === 'work')).toBe(true);
   });
   it('names recovery activity, and clears its effect when no comparison target remains', () => {

@@ -3,8 +3,9 @@ import { AdaptiveFlow } from './AdaptiveFlow.tsx';
 import { usePresentation } from '../../lib/presentation.ts';
 import { Link } from 'react-router-dom';
 import { adaptiveModel } from '../../../../core/checkin/model.mjs';
+import { choiceAnswerLabel, normalizeChoiceCatalog } from '../../../../core/checkin/choices.mjs';
 import { useEffect, useRef, useState } from 'react';
-import { adaptivePreferences, answerLabelV4 } from '../../../../core/checkin/adaptive-v4.mjs';
+import { adaptivePreferences } from '../../../../core/checkin/adaptive-v4.mjs';
 import {
   useStats,
   useSaveCheckin,
@@ -109,7 +110,7 @@ function AnswerSummary({ slot, answers }: { slot: CheckinSlot; answers: Answers 
               .filter((f) => answers[f.id] != null)
               .map((f) => (
                 <p className="text-sm" key={f.id}>
-                  {f.label}: <b>{answerLabelV4(f, answers[f.id])}</b>
+                  {f.label}: <b>{choiceAnswerLabel(f, answers[f.id], answers)}</b>
                 </p>
               ))}
         {typeof answers.answeredAtV3 === 'string' && (
@@ -316,7 +317,7 @@ export function CheckinV3Screen({
     const old = answers(slot);
     const revision = old.questionVersion === 3 ? 3 : 4;
     const changed = { ...old, [key]: value, questionVersion: revision };
-    const model = adaptiveModel(changed);
+    const model = adaptiveModel(changed, settings.data?.settings.checkinChoices);
     const next = model.clearHidden(
       slot,
       changed,
@@ -364,7 +365,12 @@ export function CheckinV3Screen({
       {
         slot,
         dateKey: demo ? undefined : date,
-        answers: { ...answers(slot), confirmed: true },
+        answers: {
+          ...answers(slot),
+          optionsRevisionV4: normalizeChoiceCatalog(settings.data?.settings.checkinChoices)
+            .revision,
+          confirmed: true,
+        },
       },
       {
         onSuccess: () => {
@@ -636,7 +642,7 @@ export function CheckinV3Screen({
                     }
                     onChange={(key, v) => change(slot, key, v)}
                     onConfirm={() => confirm(slot)}
-                    context={adaptiveModel(value).context(
+                    context={adaptiveModel(value, settings.data?.settings.checkinChoices).context(
                       { ...s.checkinRaw.records, [date]: day ?? {} },
                       date,
                       slot,

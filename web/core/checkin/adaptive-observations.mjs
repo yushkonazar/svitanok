@@ -1,4 +1,5 @@
 import { adaptiveCatalog } from './model.mjs';
+import { choiceLabelsForDays } from './choices.mjs';
 import { plannedDirectionsV4 } from './adaptive-v4.mjs';
 import { observedMean, shiftCheckinDate } from './observations.mjs';
 /** @param {unknown} v */
@@ -172,9 +173,7 @@ export function adaptiveMetrics(days) {
       metrics[`${slot}.${id}`] = {
         label: f.label,
         ...frequenciesV3(days, slot, id),
-        labels: Object.fromEntries(
-          f.options?.map(([label, value]) => [String(value), label.split(' :: ').at(-1)]) ?? [],
-        ),
+        labels: choiceLabelsForDays(days, slot, f),
         ...(numericValues.length
           ? {
               average: observedMean(numericValues).value,

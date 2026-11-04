@@ -12,7 +12,7 @@ import {
   pointsV3,
   type AdaptiveDay,
 } from '../../../../core/checkin/adaptive-observations.mjs';
-import { answerLabelV3 } from '../../../../core/checkin/adaptive.mjs';
+import { choiceAnswerLabel, choiceLabelsForDays } from '../../../../core/checkin/choices.mjs';
 import { ObservationChart } from '../charts/ObservationChart.tsx';
 import { ObservationReview } from './ObservationReview.tsx';
 import { WeeklyReview } from './WeeklyReview.tsx';
@@ -49,8 +49,9 @@ function RevisionDistribution({
         Object.entries(data.counts)
           .sort((a, b) => b[1] - a[1])
           .map(([key, count]) => {
-            const option = field?.options?.find(([, v]) => String(v) === key);
-            const label = option?.[0].split(' :: ').at(-1) ?? key;
+            const label = field
+              ? (choiceLabelsForDays(days, slot, field)[key] ?? 'Власний варіант')
+              : key;
             return (
               <div key={key}>
                 <div className="flex justify-between gap-3 text-sm">
@@ -177,7 +178,7 @@ function RecordedDay({ day }: { day: AdaptiveDay }) {
                   .filter((f) => a[f.id] != null)
                   .map((f) => (
                     <p key={f.id}>
-                      {f.label}: <b>{answerLabelV3(f, a[f.id])}</b>
+                      {f.label}: <b>{choiceAnswerLabel(f, a[f.id], a)}</b>
                     </p>
                   ))}
               </div>

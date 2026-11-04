@@ -23,7 +23,24 @@ export const checkinPreferencesSchema = z.object({
   hiddenCategories: z.array(z.string()),
 });
 
+export const choiceCatalogSchema = z.object({
+  version: z.literal(1),
+  revision: z.number().int().nonnegative(),
+  entries: z
+    .array(
+      z.object({
+        field: z.string().max(72),
+        id: z.string().max(90),
+        label: z.string().max(100),
+        group: z.string().max(50),
+        scope: z.string().max(50),
+        deleted: z.boolean(),
+      }),
+    )
+    .max(500),
+});
 export const settingsSchema = z.object({
+  checkinChoices: choiceCatalogSchema.optional(),
   checkin: checkinPreferencesSchema.optional(),
   quiet: quietSchema.default({ enabled: false, from: '22:00', to: '08:00' }),
   /** Лише ЯВНІ оверрайди; відсутній id = дефолт config.yml (для перемикних — увімкнено). */

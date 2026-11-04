@@ -1406,6 +1406,66 @@
 .checkin-flow-actions {
   padding: 8px 0;
 }
+.checkin-choice-manager {
+  margin-top: 8px;
+  color: var(--color-tx3);
+  font-size: 12px;
+}
+.checkin-choice-manager > summary {
+  width: fit-content;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+}
+.checkin-choice-manager[open] {
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--color-glassb);
+}
+.checkin-choice-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  color: var(--color-tx2);
+}
+.checkin-choice-editor input,
+.checkin-choice-editor select {
+  width: 100%;
+  min-width: 0;
+  min-height: 44px;
+  padding: 10px 12px;
+  border: 1px solid var(--color-glassb);
+  border-radius: 12px;
+  background: var(--color-bg);
+  color: var(--color-tx);
+  font: inherit;
+  font-size: 16px;
+}
+.checkin-choice-editor-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+}
+.checkin-choice-editor-row > span {
+  flex: 1 1 140px;
+  overflow-wrap: anywhere;
+  color: var(--color-tx2);
+}
+.checkin-choice-editor-row b,
+.checkin-choice-editor-row small {
+  display: block;
+  font-weight: 400;
+}
+.checkin-choice-editor-row small {
+  color: var(--color-tx3);
+}
+.checkin-choice-editor-row button {
+  min-height: 44px;
+}
+.checkin-choice-editor-row button:disabled {
+  opacity: 0.45;
+}
 .checkin-detail-topics {
   display: flex;
   flex-direction: column;

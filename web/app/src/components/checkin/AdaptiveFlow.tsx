@@ -10,12 +10,13 @@ import {
   fieldVisibleV4,
   validValueV4,
   coreCompleteV4,
+  clearHiddenV4,
   answerLabelV4,
   type AdaptiveContext,
 } from '../../../../core/checkin/adaptive-v4.mjs';
 import type { Card, Field, CheckinPreferences } from '../../../../core/checkin/catalog.mjs';
 import type { CheckinSlot } from '../../api/schema.ts';
-import { FieldInput } from './CheckinV2Screen.tsx';
+import { ChoiceFieldInput } from './ChoiceFieldInput.tsx';
 import { haptic, setVerticalSwipes } from '../../telegram.ts';
 import { usePresentation } from '../../lib/presentation.ts';
 
@@ -72,6 +73,19 @@ export function AdaptiveFlow({
     previousStep.current = step;
     stage.current?.scrollIntoView?.({ block: 'start', behavior: 'auto' });
   }, [step]);
+  useEffect(() => {
+    const cleaned = clearHiddenV4(slot, answers, context);
+    const ids = new Set(
+      [...CHECKIN_CARDS_V4[slot], ...FOLLOWUP_CARDS_V4].flatMap((c) => c.fields.map((f) => f.id)),
+    );
+    const changed = Object.keys(answers).find(
+      (key) =>
+        ids.has(key) &&
+        answers[key] != null &&
+        JSON.stringify(answers[key]) !== JSON.stringify(cleaned[key]),
+    );
+    if (changed) onChange(changed, cleaned[changed] ?? null);
+  }, [slot, answers, context, onChange]);
   const eligible = eligibleFollowupsV4(slot, answers, context);
   const branches = followupsV4(slot, answers, context).sort(
     (a, b) =>
@@ -105,7 +119,15 @@ export function AdaptiveFlow({
   const renderField = (f: Field) => {
     if (!fieldVisibleV4(f, answers)) return null;
     return (
-      <FieldInput key={f.id} field={f} answers={answers} p={p} date={date} onChange={onChange} />
+      <ChoiceFieldInput
+        key={f.id}
+        field={f}
+        choices={context.choices}
+        answers={answers}
+        p={p}
+        date={date}
+        onChange={onChange}
+      />
     );
   };
   const visibleFields = (card?.fields ?? []).filter((f) => fieldVisibleV4(f, answers));
@@ -140,7 +162,7 @@ export function AdaptiveFlow({
     time: 'Деталі про вільний час',
     'next-sleep': 'Наступний сон і замітка дня',
   };
-  const detail = (c: Card, expanded = false) => (
+  const detail = (c: Card, expanded = true) => (
     <details key={c.id} className="checkin-followup" open={expanded || undefined}>
       <summary>
         <span>{c.title}</span>
@@ -259,6 +281,22 @@ export function AdaptiveFlow({
                   )}
                 </div>
               )}
+            {optionalFields.length > 0 && (
+              <details
+                className="checkin-followup"
+                open={card.id === 'sleep' || card.id === 'time' || undefined}
+              >
+                <summary>
+                  {optionalTitles[card.id] ?? 'Додати до відповіді'}
+                  <span className="text-xs text-tx3">За бажанням</span>
+                </summary>
+                <div className="flex flex-col gap-5 mt-4">
+                  {optionalFields.map(renderCoreField)}
+                </div>
+              </details>
+            )}
+            {branches.filter((c) => owner(c.id) === card.id).map((c) => detail(c))}
+            {moreDetails}
             <div className="renewal-form-grid checkin-flow-actions">
               <button
                 type="button"
@@ -288,26 +326,6 @@ export function AdaptiveFlow({
                 {step === core.length - 1 ? 'Перевірити' : 'Далі →'}
               </button>
             </div>
-            {optionalFields.length > 0 && (
-              <details className="checkin-followup">
-                <summary>
-                  {optionalTitles[card.id] ?? 'Додати до відповіді'}
-                  <span className="text-xs text-tx3">За бажанням</span>
-                </summary>
-                <div className="flex flex-col gap-5 mt-4">
-                  {optionalFields.map(renderCoreField)}
-                </div>
-              </details>
-            )}
-            {branches
-              .filter((c) => owner(c.id) === card.id)
-              .map((c) =>
-                detail(
-                  c,
-                  Array.isArray(answers.detailTopicsV4) && answers.detailTopicsV4.includes(c.id),
-                ),
-              )}
-            {moreDetails}
           </div>
         ) : (
           <>
@@ -360,7 +378,7 @@ export function AdaptiveFlow({
             <button
               type="button"
               className="renewal-button"
-              disabled={pending || !coreCompleteV4(slot, answers)}
+              disabled={pending || !coreCompleteV4(slot, answers, context.choices)}
               onClick={onConfirm}
             >
               {pending ? 'Зберігаю…' : 'Підтвердити чек-ін'}

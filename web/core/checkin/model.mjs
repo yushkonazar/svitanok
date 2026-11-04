@@ -1,17 +1,31 @@
 import * as v3 from './adaptive.mjs';
 import * as v4 from './adaptive-v4.mjs';
 /** All consumers select the catalog by the stored revision, never by today's UI.
- * @param {KvBlob} a */
-export function adaptiveModel(a) {
+ * @param {KvBlob} a @param {unknown} [choices] */
+export function adaptiveModel(a, choices) {
   return a?.questionVersion === 4
     ? {
         cards: v4.CHECKIN_CARDS_V4,
         details: v4.FOLLOWUP_CARDS_V4,
-        clean: v4.cleanCheckinV4,
-        clearHidden: v4.clearHiddenV4,
-        complete: v4.coreCompleteV4,
-        followups: v4.followupsV4,
-        context: v4.adaptiveContextV4,
+        clean: (/** @type {string} */ slot, /** @type {KvBlob} */ raw) =>
+          v4.cleanCheckinV4(slot, raw, choices),
+        clearHidden: (
+          /** @type {string} */ slot,
+          /** @type {KvBlob} */ raw,
+          /** @type {KvBlob} */ context = {},
+        ) => v4.clearHiddenV4(slot, raw, { ...context, choices }),
+        complete: (/** @type {string} */ slot, /** @type {KvBlob} */ raw) =>
+          v4.coreCompleteV4(slot, raw, choices),
+        followups: (
+          /** @type {string} */ slot,
+          /** @type {KvBlob} */ raw,
+          /** @type {KvBlob} */ context = {},
+        ) => v4.followupsV4(slot, raw, { ...context, choices }),
+        context: (
+          /** @type {KvBlob} */ records,
+          /** @type {string} */ date,
+          /** @type {string} */ slot,
+        ) => ({ ...v4.adaptiveContextV4(records, date, slot), choices }),
       }
     : {
         cards: v3.CHECKIN_CARDS_V3,

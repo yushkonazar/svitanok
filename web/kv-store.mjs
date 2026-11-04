@@ -124,7 +124,15 @@ export async function loadSettings(env) {
  * @param {KvBlob|null|undefined} settings */
 export async function putSettings(env, settings) {
   const next = normalizeSettings(settings);
-  return normalizeSettings(await updateJson(env, 'settings', () => next));
+  // Only revision-checked choice commands may change this subdocument. A stale
+  // settings page (including an older app) cannot erase or forge the catalog.
+  delete next.checkinChoices;
+  return normalizeSettings(
+    await updateJson(env, 'settings', (current) => ({
+      ...next,
+      ...(current.checkinChoices ? { checkinChoices: current.checkinChoices } : {}),
+    })),
+  );
 }
 
 /** Застосувати pure patch до найсвіжішого canonical settings і зберегти

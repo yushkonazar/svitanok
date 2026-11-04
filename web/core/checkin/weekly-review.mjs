@@ -1,6 +1,6 @@
 import { adaptiveCatalog } from './model.mjs';
 import { analyzeAdaptive, frequenciesV3 } from './adaptive-observations.mjs';
-import { answerLabelV3 } from './adaptive.mjs';
+import { choiceLabelsForDays } from './choices.mjs';
 import { shiftCheckinDate } from './observations.mjs';
 /** Calendar weeks, matched weekdays for a partial current week, confirmed v3 answers only.
  * @param {KvBlob} records @param {string} today @param {boolean} [completed] */
@@ -56,7 +56,7 @@ export function weeklyReview(records, today, completed = true) {
       id: key,
       title,
       n: f.n,
-      text: `«${answerLabelV3(field, [top[0]])}» — у ${top[1]} з ${f.n} відповідей на це уточнення. Це твоя оцінка обставин, не доведена причина.`,
+      text: `«${choiceLabelsForDays(a.current, slot, field)[top[0]] ?? 'Власний варіант'}» — у ${top[1]} з ${f.n} відповідей на це уточнення. Це твоя оцінка обставин, не доведена причина.`,
       dates: a.current.filter((d) => (d[slot][key] ?? []).includes(top[0])).map((d) => d.date),
     });
   }

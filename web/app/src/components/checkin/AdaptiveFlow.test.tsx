@@ -1,3 +1,4 @@
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useState } from 'react';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
@@ -27,9 +28,15 @@ function Flow({
     questionVersion: 4,
     ...initial,
   });
+  const [qc] = useState(
+    () =>
+      new QueryClient({
+        defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+      }),
+  );
   const context = { morning: {}, previous, previousEvening, activities: [] };
   return (
-    <>
+    <QueryClientProvider client={qc}>
       <AdaptiveFlow
         slot={slot}
         nowMs={Date.parse('2026-11-04T20:00:00Z')}
@@ -42,7 +49,7 @@ function Flow({
         pending={pending}
       />
       <output data-testid="answers">{JSON.stringify(answers)}</output>
-    </>
+    </QueryClientProvider>
   );
 }
 it('allows sleepless morning without inventing quality or duration', () => {
@@ -53,17 +60,16 @@ it('allows sleepless morning without inventing quality or duration', () => {
   expect(screen.getByRole('heading', { name: 'Як ти зараз?' })).toBeInTheDocument();
   expect(screen.getByRole('button', { name: 'Далі →' })).toBeDisabled();
 });
-it('offers sleep details, clears inapplicable branches and keeps navigation above them', () => {
+it('offers sleep details, clears inapplicable branches and keeps navigation after them', () => {
   const view = render(<Flow />);
   fireEvent.click(screen.getByRole('button', { name: 'Основний сон' }));
   fireEvent.click(screen.getByRole('button', { name: '2 · Радше не відпочив' }));
   const sleep = screen.getByText('Що завадило цьому сну?').closest('details')!;
-  fireEvent.click(screen.getByText('Що завадило цьому сну?'));
   fireEvent.click(screen.getByRole('button', { name: 'Прокидався' }));
   expect(screen.getByTestId('answers').textContent).toContain('awakenings');
   expect(
     view.container.querySelector('.checkin-flow-actions')!.compareDocumentPosition(sleep) &
-      Node.DOCUMENT_POSITION_FOLLOWING,
+      Node.DOCUMENT_POSITION_PRECEDING,
   ).toBeTruthy();
   fireEvent.click(screen.getByRole('button', { name: '5 · Повністю відпочив' }));
   expect(screen.queryByText('Що завадило цьому сну?')).not.toBeInTheDocument();
@@ -93,13 +99,12 @@ it('exposes neutral mood details manually and retains positive and negative reas
   expect(screen.getByTestId('answers').textContent).toContain('weather_good');
   expect(screen.getByTestId('answers').textContent).toContain('partner_hard');
   fireEvent.click(screen.getByRole('button', { name: '5 · Дуже хороший' }));
-  expect(screen.getByTestId('answers').textContent).toContain('partner_hard');
+  expect(screen.getByTestId('answers').textContent).not.toContain('partner_hard');
 });
 it('keeps independent energy and mood and supports mental fatigue', () => {
   render(<Flow slot="afternoon" />);
   fireEvent.click(screen.getByRole('button', { name: '1 · Сил майже немає' }));
   expect(screen.getByTestId('answers').textContent).not.toContain('"mood"');
-  fireEvent.click(screen.getByText('Що пов’язуєш зі своїми силами?'));
   fireEvent.click(screen.getByRole('button', { name: 'Розумова втома' }));
   fireEvent.click(screen.getByRole('button', { name: 'Фізична втома' }));
   expect(screen.getByTestId('answers').textContent).toContain(
@@ -120,7 +125,7 @@ it('supports three independent activities and keeps alone exclusive', () => {
 });
 it('opens optional Other text only for its selected reason', () => {
   render(<Flow slot="afternoon" initial={{ energy: 1 }} />);
-  fireEvent.click(screen.getByText('Що пов’язуєш зі своїми силами?'));
+  fireEvent.click(screen.getByRole('button', { name: 'Розумова втома' }));
   const buttons = screen.getAllByRole('button', { name: 'Інше' });
   fireEvent.click(buttons[0]);
   expect(screen.getByRole('textbox', { name: /Інше — своїми словами/ })).toBeInTheDocument();

@@ -38,11 +38,19 @@ export async function writeCheckinDemo(payload: Record<string, unknown>) {
   if ([3, 4].includes(Number(payload.questionVersion))) {
     // This catalog is only needed for an explicit demo confirmation. Keep it
     // out of the initial client bundle used by Today, News and private APIs.
-    const [{ adaptiveModel }, { currentPlanV4, nextSleepDateV4 }] = await Promise.all([
-      import('../../../core/checkin/model.mjs'),
-      import('../../../core/checkin/adaptive-v4.mjs'),
-    ]);
-    const model = adaptiveModel(payload),
+    const [{ adaptiveModel }, { currentPlanV4, nextSleepDateV4, choiceSnapshotV4 }] =
+      await Promise.all([
+        import('../../../core/checkin/model.mjs'),
+        import('../../../core/checkin/adaptive-v4.mjs'),
+      ]);
+    let choices: unknown;
+    try {
+      choices = JSON.parse(localStorage.getItem('svitanok:demo-settings:v1') ?? '{}').settings
+        ?.checkinChoices;
+    } catch {
+      /* Default catalog. */
+    }
+    const model = adaptiveModel(payload, choices),
       context = model.context({ [date]: prior }, date, slot);
     const answers = model.clearHidden(slot, model.clean(slot, payload).set, context);
     if (!model.complete(slot, answers))
@@ -58,6 +66,7 @@ export async function writeCheckinDemo(payload: Record<string, unknown>) {
     if (answers.questionVersion === 4) {
       const plan = currentPlanV4(context);
       Object.assign(candidate, {
+        ...choiceSnapshotV4(slot, answers, context),
         planSourceV4: plan.source,
         planTextV4: plan.text,
         planAtV4: plan.at,

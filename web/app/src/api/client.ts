@@ -19,7 +19,13 @@ import {
 } from './briefing-schema.ts';
 import { SAMPLE_BRIEF } from './briefing-sample.ts';
 import { newsDemoSnapshot, newsDemoStory } from './news-demo.ts';
-import { settingsResponseSchema, type SettingsResponse, type Settings } from './settings-schema.ts';
+import {
+  settingsResponseSchema,
+  choiceCatalogSchema,
+  type SettingsResponse,
+  type Settings,
+} from './settings-schema.ts';
+import type { ChoiceCommand, PublicChoiceCatalog } from '../../../core/checkin/choices.mjs';
 import { savedPageSchema, type SavedPage } from './schema.ts';
 import { workerQualityResponseSchema, type WorkerQuality } from './worker-quality-schema.ts';
 import { budgetCategoriesAt } from '../../../core/finance/budget-analysis.mjs';
@@ -877,6 +883,32 @@ export async function requestLocatePrompt(): Promise<void> {
  * оновлюють React-кеш, мережевих записів немає.
  */
 export async function postEvent(type: string, payload: Record<string, unknown>): Promise<void> {
+  if (type === 'checkin') {
+    payload = { ...payload };
+    // Server-derived snapshots can grow with personal labels. Send answers only;
+    // the server rebuilds labels, timing and plan context from canonical data.
+    for (const key of [
+      'checkinChoicesV4',
+      'optionLabelsV4',
+      'planTextV4',
+      'planSourceV4',
+      'planAtV4',
+      'bedtimeDateV4',
+      'answerTimesV3',
+      'answerPeriodsV3',
+      'shownBranchesV3',
+      'answeredAtV3',
+      'confirmedAtV3',
+      'timezoneV3',
+      'answerTimesV2',
+      'answerPeriodsV2',
+      'shownBranchesV2',
+      'answeredAtV2',
+      'confirmedAtV2',
+      'timezoneV2',
+    ])
+      delete payload[key];
+  }
   if (!inTelegram() || !tg) {
     if (type === 'checkin') await writeCheckinDemo(payload);
     if (['save_item', 'unsave_item', 'save_news', 'unsave_news'].includes(type))
@@ -956,26 +988,80 @@ export async function fetchSettings(): Promise<SettingsResponse> {
  */
 export async function postSettings(next: Settings): Promise<SettingsResponse | null> {
   if (!inTelegram() || !tg) {
+    const current = await fetchSettings();
+    const saved = { ...next, checkinChoices: current.settings.checkinChoices };
     try {
       localStorage.setItem(
         'svitanok:demo-settings:v1',
-        JSON.stringify({ ...DEMO_SETTINGS, settings: next }),
+        JSON.stringify({ ...DEMO_SETTINGS, settings: saved }),
       );
     } catch {
       /* Current cache still works. */
     }
-    return null;
+    return { ...DEMO_SETTINGS, settings: saved };
   }
+  const settings = { ...next };
+  delete settings.checkinChoices;
   const res = await fetch('/api/settings', {
     method: 'POST',
     headers: { 'content-type': 'application/json', ...authHeaders() },
-    body: JSON.stringify({ settings: next }),
+    body: JSON.stringify({ settings }),
   });
   throwIfSessionExpired(res);
   if (!res.ok) throw new Error(`Налаштування не збережено (${res.status})`);
 
   const parsed = settingsResponseSchema.safeParse(await res.json());
   if (!parsed.success) throw new Error('Формат налаштувань змінився — оновіть застосунок');
+  return parsed.data;
+}
+
+export class CheckinChoiceError extends Error {
+  constructor(
+    message: string,
+    public status: number,
+  ) {
+    super(message);
+  }
+}
+export async function postCheckinChoice(command: ChoiceCommand): Promise<PublicChoiceCatalog> {
+  if (!inTelegram()) {
+    const [{ applyChoiceCommand, publicChoiceCatalog }, { CHECKIN_CARDS_V4, FOLLOWUP_CARDS_V4 }] =
+      await Promise.all([
+        import('../../../core/checkin/choices.mjs'),
+        import('../../../core/checkin/adaptive-v4.mjs'),
+      ]);
+    const current = await fetchSettings();
+    const choices = publicChoiceCatalog(
+      applyChoiceCommand(
+        current.settings.checkinChoices,
+        command,
+        [...Object.values(CHECKIN_CARDS_V4).flat(), ...FOLLOWUP_CARDS_V4].flatMap((c) => c.fields),
+      ),
+    );
+    localStorage.setItem(
+      'svitanok:demo-settings:v1',
+      JSON.stringify({ ...current, settings: { ...current.settings, checkinChoices: choices } }),
+    );
+    return choices;
+  }
+  const res = await fetch('/api/event', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', ...authHeaders() },
+    body: JSON.stringify({ ...command, type: 'checkin_choice' }),
+  });
+  throwIfSessionExpired(res);
+  const body = await res.json().catch(() => null);
+  if (!res.ok)
+    throw new CheckinChoiceError(
+      typeof body?.error === 'string' ? body.error : 'Не вдалося зберегти варіант. Спробуй ще раз.',
+      res.status,
+    );
+  const parsed = choiceCatalogSchema.safeParse(body?.choices);
+  if (body?.ok !== true || !parsed.success)
+    throw new CheckinChoiceError(
+      'Не вдалося підтвердити збереження. Повтори дію; дубль не створиться.',
+      503,
+    );
   return parsed.data;
 }
 

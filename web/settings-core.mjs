@@ -5,6 +5,7 @@ import {
   NEWS_CATALOG_VERSION,
 } from './core/brief/news-catalog.mjs';
 import { normalizeCheckinPreferences } from './core/checkin/catalog.mjs';
+import { normalizeChoiceCatalog } from './core/checkin/choices.mjs';
 import { parseGrantedScopes, hasFeatureScope } from './core/google-scopes.mjs';
 // Чиста логіка налаштувань власника (роадмеп v3, F2). Worker читає/пише
 // canonical `settings` через StateStoreDO; KV mirror лишається оркестратору
@@ -43,7 +44,7 @@ export const TOGGLEABLE_MODULE_IDS = [
  * Форма блоба `settings`.
  * @typedef {{ enabled: boolean, from: string, to: string }} QuietHours
  * @typedef {{ quiet: QuietHours, modules: Record<string, boolean>,
- *             mutedTopics: string[], checkin?: import('./core/checkin/catalog.mjs').CheckinPreferences, news?: {sources: string[], intervalHours: number, catalogVersion?:number} }} Settings
+ *             mutedTopics: string[], checkinChoices?: import('./core/checkin/choices.mjs').ChoiceCatalog, checkin?: import('./core/checkin/catalog.mjs').CheckinPreferences, news?: {sources: string[], intervalHours: number, catalogVersion?:number} }} Settings
  */
 
 const DEFAULT_QUIET = { enabled: false, from: '22:00', to: '08:00' };
@@ -122,6 +123,7 @@ export function normalizeSettings(rawSettings) {
     modules,
     mutedTopics,
     ...(raw.checkin ? { checkin: normalizeCheckinPreferences(raw.checkin) } : {}),
+    ...(raw.checkinChoices ? { checkinChoices: normalizeChoiceCatalog(raw.checkinChoices) } : {}),
     ...(raw.news && typeof raw.news === 'object'
       ? {
           news: {

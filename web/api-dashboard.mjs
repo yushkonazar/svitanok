@@ -1,4 +1,11 @@
 import { adaptiveModel } from './core/checkin/model.mjs';
+import { CHECKIN_CARDS_V4, FOLLOWUP_CARDS_V4 } from './core/checkin/adaptive-v4.mjs';
+import {
+  applyChoiceCommand,
+  ChoiceCatalogError,
+  publicChoiceCatalog,
+  normalizeChoiceCatalog,
+} from './core/checkin/choices.mjs';
 import { checkinGapV3 } from './core/checkin/adaptive.mjs';
 // HTTP-ендпоінти дашборда (Фаза 5, модуляризація worker.js, план A2 §5).
 //
@@ -21,6 +28,7 @@ import {
   loadState,
   loadSettings,
   putSettings,
+  updateSettings,
   updateStats,
   updateState,
 } from './kv-store.mjs';
@@ -156,7 +164,8 @@ export async function applyEvent(/** @type {Env} */ env, /** @type {any} */ body
     // Explicit date/slot selects only a server-authorized open window (including
     // a one-time extension). Legacy clients without a date keep the clock route.
     const h = kyivHour();
-    const prefs = (await loadSettings(env)).checkin;
+    const settings = await loadSettings(env);
+    const prefs = settings.checkin;
     if (prefs?.version === 3 && ![3, 4].includes(body.questionVersion))
       return { locked: false, expired: true };
     const clock = checkinClock(kyivMinuteOfDay(), prefs);
@@ -167,7 +176,7 @@ export async function applyEvent(/** @type {Env} */ env, /** @type {any} */ body
     const slot = body.dateKey ? requested?.slot : clock.slot;
     // No open/authorized target: never redirect the write into a different slot.
     if (!slot) return body.dateKey ? { locked: false, expired: true } : undefined;
-    ev = { ...body, slot, checkinPreferencesV2: prefs };
+    ev = { ...body, slot, checkinPreferencesV2: prefs, checkinChoicesV4: settings.checkinChoices };
     dateKey = requested
       ? requested.dateKey
       : prefs
@@ -196,8 +205,13 @@ export async function applyEvent(/** @type {Env} */ env, /** @type {any} */ body
   const checkinLocked =
     body.type === 'checkin' && !!loaded.checkins?.[dateKey]?.[ev.slot]?.confirmed;
   if (checkinLocked) return { locked: true, expired: false }; // нічого не зміниться — не палимо KV-запис даремно
+  if (body.type === 'checkin' && body.confirmed && body.questionVersion === 4) {
+    const revision = normalizeChoiceCatalog(ev.checkinChoicesV4).revision;
+    if ((body.optionsRevisionV4 ?? 0) !== revision)
+      return { locked: false, expired: false, choicesChanged: true };
+  }
   if (body.type === 'checkin' && body.confirmed && [3, 4].includes(body.questionVersion)) {
-    const model = adaptiveModel(ev);
+    const model = adaptiveModel(ev, ev.checkinChoicesV4);
     const cleaned = model.clean(ev.slot, ev);
     const prior = loaded.checkins?.[dateKey]?.[ev.slot];
     const candidate = {
@@ -245,6 +259,31 @@ export async function handleEvent(/** @type {Request} */ request, /** @type {Env
   const auth = await checkPrimaryOwner(mutationInitData(request, body), env);
   if (!auth.ok) return json({ ok: false, error: auth.error }, auth.status);
 
+  if (body.type === 'checkin_choice') {
+    try {
+      const fields = [...Object.values(CHECKIN_CARDS_V4).flat(), ...FOLLOWUP_CARDS_V4].flatMap(
+        (c) => c.fields,
+      );
+      const { settings } = await updateSettings(env, (s) => ({
+        ...s,
+        checkinChoices: applyChoiceCommand(s.checkinChoices, body, fields),
+      }));
+      const response = json({ ok: true, choices: publicChoiceCatalog(settings.checkinChoices) });
+      response.headers.set('cache-control', 'private, no-store');
+      return response;
+    } catch (error) {
+      return json(
+        {
+          ok: false,
+          error:
+            error instanceof ChoiceCatalogError
+              ? error.message
+              : 'Не вдалося зберегти варіанти. Спробуй ще раз.',
+        },
+        error instanceof ChoiceCatalogError ? error.status : 503,
+      );
+    }
+  }
   if (body.type === 'checkin_extend') {
     try {
       const result = await extendCheckin(
@@ -259,6 +298,15 @@ export async function handleEvent(/** @type {Request} */ request, /** @type {Env
   }
 
   const result = await applyEvent(env, body);
+  if (result?.choicesChanged)
+    return json(
+      {
+        ok: false,
+        error:
+          'Варіанти відповідей змінилися на іншому пристрої. Список оновлюється; перевір відповіді й підтвердь ще раз.',
+      },
+      409,
+    );
   if (result?.expired)
     return json({ ok: false, error: 'Вікно чек-іну змінилося. Онови екран.' }, 409);
   if (result?.incomplete)
@@ -311,7 +359,7 @@ export async function handleSettings(/** @type {Request} */ request, /** @type {
     const auth = await checkOwnerRead(request, env);
     if (!auth.ok) return json({ ok: false, error: auth.error }, auth.status);
     const [settings, connectors] = await Promise.all([loadSettings(env), googleConnectors(env)]);
-    const response = json({ ok: true, settings, connectors });
+    const response = json({ ok: true, settings: publicSettings(settings), connectors });
     response.headers.set('cache-control', 'private, no-store');
     return response;
   }
@@ -332,11 +380,20 @@ export async function handleSettings(/** @type {Request} */ request, /** @type {
     return json({ ok: false, error: 'bad-params' }, 400);
   }
   const next = normalizeSettings(raw);
-  await putSettings(env, next);
+  const saved = await putSettings(env, next);
   const connectors = await googleConnectors(env);
-  const response = json({ ok: true, settings: next, connectors });
+  const response = json({ ok: true, settings: publicSettings(saved), connectors });
   response.headers.set('cache-control', 'private, no-store');
   return response;
+}
+/** @param {import('./settings-core.mjs').Settings} settings */
+function publicSettings(settings) {
+  return {
+    ...settings,
+    ...(settings.checkinChoices
+      ? { checkinChoices: publicChoiceCatalog(settings.checkinChoices) }
+      : {}),
+  };
 }
 
 /**

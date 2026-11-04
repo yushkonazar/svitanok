@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { StateStoreDO } from '../web/core/state-store/do.mjs';
 import { STATE_STORE_DO_NAME } from '../web/core/state-store/contract.mjs';
+import { applyChoiceCommand } from '../web/core/checkin/choices.mjs';
+import { FOLLOWUP_CARDS_V4 } from '../web/core/checkin/adaptive-v4.mjs';
 import {
   clearSettings,
   loadSettings,
@@ -8,6 +10,7 @@ import {
   loadStats,
   mutableStateSnapshot,
   updateSettings,
+  putSettings,
   updateState,
 } from '../web/kv-store.mjs';
 import { memoryKv } from './helpers/kv.js';
@@ -33,6 +36,45 @@ function setup(seed: Record<string, string> = {}) {
 }
 
 describe('StateStoreDO — canonical mutable state', () => {
+  it('serializes competing choice revisions and preserves the winner through a stale settings PUT', async () => {
+    const { env } = setup();
+    const command = {
+      op: 'create',
+      requestId: 'request_12345678',
+      expectedRevision: 0,
+      field: 'moodFactorsV4',
+      optionId: 'user_12345678',
+      label: 'Ранкова кава',
+      group: 'Моє',
+      scope: 'mood:positive',
+    };
+    const fields = FOLLOWUP_CARDS_V4.flatMap((c) => c.fields);
+    const results = await Promise.allSettled([
+      updateSettings(env, (s) => ({
+        ...s,
+        checkinChoices: applyChoiceCommand(s.checkinChoices, command, fields),
+      })),
+      updateSettings(env, (s) => ({
+        ...s,
+        checkinChoices: applyChoiceCommand(
+          s.checkinChoices,
+          {
+            ...command,
+            requestId: 'request_87654321',
+            optionId: 'user_87654321',
+            label: 'Сонячний ранок',
+          },
+          fields,
+        ),
+      })),
+    ]);
+    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    expect(results.filter((r) => r.status === 'rejected')).toHaveLength(1);
+    await putSettings(env, { quiet: { enabled: true }, modules: { weather: false } });
+    expect((await loadSettings(env)).checkinChoices?.revision).toBe(1);
+    expect((await loadSettings(env)).checkinChoices?.entries).toHaveLength(1);
+    expect((await loadSettings(env)).modules.weather).toBe(false);
+  });
   it('report peek never seeds missing state and returns the canonical record after a real read', async () => {
     const { stateStore } = setup({ stats: JSON.stringify({ old: true }) });
     expect(await stateStore.peek('stats')).toBeNull();

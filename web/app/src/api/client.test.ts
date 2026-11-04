@@ -24,6 +24,7 @@ const {
   postEvent,
   postVote,
   postSettings,
+  postCheckinChoice,
   setWeatherLocation,
   setWeatherLocationExact,
   clearWeatherLocation,
@@ -238,6 +239,49 @@ const MUTATIONS: [string, () => Promise<unknown>][] = [
   ['clearWeatherLocation', () => clearWeatherLocation()],
   ['requestLocatePrompt', () => requestLocatePrompt()],
 ];
+it('sends answers and the reviewed revision without resending derived snapshots or the personal catalog', async () => {
+  await postEvent('checkin', {
+    questionVersion: 4,
+    mood: 5,
+    optionsRevisionV4: 3,
+    optionLabelsV4: { moodFactorsV4: { rest: 'x'.repeat(20000) } },
+    answerTimesV3: { mood: 'old' },
+    checkinChoicesV4: { entries: [] },
+    planTextV4: 'old',
+  });
+  expect(lastCall().body).toEqual({
+    type: 'checkin',
+    questionVersion: 4,
+    mood: 5,
+    optionsRevisionV4: 3,
+  });
+  await postSettings({ ...SETTINGS, checkinChoices: { version: 1, revision: 3, entries: [] } });
+  expect(lastCall().body).toEqual({ settings: SETTINGS });
+});
+it('requires a complete acknowledgement for a choice command and carries its retry ID with header authentication', async () => {
+  const command = {
+    op: 'delete' as const,
+    requestId: 'request_12345678',
+    expectedRevision: 2,
+    field: 'moodFactorsV4',
+    optionId: 'weather_good',
+  };
+  fetchMock.mockResolvedValueOnce(Response.json({ ok: true }));
+  await expect(postCheckinChoice(command)).rejects.toThrow('підтвердити');
+  expect(lastCall()).toMatchObject({
+    url: '/api/event',
+    headers: { 'x-telegram-init-data': tg.initData },
+    body: { ...command, type: 'checkin_choice' },
+  });
+  fetchMock.mockResolvedValueOnce(
+    Response.json({ ok: true, choices: { version: 1, revision: 3, entries: [] } }),
+  );
+  await expect(postCheckinChoice(command)).resolves.toEqual({
+    version: 1,
+    revision: 3,
+    entries: [],
+  });
+});
 
 describe('M3 — мутації клієнта автентифікуються заголовком', () => {
   for (const [name, run] of MUTATIONS) {

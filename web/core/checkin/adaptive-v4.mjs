@@ -1,11 +1,11 @@
-import {
-  CHECKIN_CARDS_V3,
-  FOLLOWUP_CARDS_V3,
-  answerLabelV3,
-  fieldVisibleV3,
-  validValueV3,
-} from './adaptive.mjs';
+import { CHECKIN_CARDS_V3, FOLLOWUP_CARDS_V3, fieldVisibleV3, validValueV3 } from './adaptive.mjs';
 import { kyivParts, shiftDate } from '../finance/planning.mjs';
+import {
+  activeChoiceScopes,
+  resolveFieldChoices,
+  normalizeChoiceCatalog,
+  choiceAnswerLabel,
+} from './choices.mjs';
 export { adaptivePreferences, checkinGapV3, answerLabelV3 as answerLabelV4 } from './adaptive.mjs';
 /** @typedef {import('./catalog.mjs').Field} Field */
 /** @typedef {import('./catalog.mjs').Card} Card */
@@ -413,7 +413,7 @@ field('sleepHelpersV4').options?.push(['Інше', 'other']);
 field('moodFactorsV4').options = MOOD_OPTIONS_V4;
 field('moodFactorsV4').label =
   'Що, на твою думку, вплинуло на настрій зараз? · обери до трьох основних причин';
-field('moodFactorsV4').help = 'Це твоє пояснення. Позитивні й складні причини можна поєднувати.';
+field('moodFactorsV4').help = 'Обери причини, які пов’язуєш зі своїм настроєм зараз.';
 const energy = FOLLOWUP_CARDS_V4.find((c) => c.id === 'energy-context');
 if (energy) {
   energy.title = 'Що пов’язуєш зі своїми силами?';
@@ -674,7 +674,7 @@ export function currentPlanV4(context) {
         : CHECKIN_CARDS_V3.morning?.find((c) => c.id === 'priority')?.fields[0];
     if (m[id] && m[id] !== 'noplan' && f)
       return {
-        text: step || answerLabelV3(f, m[id]),
+        text: step || choiceAnswerLabel(f, m[id], m),
         source: 'Ранковий план',
         at: m.confirmedAtV3 ?? m.answeredAtV3 ?? null,
       };
@@ -741,9 +741,92 @@ export function contextualCardV4(card, a, context = {}) {
     const f = c.fields.find((f) => f.id === 'recoveryEffectV4');
     if (f && activity) f.label = `Як змінилося твоє самопочуття після ${activity}?`;
   }
+  c.fields = c.fields.map((f) =>
+    resolveFieldChoices(contextualFieldV4(f, a), context.choices, activeChoiceScopes(f.id, a)),
+  );
   return c;
 }
-/** All relevant topics, independent of the two automatic suggestions. @param {string} slot @param {KvBlob} a @param {KvBlob} [context] @returns {Card[]} */
+const positiveMood = new Set([
+  'weather_good',
+  'partner_good',
+  'slept_well',
+  'rest',
+  'success',
+  'calm_day',
+  'connection',
+  'family',
+  'friends',
+  'support',
+  'work_good',
+  'income_good',
+  'study_good',
+  'course_good',
+  'creativity',
+  'focus',
+  'food_good',
+  'music',
+  'walk',
+  'workout',
+  'good_news',
+  'good_no_event',
+]);
+const escapeChoices = new Set(['other', 'none', 'unknown']);
+/** Shared by rendering, the choice editor and canonical server cleanup. No expanded list
+ * can escape this contextual boundary. @param {Field} field @param {KvBlob} a @returns {Field} */
+export function contextualFieldV4(field, a) {
+  const f = { ...field };
+  /** @param {(id:string|number)=>boolean} keep */
+  const filter = (keep) => {
+    f.options = f.options?.filter(([, id]) => keep(id));
+  };
+  if (f.id === 'moodFactorsV4' && typeof a.mood === 'number' && a.mood !== 3) {
+    filter(
+      (id) =>
+        escapeChoices.has(String(id)) ||
+        (a.mood >= 4 ? positiveMood.has(String(id)) : !positiveMood.has(String(id))),
+    );
+    f.label =
+      a.mood >= 4
+        ? 'Що підтримує твій хороший настрій? · до трьох причин'
+        : 'Що пов’язуєш зі складним настроєм зараз? · до трьох причин';
+  }
+  if (f.id === 'moodFactorsV4' && a.sleepModeV4 === 'none') filter((id) => id !== 'slept_well');
+  if (f.id === 'energyHelpersV4' && a.sleepModeV4 === 'none') filter((id) => id !== 'sleep');
+  if (f.id === 'energyFactorsV4') {
+    const kinds = Array.isArray(a.energyKindV4) ? a.energyKindV4 : [];
+    const byKind = /** @type {Record<string,string[]>} */ ({
+      sleepy: ['sleep', 'no_breaks', 'many_tasks'],
+      physical: ['no_breaks', 'physical_load', 'immobility', 'health', 'sleep'],
+      mental: ['no_breaks', 'many_tasks', 'stress', 'distraction', 'sleep'],
+      emotional: ['stress', 'many_tasks', 'no_breaks', 'sleep'],
+      activation: ['unclear', 'distraction', 'sleep', 'stress'],
+      hunger: ['missed_food', 'no_food_time'],
+      discomfort: ['health', 'immobility', 'physical_load', 'sleep'],
+    });
+    if (kinds.length && !kinds.includes('unknown')) {
+      const allowed = new Set(kinds.flatMap((/** @type {string} */ k) => byKind[k] ?? []));
+      filter((id) => escapeChoices.has(String(id)) || allowed.has(String(id)));
+    }
+  }
+  if (f.id === 'workFactorsV4') {
+    const heavyOnly = new Set(['many_tasks', 'duration', 'urgent', 'physical', 'no_breaks']);
+    if ([1, 2].includes(a.workLoadV4)) filter((id) => !heavyOnly.has(String(id)));
+    if ([4, 5].includes(a.workLoadV4)) filter((id) => !['few_orders', 'calm'].includes(String(id)));
+    if (a.workBreaksV4 === 'enough') filter((id) => id !== 'no_breaks');
+  }
+  for (const direction of ['study', 'course'])
+    if (
+      f.id === `${direction}HelpersV4` &&
+      ['not_tried', 'na'].includes(a[`${direction}PracticeV4`])
+    )
+      filter((id) => id !== 'practice');
+  if (f.id === 'workBreaksV4' && ['4_8h', '8_12h', '12_plus'].includes(a.workRangeV4))
+    filter((id) => id !== 'na');
+  if (f.id === 'freeTimeEnoughV4' && a.freeTimeV4 === 'zero')
+    filter((id) => ![3, 4].includes(Number(id)));
+  return f;
+}
+/** All relevant topics, including those the user may add voluntarily. @param {string} slot @param {KvBlob} a @param {KvBlob} [context] @returns {Card[]} */
 export function eligibleFollowupsV4(slot, a, context = {}) {
   const actual = Array.isArray(a.developmentActualV4) ? a.developmentActualV4 : [];
   const plan = plannedDirectionsV4(context.morning ?? {});
@@ -835,8 +918,7 @@ export function followupsV4(slot, a, context = {}) {
                       ? 6
                       : 7;
       return rank(a) - rank(b);
-    })
-    .slice(0, 2);
+    });
   return eligible.filter(
     (c) =>
       suggestions.includes(c) ||
@@ -852,6 +934,18 @@ export function validValueV4(f, value) {
 export function fieldVisibleV4(f, a) {
   if (f.id === 'sleepMinutesV4' && a.sleepDurationStatusV4 === 'unknown') return false;
   if (f.id === 'napMinutesV4' && a.napDurationStatusV4 === 'unknown') return false;
+  if (f.id === 'energyFactorsV4' && (!Array.isArray(a.energyKindV4) || !a.energyKindV4.length))
+    return false;
+  if (f.id === 'workFactorsV4' && a.workLoadV4 == null) return false;
+  for (const direction of ['study', 'course']) {
+    if (
+      f.id === `${direction}ChallengesV4` &&
+      ![1, 2, 3].includes(a[`${direction}ComprehensionV4`])
+    )
+      return false;
+    if (f.id === `${direction}HelpersV4` && ![3, 4, 5].includes(a[`${direction}ComprehensionV4`]))
+      return false;
+  }
   return fieldVisibleV3(f, a);
 }
 /** Calendar date of the next intended sleep, not a measured sleep episode.
@@ -862,8 +956,8 @@ export function nextSleepDateV4(nowMs, time) {
     minutes = Number(time.slice(0, 2)) * 60 + Number(time.slice(3));
   return shiftDate(p.date, minutes < p.hour * 60 + p.minute ? 1 : 0);
 }
-/** @param {string} slot @param {KvBlob} raw */
-export function cleanCheckinV4(slot, raw) {
+/** @param {string} slot @param {KvBlob} raw @param {unknown} [choices] */
+export function cleanCheckinV4(slot, raw, choices) {
   /** @type {KvBlob} */ const set = {};
   /** @type {string[]} */ const clear = [];
   if (!CHECKIN_CARDS_V4[/** @type {'morning'|'afternoon'|'evening'} */ (slot)])
@@ -875,7 +969,8 @@ export function cleanCheckinV4(slot, raw) {
     const v = raw[f.id];
     if (v === undefined) continue;
     if (v === null || v === '' || (Array.isArray(v) && !v.length)) clear.push(f.id);
-    else if (validValueV4(f, v)) set[f.id] = typeof v === 'string' ? v.trim() : v;
+    else if (validValueV4(resolveFieldChoices(f, choices), v))
+      set[f.id] = typeof v === 'string' ? v.trim() : v;
   }
   if (Array.isArray(raw.detailTopicsV4))
     set.detailTopicsV4 = [
@@ -944,14 +1039,35 @@ export function clearHiddenV4(slot, a, context = {}) {
   if (out.priorityV4 === 'noplan') delete out.priorityStepV4;
   return out;
 }
-/** @param {string} slot @param {KvBlob} a */
-export function coreCompleteV4(slot, a) {
+/** @param {string} slot @param {KvBlob} a @param {unknown} [choices] */
+export function coreCompleteV4(slot, a, choices) {
   return (
     !!CHECKIN_CARDS_V4[/** @type {'morning'|'afternoon'|'evening'} */ (slot)] &&
     CHECKIN_CARDS_V4[/** @type {'morning'|'afternoon'|'evening'} */ (slot)].every((c) =>
       c.fields
         .filter((f) => !f.optional && fieldVisibleV4(f, a))
-        .every((f) => validValueV4(f, a[f.id])),
+        .every((f) => validValueV4(resolveFieldChoices(f, choices), a[f.id])),
     )
   );
+}
+/** Freeze the displayed label/category at answer time; catalog edits never rewrite history.
+ * @param {string} slot @param {KvBlob} a @param {KvBlob} [context] */
+export function choiceSnapshotV4(slot, a, context = {}) {
+  /** @type {Record<string,Record<string,string>>} */ const labels = {};
+  const cards = [
+    ...(CHECKIN_CARDS_V4[/** @type {'morning'|'afternoon'|'evening'} */ (slot)] ?? []),
+    ...FOLLOWUP_CARDS_V4,
+  ];
+  for (const f of cards.map((c) => contextualCardV4(c, a, context)).flatMap((c) => c.fields)) {
+    if (!f.options || a[f.id] == null || !fieldVisibleV4(f, a)) continue;
+    const selected = Array.isArray(a[f.id]) ? a[f.id] : [a[f.id]];
+    for (const id of selected) {
+      const label = f.options.find(([, v]) => v === id)?.[0];
+      if (label) (labels[f.id] ??= {})[String(id)] = label;
+    }
+  }
+  return {
+    optionLabelsV4: labels,
+    optionsRevisionV4: normalizeChoiceCatalog(context.choices).revision,
+  };
 }

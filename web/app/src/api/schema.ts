@@ -246,6 +246,11 @@ const multi = <T extends z.ZodType>(s: T) =>
     .optional()
     .catch(undefined);
 const checkinV4Fields = {
+  optionLabelsV4: z
+    .record(z.string().max(72), z.record(z.string().max(90), z.string().max(155)))
+    .optional()
+    .catch(undefined),
+  optionsRevisionV4: z.number().int().nonnegative().optional().catch(undefined),
   sleepDurationStatusV4: z.string().optional(),
   napDurationStatusV4: z.string().optional(),
   bedtimeDateV4: z.string().nullable().optional(),
