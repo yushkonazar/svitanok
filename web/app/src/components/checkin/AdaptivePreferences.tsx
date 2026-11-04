@@ -1,9 +1,13 @@
+import { CheckinReminders } from './CheckinReminders.tsx';
+import { usePresentation } from '../../lib/presentation.ts';
 import { useState } from 'react';
 import { useSettings, useSaveSettings } from '../../api/hooks.ts';
 import { adaptivePreferences } from '../../../../core/checkin/adaptive.mjs';
 import { validSchedule, type CheckinPreferences } from '../../../../core/checkin/catalog.mjs';
 
 export function AdaptivePreferences() {
+  const { explanations } = usePresentation();
+  const [opened, setOpened] = useState(false);
   const query = useSettings(),
     save = useSaveSettings();
   const p = adaptivePreferences(query.data?.settings.checkin);
@@ -13,19 +17,27 @@ export function AdaptivePreferences() {
   const morningEnd =
     shown.morning < '13:00' && shown.afternoon > '13:00' ? '13:00' : shown.afternoon;
   return (
-    <details className="renewal-card">
-      <summary className="cursor-pointer font-semibold">Мій ритм і джерела даних</summary>
+    <details
+      id="checkin-preferences"
+      className="renewal-card"
+      onToggle={(e) => setOpened(e.currentTarget.open)}
+    >
+      <summary className="cursor-pointer font-semibold">Розклад і нагадування</summary>
       <div className="mt-5 flex flex-col gap-5">
-        <p className="renewal-muted">
-          Питання пов’язані автоматично. Напрямки обирати не потрібно. Уточнення можна пропускати.
-        </p>
+        {explanations && (
+          <p className="renewal-muted">
+            Питання пов’язані автоматично. Напрямки обирати не потрібно. Уточнення можна пропускати.
+          </p>
+        )}
+        {opened && <CheckinReminders />}
         <fieldset className="renewal-inset">
           <legend className="font-semibold">Час за Києвом</legend>
-          <p className="renewal-chart-note mb-3">
-            Початки вікон визначають, коли доступний кожен чек-ін. Після опівночі до межі ночі
-            вечірній запис належить попередньому дню. Нагадування вмикаються окремо у фінансових
-            налаштуваннях.
-          </p>
+          {explanations && (
+            <p className="renewal-chart-note mb-3">
+              Початки вікон визначають, коли доступний кожен чек-ін. Після опівночі до межі ночі
+              вечірній запис належить попередньому дню. Нагадування керуються перемикачем вище.
+            </p>
+          )}
           <div className="renewal-form-grid schedule-fields">
             {(['morning', 'afternoon', 'evening', 'end'] as const).map((key, i) => (
               <label className="renewal-field" key={key}>
@@ -106,14 +118,18 @@ export function AdaptivePreferences() {
         <div className="renewal-inset">
           <h3 className="font-semibold">Apple «Здоров’я»</h3>
           <span className="renewal-pill mt-3">Не підключено</span>
-          <p className="renewal-chart-note mt-3">
-            До налаштування передачі з iPhone тривалість сну вказується вручну. Самопочуття й
-            пояснення завжди залишаються твоїми відповідями.
-          </p>
-          <p className="renewal-chart-note mt-2">
-            Підключення потребує окремого налаштування на телефоні; наявність Apple Watch сама по
-            собі не передає дані у Світанок.
-          </p>
+          {explanations && (
+            <p className="renewal-chart-note mt-3">
+              До налаштування передачі з iPhone тривалість сну вказується вручну. Самопочуття й
+              пояснення завжди залишаються твоїми відповідями.
+            </p>
+          )}
+          {explanations && (
+            <p className="renewal-chart-note mt-2">
+              Підключення потребує окремого налаштування на телефоні; наявність Apple Watch сама по
+              собі не передає дані у Світанок.
+            </p>
+          )}
         </div>
       </div>
     </details>

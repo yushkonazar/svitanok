@@ -22,4 +22,5 @@ export function checkinOpenButton(
   date: string,
   slot: string,
   chatId: string | number | null,
+  text?: string,
 ): Record<string, unknown> | null;

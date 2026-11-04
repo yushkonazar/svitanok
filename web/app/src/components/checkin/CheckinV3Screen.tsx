@@ -1,18 +1,10 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { FieldInput } from './CheckinV2Screen.tsx';
-import {
-  CHECKIN_CARDS_V3,
-  FOLLOWUP_CARDS_V3,
-  adaptiveContext,
-  adaptivePreferences,
-  followupsV3,
-  fieldVisibleV3,
-  validValueV3,
-  clearHiddenV3,
-  coreCompleteV3,
-  answerLabelV3,
-  type AdaptiveContext,
-} from '../../../../core/checkin/adaptive.mjs';
+import { LegacyAdaptiveFlow } from './LegacyAdaptiveFlow.tsx';
+import { AdaptiveFlow } from './AdaptiveFlow.tsx';
+import { usePresentation } from '../../lib/presentation.ts';
+import { Link } from 'react-router-dom';
+import { adaptiveModel } from '../../../../core/checkin/model.mjs';
+import { useEffect, useRef, useState } from 'react';
+import { adaptivePreferences, answerLabelV4 } from '../../../../core/checkin/adaptive-v4.mjs';
 import {
   useStats,
   useSaveCheckin,
@@ -24,16 +16,9 @@ import { isSessionExpired } from '../../api/client.ts';
 import { resetCheckinDemo } from '../../api/checkin-demo.ts';
 import { type CheckinSlot } from '../../api/schema.ts';
 import { inTelegram, haptic, setVerticalSwipes } from '../../telegram.ts';
-import { PageHeading } from '../ui/PageHeading.tsx';
 import { LoadingSkeleton, ErrorState } from '../ui/states.tsx';
 import { useTick } from '../../lib/useTick.ts';
 import { kyivParts, shiftDate } from '../../../../core/finance/planning.mjs';
-import {
-  checkinClock,
-  type Card,
-  type Field,
-  type CheckinPreferences as Preferences,
-} from '../../../../core/checkin/catalog.mjs';
 import { BLOCKS as LEGACY_BLOCKS } from './questions.ts';
 import { AdaptivePreferences } from './AdaptivePreferences.tsx';
 import { useCheckinProgress } from '../../lib/useCheckinProgress.ts';
@@ -44,6 +29,7 @@ import {
   preferredCheckinWindow,
 } from '../../lib/checkinProgress.ts';
 import { CheckinDayProgress } from './CheckinDayProgress.tsx';
+import { CHECKIN_CARDS } from '../../../../core/checkin/catalog.mjs';
 
 type Answers = Record<string, unknown>;
 type Completion = {
@@ -58,11 +44,11 @@ const slots: CheckinSlot[] = ['morning', 'afternoon', 'evening'];
 const names = { morning: 'Ранок', afternoon: 'День', evening: 'Вечір' };
 const icons = { morning: '🌅', afternoon: '☀️', evening: '🌙' };
 const draftKey = (date: string, slot: CheckinSlot) =>
-  `svitanok:checkin-v3:${inTelegram() ? 'private' : 'demo'}:${date}:${slot}`;
+  `svitanok:checkin-v4:${inTelegram() ? 'private' : 'demo'}:${date}:${slot}`;
 function readDraft(key: string): Answers {
   try {
     const v = JSON.parse(sessionStorage.getItem(key) ?? '{}');
-    return v && typeof v === 'object' && !Array.isArray(v) && Object.keys(v).length <= 100 ? v : {};
+    return v && typeof v === 'object' && !Array.isArray(v) && Object.keys(v).length <= 160 ? v : {};
   } catch {
     return {};
   }
@@ -76,207 +62,25 @@ function writeDraft(key: string, value?: Answers) {
   }
 }
 
-export function AdaptiveFlow({
-  slot,
-  date,
-  answers,
-  morning,
-  p,
-  onChange,
-  onConfirm,
-  pending,
-  context,
-}: {
-  slot: CheckinSlot;
-  date: string;
-  answers: Answers;
-  morning: Answers;
-  p: Preferences;
-  onChange: (key: string, v: unknown) => void;
-  onConfirm: () => void;
-  pending: boolean;
-  context: AdaptiveContext;
-}) {
-  const [step, setStep] = useState(0);
-  const stage = useRef<HTMLDivElement>(null);
-  const previousStep = useRef(step);
-  useEffect(() => {
-    // The native Telegram pull gesture can resize/move its WKWebView while
-    // the user is scrolling a long answer. Restore it when the flow closes.
-    setVerticalSwipes(false);
-    return () => setVerticalSwipes(true);
-  }, []);
-  useLayoutEffect(() => {
-    if (previousStep.current === step) return;
-    previousStep.current = step;
-    // Only explicit card navigation scrolls. Answers, saves and timer ticks
-    // never restore an older viewport or restart a smooth scroll.
-    stage.current?.scrollIntoView?.({ block: 'start', behavior: 'auto' });
-  }, [step]);
-  const core = CHECKIN_CARDS_V3[slot] ?? [];
-  // Selection prioritizes answered details; presentation must not move them
-  // past each other as answers arrive while the user is scrolling.
-  const branches = followupsV3(slot, answers, context).sort(
-    (a, b) =>
-      FOLLOWUP_CARDS_V3.findIndex((c) => c.id === a.id) -
-      FOLLOWUP_CARDS_V3.findIndex((c) => c.id === b.id),
-  );
-  const card = core[step];
-  const owner = (id: string) =>
-    id.startsWith('sleep') || id === 'bedtime'
-      ? 'sleep'
-      : id.startsWith('energy') || id === 'mood-context'
-        ? 'state'
-        : id === 'plan-blocked'
-          ? slot === 'afternoon'
-            ? 'progress'
-            : 'outcome'
-          : ['learning', 'reading', 'development-blocked'].includes(id)
-            ? 'outcome'
-            : 'context';
-  const complete = (c: Card) =>
-    c.fields
-      .filter((f) => !f.optional && fieldVisibleV3(f, answers))
-      .every((f) => validValueV3(f, answers[f.id]));
-  const renderField = (f: Field) =>
-    f.type === 'text' ? (
-      <details key={f.id}>
-        <summary className="renewal-link">Додати конкретний результат · за бажанням</summary>
-        <div className="mt-3">
-          <FieldInput field={f} answers={answers} p={p} date={date} onChange={onChange} />
-        </div>
-      </details>
-    ) : (
-      <FieldInput key={f.id} field={f} answers={answers} p={p} date={date} onChange={onChange} />
-    );
-  const review = [...core, ...branches];
-  return (
-    <div
-      className="checkin-adaptive-flow"
-      onClickCapture={(event) => {
-        // WebKit may scroll a retained button/summary back into view when
-        // conditional details change. Pointer taps do not need that focus;
-        // keyboard and assistive activation (detail=0) keep normal focus.
-        if (event.detail === 0 || !(event.target instanceof Element)) return;
-        const control = event.target.closest('button, summary');
-        const focused = document.activeElement;
-        if (
-          control instanceof HTMLElement &&
-          event.currentTarget.contains(control) &&
-          focused instanceof HTMLElement &&
-          event.currentTarget.contains(focused)
-        )
-          focused.blur();
-      }}
-    >
-      <div className="flex justify-between text-xs text-tx3">
-        <span>{card ? `Картка ${step + 1} із ${core.length}` : 'Перевір відповіді'}</span>
-        <span>Уточнення за відповідями</span>
-      </div>
-      <div className="renewal-progress">
-        <span style={{ width: `${Math.min(step / core.length, 1) * 100}%` }} />
-      </div>
-      <div ref={stage} className="checkin-adaptive-stage">
-        {card ? (
-          <div key={card.id} className="checkin-adaptive-card">
-            <h3 className="text-xl font-semibold">{card.title}</h3>
-            {card.help && <p className="renewal-chart-note">{card.help}</p>}
-            {['progress', 'outcome'].includes(card.id) && (
-              <p className="renewal-inset text-sm">
-                Ранковий намір:{' '}
-                {morning.priorityV3
-                  ? answerLabelV3(
-                      CHECKIN_CARDS_V3.morning.find((c) => c.id === 'priority')!.fields[0],
-                      morning.priorityV3,
-                    )
-                  : 'не записаний'}
-                {morning.priorityStepV3 ? ` · ${String(morning.priorityStepV3)}` : ''}
-              </p>
-            )}
-            {card.fields.map(renderField)}
-            {branches
-              .filter((c) => owner(c.id) === card.id)
-              .map((c) => (
-                <section key={c.id} className="checkin-followup" aria-label={c.title}>
-                  <p className="text-xs text-a2">УТОЧНЕННЯ ДО ВІДПОВІДІ · можна пропустити</p>
-                  <h4 className="font-semibold">{c.title}</h4>
-                  {c.id === 'bedtime' && (
-                    <p className="renewal-chart-note">
-                      Планував лягти о {String(context.previousEvening.bedtimePlanV3)}
-                    </p>
-                  )}
-                  {c.fields.map(renderField)}
-                </section>
-              ))}
-            <div className="renewal-form-grid">
-              <button
-                className="renewal-secondary"
-                disabled={!step}
-                onClick={() => setStep(step - 1)}
-              >
-                ← Назад
-              </button>
-              <button
-                className="renewal-button"
-                disabled={!complete(card)}
-                onClick={() => {
-                  setStep(step + 1);
-                  haptic('light');
-                }}
-              >
-                {step === core.length - 1 ? 'Перевірити' : 'Далі →'}
-              </button>
-            </div>
-          </div>
-        ) : (
-          <>
-            <p className="renewal-muted">
-              Основні відповіді готові. Уточнення не обов’язкові; пропуск не стане нулем.
-            </p>
-            {review.map((c) => (
-              <button
-                key={c.id}
-                className="renewal-inset text-left"
-                onClick={() =>
-                  setStep(
-                    Math.max(
-                      0,
-                      core.findIndex((x) => x.id === (core.includes(c) ? c.id : owner(c.id))),
-                    ),
-                  )
-                }
-              >
-                <b>{c.title}</b>
-                <div className="mt-2 flex flex-col gap-1 text-sm text-tx2">
-                  {c.fields
-                    .filter((f) => fieldVisibleV3(f, answers) && answers[f.id] != null)
-                    .map((f) => (
-                      <span key={f.id}>
-                        {f.label}: {answerLabelV3(f, answers[f.id])}
-                      </span>
-                    ))}
-                </div>
-              </button>
-            ))}
-            <button
-              className="renewal-button"
-              disabled={pending || !coreCompleteV3(slot, answers)}
-              onClick={onConfirm}
-            >
-              {pending ? 'Зберігаю…' : 'Підтвердити чек-ін'}
-            </button>
-            <button className="renewal-link" onClick={() => setStep(core.length - 1)}>
-              ← Повернутися
-            </button>
-          </>
-        )}
-      </div>
-    </div>
+export { AdaptiveFlow } from './AdaptiveFlow.tsx';
+
+function hasAnswers(slot: CheckinSlot, answers: Answers) {
+  if (answers.questionVersion === 2)
+    return (CHECKIN_CARDS[slot] ?? []).some((c) => c.fields.some((f) => answers[f.id] != null));
+  if (![3, 4].includes(Number(answers.questionVersion)))
+    return LEGACY_BLOCKS.find((b) => b.id === slot)?.qs.some((f) => answers[f.id] != null) ?? false;
+  const model = adaptiveModel(answers);
+  return [...(model.cards[slot] ?? []), ...model.details].some((c) =>
+    c.fields.some((f) => answers[f.id] != null),
   );
 }
-
 function AnswerSummary({ slot, answers }: { slot: CheckinSlot; answers: Answers }) {
-  const legacy = answers.questionVersion !== 3;
+  const legacy = ![2, 3, 4].includes(Number(answers.questionVersion));
+  const model = adaptiveModel(answers);
+  const catalog =
+    answers.questionVersion === 2
+      ? (CHECKIN_CARDS[slot] ?? [])
+      : [...(model.cards[slot] ?? []), ...model.details];
   const old = LEGACY_BLOCKS.find((b) => b.id === slot);
   return (
     <details className="mt-3">
@@ -284,6 +88,13 @@ function AnswerSummary({ slot, answers }: { slot: CheckinSlot; answers: Answers 
         Переглянути {legacy ? 'попередні ' : ''}відповіді
       </summary>
       <div className="mt-3 flex flex-col gap-3">
+        {slot !== 'morning' && typeof answers.planTextV4 === 'string' && (
+          <p className="renewal-inset text-sm">
+            <b>{String(answers.planSourceV4 ?? 'План')}</b>
+            <br />
+            {answers.planTextV4}
+          </p>
+        )}
         {legacy
           ? Object.entries(answers)
               .filter(([id]) => !['confirmed', 'questionVersion'].includes(id))
@@ -293,12 +104,12 @@ function AnswerSummary({ slot, answers }: { slot: CheckinSlot; answers: Answers 
                   {Array.isArray(v) ? v.join(', ') : String(v)}
                 </p>
               ))
-          : [...(CHECKIN_CARDS_V3[slot] ?? []), ...FOLLOWUP_CARDS_V3]
+          : catalog
               .flatMap((c) => c.fields)
               .filter((f) => answers[f.id] != null)
               .map((f) => (
                 <p className="text-sm" key={f.id}>
-                  {f.label}: <b>{answerLabelV3(f, answers[f.id])}</b>
+                  {f.label}: <b>{answerLabelV4(f, answers[f.id])}</b>
                 </p>
               ))}
         {typeof answers.answeredAtV3 === 'string' && (
@@ -327,10 +138,15 @@ export function CheckinV3Screen({
     extend = useExtendCheckin(),
     now = useTick(1000);
   const checkin = useCheckinProgress(query, now);
+  const { explanations } = usePresentation();
+  const [historyDate, setHistoryDate] = useState<string | null>(null);
   const [preview, setPreview] = useState<CheckinSlot>('morning'),
     [drafts, setDrafts] = useState<Record<string, Answers>>({}),
     [early, setEarly] = useState<string | null>(null),
     [selection, setSelection] = useState<{ date: string; slot: CheckinSlot } | null>(null);
+  const [localPending, setLocalPending] = useState<{ date: string; slot: CheckinSlot } | null>(
+    null,
+  );
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingDraft = useRef<{ slot: CheckinSlot; dateKey?: string; answers: Answers } | null>(
     null,
@@ -432,6 +248,14 @@ export function CheckinV3Screen({
   const serverNow = checkin.serverNow;
   const openWindows = openCheckinWindows(s, serverNow);
   const defaultWindow = preferredCheckinWindow(s, serverNow);
+  // Pin an existing unfinished draft once; a later server window must not replace it.
+  // This guarded adjustment changes its own condition on the next render.
+  if (!demo && !selection && !target?.date && defaultWindow) {
+    const value = checkinDayRecord(s, defaultWindow.dateKey)?.[defaultWindow.slot];
+    if (value && !value.confirmed && hasAnswers(defaultWindow.slot, value))
+      setSelection({ date: defaultWindow.dateKey, slot: defaultWindow.slot });
+  }
+
   const selected =
     selection ??
     (target?.date && slots.includes(target.slot as CheckinSlot)
@@ -459,10 +283,12 @@ export function CheckinV3Screen({
   const dayProgress = checkinDayProgress(s, serverNow, date, checkin.pending);
   const answers = (slot: CheckinSlot): Answers => {
     const stored = day?.[slot] ?? {};
-    const prior = stored.confirmed || stored.questionVersion === 3 ? stored : {};
-    return prior.confirmed
-      ? prior
-      : { ...prior, ...(drafts[draftKey(date, slot)] ?? readDraft(draftKey(date, slot))) };
+    const prior = stored.confirmed || [3, 4].includes(Number(stored.questionVersion)) ? stored : {};
+    const key = draftKey(date, slot);
+    let local = drafts[key] ?? readDraft(key);
+    if (!Object.keys(local).length && !Object.keys(prior).length)
+      local = readDraft(key.replace('checkin-v4:', 'checkin-v3:'));
+    return prior.confirmed ? prior : { questionVersion: 4, ...prior, ...local };
   };
   const current = completion?.date === date ? completion.answers : active ? answers(active) : {};
   // useTick can lag behind a just-received snapshot. Never turn a zero gap into +1 minute.
@@ -473,40 +299,44 @@ export function CheckinV3Screen({
       : Math.max(0, (s.checkinSlotEndsIn ?? 0) - elapsed);
   const gap = demo ? 0 : Math.max(0, (selectedWindow?.gapIn ?? s.checkinGapIn ?? 0) - elapsed);
   const allowed = !gap || early === `${date}:${active}`;
-  const nextSeconds = Math.max(
-    0,
-    Math.ceil(
-      (s.checkinNextIn ?? checkinClock(kyivParts(now).hour * 60).nextIn) * 60 - elapsedMs / 1000,
-    ),
-  );
+  const nextWindow = s.checkinWindows
+    ?.filter((w) => Date.parse(w.startAt) > serverNow)
+    .sort((a, b) => Date.parse(a.startAt) - Date.parse(b.startAt))[0];
   function selectWindow(dateKey: string, slot: CheckinSlot) {
     if (timer.current) clearTimeout(timer.current);
     timer.current = null;
     const draft = pendingDraft.current;
     pendingDraft.current = null;
+    setLocalPending(null);
     if (draft) save.mutate(draft);
     setSelection({ date: dateKey, slot });
     extend.reset();
   }
   function change(slot: CheckinSlot, key: string, value: unknown) {
     const old = answers(slot);
-    const changed = { ...old, [key]: value, questionVersion: 3 };
-    const next = clearHiddenV3(
+    const revision = old.questionVersion === 3 ? 3 : 4;
+    const changed = { ...old, [key]: value, questionVersion: revision };
+    const model = adaptiveModel(changed);
+    const next = model.clearHidden(
       slot,
       changed,
-      adaptiveContext({ ...s.checkinRaw.records, [date]: day ?? {} }, date, slot),
+      model.context({ ...s.checkinRaw.records, [date]: day ?? {} }, date, slot),
     );
     // Explicit clears cross the merge boundary, including values hidden by a changed gate.
-    for (const k of Object.keys(old)) if (!(k in next) && k.endsWith('V3')) next[k] = null;
+    for (const k of Object.keys(old))
+      if (!(k in next) && (k.endsWith('V3') || k.endsWith('V4') || k.endsWith('V4Other')))
+        next[k] = null;
     const storageKey = draftKey(date, slot);
     writeDraft(storageKey, next);
     setDrafts((v) => ({ ...v, [storageKey]: next }));
     if (timer.current) clearTimeout(timer.current);
     pendingDraft.current = { slot, dateKey: demo ? undefined : date, answers: next };
+    setLocalPending({ date, slot });
     timer.current = setTimeout(() => {
       timer.current = null;
       const draft = pendingDraft.current;
       pendingDraft.current = null;
+      setLocalPending(null);
       if (draft) save.mutate(draft);
     }, 1200);
   }
@@ -529,11 +359,12 @@ export function CheckinV3Screen({
     if (timer.current) clearTimeout(timer.current);
     timer.current = null;
     pendingDraft.current = null;
+    setLocalPending(null);
     save.mutate(
       {
         slot,
         dateKey: demo ? undefined : date,
-        answers: { ...answers(slot), questionVersion: 3, confirmed: true },
+        answers: { ...answers(slot), confirmed: true },
       },
       {
         onSuccess: () => {
@@ -555,12 +386,22 @@ export function CheckinV3Screen({
   }
   return (
     <div className="checkin-screen flex flex-col gap-5">
-      <PageHeading
-        eyebrow="ПАУЗА ДЛЯ СЕБЕ"
-        title="Помітити себе."
-        accent="У своєму ритмі."
-        description="Три пов’язані записи. Чіткі питання й уточнення лише за потреби."
-      />
+      <div className="flex items-center justify-between gap-3">
+        <h1 className="text-2xl font-semibold">Чек-ін</h1>
+        <button
+          type="button"
+          className="renewal-link text-sm"
+          onClick={() => {
+            const panel = document.getElementById('checkin-preferences');
+            if (panel instanceof HTMLDetailsElement) {
+              panel.open = true;
+              panel.scrollIntoView({ block: 'start', behavior: 'auto' });
+            }
+          }}
+        >
+          Розклад і нагадування
+        </button>
+      </div>
       <section>
         <p className="renewal-chart-note mb-2">
           {date === kyivParts(serverNow).date
@@ -581,7 +422,8 @@ export function CheckinV3Screen({
         />
       </section>
       {demo && (
-        <section className="renewal-inset">
+        <details className="renewal-inset">
+          <summary className="renewal-link cursor-pointer">Демо · змінити час доби</summary>
           <p className="renewal-chart-note mb-3">
             Демо: обери час доби. Особисті записи не змінюються.
           </p>
@@ -603,7 +445,7 @@ export function CheckinV3Screen({
           >
             Скинути демо чек-іну
           </button>
-        </section>
+        </details>
       )}
       {!demo && (selected || openWindows.length > 1) && (
         <section className="renewal-inset">
@@ -670,24 +512,30 @@ export function CheckinV3Screen({
         </section>
       )}
       {!completion && (!active || current.confirmed === true) && (
-        <section className="renewal-card text-center">
+        <section className="renewal-inset checkin-waiting">
           <span className="renewal-pill">
             {active ? '✓ Чек-ін підтверджено' : 'Пауза між чек-інами'}
           </span>
-          <h2 className="text-xl font-semibold mt-4">Можна повернутись до дня</h2>
-          <p className="renewal-muted mt-2">
-            Наступне вікно —{' '}
-            {active === 'morning'
-              ? `день о ${p.schedule.afternoon}`
-              : active === 'afternoon'
-                ? `вечір о ${p.schedule.evening}`
-                : `ранок о ${p.schedule.morning}`}
-          </p>
-          <div className="renewal-focus-clock" role="timer">
-            {String(Math.floor(nextSeconds / 3600)).padStart(2, '0')}:
-            {String(Math.floor((nextSeconds % 3600) / 60)).padStart(2, '0')}:
-            {String(nextSeconds % 60).padStart(2, '0')}
-          </div>
+          {nextWindow ? (
+            <p className="renewal-muted mt-2">
+              Наступний{' '}
+              {{ morning: 'ранковий', afternoon: 'денний', evening: 'вечірній' }[nextWindow.slot]}{' '}
+              чек-ін ·{' '}
+              {new Date(nextWindow.startAt).toLocaleString('uk-UA', {
+                timeZone: 'Europe/Kyiv',
+                day: '2-digit',
+                month: '2-digit',
+                hour: '2-digit',
+                minute: '2-digit',
+              })}
+            </p>
+          ) : (
+            <p className="renewal-chart-note mt-2">
+              {demo
+                ? 'Обери інший час доби в демо вище.'
+                : 'Час наступного вікна поки недоступний.'}
+            </p>
+          )}
         </section>
       )}
       {gap > 0 && !current.confirmed && !allowed && (
@@ -702,85 +550,113 @@ export function CheckinV3Screen({
           </button>
         </section>
       )}
-      {slots.map((slot) => {
-        const finishing = completion?.slot === slot && completion.date === date ? completion : null;
-        const value = finishing
-            ? { ...finishing.answers, confirmed: finishing.phase !== 'saving' }
-            : answers(slot),
-          live = slot === active || finishing != null,
-          confirmed = value.confirmed === true;
-        return (
-          <section
-            key={`${date}:${slot}`}
-            ref={(node) => {
-              slotNodes.current[slot] = node ?? undefined;
-            }}
-            className="renewal-card checkin-slot-card"
-            style={finishing ? { minHeight: finishing.height } : undefined}
-            data-checkin-slot={slot}
-            data-completion={finishing?.phase}
-            aria-busy={finishing?.phase === 'saving' || undefined}
-            onClickCapture={() => {
-              if (live && !demo && !selected && s.checkinWindows) setSelection({ date, slot });
-            }}
-          >
-            <div className="flex items-center justify-between gap-3">
-              <h2 className="font-semibold">
-                {icons[slot]} {names[slot]}
-              </h2>
-              <span className="renewal-chart-note">
-                {confirmed
-                  ? '✓ Підтверджено'
-                  : live
-                    ? demo
-                      ? 'Демо проходження'
-                      : `Чернетка · ще ${left} хв`
-                    : dayProgress.items.find((item) => item.slot === slot)?.description}
-              </span>
-            </div>
-            {finishing && finishing.phase !== 'saving' ? (
-              <div
-                className="checkin-completion"
-                style={{ top: finishing.feedbackTop }}
-                role="status"
-                aria-live="polite"
-              >
-                <svg className="checkin-completion-mark" viewBox="0 0 48 48" aria-hidden="true">
-                  <circle cx="24" cy="24" r="21" />
-                  <path d="m14 24 7 7 14-15" />
-                </svg>
-                <h3 className="text-lg font-semibold">Чек-ін збережено</h3>
-                <p className="renewal-chart-note">
-                  {names[slot]} · відповіді вже у твоїй статистиці
-                </p>
+      {[...slots]
+        .sort((a, b) => Number(b === active) - Number(a === active))
+        .map((slot) => {
+          const finishing =
+            completion?.slot === slot && completion.date === date ? completion : null;
+          const value = finishing
+              ? { ...finishing.answers, confirmed: finishing.phase !== 'saving' }
+              : answers(slot),
+            live = slot === active || finishing != null,
+            confirmed = value.confirmed === true;
+          const Flow = value.questionVersion === 3 ? LegacyAdaptiveFlow : AdaptiveFlow;
+          return (
+            <section
+              key={`${date}:${slot}`}
+              ref={(node) => {
+                slotNodes.current[slot] = node ?? undefined;
+              }}
+              className={`renewal-card checkin-slot-card ${live && !confirmed ? 'is-live' : 'is-folded'}`}
+              style={finishing ? { minHeight: finishing.height } : undefined}
+              data-checkin-slot={slot}
+              data-completion={finishing?.phase}
+              aria-busy={finishing?.phase === 'saving' || undefined}
+              onClickCapture={() => {
+                if (live && !demo && !selected && s.checkinWindows) setSelection({ date, slot });
+              }}
+            >
+              <div className="flex items-center justify-between gap-3">
+                <h2 className="font-semibold">
+                  {icons[slot]} {names[slot]}
+                </h2>
+                <span className="renewal-chart-note">
+                  {confirmed
+                    ? '✓ Підтверджено'
+                    : live
+                      ? demo
+                        ? 'Демо проходження'
+                        : `${hasAnswers(slot, value) ? 'Чернетка' : 'Відкрито'} · ще ${left} хв`
+                      : dayProgress.items.find((item) => item.slot === slot)?.description}
+                </span>
               </div>
-            ) : live && !confirmed && allowed ? (
-              <div className="mt-5" inert={finishing?.phase === 'saving' || undefined}>
-                <AdaptiveFlow
-                  key={`${date}:${slot}`}
-                  slot={slot}
-                  date={date}
-                  answers={value}
-                  morning={answers('morning')}
-                  p={p}
-                  pending={save.isPending || finishing?.phase === 'saving'}
-                  onChange={(key, v) => change(slot, key, v)}
-                  onConfirm={() => confirm(slot)}
-                  context={adaptiveContext(
-                    { ...s.checkinRaw.records, [date]: day ?? {} },
-                    date,
-                    slot,
+              {finishing && finishing.phase !== 'saving' ? (
+                <div
+                  className="checkin-completion"
+                  style={{ top: finishing.feedbackTop }}
+                  role="status"
+                  aria-live="polite"
+                >
+                  <svg className="checkin-completion-mark" viewBox="0 0 48 48" aria-hidden="true">
+                    <circle cx="24" cy="24" r="21" />
+                    <path d="m14 24 7 7 14-15" />
+                  </svg>
+                  <h3 className="text-lg font-semibold">Чек-ін збережено</h3>
+                  <p className="renewal-chart-note">
+                    {names[slot]} · відповіді вже у твоїй статистиці
+                  </p>
+                </div>
+              ) : live && !confirmed && allowed ? (
+                <div className="mt-5" inert={finishing?.phase === 'saving' || undefined}>
+                  {value.questionVersion === 3 && (
+                    <p className="renewal-chart-note mb-4">
+                      Цю чернетку почато в попередній формі. Заверши її зі збереженими відповідями;
+                      наступний запис відкриється в оновленій.
+                    </p>
                   )}
-                />
-              </div>
-            ) : Object.keys(value).length ? (
-              <AnswerSummary slot={slot} answers={value} />
-            ) : (
-              <p className="renewal-chart-note mt-3">Відповіді з’являться після проходження.</p>
-            )}
-          </section>
-        );
-      })}
+                  <Flow
+                    key={`${date}:${slot}`}
+                    slot={slot}
+                    nowMs={serverNow}
+                    date={date}
+                    answers={value}
+                    morning={answers('morning')}
+                    p={p}
+                    pending={save.isPending || finishing?.phase === 'saving'}
+                    saveStatus={
+                      localPending?.slot === slot && localPending.date === date
+                        ? 'Чернетка на пристрої · очікує збереження'
+                        : save.variables?.slot === slot && save.isPending
+                          ? 'Зберігаю чернетку…'
+                          : save.variables?.slot === slot && save.error
+                            ? 'Чернетка на пристрої · не вдалося синхронізувати'
+                            : save.variables?.slot === slot && save.isSuccess
+                              ? 'Чернетку збережено'
+                              : 'Відповіді зберігаються автоматично'
+                    }
+                    onChange={(key, v) => change(slot, key, v)}
+                    onConfirm={() => confirm(slot)}
+                    context={adaptiveModel(value).context(
+                      { ...s.checkinRaw.records, [date]: day ?? {} },
+                      date,
+                      slot,
+                    )}
+                  />
+                </div>
+              ) : hasAnswers(slot, value) ? (
+                <AnswerSummary slot={slot} answers={value} />
+              ) : (
+                <>
+                  {explanations && (
+                    <p className="renewal-chart-note mt-3">
+                      Відповіді з’являться після проходження.
+                    </p>
+                  )}
+                </>
+              )}
+            </section>
+          );
+        })}
       {save.error && (
         <p role="alert" className="renewal-inset text-neg">
           {save.error.message}
@@ -804,25 +680,63 @@ export function CheckinV3Screen({
       )}
       <section className="renewal-card">
         <h2 className="font-semibold">Ритм тижня</h2>
-        <p className="renewal-chart-note mt-1">
-          Підтверджені чек-іни; чернетки не позначені як завершені.
-        </p>
+        {explanations && (
+          <p className="renewal-chart-note mt-1">
+            Підтверджені чек-іни; чернетки не позначені як завершені.
+          </p>
+        )}
         <div className="renewal-week-grid mt-4">
           {Array.from({ length: 7 }, (_, i) => {
             const d = shiftDate(date, i - 6);
             const count = checkinDayProgress(s, serverNow, d, checkin.pending).completed;
             return (
-              <div key={d}>
+              <button
+                type="button"
+                key={d}
+                className="checkin-history-day"
+                aria-pressed={historyDate === d}
+                aria-label={`Переглянути чек-іни за ${d}`}
+                onClick={() => setHistoryDate(historyDate === d ? null : d)}
+              >
                 <small>
                   {new Date(d + 'T12:00:00Z').toLocaleDateString('uk-UA', { weekday: 'short' })}
                 </small>
                 <span data-filled={count > 0}>{count ? `${count}/3` : '·'}</span>
                 <small>{d.slice(8)}</small>
-              </div>
+              </button>
             );
           })}
         </div>
       </section>
+      {historyDate && (
+        <section className="renewal-card" aria-label="Історія чек-інів">
+          <div className="flex justify-between">
+            <h2 className="font-semibold">
+              {historyDate.slice(8)}.{historyDate.slice(5, 7)} · записи
+            </h2>
+            <button className="renewal-link" onClick={() => setHistoryDate(null)}>
+              Закрити
+            </button>
+          </div>
+          {slots.map((slot) => {
+            const entry = checkinDayRecord(s, historyDate, kyivParts(serverNow).date)?.[slot] ?? {};
+            return (
+              <div className="renewal-inset mt-3" key={slot}>
+                <b>{names[slot]}</b> ·{' '}
+                {entry.confirmed
+                  ? '✓ Підтверджено'
+                  : Object.keys(entry).length
+                    ? 'Чернетка · не підтверджено'
+                    : 'Немає запису'}
+                {Object.keys(entry).length > 0 && <AnswerSummary slot={slot} answers={entry} />}
+              </div>
+            );
+          })}
+          <Link to="/stats" className="renewal-link mt-4">
+            Динаміка й детальні спостереження ↗
+          </Link>
+        </section>
+      )}
       <AdaptivePreferences />
     </div>
   );

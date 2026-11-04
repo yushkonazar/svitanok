@@ -1,4 +1,5 @@
 import { loadSettings, loadStats } from '../../kv-store.mjs';
+import { adaptiveModel } from './model.mjs';
 import { kyivParts, shiftDate } from '../finance/planning.mjs';
 import {
   CHECKIN_WINDOW_SLOTS,
@@ -115,20 +116,36 @@ export async function renderCheckinNotice(env, target, nowMs, chatId) {
   const w = (await checkinWindows(env, prefs, nowMs)).find(
     (w) => w.dateKey === target.dateKey && w.slot === target.slot && w.key === target.key && w.open,
   );
-  if (!w || (await loadStats(env)).checkins?.[w.dateKey]?.[w.slot]?.confirmed) return null;
-  return checkinNoticePayload(env, w, chatId);
+  if (!w) return null;
+  const record = (await loadStats(env)).checkins?.[w.dateKey]?.[w.slot] ?? {};
+  if (record.confirmed) return null;
+  return checkinNoticePayload(env, w, chatId, record);
 }
-/** @param {Env} env @param {import('./windows.mjs').CheckinWindow & {extensionAvailable:boolean}} w @param {string|number|null} chatId */
-export function checkinNoticePayload(env, w, chatId) {
+/** @param {string} slot @param {KvBlob} [record] */
+function checkinDraftLabel(slot, record = {}) {
+  const model = adaptiveModel(record);
+  return [...(model.cards[slot] ?? []), ...model.details].some((c) =>
+    c.fields.some((f) => record[f.id] != null),
+  )
+    ? 'Продовжити чек-ін'
+    : 'Почати чек-ін';
+}
+/** @param {Env} env @param {import('./windows.mjs').CheckinWindow & {extensionAvailable:boolean}} w @param {string|number|null} chatId @param {KvBlob} [record] */
+export function checkinNoticePayload(env, w, chatId, record = {}) {
   const names = { morning: 'Ранковий', afternoon: 'Денний', evening: 'Вечірній' };
-  const open = checkinOpenButton(env, w.dateKey, w.slot, chatId);
+  const open = checkinOpenButton(env, w.dateKey, w.slot, chatId, checkinDraftLabel(w.slot, record));
+  const topics = {
+    morning: 'сон, самопочуття й план на день',
+    afternoon: 'як ти зараз і як ідуть справи',
+    evening: 'підсумок дня, час для себе й сон',
+  };
   /** @type {Record<string,unknown>[][]} */ const buttons = open ? [[open]] : [];
   if (w.extensionAvailable)
     buttons.push([
       { text: 'Ще годину', callback_data: `ci:extend:${w.dateKey}:${w.slot}:${w.key}` },
     ]);
   return {
-    text: `${names[w.slot]} чек-ін відкритий до ${checkinDeadlineLabel(w.endAt)}.`,
+    text: `${names[w.slot]} чек-ін: ${topics[w.slot]}. Доступний до ${checkinDeadlineLabel(w.endAt)}.`,
     reply_markup: { inline_keyboard: buttons },
   };
 }
@@ -150,6 +167,10 @@ export async function checkinExtensionCallback(env, parsed, nowMs) {
     result.window.dateKey,
     result.window.slot,
     parsed.chatId ?? null,
+    checkinDraftLabel(
+      result.window.slot,
+      (await loadStats(env)).checkins?.[result.window.dateKey]?.[result.window.slot],
+    ),
   );
   try {
     if (parsed.chatId != null && parsed.messageId != null) {

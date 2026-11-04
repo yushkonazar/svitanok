@@ -159,7 +159,7 @@ it('explains empty quiet hours and persists local appearance settings', async ()
 });
 it('previews the actual check-in schedule, rejects invalid order, and waits for acknowledgement', async () => {
   await setup();
-  fireEvent.click(screen.getByText('Мій ритм і джерела даних'));
+  fireEvent.click(screen.getByText('Розклад і нагадування'));
   expect(screen.getByText(/Ранок 05:00–13:00/)).toBeInTheDocument();
   const time = screen.getByLabelText('Початок денного');
   fireEvent.change(time, { target: { value: '04:00' } });
@@ -184,6 +184,6 @@ it('previews the actual check-in schedule, rejects invalid order, and waits for 
     cache.getQueryData<SettingsResponse>(['settings'])!.settings.checkin?.schedule.afternoon,
   ).toBe('12:00');
   expect(
-    within(screen.getByText('Мій ритм і джерела даних').parentElement!).getByRole('status'),
+    within(screen.getByText('Розклад і нагадування').parentElement!).getByRole('status'),
   ).toHaveTextContent('Розклад збережено');
 });

@@ -1,3 +1,5 @@
+import { fieldVisibleV4 } from '../../../../core/checkin/adaptive-v4.mjs';
+import { usePresentation } from '../../lib/presentation.ts';
 import { fieldVisibleV3, validValueV3 } from '../../../../core/checkin/adaptive.mjs';
 import { useEffect, useId, useRef, useState } from 'react';
 import { useStats, useSaveCheckin, useSettings } from '../../api/hooks.ts';
@@ -79,8 +81,38 @@ export function FieldInput({
 }) {
   const id = useId(),
     [limitMessage, setLimitMessage] = useState('');
-  const adaptive = answers.questionVersion === 3;
-  if (!(adaptive ? fieldVisibleV3(field, answers) : fieldVisible(field, answers))) return null;
+  const { explanations } = usePresentation();
+  const modern = answers.questionVersion === 4;
+  const adaptive = modern || answers.questionVersion === 3;
+  const [pins, setPins] = useState<string[]>(() => {
+    try {
+      const saved: unknown = JSON.parse(
+        localStorage.getItem('svitanok:checkin:mood-pins:v1') ?? '[]',
+      );
+      return Array.isArray(saved)
+        ? saved.filter((x): x is string => typeof x === 'string').slice(0, 6)
+        : [];
+    } catch {
+      return [];
+    }
+  });
+  const [displayPins] = useState(pins);
+  const [suggestedMood] = useState(() =>
+    Number(answers.mood) <= 2
+      ? ['poor_sleep', 'fatigue', 'little_time', 'partner_hard', 'money', 'hard_no_event']
+      : answers.mood === 3
+        ? ['weather_good', 'partner_good', 'rest', 'fatigue', 'little_time', 'success']
+        : ['weather_good', 'partner_good', 'slept_well', 'rest', 'success', 'calm_day'],
+  );
+
+  if (
+    !(modern
+      ? fieldVisibleV4(field, answers)
+      : adaptive
+        ? fieldVisibleV3(field, answers)
+        : fieldVisible(field, answers))
+  )
+    return null;
   const value = answers[field.id];
   const pick = (v: string | number) => {
     haptic('light');
@@ -147,8 +179,81 @@ export function FieldInput({
         {field.label}
         {field.optional && <span className="text-xs font-normal text-tx3"> · за бажанням</span>}
       </label>
-      {field.help && <p className="renewal-chart-note">{field.help}</p>}
-      {adaptive && options.some(([label]) => label.includes(' :: ')) ? (
+      {field.help && (!modern || explanations) && (
+        <p className="renewal-chart-note">{field.help}</p>
+      )}
+      {modern && field.id === 'moodFactorsV4' ? (
+        <div className="flex flex-col gap-3" aria-labelledby={`${id}-label`}>
+          <div className="flex flex-wrap gap-2">
+            {(displayPins.length
+              ? options.filter(([, v]) => displayPins.includes(String(v)))
+              : options.filter(([, v]) => suggestedMood.includes(String(v)))
+            ).map(([label, v]) => option(label, v))}
+          </div>
+          <details className="checkin-option-group">
+            <summary>Ще причини</summary>
+            <div className="flex flex-col gap-4 mt-3">
+              {[
+                ...new Set(
+                  options.map(([label]) =>
+                    label.includes(' :: ') ? label.split(' :: ')[0] : 'Інші причини',
+                  ),
+                ),
+              ].map((group) => (
+                <div key={group}>
+                  <p className="text-xs text-tx3 mb-2">{group}</p>
+                  <div className="flex flex-wrap gap-2">
+                    {options
+                      .filter(
+                        ([label, v]) =>
+                          (label.includes(' :: ') ? label.split(' :: ')[0] : 'Інші причини') ===
+                            group &&
+                          !(displayPins.length
+                            ? displayPins.includes(String(v))
+                            : suggestedMood.includes(String(v))),
+                      )
+                      .map(([label, v]) => option(label, v))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </details>
+          <details>
+            <summary className="renewal-link text-xs">Закріпити свої часті причини</summary>
+            <div className="flex flex-col gap-2 mt-3">
+              {options
+                .filter(([, v]) => !['other', 'none', 'unknown'].includes(String(v)))
+                .map(([label, v]) => (
+                  <label key={v} className="flex gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={pins.includes(String(v))}
+                      onChange={() => {
+                        const next = pins.includes(String(v))
+                          ? pins.filter((x) => x !== v)
+                          : [...pins, String(v)].slice(0, 6);
+                        setPins(next);
+                        try {
+                          localStorage.setItem(
+                            'svitanok:checkin:mood-pins:v1',
+                            JSON.stringify(next),
+                          );
+                        } catch {
+                          /* Optional device preference. */
+                        }
+                      }}
+                    />
+                    {label.split(' :: ').at(-1)}
+                  </label>
+                ))}
+              <p className="renewal-chart-note">
+                До шести причин на цьому пристрої. Новий порядок — із наступного відкриття; під час
+                відповіді кнопки залишаються на місцях.
+              </p>
+            </div>
+          </details>
+        </div>
+      ) : adaptive && options.some(([label]) => label.includes(' :: ')) ? (
         <div className="flex flex-col gap-3" aria-labelledby={`${id}-label`}>
           {[
             ...new Set(
@@ -275,17 +380,19 @@ export function FieldInput({
             {(field.id.startsWith('sleepMinutes')
               ? [240, 360, 420, 480, 540]
               : [0, 15, 30, 60, 120]
-            ).map((n) => (
-              <button
-                type="button"
-                key={n}
-                className="renewal-pill"
-                aria-pressed={value === n}
-                onClick={() => onChange(field.id, n)}
-              >
-                {n >= 60 ? `${n / 60} год` : `${n} хв`}
-              </button>
-            ))}
+            )
+              .filter((n) => !modern || n >= (field.min ?? 0))
+              .map((n) => (
+                <button
+                  type="button"
+                  key={n}
+                  className="renewal-pill"
+                  aria-pressed={value === n}
+                  onClick={() => onChange(field.id, n)}
+                >
+                  {n >= 60 ? `${n / 60} год` : `${n} хв`}
+                </button>
+              ))}
           </div>
           {value != null &&
             !(adaptive ? validValueV3(field, value) : validFieldValue(field, value)) && (

@@ -442,7 +442,8 @@ describe('adaptive statistics: observations and denominators', () => {
     const metrics = adaptiveMetrics(a.current);
     expect(metrics['evening.learningRangeV3'].counts).toEqual({ '1_2h': 1 });
     expect(metrics['evening.learningRangeV3'].average).toBeUndefined();
-    expect(a.learning).toBe(1);
+    expect(a.learning).toBe(0);
+    expect(a.legacyLearning).toBe(1);
   });
   it('preserves v3 fields through the frontend schema and sends bounded assistant metrics', () => {
     const s = write(emptyStore(), 'morning', { ...morning, confirmed: true });

@@ -56,6 +56,57 @@ beforeEach(() => {
 afterEach(() => vi.useRealTimers());
 
 describe('POST /api/event — checkin, locked-контракт', () => {
+  it('accepts v4 manual details and derives their timestamps and next sleep date on the server', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-11-04T22:30:00Z'));
+    kv.set(
+      'settings',
+      JSON.stringify({
+        checkin: {
+          version: 3,
+          schedule: { morning: '05:00', afternoon: '18:00', evening: '22:00', end: '04:00' },
+        },
+      }),
+    );
+    const initData = await buildInitData(OWNER, BOT_TOKEN);
+    const response = await postCheckin({
+      type: 'checkin',
+      questionVersion: 4,
+      slot: 'evening',
+      dateKey: '2026-11-04',
+      energy: 2,
+      mood: 3,
+      satisfactionV4: 4,
+      priorityOutcomeV4: 'noplan',
+      developmentActualV4: ['course'],
+      courseRangeV4: '30_59',
+      courseComprehensionV4: 5,
+      coursePracticeV4: 'not_tried',
+      freeTimeV4: 'zero',
+      napV4: 'unknown',
+      bedtimePlanV4: '01:30',
+      detailTopicsV4: ['work', 'mood-context', 'development-course'],
+      workLoadV4: 1,
+      workFactorsV4: ['few_orders'],
+      moodFactorsV4: ['weather_good', 'partner_hard'],
+      confirmedAtV3: '1900-01-01',
+      bedtimeDateV4: '1900-01-01',
+      confirmed: true,
+      initData,
+    });
+    expect(response.status).toBe(200);
+    const records = JSON.parse(kv.get('stats')!).checkins;
+    const a = records['2026-11-04'].evening;
+    expect(a.questionVersion).toBe(4);
+    expect(a.courseRangeV4).toBe('30_59');
+    expect(a.workFactorsV4).toEqual(['few_orders']);
+    expect(a.moodFactorsV4).toHaveLength(2);
+    expect(a.confirmedAtV3).toBe('2026-11-04T22:30:00.000Z');
+    expect(a.bedtimeDateV4).toBe('2026-11-05');
+    expect(a.planSourceV4).toBe('Власна оцінка');
+    expect(records['2026-11-05']).toBeUndefined();
+    expect(a.napMinutesV4).toBeUndefined();
+  });
   it('v3 validates the new core and ignores forged branch/time metadata', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-10-06T09:00:00Z'));
