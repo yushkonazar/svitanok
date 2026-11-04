@@ -77,12 +77,11 @@ export function checkinPathForStartParam(param) {
   }
   return `/checkin?date=${m[1]}&slot=${m[2]}`;
 }
-/** @param {Env} env @param {string} date @param {string} slot @param {string|number|null} chatId */
-export function checkinOpenButton(env, date, slot, chatId) {
+/** @param {Env} env @param {string} date @param {string} slot @param {string|number|null} chatId @param {string} [text] */
+export function checkinOpenButton(env, date, slot, chatId, text = 'Почати чек-ін') {
   const param = `checkin_${date}_${slot}`,
     path = checkinPathForStartParam(param);
   if (!path) return null;
-  const text = 'Відкрити чек-ін';
   const username = String(env.TELEGRAM_BOT_USERNAME ?? '')
     .trim()
     .replace(/^@/, '');

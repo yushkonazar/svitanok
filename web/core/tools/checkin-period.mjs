@@ -38,9 +38,9 @@ function window(checkins, from, to, days) {
   for (const [date, record] of Object.entries(checkins ?? {})) {
     if (date < from || date > to || !record || typeof record !== 'object') continue;
     if (
-      [2, 3].includes(record.morning?.questionVersion) ||
-      [2, 3].includes(record.evening?.questionVersion) ||
-      [2, 3].includes(record.afternoon?.questionVersion)
+      [2, 3, 4].includes(record.morning?.questionVersion) ||
+      [2, 3, 4].includes(record.evening?.questionVersion) ||
+      [2, 3, 4].includes(record.afternoon?.questionVersion)
     )
       continue;
     recordedDays += 1;
@@ -154,6 +154,6 @@ export function buildCheckinPeriod(checkins, todayKey, days) {
     retentionDays: 365,
     sourceCoverage:
       duration * 2 > 365 ? 'previous_period_may_be_incomplete' : 'within_retention_window',
-    rule: 'Legacy, confirmed v2 and confirmed v3 observations are separate. Missing values are excluded; explicit no sleep is 0 hours; naps without a duration are unknown. Correlation is reported only with at least 14 pairs and never implies causation.',
+    rule: 'Legacy, confirmed v2 and confirmed adaptive v3/v4 observations are separate. V4 study, course and personal reading are independent; legacy combined learning/course remains combined. Reasons are self-reported context, never proven causes. Evening priority outcome refers to the current plan, including an explicit afternoon change, not necessarily the original morning plan. Missing values are excluded; explicit no sleep is 0 hours; naps without a duration are unknown. Correlation is reported only with at least 14 pairs and never implies causation.',
   };
 }

@@ -1,3 +1,4 @@
+import { adaptiveCatalog, adaptiveModel } from '../../../../core/checkin/model.mjs';
 import { useTick } from '../../lib/useTick.ts';
 import { useState } from 'react';
 import type { Stats, CheckinSlot } from '../../api/schema.ts';
@@ -11,11 +12,7 @@ import {
   pointsV3,
   type AdaptiveDay,
 } from '../../../../core/checkin/adaptive-observations.mjs';
-import {
-  CHECKIN_CARDS_V3,
-  FOLLOWUP_CARDS_V3,
-  answerLabelV3,
-} from '../../../../core/checkin/adaptive.mjs';
+import { answerLabelV3 } from '../../../../core/checkin/adaptive.mjs';
 import { ObservationChart } from '../charts/ObservationChart.tsx';
 import { ObservationReview } from './ObservationReview.tsx';
 import { WeeklyReview } from './WeeklyReview.tsx';
@@ -26,7 +23,7 @@ const fmt = (n: number | null) =>
   n == null ? '—' : n.toLocaleString('uk-UA', { maximumFractionDigits: 1 });
 const labelDate = (d: string) =>
   new Date(d + 'T12:00:00Z').toLocaleDateString('uk-UA', { day: 'numeric', month: 'long' });
-function Distribution({
+function RevisionDistribution({
   days,
   slot,
   fieldId,
@@ -37,9 +34,7 @@ function Distribution({
   fieldId: string;
   title: string;
 }) {
-  const field = [...(CHECKIN_CARDS_V3[slot] ?? []), ...FOLLOWUP_CARDS_V3]
-    .flatMap((c) => c.fields)
-    .find((f) => f.id === fieldId);
+  const field = adaptiveCatalog.flatMap((c) => c.fields).find((f) => f.id === fieldId);
   const data = frequenciesV3(days, slot, fieldId);
   return (
     <div className="adaptive-distribution">
@@ -74,6 +69,30 @@ function Distribution({
     </div>
   );
 }
+function Distribution(props: {
+  days: AdaptiveDay[];
+  slot: CheckinSlot;
+  fieldId: string;
+  title: string;
+}) {
+  const modern = props.fieldId.replace(/V3$/, 'V4');
+  const hasModern =
+    modern !== props.fieldId &&
+    adaptiveCatalog.some((c) => c.fields.some((f) => f.id === modern)) &&
+    frequenciesV3(props.days, props.slot, modern).n > 0;
+  const hasOld = frequenciesV3(props.days, props.slot, props.fieldId).n > 0;
+  return (
+    <>
+      {(!hasModern || hasOld) && (
+        <RevisionDistribution
+          {...props}
+          title={hasModern ? `${props.title} · попередні питання` : props.title}
+        />
+      )}
+      {hasModern && <RevisionDistribution {...props} fieldId={modern} />}
+    </>
+  );
+}
 function AdditionalDetails({
   days,
   slot,
@@ -83,9 +102,13 @@ function AdditionalDetails({
   slot: CheckinSlot;
   ids: string[];
 }) {
-  const fields = FOLLOWUP_CARDS_V3.flatMap((c) => c.fields).filter(
-    (f) => ids.includes(f.id) && frequenciesV3(days, slot, f.id).n > 0,
-  );
+  const fields = adaptiveCatalog
+    .flatMap((c) => c.fields)
+    .filter(
+      (f) =>
+        (ids.includes(f.id) || ids.includes(f.id.replace(/V4$/, 'V3'))) &&
+        frequenciesV3(days, slot, f.id).n > 0,
+    );
   if (!fields.length) return null;
   return (
     <details className="checkin-option-group">
@@ -128,9 +151,8 @@ function RecordedDay({ day }: { day: AdaptiveDay }) {
       </p>
       {slots.map((slot) => {
         const a = day[slot];
-        const fields = [...(CHECKIN_CARDS_V3[slot] ?? []), ...FOLLOWUP_CARDS_V3].flatMap(
-          (c) => c.fields,
-        );
+        const model = adaptiveModel(a);
+        const fields = [...(model.cards[slot] ?? []), ...model.details].flatMap((c) => c.fields);
         return (
           <details key={slot} className="checkin-option-group">
             <summary>
@@ -142,6 +164,13 @@ function RecordedDay({ day }: { day: AdaptiveDay }) {
                   <p className="text-tx3">
                     {new Date(a.confirmedAtV3).toLocaleString('uk-UA', { timeZone: 'Europe/Kyiv' })}{' '}
                     · Київ
+                  </p>
+                )}
+                {a.planTextV4 && (
+                  <p className="renewal-inset">
+                    <b>{a.planSourceV4}</b>
+                    <br />
+                    {a.planTextV4}
                   </p>
                 )}
                 {fields
@@ -180,7 +209,7 @@ export function AdaptiveReview({
     ...(demo ? demoAdaptive(to) : {}),
     ...Object.fromEntries(
       Object.entries(s.checkinRaw.records).filter(([, r]) =>
-        Object.values(r).some((a) => a?.questionVersion === 3),
+        Object.values(r).some((a) => [3, 4].includes(Number(a?.questionVersion))),
       ),
     ),
     [to]: {
@@ -206,6 +235,50 @@ export function AdaptiveReview({
   );
   return (
     <>
+      {a.current.some((d) => slots.some((slot) => d[slot].questionVersion === 4)) && (
+        <details className="renewal-card">
+          <summary className="font-semibold">Навчання, курс і нові спостереження</summary>
+          <div className="flex flex-col gap-6 mt-4">
+            <p className="renewal-chart-note">
+              Старі об’єднані відповіді про навчання / курс: {a.legacyLearning} днів. Їх не
+              розподілено між новими напрямками.
+            </p>
+            {Object.entries(a.directionOutcomes).map(([id, result]) => (
+              <p key={id} className="text-sm">
+                {id === 'study' ? 'Навчання' : id === 'course' ? 'Курс' : 'Читання'}: задумано{' '}
+                {result.planned} днів; відбулося у {result.met} із {result.observed} днів із відомою
+                вечірньою відповіддю.
+              </p>
+            ))}
+            {[
+              ...new Map(
+                adaptiveCatalog
+                  .flatMap((c) => c.fields)
+                  .filter(
+                    (f) =>
+                      /^(study|course|read)/.test(f.id) &&
+                      /V4$/.test(f.id) &&
+                      f.options &&
+                      !['energy', 'mood'].includes(f.id),
+                  )
+                  .map((f) => [f.id, f]),
+              ).values(),
+            ].flatMap((f) =>
+              slots
+                .filter((slot) => frequenciesV3(a.current, slot, f.id).n > 0)
+                .map((slot) => (
+                  <RevisionDistribution
+                    key={`${slot}:${f.id}`}
+                    days={a.current}
+                    slot={slot}
+                    fieldId={f.id}
+                    title={`${names[slot]} · ${f.label}`}
+                  />
+                )),
+            )}
+          </div>
+        </details>
+      )}
       {demo && (
         <p className="renewal-inset renewal-chart-note">
           Демонстраційні спостереження. Особисті відповіді тут не підставляються.
@@ -256,9 +329,9 @@ export function AdaptiveReview({
             `${a.satisfaction.n} вечірніх оцінок`,
           )}
           {stat(
-            'Навчання · читання',
-            `${a.learning} · ${a.reading} днів`,
-            `${a.developmentAnswers} відповідей про заняття`,
+            'Навчання · курс · читання',
+            `${a.learning} · ${a.course} · ${a.reading} днів`,
+            `${a.developmentAnswers} відповідей про заняття${a.legacyLearning ? ` · старі об’єднані навчання / курс: ${a.legacyLearning}` : ''}`,
           )}
           {stat(
             'Підтверджені записи',
@@ -371,7 +444,13 @@ export function AdaptiveReview({
             points={a.current.flatMap((d) =>
               d.sleepHours == null
                 ? []
-                : [{ date: d.date, value: d.sleepHours, approx: d.morning.sleepModeV3 !== 'none' }],
+                : [
+                    {
+                      date: d.date,
+                      value: d.sleepHours,
+                      approx: (d.morning.sleepModeV4 ?? d.morning.sleepModeV3) !== 'none',
+                    },
+                  ],
             )}
             label="Заявлена тривалість сну"
             unit="год"
@@ -560,7 +639,7 @@ export function AdaptiveReview({
       </details>
       <p className="renewal-inset renewal-chart-note">
         Це спостереження за твоїми записами. Пояснення та спільна поява факторів не доводять причину
-        зміни. Обрані два фактори не є повним переліком обставин дня.
+        зміни. Обрані фактори не є повним переліком обставин дня.
       </p>
       <details className="renewal-card" onToggle={(e) => setLegacy(e.currentTarget.open)}>
         <summary className="font-semibold cursor-pointer">

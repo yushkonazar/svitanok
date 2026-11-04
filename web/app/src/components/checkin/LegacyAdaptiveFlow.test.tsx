@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
-import { AdaptiveFlow } from './CheckinV3Screen.tsx';
+import { LegacyAdaptiveFlow as AdaptiveFlow } from './LegacyAdaptiveFlow.tsx';
 import { adaptivePreferences, clearHiddenV3 } from '../../../../core/checkin/adaptive.mjs';
 import { setVerticalSwipes } from '../../telegram.ts';
 vi.mock('../../telegram.ts', () => ({

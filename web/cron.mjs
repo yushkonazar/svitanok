@@ -628,7 +628,12 @@ export async function checkinNudgeCheck(/** @type {Env} */ env) {
     });
     if (!due || !attention.deliver) continue;
 
-    const { text, reply_markup } = checkinNoticePayload(env, win, home.chatId);
+    const { text, reply_markup } = checkinNoticePayload(
+      env,
+      win,
+      home.chatId,
+      store.checkins?.[dateKey]?.[win.slot],
+    );
 
     if (miniApp) {
       if (

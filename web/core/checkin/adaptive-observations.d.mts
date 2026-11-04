@@ -42,6 +42,9 @@ export function analyzeAdaptive(
   lowerEnergy: number;
   energyPairs: number;
   learning: number;
+  legacyLearning: number;
+  course: number;
+  directionOutcomes: Record<string, { planned: number; observed: number; met: number }>;
   reading: number;
   developmentAnswers: number;
   planned: number;

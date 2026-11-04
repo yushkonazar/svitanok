@@ -1,12 +1,5 @@
-import {
-  CHECKIN_CARDS_V3,
-  FOLLOWUP_CARDS_V3,
-  cleanCheckinV3,
-  clearHiddenV3,
-  coreCompleteV3,
-  adaptiveContext,
-  followupsV3,
-} from './core/checkin/adaptive.mjs';
+import { adaptiveModel } from './core/checkin/model.mjs';
+import { currentPlanV4, nextSleepDateV4 } from './core/checkin/adaptive-v4.mjs';
 // Чиста логіка статистики дашборда (F1): запис подій + агрегація для /api/stats.
 // Без залежностей і без I/O — щоб покрити тестами (worker.js імпортує це, KV-I/O
 // робить Worker). Стор — один JSON-блоб у KV (ключ `stats`).
@@ -607,7 +600,7 @@ export function staleSleepNudges(
  * обʼєкт), `clear` — ключі, які треба ВИДАЛИТИ з існуючого блоку.
  */
 function cleanCheckin(/** @type {string} */ slot, /** @type {KvBlob} */ ev) {
-  if (ev.questionVersion === 3) return cleanCheckinV3(slot, ev);
+  if ([3, 4].includes(ev.questionVersion)) return adaptiveModel(ev).clean(slot, ev);
   if (ev.questionVersion === 2) return cleanCheckinV2(slot, ev);
   // Приведення CHECKIN_FIELDS до блоба: точна форма реєстру потрібна тестам
   // (enum ⊆ levels), а тут по ньому ходять довільним рядком-слотом.
@@ -1250,7 +1243,9 @@ export function recordEvent(store, ev, dateKey, nowMin = null, nowIso = null) {
       if (!hasClean && !hasClear && !confirming) break;
 
       let merged = {
-        ...(ev.questionVersion === 3 && existing?.questionVersion !== 3 ? {} : existing),
+        ...([3, 4].includes(ev.questionVersion) && existing?.questionVersion !== ev.questionVersion
+          ? {}
+          : existing),
         ...(clean ?? {}),
       };
       // Явне очищення (null/[] від клієнта) — ВИДАЛЯЄ ключ, а не залишає старе
@@ -1258,14 +1253,21 @@ export function recordEvent(store, ev, dateKey, nowMin = null, nowIso = null) {
       // додавати/перезаписувати, ніколи не прибирав — «повторний тап знімає»
       // (questions.ts) працювало тільки локально, до першого дебаунсу.
       for (const k of clear) delete merged[k];
-      if (merged.questionVersion === 3) {
-        const context = adaptiveContext(s.checkins, dateKey, ev.slot);
-        merged = clearHiddenV3(ev.slot, merged, context);
+      if ([3, 4].includes(merged.questionVersion)) {
+        const model = adaptiveModel(merged);
+        const context = model.context(s.checkins, dateKey, ev.slot);
+        merged = model.clearHidden(ev.slot, merged, context);
         merged.timezoneV3 = 'Europe/Kyiv';
-        const fields = [...(CHECKIN_CARDS_V3[ev.slot] ?? []), ...FOLLOWUP_CARDS_V3].flatMap(
-          (c) => c.fields,
-        );
-        merged.shownBranchesV3 = followupsV3(ev.slot, merged, context).map((c) => c.id);
+        if (merged.questionVersion === 4) {
+          const plan = currentPlanV4(context);
+          merged.planSourceV4 = plan.source;
+          merged.planTextV4 = plan.text;
+          merged.planAtV4 = plan.at;
+          if (ev.slot === 'evening' && nowIso)
+            merged.bedtimeDateV4 = nextSleepDateV4(Date.parse(nowIso), merged.bedtimePlanV4);
+        }
+        const fields = [...(model.cards[ev.slot] ?? []), ...model.details].flatMap((c) => c.fields);
+        merged.shownBranchesV3 = model.followups(ev.slot, merged, context).map((c) => c.id);
         if (nowIso) {
           merged.answeredAtV3 = nowIso;
           merged.answerTimesV3 = { ...(existing?.answerTimesV3 ?? {}) };
@@ -1275,7 +1277,7 @@ export function recordEvent(store, ev, dateKey, nowMin = null, nowIso = null) {
             if (
               field &&
               merged[key] != null &&
-              (existing?.questionVersion !== 3 ||
+              (existing?.questionVersion !== merged.questionVersion ||
                 JSON.stringify(existing?.[key]) !== JSON.stringify(value))
             ) {
               merged.answerTimesV3[key] = nowIso;
@@ -1347,7 +1349,11 @@ export function recordEvent(store, ev, dateKey, nowMin = null, nowIso = null) {
         }
       }
       if (confirming) {
-        if (merged.questionVersion === 3 && !coreCompleteV3(ev.slot, merged)) break;
+        if (
+          [3, 4].includes(merged.questionVersion) &&
+          !adaptiveModel(merged).complete(ev.slot, merged)
+        )
+          break;
         if (merged.questionVersion === 2 && !coreCompleteV2(ev.slot, merged)) break;
         // Підтверджувати ПОРОЖНІЙ блок нема сенсу — це замкнуло б добу, де
         // жодної відповіді ще нема, назавжди без жодних даних усередині.

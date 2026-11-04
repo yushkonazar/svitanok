@@ -403,8 +403,18 @@ describe('notifications and callbacks', () => {
       123,
     );
     expect(card.reply_markup.inline_keyboard.flat().map((b) => b.text)).toEqual([
-      'Відкрити чек-ін',
+      'Почати чек-ін',
       'Ще годину',
     ]);
+  });
+  it('distinguishes an actual draft from revision metadata and describes the slot', () => {
+    const { env } = setup();
+    const w = { ...checkinWindow(target.dateKey, target.slot, prefs), extensionAvailable: true };
+    const fresh = checkinNoticePayload(env, w, 123, { questionVersion: 4 });
+    const draft = checkinNoticePayload(env, w, 123, { questionVersion: 4, energy: 2 });
+    expect(fresh.reply_markup.inline_keyboard[0]?.[0]?.text).toBe('Почати чек-ін');
+    expect(draft.reply_markup.inline_keyboard[0]?.[0]?.text).toBe('Продовжити чек-ін');
+    expect(draft.text).toContain('Доступний до');
+    expect(draft.text).toMatch(/сон|справи|самопочуття/);
   });
 });

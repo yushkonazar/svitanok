@@ -30,7 +30,7 @@ const snapshot = () => ({
     checkinSlot: 'evening' as const,
     checkinGapIn: 0,
     checkinSlotEndsIn: 120,
-    checkinToday: { evening: { questionVersion: 3, energy: 3, mood: 3, satisfactionV3: 3 } },
+    checkinToday: { evening: { questionVersion: 4, energy: 3, mood: 3, satisfactionV4: 3 } },
   },
   demo: false,
 });
@@ -97,23 +97,21 @@ function windowSnapshot(extended = false) {
 async function readyToConfirm() {
   const data = snapshot();
   data.stats.checkinToday.evening = {
-    questionVersion: 3,
+    questionVersion: 4,
     energy: 3,
     mood: 3,
-    satisfactionV3: 3,
-    activitiesV3: ['rest'],
-    companyV3: ['alone'],
-    priorityOutcomeV3: 'noplan',
-    developmentActualV3: 'none',
-    freeTimeV3: 'lt30',
-    napV3: 'no',
+    satisfactionV4: 3,
+    activitiesV4: ['rest'],
+    companyV4: ['alone'],
+    priorityOutcomeV4: 'noplan',
+    developmentActualV4: ['none'],
+    freeTimeV4: '1_29',
+    napV4: 'no',
   } as typeof data.stats.checkinToday.evening;
   qc.setQueryData(['stats'], data);
   api.fetchStats.mockResolvedValue(data);
   const view = open();
-  await screen.findByRole('heading', { name: 'Як ти зараз?' });
-  for (let i = 0; i < 4; i++) fireEvent.click(screen.getByRole('button', { name: 'Далі →' }));
-  fireEvent.click(screen.getByRole('button', { name: 'Перевірити' }));
+  await screen.findByRole('button', { name: 'Підтвердити чек-ін' });
   return { view, data, button: screen.getByRole('button', { name: 'Підтвердити чек-ін' }) };
 }
 it.each([false, true])(
@@ -161,7 +159,9 @@ it.each([false, true])(
       expect(section).toHaveStyle({ minHeight: '1800px' });
       expect(setVerticalSwipes).toHaveBeenLastCalledWith(false);
     }
-    await waitFor(() => expect(screen.getByRole('timer')).toBeInTheDocument(), { timeout: 2000 });
+    await waitFor(() => expect(screen.getByText('✓ Чек-ін підтверджено')).toBeInTheDocument(), {
+      timeout: 2000,
+    });
     expect(scroll).toHaveBeenLastCalledWith({ top: 0, behavior: 'auto' });
     const positions = scroll.mock.calls.map(([value]) => (value as ScrollToOptions).top!);
     expect(positions.every((top, i) => i === 0 || top <= positions[i - 1]!)).toBe(true);
@@ -219,9 +219,13 @@ it('does not silently switch an expired deep link to another currently open slot
   api.fetchStats.mockResolvedValue(windowSnapshot());
   open({ date: '2026-10-06', slot: 'evening' });
   expect(await screen.findByText(/Цей чек-ін уже закритий/)).toBeInTheDocument();
-  expect(screen.queryByRole('heading', { name: 'Як ти зараз?' })).not.toBeInTheDocument();
+  expect(
+    screen.queryByRole('heading', { name: 'Що було від попереднього запису' }),
+  ).not.toBeInTheDocument();
   fireEvent.click(screen.getByRole('button', { name: 'Вечір · 07.10' }));
-  expect(await screen.findByRole('heading', { name: 'Як ти зараз?' })).toBeInTheDocument();
+  expect(
+    await screen.findByRole('heading', { name: 'Що було від попереднього запису' }),
+  ).toBeInTheDocument();
   expect(api.postEvent).not.toHaveBeenCalled();
 });
 it('switches explicitly between overlapping slots and keeps their drafts separate', async () => {
@@ -244,6 +248,7 @@ it('switches explicitly between overlapping slots and keeps their drafts separat
   await screen.findByRole('heading', { name: 'Як ти зараз?' });
   fireEvent.click(screen.getByRole('button', { name: '4 · Радше хороший' }));
   fireEvent.click(screen.getByRole('button', { name: 'Вечір · 07.10' }));
+  fireEvent.click(screen.getByRole('button', { name: '← Назад' }));
   expect(screen.getByRole('button', { name: '3 · Нейтральний або змішаний' })).toHaveAttribute(
     'aria-pressed',
     'true',
@@ -277,13 +282,14 @@ it('uses the original evening date for a draft after midnight rather than the ne
       checkinRaw: {
         ...EMPTY_STATS.checkinRaw,
         records: {
-          '2026-10-07': { evening: { questionVersion: 3, energy: 3, mood: 3, satisfactionV3: 3 } },
+          '2026-10-07': { evening: { questionVersion: 4, energy: 3, mood: 3, satisfactionV4: 3 } },
         },
       },
     },
   });
   open({ date: '2026-10-07', slot: 'evening' });
-  fireEvent.click(await screen.findByRole('button', { name: '4 · Радше хороший' }));
+  fireEvent.click(await screen.findByRole('button', { name: '← Назад' }));
+  fireEvent.click(screen.getByRole('button', { name: '4 · Радше хороший' }));
   await waitFor(() => expect(api.postEvent).toHaveBeenCalled(), { timeout: 3000 });
   expect(api.postEvent).toHaveBeenCalledWith(
     'checkin',
@@ -309,14 +315,16 @@ it('does not abandon an in-progress extended slot when the next slot opens', asy
       ...value.stats,
       checkinSlot: 'afternoon' as const,
       checkinServerTime: '2026-10-07T16:30:00.000Z',
-      checkinToday: { afternoon: { questionVersion: 3, energy: 3, mood: 3 } },
+      checkinToday: { afternoon: { questionVersion: 4, energy: 3, mood: 3 } },
       checkinWindows: [afternoon],
     },
   };
   api.fetchStats.mockResolvedValue(data);
   open();
-  fireEvent.click(await screen.findByRole('button', { name: 'Далі →' }));
-  expect(screen.getByRole('heading', { name: 'Твій контекст' })).toBeInTheDocument();
+  await screen.findByRole('heading', { name: 'Що було від попереднього запису' });
+  expect(
+    screen.getByRole('heading', { name: 'Що було від попереднього запису' }),
+  ).toBeInTheDocument();
   await act(async () =>
     qc.setQueryData(['stats'], {
       ...data,
@@ -332,24 +340,27 @@ it('does not abandon an in-progress extended slot when the next slot opens', asy
     'aria-pressed',
     'true',
   );
-  expect(screen.getByRole('heading', { name: 'Твій контекст' })).toBeInTheDocument();
+  expect(
+    screen.getByRole('heading', { name: 'Що було від попереднього запису' }),
+  ).toBeInTheDocument();
 });
 
 it('never closes an available evening flow when the cache timestamp leads the ticking clock', async () => {
   // Like an optimistic write just after the last one-second useTick update.
   qc.setQueryData(['stats'], snapshot(), { updatedAt: Date.now() + 10_000 });
   const view = open();
-  await screen.findByRole('heading', { name: 'Як ти зараз?' });
+  await screen.findByRole('heading', { name: 'Що було від попереднього запису' });
   expect(screen.queryByText('Дай дню трохи часу')).not.toBeInTheDocument();
   expect(screen.getByText('Чернетка · ще 120 хв')).toBeInTheDocument();
-  fireEvent.click(screen.getByRole('button', { name: 'Далі →' }));
   const card = view.container.querySelector('.checkin-adaptive-card');
   for (let i = 0; i < 3; i++) {
     await act(async () => {
       qc.setQueryData(['stats'], snapshot(), { updatedAt: Date.now() + 10_000 });
     });
     fireEvent.scroll(window, { target: { scrollY: 500 + i * 100 } });
-    expect(screen.getByRole('heading', { name: 'Твій контекст' })).toBeInTheDocument();
+    expect(
+      screen.getByRole('heading', { name: 'Що було від попереднього запису' }),
+    ).toBeInTheDocument();
     expect(view.container.querySelector('.checkin-adaptive-card')).toBe(card);
   }
 });
@@ -369,8 +380,7 @@ it('does not restart the server countdown when an optimistic cache write changes
 
 it('keeps the second evening block through repeated successful answer autosaves', async () => {
   const view = open();
-  await screen.findByRole('heading', { name: 'Як ти зараз?' });
-  fireEvent.click(screen.getByRole('button', { name: 'Далі →' }));
+  await screen.findByRole('heading', { name: 'Що було від попереднього запису' });
   fireEvent.click(screen.getByText('Справи й розвиток'));
   const work = screen.getByRole('button', { name: 'Робота' });
   const group = work.closest('details')!;
@@ -380,7 +390,9 @@ it('keeps the second evening block through repeated successful answer autosaves'
     fireEvent.scroll(window, { target: { scrollY: 600 } });
     await waitFor(() => expect(api.postEvent).toHaveBeenCalledTimes(i), { timeout: 3000 });
     await waitFor(() => expect(qc.isFetching({ queryKey: ['stats'] })).toBe(0));
-    expect(screen.getByRole('heading', { name: 'Твій контекст' })).toBeInTheDocument();
+    expect(
+      screen.getByRole('heading', { name: 'Що було від попереднього запису' }),
+    ).toBeInTheDocument();
     expect(view.container.querySelector('.checkin-adaptive-card')).toBe(card);
     expect(group).toHaveAttribute('open');
     expect(work).toHaveAttribute('aria-pressed', i === 1 ? 'true' : 'false');
@@ -389,8 +401,7 @@ it('keeps the second evening block through repeated successful answer autosaves'
 
 it('keeps the evening stage mounted when the real autosave refetch fails and recovers', async () => {
   const view = open();
-  await screen.findByRole('heading', { name: 'Як ти зараз?' });
-  fireEvent.click(screen.getByRole('button', { name: 'Далі →' }));
+  await screen.findByRole('heading', { name: 'Що було від попереднього запису' });
   fireEvent.click(screen.getByText('Справи й розвиток'));
   const work = screen.getByRole('button', { name: 'Робота' });
   const card = view.container.querySelector('.checkin-adaptive-card');
@@ -399,7 +410,9 @@ it('keeps the evening stage mounted when the real autosave refetch fails and rec
   fireEvent.click(work, { detail: 1 });
   await waitFor(() => expect(api.postEvent).toHaveBeenCalled(), { timeout: 3000 });
   await waitFor(() => expect(qc.getQueryState(['stats'])?.status).toBe('error'));
-  expect(screen.getByRole('heading', { name: 'Твій контекст' })).toBeInTheDocument();
+  expect(
+    screen.getByRole('heading', { name: 'Що було від попереднього запису' }),
+  ).toBeInTheDocument();
   expect(view.container.querySelector('.checkin-adaptive-card')).toBe(card);
   expect(group).toHaveAttribute('open');
   expect(work).toHaveAttribute('aria-pressed', 'true');
@@ -414,25 +427,73 @@ it('keeps the evening stage mounted when the real autosave refetch fails and rec
 
 it('keeps the active stage when a background settings refresh fails', async () => {
   const view = open();
-  await screen.findByRole('heading', { name: 'Як ти зараз?' });
-  fireEvent.click(screen.getByRole('button', { name: 'Далі →' }));
+  await screen.findByRole('heading', { name: 'Що було від попереднього запису' });
   const card = view.container.querySelector('.checkin-adaptive-card');
   api.fetchSettings.mockRejectedValue(new Error('Налаштування тимчасово недоступні'));
   await act(async () => {
     await qc.invalidateQueries({ queryKey: ['settings'] });
   });
-  expect(screen.getByRole('heading', { name: 'Твій контекст' })).toBeInTheDocument();
+  expect(
+    screen.getByRole('heading', { name: 'Що було від попереднього запису' }),
+  ).toBeInTheDocument();
   expect(view.container.querySelector('.checkin-adaptive-card')).toBe(card);
 });
 
 it('still blocks private check-in data when the session expires during refresh', async () => {
   open();
-  await screen.findByRole('heading', { name: 'Як ти зараз?' });
+  await screen.findByRole('heading', { name: 'Що було від попереднього запису' });
   api.fetchStats.mockRejectedValue(new SessionExpiredError(401));
   await act(async () => {
     await qc.invalidateQueries({ queryKey: ['stats'] });
   });
   await waitFor(() =>
-    expect(screen.queryByRole('heading', { name: 'Як ти зараз?' })).not.toBeInTheDocument(),
+    expect(
+      screen.queryByRole('heading', { name: 'Що було від попереднього запису' }),
+    ).not.toBeInTheDocument(),
+  );
+});
+it('uses the next server window for its name and time during the midday pause', async () => {
+  const data = windowSnapshot();
+  api.fetchStats.mockResolvedValue({
+    ...data,
+    stats: {
+      ...data.stats,
+      checkinSlot: null,
+      checkinServerTime: '2026-10-07T11:30:00Z',
+      checkinToday: null,
+      checkinWindows: [
+        {
+          ...data.stats.checkinWindows[0],
+          slot: 'afternoon',
+          startAt: '2026-10-07T15:00:00Z',
+          endAt: '2026-10-07T19:00:00Z',
+          open: false,
+        },
+      ],
+    },
+  });
+  open();
+  expect(await screen.findByText(/Наступний денний чек-ін/)).toHaveTextContent('18:00');
+  expect(screen.queryByRole('timer')).not.toBeInTheDocument();
+});
+it('finishes an existing v3 draft with its original answers and revision intact', async () => {
+  const data = snapshot();
+  api.fetchStats.mockResolvedValue({
+    ...data,
+    stats: {
+      ...data.stats,
+      checkinToday: { evening: { questionVersion: 3, energy: 3, mood: 4, satisfactionV3: 4 } },
+    },
+  });
+  open();
+  expect(await screen.findByText(/Цю чернетку почато в попередній формі/)).toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: '4 · Багато сил, легко включитися' }));
+  await waitFor(
+    () =>
+      expect(api.postEvent).toHaveBeenCalledWith(
+        'checkin',
+        expect.objectContaining({ questionVersion: 3, energy: 4, mood: 4, satisfactionV3: 4 }),
+      ),
+    { timeout: 3000 },
   );
 });

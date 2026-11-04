@@ -878,7 +878,7 @@ export async function requestLocatePrompt(): Promise<void> {
  */
 export async function postEvent(type: string, payload: Record<string, unknown>): Promise<void> {
   if (!inTelegram() || !tg) {
-    if (type === 'checkin') writeCheckinDemo(payload);
+    if (type === 'checkin') await writeCheckinDemo(payload);
     if (['save_item', 'unsave_item', 'save_news', 'unsave_news'].includes(type))
       writeSavedDemo(type, payload);
     return;

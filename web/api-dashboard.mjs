@@ -1,10 +1,5 @@
-import {
-  cleanCheckinV3,
-  clearHiddenV3,
-  coreCompleteV3,
-  adaptiveContext,
-  checkinGapV3,
-} from './core/checkin/adaptive.mjs';
+import { adaptiveModel } from './core/checkin/model.mjs';
+import { checkinGapV3 } from './core/checkin/adaptive.mjs';
 // HTTP-ендпоінти дашборда (Фаза 5, модуляризація worker.js, план A2 §5).
 //
 // ЩО ТУТ: усе, що Mini App викликає напряму — голос за тему, запис події,
@@ -162,7 +157,8 @@ export async function applyEvent(/** @type {Env} */ env, /** @type {any} */ body
     // a one-time extension). Legacy clients without a date keep the clock route.
     const h = kyivHour();
     const prefs = (await loadSettings(env)).checkin;
-    if (prefs?.version === 3 && body.questionVersion !== 3) return { locked: false, expired: true };
+    if (prefs?.version === 3 && ![3, 4].includes(body.questionVersion))
+      return { locked: false, expired: true };
     const clock = checkinClock(kyivMinuteOfDay(), prefs);
     const windows = body.dateKey ? await checkinWindows(env, prefs, Date.now()) : [];
     const requested = windows.find(
@@ -200,15 +196,19 @@ export async function applyEvent(/** @type {Env} */ env, /** @type {any} */ body
   const checkinLocked =
     body.type === 'checkin' && !!loaded.checkins?.[dateKey]?.[ev.slot]?.confirmed;
   if (checkinLocked) return { locked: true, expired: false }; // нічого не зміниться — не палимо KV-запис даремно
-  if (body.type === 'checkin' && body.confirmed && body.questionVersion === 3) {
-    const cleaned = cleanCheckinV3(ev.slot, ev);
+  if (body.type === 'checkin' && body.confirmed && [3, 4].includes(body.questionVersion)) {
+    const model = adaptiveModel(ev);
+    const cleaned = model.clean(ev.slot, ev);
     const prior = loaded.checkins?.[dateKey]?.[ev.slot];
-    const candidate = { ...(prior?.questionVersion === 3 ? prior : {}), ...cleaned.set };
+    const candidate = {
+      ...(prior?.questionVersion === ev.questionVersion ? prior : {}),
+      ...cleaned.set,
+    };
     for (const key of cleaned.clear) delete candidate[key];
     if (
-      !coreCompleteV3(
+      !model.complete(
         ev.slot,
-        clearHiddenV3(ev.slot, candidate, adaptiveContext(loaded.checkins, dateKey, ev.slot)),
+        model.clearHidden(ev.slot, candidate, model.context(loaded.checkins, dateKey, ev.slot)),
       )
     )
       return { locked: false, expired: false, incomplete: true };
