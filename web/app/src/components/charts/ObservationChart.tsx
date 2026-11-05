@@ -13,6 +13,7 @@ export function ObservationChart({
   maxGapDays,
   domain,
   onSelect,
+  formatDate,
 }: {
   points: Observation[];
   label: string;
@@ -21,6 +22,7 @@ export function ObservationChart({
   maxGapDays?: number;
   domain?: [number, number];
   onSelect?: (date: string) => void;
+  formatDate?: (date: string) => string;
 }) {
   const uid = useId();
   const [selected, setSelected] = useState<number | null>(null);
@@ -53,6 +55,7 @@ export function ObservationChart({
     )
     .join(' ');
   const date = (s: string) =>
+    formatDate?.(s) ??
     new Date(s).toLocaleDateString('uk-UA', {
       day: 'numeric',
       month: 'short',

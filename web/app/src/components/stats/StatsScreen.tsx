@@ -1,15 +1,35 @@
-import { AdaptiveReview } from './AdaptiveReview.tsx';
+import { StateDashboard } from './StateDashboard.tsx';
 import { useState } from 'react';
-import { Link } from 'react-router-dom';
-import { PageHeading } from '../ui/PageHeading.tsx';
+import { inTelegram } from '../../telegram.ts';
 import { useStats } from '../../api/hooks.ts';
 import { LoadingSkeleton, ErrorState } from '../ui/states.tsx';
 import { InterestsBlock } from './InterestsBlock.tsx';
 import { ReliabilityBlock } from './ReliabilityBlock.tsx';
-import { HistoryBlock } from './HistoryBlock.tsx';
+import './state-dashboard.css';
+
+export const statisticsPeriodKey = (privateMode: boolean) =>
+  `svitanok.state-period.${privateMode ? 'private' : 'demo'}`;
+function initialPeriod(key: string) {
+  try {
+    const value = Number(localStorage.getItem(key));
+    return [7, 30, 90].includes(value) ? value : 30;
+  } catch {
+    return 30;
+  }
+}
 
 export function StatsScreen() {
-  const [days, setDays] = useState(7);
+  const key = statisticsPeriodKey(inTelegram());
+  const [days, changeDays] = useState(() => initialPeriod(key));
+  const setDays = (value: number) => {
+    if (![7, 30, 90].includes(value)) return;
+    changeDays(value);
+    try {
+      localStorage.setItem(key, String(value));
+    } catch {
+      /* Selection still works without browser storage. */
+    }
+  };
   const { data, isLoading, isError, error, refetch } = useStats();
 
   if (isLoading) return <LoadingSkeleton />;
@@ -24,20 +44,8 @@ export function StatsScreen() {
 
   const s = data.stats;
   return (
-    <div className="flex flex-col gap-[26px]">
-      <PageHeading
-        eyebrow="ЩО ЗМІНЮЄТЬСЯ В ТОБІ"
-        title="Не просто числа."
-        accent="Твій ритм."
-        description="Від щоденних відповідей до змін, які можна помітити."
-      />
-      <AdaptiveReview s={s} days={days} setDays={setDays} />
-      <Link
-        to="/weekly-report"
-        className="renewal-card flex items-center justify-between gap-4 font-bold"
-      >
-        Тижневі огляди <span aria-hidden="true">→</span>
-      </Link>
+    <div className="state-dashboard">
+      <StateDashboard s={s} days={days} setDays={setDays} />
       <details className="renewal-card">
         <summary className="cursor-pointer text-sm font-bold">Інтереси й робота Світанку</summary>
         <div className="mt-5 flex flex-col gap-6">
@@ -45,7 +53,6 @@ export function StatsScreen() {
           <ReliabilityBlock s={s} />
         </div>
       </details>
-      <HistoryBlock />
     </div>
   );
 }
