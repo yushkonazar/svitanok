@@ -1,9 +1,12 @@
 import { useState } from 'react';
 import type { StateReport } from '../../../../core/checkin/state-analysis.mjs';
-import { stateDistribution } from '../../../../core/checkin/state-analysis.mjs';
+import { stateDistribution, stateOutcomeValue } from '../../../../core/checkin/state-analysis.mjs';
 import { ObservationChart } from '../charts/ObservationChart.tsx';
 import { StateDates, StateDistributionView } from './StateComparisons.tsx';
-import { stateNumber, stateSleep } from './state-format.ts';
+import { stateDays, statePoints } from './state-format.ts';
+import { stateBand, stateRollup } from './state-series.ts';
+
+const comprehensionNames = ['Складно', 'Частково', 'Зрозуміло'] as const;
 
 export function StateThemes({
   report: r,
@@ -20,10 +23,13 @@ export function StateThemes({
     (d) => d.evening.questionVersion === 4 && ['yes', 'no'].includes(d.evening.napV4),
   );
   const napped = naps.filter((d) => d.evening.napV4 === 'yes');
-  const comprehension = r.current.flatMap((d) =>
-    typeof d.evening[`${learning}ComprehensionV4`] === 'number'
-      ? [{ date: d.date, value: d.evening[`${learning}ComprehensionV4`] }]
-      : [],
+  const comprehension = r.current.flatMap((day) => {
+    const value = stateOutcomeValue(day, `${learning}_comprehension`);
+    return value == null ? [] : [{ date: day.date, value }];
+  });
+  const meanComprehension = stateRollup(
+    comprehension.map((point) => point.value),
+    'satisfaction',
   );
   const actual = stateDistribution(r.current, 'evening', 'developmentActual', 4);
   return (
@@ -31,7 +37,7 @@ export function StateThemes({
       <details className="state-panel" id="state-sleep">
         <summary>
           <span>Сон</span>
-          <small>{sleep.n ? stateSleep(sleep.value) : 'Ще немає тривалості'}</small>
+          <small>Якість сну · дрімота</small>
         </summary>
         <div className="state-panel-body">
           {!!sleep.n && (
@@ -60,7 +66,7 @@ export function StateThemes({
             <div className="state-topic-row">
               <span>Дрімота вдень</span>
               <b>
-                {napped.length}/{naps.length} відповідей
+                Дрімота у {napped.length} з {stateDays(naps.length)}
               </b>
               <StateDates dates={napped.map((d) => d.date)} onDay={onDay} />
             </div>
@@ -108,7 +114,7 @@ export function StateThemes({
           <span>Навантаження й відновлення</span>
           <small>
             {r.personal.n
-              ? `${r.personal.enough}/${r.personal.n} · часу вистачило`
+              ? `${stateDays(r.personal.enough)} · часу вистачило`
               : 'Робота · час для себе'}
           </small>
         </summary>
@@ -269,18 +275,19 @@ export function StateThemes({
                 key={learning}
                 points={comprehension}
                 label={`Розуміння: ${learning === 'study' ? 'навчання' : 'курс'}`}
-                unit="/5"
+                formatValue={(value) => comprehensionNames[stateBand(value, 'satisfaction')]}
                 domain={[1, 5]}
                 maxGapDays={1}
                 onSelect={onDay}
               />
-              <p className="state-caption">
-                {comprehension.length} власних оцінок · середня{' '}
-                {stateNumber(
-                  comprehension.reduce((sum, p) => sum + p.value, 0) / comprehension.length,
-                )}
-                /5
-              </p>
+              {meanComprehension != null && (
+                <details className="state-subdetails state-exact">
+                  <summary>Точне середнє</summary>
+                  <p className="state-caption">
+                    {statePoints(meanComprehension)} · {comprehension.length} оцінок
+                  </p>
+                </details>
+              )}
             </>
           )}
           <StateDistributionView

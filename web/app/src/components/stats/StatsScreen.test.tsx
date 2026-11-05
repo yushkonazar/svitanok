@@ -103,15 +103,15 @@ it('remembers a supported period independently for demo and private views', () =
 it('uses one selected date for all three slot values and resets the day when period changes', () => {
   mock.stats = stats(demoStateRecords(to));
   show();
-  fireEvent.click(screen.getByRole('button', { name: 'Настрій' }));
+  fireEvent.click(screen.getByRole('button', { name: /Настрій увечері/ }));
+  fireEvent.click(screen.getByRole('button', { name: 'Усі' }));
   const slider = screen.getByRole('slider', { name: 'Дата: Настрій' });
   fireEvent.change(slider, { target: { value: '0' } });
   expect(slider).toHaveAttribute('aria-valuetext', expect.stringMatching(/^7 жовт\./));
-  fireEvent.click(screen.getByText('Відповіді за 7 жовт.'));
   expect(screen.getByLabelText('День для перегляду')).toHaveValue('2026-10-07');
   fireEvent.click(screen.getByRole('button', { name: '7 днів' }));
-  expect(screen.getByRole('button', { name: 'Настрій' })).toHaveAttribute('aria-pressed', 'true');
-  expect(screen.getByText('Відповіді за 5 лист.').closest('details')).not.toHaveAttribute('open');
+  expect(screen.getByLabelText('Показник графіка')).toHaveValue('mood');
+  expect(screen.getByRole('heading', { name: 'Відповіді за 5 лист.' })).toBeInTheDocument();
   expect(screen.getByRole('slider', { name: 'Дата: Настрій' })).toHaveAttribute(
     'aria-valuetext',
     expect.stringMatching(/^5 лист\./),
@@ -132,11 +132,11 @@ it('opens evidence dates into a readable, deduplicated day with historical custo
   };
   mock.stats = stats(records);
   show();
-  fireEvent.click(screen.getAllByText('На чому це ґрунтується')[0]);
-  const evidence = document.querySelector('.state-evidence[open]')!;
-  fireEvent.click(within(evidence as HTMLElement).getAllByRole('button', { name: '5 лист.' })[0]);
-  const detail = screen.getByText('Відповіді за 5 лист.').closest('details')!;
-  expect(detail).toHaveAttribute('open');
+  fireEvent.click(screen.getByRole('button', { name: 'Зв’язки' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Мої пояснення' }));
+  fireEvent.click(screen.getByText('Наш вечір'));
+  fireEvent.click(screen.getByRole('button', { name: '5 лист.' }));
+  const detail = screen.getByRole('region', { name: 'Записи дня' });
   fireEvent.click(within(detail).getByText('Вечір', { exact: true }));
   expect(within(detail).getByText('Наш вечір')).toBeInTheDocument();
   expect(within(detail).getAllByText('Завершити урок')).toHaveLength(1);
@@ -152,14 +152,13 @@ it('keeps gated explanations separate from manual comparisons and filters them b
     },
   });
   show();
-  const summary = screen.getByText('Дослідити власні зв’язки');
-  fireEvent.click(summary);
+  fireEvent.click(screen.getByRole('button', { name: 'Зв’язки' }));
   await waitFor(() => expect(screen.getByLabelText('Що порівняти')).toBeInTheDocument());
   const select = screen.getByLabelText('Що порівняти');
   expect(
     within(select).queryByRole('option', { name: /причини настрою/i }),
   ).not.toBeInTheDocument();
-  fireEvent.click(screen.getByRole('button', { name: 'Твої пояснення' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Мої пояснення' }));
   const explorer = within(document.querySelector('.state-explorer') as HTMLElement);
   expect(explorer.getByText('Гарна погода')).toBeInTheDocument();
   expect(explorer.queryByText('Конфлікт')).not.toBeInTheDocument();
@@ -167,6 +166,28 @@ it('keeps gated explanations separate from manual comparisons and filters them b
   expect(explorer.queryByText('Гарна погода')).not.toBeInTheDocument();
   expect(explorer.getByText('Конфлікт')).toBeInTheDocument();
   expect(screen.getByText(/Це твої пояснення/)).toBeInTheDocument();
+});
+it('shows visual scores, keeps exact values in details, and opens the same work group on the chart', () => {
+  mock.stats = stats(demoStateRecords(to));
+  show();
+  const overview = screen.getByRole('region', { name: 'Огляд за період' });
+  expect(overview.textContent).not.toMatch(/\d\s*\/5/);
+  expect(within(overview).getByRole('button', { name: /Основний сон.*год/ })).toBeInTheDocument();
+  fireEvent.click(within(overview).getByRole('button', { name: 'Відкрити зіставлення' }));
+  expect(screen.getByLabelText('Тривалість роботи')).toHaveValue('4_8h');
+  const links = within(screen.getByRole('region', { name: 'Зв’язки й пояснення' }));
+  const summary = links.getByText('Точні значення');
+  const exact = summary.closest('details')!;
+  expect(exact).not.toHaveAttribute('open');
+  fireEvent.click(summary);
+  expect(exact).toHaveAttribute('open');
+  expect(exact.textContent).toMatch(/бал/);
+  fireEvent.click(links.getByRole('button', { name: 'На графіку' }));
+  expect(screen.getByLabelText('Показник графіка')).toHaveValue('change');
+  expect(screen.getByText(/Перерв вистачало · \d+ дн/)).toBeVisible();
+  fireEvent.click(screen.getByRole('button', { name: '90 днів' }));
+  expect(screen.getByText('Середні за тижнями')).toBeVisible();
+  expect(screen.queryByRole('button', { name: 'Прибрати виділення днів' })).not.toBeInTheDocument();
 });
 it('loads history on request, shows a single recorded month and preserves custom archive names', async () => {
   const bucket = { month: '2025-12' };

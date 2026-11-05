@@ -13,8 +13,8 @@ const rating = (/** @type {unknown} */ v) =>
 export const stateValue = (record, stem) => record[`${stem}V${record.questionVersion}`];
 /** @param {number[]} values */
 const mean = (values) => observedMean(values).value;
-const answers = (/** @type {number} */ n) =>
-  `${n} ${n % 100 >= 11 && n % 100 <= 14 ? 'відповідей' : n % 10 === 1 ? 'відповідь' : n % 10 >= 2 && n % 10 <= 4 ? 'відповіді' : 'відповідей'}`;
+export const STATE_WORK_RANGES =
+  fields.get('workRangeV4')?.options?.filter(([, id]) => id !== 'unknown') ?? [];
 /** @param {Day[]} days @param {string} slot @param {string} stem @param {number} [revision] */
 export function stateDistribution(days, slot, stem, revision) {
   /** @type {Map<string,KvBlob>} */ const items = new Map();
@@ -27,7 +27,7 @@ export function stateDistribution(days, slot, stem, revision) {
       value = r[id];
     if (!f || value == null || (Array.isArray(value) && !value.length)) continue;
     n++;
-    for (const v of Array.isArray(value) ? value : [value]) {
+    for (const v of new Set(Array.isArray(value) ? value : [value])) {
       const key = String(v),
         item = items.get(key) ?? {
           id: key,
@@ -83,7 +83,8 @@ export function stateOutcomes(factor, slot = 'evening') {
     : [...evening, ['Зміна енергії: ранок → вечір', 'energy_change']];
 }
 /** @param {Day} day @param {string} key @returns {number|null} */
-function outcomeValue(day, key) {
+export function stateOutcomeValue(day, key) {
+  if (key === 'sleep') return day.sleepHours;
   if (key === 'energy_change')
     return rating(day.morning.energy) != null && rating(day.evening.energy) != null
       ? day.evening.energy - day.morning.energy
@@ -102,7 +103,7 @@ export function stateCompanyOptions(days, slot = 'evening') {
     (x) => !['alone', 'private', 'other', 'unknown'].includes(x.id),
   );
 }
-/** @param {Day[]} days @param {string} factor @param {string} outcome @param {{slot?:string,company?:string}} [options] */
+/** @param {Day[]} days @param {string} factor @param {string} outcome @param {{slot?:string,company?:string,workRange?:string}} [options] */
 export function compareState(days, factor, outcome, options = {}) {
   const slot = options.slot ?? 'evening',
     company = options.company ?? 'partner';
@@ -146,7 +147,7 @@ export function compareState(days, factor, outcome, options = {}) {
   ];
   if (allowed)
     for (const day of days) {
-      const value = outcomeValue(day, outcome);
+      const value = stateOutcomeValue(day, outcome);
       if (value == null) continue;
       let group = -1;
       if (factor === 'sleep_duration' && day.sleepHours != null && median != null)
@@ -159,7 +160,7 @@ export function compareState(days, factor, outcome, options = {}) {
             : -1;
       const e = day.evening;
       if (e.questionVersion === 4) {
-        if (factor === 'work_breaks')
+        if (factor === 'work_breaks' && (!options.workRange || e.workRangeV4 === options.workRange))
           group = ['none', 'not_enough'].includes(e.workBreaksV4)
             ? 0
             : e.workBreaksV4 === 'enough'
@@ -266,14 +267,12 @@ export function stateReport(records, to, period = 30) {
     ['sleep', 'Сон', 'hours'],
     ['satisfaction', 'Оцінка дня', 'score'],
   ]) {
-    const property = id === 'sleep' ? 'sleepHours' : 'satisfaction';
+    const key = id ?? '';
     const c = a.current.flatMap((d) => {
-      const v = d[/** @type {'sleepHours'|'satisfaction'} */ (property)];
+      const v = stateOutcomeValue(d, key);
       return v == null ? [] : [{ date: d.date, value: v }];
     });
-    const p = a.previous
-      .map((d) => d[/** @type {'sleepHours'|'satisfaction'} */ (property)])
-      .filter((v) => v != null);
+    const p = a.previous.map((d) => stateOutcomeValue(d, key)).filter((v) => v != null);
     const value = mean(c.map((v) => v.value)),
       previous = mean(p);
     overview.push({
@@ -315,7 +314,7 @@ export function stateReport(records, to, period = 30) {
     insights.push({
       id: 'mood-change',
       title: moodMetric.delta > 0 ? 'Настрій за період вищий' : 'Настрій за період нижчий',
-      text: `Середня оцінка ${moodMetric.value.toFixed(1).replace('.', ',')}/5 проти ${moodMetric.previous.toFixed(1).replace('.', ',')}/5 за попередні ${a.days} днів. Основа: ${moodMetric.n} і ${moodMetric.previousN} оцінок відповідно.`,
+      text: `Зіставлено оцінки з тих самих частин дня за два періоди по ${a.days} днів.`,
       idea: 'Подивись, які обставини ти відзначав у ці дні, й обери одну справу, що зазвичай підтримує тебе.',
       dates,
       n: dates.length,
@@ -327,11 +326,6 @@ export function stateReport(records, to, period = 30) {
       'sleep_duration',
       'morning_energy',
       'Продовжуй позначати сон і ранкові сили, щоб перевірити повторюваність.',
-    ],
-    [
-      'work_breaks',
-      'evening_energy',
-      'Заплануй перерву в наступний робочий день і відзнач вечірній стан.',
     ],
     [
       'personal_time',
@@ -347,10 +341,11 @@ export function stateReport(records, to, period = 30) {
       title:
         factor === 'sleep_duration'
           ? 'Сон поруч із ранковими силами'
-          : factor === 'work_breaks'
-            ? 'Перерви поруч із вечірнім станом'
-            : 'Особистий час і оцінка дня',
-      text: `${right.label}: ${right.value?.toFixed(1).replace('.', ',')}/5 (${answers(right.n)}); ${left.label.toLowerCase()}: ${left.value?.toFixed(1).replace('.', ',')}/5 (${answers(left.n)}).`,
+          : 'Особистий час і оцінка дня',
+      text:
+        factor === 'sleep_duration'
+          ? 'Зіставлено ранкові сили після коротших і довших ночей.'
+          : 'Зіставлено оцінки днів, коли часу для себе вистачило або бракувало.',
       idea,
       comparison,
       dates: [...new Set([...left.dates, ...right.dates])].sort(),
@@ -390,6 +385,35 @@ export function stateReport(records, to, period = 30) {
   const enough = a.current.filter(
     (d) => d.evening.questionVersion === 4 && [1, 2, 3, 4].includes(d.evening.freeTimeEnoughV4),
   );
+  const workOptions = { workRange: '4_8h' };
+  const work = compareState(a.current, 'work_breaks', 'energy_change', workOptions);
+  const midpoint = Math.floor(a.current.length / 2);
+  // A lead observation needs enough paired days and the same direction in both halves.
+  if (
+    work.groups.every((group) => group.n >= 6) &&
+    (work.delta ?? 0) >= 0.5 &&
+    [a.current.slice(0, midpoint), a.current.slice(midpoint)].every((half) => {
+      const result = compareState(half, 'work_breaks', 'energy_change', workOptions);
+      return (
+        result.groups.every((group) => group.n >= 2) &&
+        (result.groups[1].value ?? 0) > (result.groups[0].value ?? 0)
+      );
+    })
+  ) {
+    insights.unshift({
+      id: 'work_breaks',
+      title:
+        (work.groups[1].value ?? 0) < 0
+          ? 'Менший спад сил, коли перерв вистачало'
+          : 'Енергія краще трималася, коли перерв вистачало',
+      text: 'Робота 4–менше 8 год · дні з ранковим і вечірнім чек-інами',
+      idea: 'Заплануй перерву в наступний робочий день і відзнач вечірній стан.',
+      comparison: work,
+      dates: work.groups.flatMap((group) => group.dates).sort(),
+      n: work.groups.reduce((total, group) => total + group.n, 0),
+      kind: 'comparison',
+    });
+  }
   const learning = Object.fromEntries(
     ['study', 'course', 'read'].map((id) => {
       const known = a.current.filter(

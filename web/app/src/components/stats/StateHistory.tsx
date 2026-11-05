@@ -3,14 +3,22 @@ import { useArchive } from '../../api/hooks.ts';
 import { stateHistoryMonths, stateHistorySeries } from '../../../../core/checkin/state-history.mjs';
 import { ObservationChart } from '../charts/ObservationChart.tsx';
 import { HistoryBlock } from './HistoryBlock.tsx';
-import { stateMonth, stateNumber, stateSleep, slotNames } from './state-format.ts';
+import { stateCount, stateMonth, statePoints, stateSleep, slotNames } from './state-format.ts';
+import { stateBand, stateBandNames } from './state-series.ts';
 
 const metrics = [
   ['energy', 'Енергія'],
   ['mood', 'Настрій'],
   ['sleep', 'Сон'],
   ['satisfaction', 'Оцінка дня'],
-];
+] as const;
+type HistoryMetric = (typeof metrics)[number][0];
+const qualitative = (metric: Exclude<HistoryMetric, 'sleep'>, value: number) =>
+  stateBandNames[metric][stateBand(value, metric)];
+function historyValue(metric: HistoryMetric, value: number | null) {
+  if (value == null) return '—';
+  return metric === 'sleep' ? stateSleep(value) : qualitative(metric, value);
+}
 export function StateHistory({
   records,
   from,
@@ -22,7 +30,7 @@ export function StateHistory({
 }) {
   const [open, setOpen] = useState(false),
     [range, setRange] = useState<'all' | 'year'>('all'),
-    [metric, setMetric] = useState('energy');
+    [metric, setMetric] = useState<HistoryMetric>('energy');
   const archive = useArchive(open);
   const months = useMemo(
     () => (open ? stateHistoryMonths(archive.data ?? [], records, from, to) : []),
@@ -33,8 +41,7 @@ export function StateHistory({
     [months, metric, to, range],
   );
   const visible = history.series.filter((item) => item.n > 0);
-  const label = metrics.find(([id]) => id === metric)![1],
-    format = (v: number | null) => (metric === 'sleep' ? stateSleep(v) : `${stateNumber(v)} /5`);
+  const label = metrics.find(([id]) => id === metric)![1];
   return (
     <details className="state-panel" onToggle={(e) => setOpen(e.currentTarget.open)}>
       <summary>
@@ -53,7 +60,7 @@ export function StateHistory({
           </div>
           <label className="renewal-field">
             <span>Показник історії</span>
-            <select value={metric} onChange={(e) => setMetric(e.target.value)}>
+            <select value={metric} onChange={(e) => setMetric(e.target.value as HistoryMetric)}>
               {metrics.map(([id, name]) => (
                 <option key={id} value={id}>
                   {name}
@@ -84,8 +91,14 @@ export function StateHistory({
                 {label} · {history.from && stateMonth(history.from)} —{' '}
                 {history.to && stateMonth(history.to)}
               </span>
-              <b>{format(history.value)}</b>
+              <b>{historyValue(metric, history.value)}</b>
               <small>{history.n} відповідей</small>
+              {metric !== 'sleep' && history.value != null && (
+                <details className="state-subdetails state-exact">
+                  <summary>Точне середнє за період</summary>
+                  <p className="state-caption">{statePoints(history.value)}</p>
+                </details>
+              )}
             </div>
           )}
           {visible.length >= 4 && (
@@ -93,7 +106,8 @@ export function StateHistory({
               key={`${metric}-${range}`}
               points={visible.map((item) => ({ date: item.date, value: item.value! }))}
               label={`${label} за місяцями`}
-              unit={metric === 'sleep' ? 'год' : '/5'}
+              unit={metric === 'sleep' ? 'год' : undefined}
+              formatValue={metric === 'sleep' ? undefined : (value) => qualitative(metric, value)}
               domain={metric === 'sleep' ? undefined : [1, 5]}
               maxGapDays={40}
               formatDate={stateMonth}
@@ -119,7 +133,7 @@ export function StateHistory({
                       {stateMonth(item.month)}
                       {item.month === to.slice(0, 7) ? ' · триває' : ''}
                     </span>
-                    <b>{format(item.value)}</b>
+                    <b>{historyValue(metric, item.value)}</b>
                     <small>{item.n} відп.</small>
                   </summary>
                   <div className="state-month-body">
@@ -132,13 +146,24 @@ export function StateHistory({
                       return row.n ? (
                         <div className="state-month-metric" key={id}>
                           <span>{name}</span>
-                          <b>
-                            {id === 'sleep' ? stateSleep(row.value) : `${stateNumber(row.value)}/5`}
-                          </b>
+                          <b>{historyValue(id, row.value)}</b>
                           <small>{row.n} відп.</small>
                         </div>
                       ) : null;
                     })}
+                    <details className="state-subdetails state-exact">
+                      <summary>Точні середні за місяць</summary>
+                      {metrics
+                        .filter(([id]) => id !== 'sleep')
+                        .map(([id, name]) => {
+                          const row = stateHistorySeries([month], id, to);
+                          return row.value == null ? null : (
+                            <p className="state-caption" key={id}>
+                              {name} · {statePoints(row.value)}
+                            </p>
+                          );
+                        })}
+                    </details>
                     {named.length > 0 && (
                       <details className="state-subdetails">
                         <summary>Власні варіанти в цьому місяці</summary>
@@ -153,7 +178,9 @@ export function StateHistory({
                               .map(([id, count]) => (
                                 <div key={id}>
                                   <p>
-                                    {value.labels?.[id] ?? 'Власний варіант'} · {count}/{value.n}
+                                    {value.labels?.[id] ?? 'Власний варіант'} ·{' '}
+                                    {stateCount(count, 'згадка', 'згадки', 'згадок')} з {value.n}{' '}
+                                    відповідей
                                   </p>
                                   {Object.keys(value.labelCounts?.[id] ?? {}).length > 1 && (
                                     <p className="state-caption">

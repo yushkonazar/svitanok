@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { adaptiveDay } from '../web/core/checkin/adaptive-observations.mjs';
+import { shiftCheckinDate } from '../web/core/checkin/observations.mjs';
 import {
   compareState,
   demoStateRecords,
@@ -146,6 +147,39 @@ describe('state statistics: observed data and comparable periods', () => {
   });
 });
 describe('independent comparisons and historical labels', () => {
+  it('compares paired work days within a duration and refuses a lead based on mixed shifts', () => {
+    const to = '2026-11-05';
+    const shifts = [
+      { hours: '4_8h', breaks: 'none', morning: 5, evening: 2, n: 12 },
+      { hours: '4_8h', breaks: 'enough', morning: 5, evening: 1, n: 6 },
+      { hours: '8_12h', breaks: 'none', morning: 1, evening: 5, n: 6 },
+      { hours: '8_12h', breaks: 'enough', morning: 1, evening: 4, n: 12 },
+    ];
+    let offset = 0;
+    const records = Object.fromEntries(
+      shifts.flatMap((shift) =>
+        Array.from({ length: shift.n }, () => [
+          shiftCheckinDate(to, -offset++),
+          {
+            morning: confirmed({ energy: shift.morning }),
+            evening: confirmed({
+              energy: shift.evening,
+              workRangeV4: shift.hours,
+              workBreaksV4: shift.breaks,
+            }),
+          },
+        ]),
+      ),
+    );
+    const report = stateReport(records, to, 90);
+    expect(compareState(report.current, 'work_breaks', 'energy_change').delta).toBeGreaterThan(1);
+    for (const workRange of ['4_8h', '8_12h']) {
+      const result = compareState(report.current, 'work_breaks', 'energy_change', { workRange });
+      expect(result).toMatchObject({ ready: true, delta: -1 });
+    }
+    expect(report.insights.some((insight) => insight.id === 'work_breaks')).toBe(false);
+  });
+
   it('cannot use gated mood reasons or unmarked activities as independent factors', () => {
     expect(STATE_FACTORS.some(([, id]) => /moodFactors|activities|energyFactors/.test(id))).toBe(
       false,

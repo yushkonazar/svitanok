@@ -2,8 +2,11 @@ export const stateNumber = (value: number | null, digits = 1) =>
   value == null ? '—' : value.toLocaleString('uk-UA', { maximumFractionDigits: digits });
 export function stateSleep(value: number | null) {
   if (value == null) return '—';
-  const minutes = Math.round((value * 60) / 5) * 5;
-  return `${value > 0 ? '≈ ' : ''}${Math.floor(minutes / 60)} год${minutes % 60 ? ` ${minutes % 60} хв` : ''}`;
+  return `${value > 0 ? '≈ ' : ''}${stateDuration(value, 5)}`;
+}
+export function stateDuration(hours: number, precision = 1) {
+  const minutes = Math.round((hours * 60) / precision) * precision;
+  return `${Math.floor(minutes / 60)} год${minutes % 60 ? ` ${minutes % 60} хв` : ''}`;
 }
 export const stateDate = (date: string) =>
   new Date(`${date}T12:00:00Z`).toLocaleDateString('uk-UA', { day: 'numeric', month: 'short' });
@@ -24,4 +27,15 @@ export function stateCount(n: number, one: string, few: string, many: string) {
             ? few
             : many;
   return `${n} ${word}`;
+}
+export const stateDays = (n: number) => stateCount(n, 'день', 'дні', 'днів');
+export function statePoints(value: number, signed = false) {
+  const absolute = Math.round(Math.abs(value) * 100) / 100;
+  const prefix = absolute === 0 ? '' : value < 0 ? '−' : signed ? '+' : '';
+  return (
+    prefix +
+    (Number.isInteger(absolute)
+      ? stateCount(absolute, 'бал', 'бали', 'балів')
+      : `${stateNumber(absolute, 2)} бала`)
+  );
 }

@@ -1,6 +1,6 @@
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
-import type { Stats } from '../../api/schema.ts';
+import type { CheckinSlot, Stats } from '../../api/schema.ts';
 import { inTelegram } from '../../telegram.ts';
 import { useTick } from '../../lib/useTick.ts';
 import { usePresentation } from '../../lib/presentation.ts';
@@ -12,6 +12,7 @@ import {
   demoStateRecords,
   type StateInsight,
 } from '../../../../core/checkin/state-analysis.mjs';
+import { StateOverview } from './StateOverview.tsx';
 import { StateTimeline } from './StateTimeline.tsx';
 import { StateDayDetail } from './StateDayDetail.tsx';
 import {
@@ -19,22 +20,19 @@ import {
   StateComparisons,
   ComparisonResult,
   StateDistributionView,
+  type StateEvidence,
 } from './StateComparisons.tsx';
 import { StateThemes } from './StateThemes.tsx';
 import { StateHistory } from './StateHistory.tsx';
 import { ObservationReview } from './ObservationReview.tsx';
-import { stateDate, stateNumber, stateCount } from './state-format.ts';
-
-function SleepMetric({ value }: { value: number | null }) {
-  if (value == null) return <>—</>;
-  const minutes = Math.round((value * 60) / 5) * 5;
-  return (
-    <>
-      {value > 0 ? '≈ ' : ''}
-      {Math.floor(minutes / 60)} <small>год{minutes % 60 ? ` ${minutes % 60} хв` : ''}</small>
-    </>
-  );
-}
+import { stateDate, stateDays, slotNames } from './state-format.ts';
+import {
+  stateHasSlots,
+  stateMetricNames,
+  stateSlots,
+  type StateMetricKey,
+  type StateSlotFilter,
+} from './state-series.ts';
 
 function Insight({
   item,
@@ -136,6 +134,9 @@ function Insight({
   );
 }
 
+const modes = { overview: 'Огляд', rhythm: 'Ритм', links: 'Зв’язки' } as const;
+type Mode = keyof typeof modes;
+
 export function StateDashboard({
   s,
   days,
@@ -173,263 +174,291 @@ export function StateDashboard({
     };
   }, [s.checkinRaw.records, s.checkinToday, to, demo]);
   const report = useMemo(() => stateReport(records, to, days), [records, to, days]);
-  const [metric, setMetric] = useState<'energy' | 'mood'>('energy'),
-    [selection, setSelection] = useState<{ date: string; period: string } | null>(null),
-    [explorer, setExplorer] = useState(false),
-    [legacy, setLegacy] = useState(false);
-  const period = `${report.from}/${to}`,
-    fallback =
-      report.current
-        .filter((d) => d.morning.confirmed || d.afternoon.confirmed || d.evening.confirmed)
-        .at(-1) ?? report.current.at(-1)!;
-  const selected = selection?.period === period ? selection.date : fallback.date;
-  const chosen = report.current.find((d) => d.date === selected) ?? fallback;
-  const timeline = useRef<HTMLElement>(null),
-    detail = useRef<HTMLDetailsElement>(null);
-  const select = (date: string) =>
-    setSelection((prior) =>
-      prior?.date === date && prior.period === period ? prior : { date, period },
-    );
-  const reveal = (date: string) => {
-    if (!report.current.some((d) => d.date === date)) return;
-    select(date);
-    if (detail.current) {
-      detail.current.open = true;
-      detail.current.scrollIntoView?.({
-        behavior: preferences.calm || reduced ? 'instant' : 'smooth',
-        block: 'start',
-      });
-    }
+  const [mode, setMode] = useState<Mode>('overview');
+  const [metric, setMetric] = useState<StateMetricKey>('energy');
+  const [slot, setSlot] = useState<StateSlotFilter>('all');
+  const [selection, setSelection] = useState<{ date: string; evidencePeriod?: string } | null>(
+    null,
+  );
+  const [overlay, setOverlay] = useState<StateEvidence | null>(null);
+  const [linksVisited, setLinksVisited] = useState(false);
+  const [workEntry, setWorkEntry] = useState(0);
+  const [legacy, setLegacy] = useState(false);
+  const nav = useRef<HTMLDivElement>(null);
+  const detail = useRef<HTMLElement>(null);
+  const pendingScroll = useRef<'nav' | 'day' | null>(null);
+
+  const period = `${report.from}/${to}`;
+  const fallback =
+    report.current.filter((day) => stateSlots.some((slot) => day[slot].confirmed)).at(-1) ??
+    report.current.at(-1)!;
+  const chosen = report.current.find((day) => day.date === selection?.date) ?? fallback;
+  const showDay = mode === 'rhythm' || (mode === 'links' && selection?.evidencePeriod === period);
+  const remaining = report.insights.filter(
+    (item) => item.id !== 'work_breaks' && item.id !== 'daily-energy',
+  );
+  const active = report.recordedDays > 0;
+
+  useEffect(() => {
+    const target = pendingScroll.current;
+    if (!target) return;
+    pendingScroll.current = null;
+    const element = target === 'nav' ? nav.current : detail.current;
+    element?.scrollIntoView?.({
+      behavior: preferences.calm || reduced ? 'instant' : 'smooth',
+      block: 'start',
+    });
+    element
+      ?.querySelector<HTMLElement>(target === 'nav' ? '[aria-pressed="true"]' : 'h2')
+      ?.focus({ preventScroll: true });
+  });
+
+  const openMode = (next: Mode) => {
+    if (next === 'links') setLinksVisited(true);
+    setMode(next);
   };
-  const primary = report.overview.filter((item) => item.n > 0);
+  const select = (date: string) =>
+    setSelection((prior) => (prior?.date === date ? prior : { date }));
+  const reveal = (date: string) => {
+    if (!report.current.some((day) => day.date === date)) return;
+    pendingScroll.current = 'day';
+    setSelection({ date, evidencePeriod: period });
+    if (mode === 'overview') openMode('rhythm');
+  };
+  const openMetric = (metric: StateMetricKey, slot: CheckinSlot) => {
+    pendingScroll.current = 'nav';
+    setMetric(metric);
+    setSlot(slot);
+    setOverlay(null);
+    openMode('rhythm');
+  };
+  const showEvidence = (group: StateEvidence) => {
+    const date = group.dates.includes(chosen.date) ? chosen.date : group.dates.at(-1);
+    if (!date) return;
+    openMetric(group.metric, group.slot);
+    select(date);
+    setOverlay(group);
+  };
+
   return (
     <>
       <header className="state-page-heading">
-        <div>
-          <p>ТВОЇ СПОСТЕРЕЖЕННЯ</p>
-          <h1>Мій стан</h1>
-        </div>
+        <h1>Мій стан</h1>
         <Link to="/checkin" className="state-quiet-link">
           До чек-іну ↗
         </Link>
       </header>
       <div className="state-period">
-        <div className="renewal-segments" aria-label="Період статистики">
+        <div className="renewal-segments" role="group" aria-label="Період статистики">
           {[7, 30, 90].map((n) => (
-            <button type="button" key={n} aria-pressed={days === n} onClick={() => setDays(n)}>
+            <button
+              type="button"
+              key={n}
+              aria-pressed={days === n}
+              onClick={() => {
+                if (n !== days) setOverlay(null);
+                setDays(n);
+              }}
+            >
               {n} днів
             </button>
           ))}
         </div>
-        <p className="state-caption">
+        <p className="state-caption" aria-live="polite">
           {stateDate(report.from)} — {stateDate(to)} · {report.recordedDays} з {days} днів із
           записами
         </p>
       </div>
-      {!report.recordedDays ? (
-        <div className="state-panel state-empty">
-          <h2>Тут з’явиться твій ритм</h2>
-          <p>
-            Після підтверджених чек-інів побачиш стан, зміни й короткі спостереження. Порожні дні не
-            знижують показники.
-          </p>
-          <Link className="renewal-primary" to="/checkin">
-            Відкрити чек-ін
-          </Link>
+      {active && (
+        <div className="state-modes" ref={nav} role="group" aria-label="Подання статистики">
+          {(Object.keys(modes) as Mode[]).map((item) => (
+            <button
+              type="button"
+              key={item}
+              aria-pressed={mode === item}
+              onClick={() => openMode(item)}
+            >
+              {modes[item]}
+            </button>
+          ))}
         </div>
-      ) : (
-        <>
-          <div className="state-overview">
-            {primary.map((item) => (
-              <button
-                type="button"
-                className={`state-metric state-metric-${item.id}`}
-                key={item.id}
-                onClick={() => {
-                  if (item.id === 'energy' || item.id === 'mood') {
-                    setMetric(item.id);
-                    timeline.current?.scrollIntoView?.({
-                      behavior: preferences.calm || reduced ? 'instant' : 'smooth',
-                      block: 'start',
-                    });
-                  } else if (item.id === 'sleep') {
-                    const target = document.getElementById(
-                      'state-sleep',
-                    ) as HTMLDetailsElement | null;
-                    if (target) {
-                      target.open = true;
-                      target.scrollIntoView?.({
-                        behavior: preferences.calm || reduced ? 'instant' : 'smooth',
-                        block: 'start',
-                      });
-                    }
-                  } else reveal(chosen.date);
-                }}
-              >
-                <span>
-                  {item.label}
-                  <span aria-hidden="true">↗</span>
-                </span>
-                <b>
-                  {item.unit === 'hours' ? (
-                    <SleepMetric value={item.value} />
-                  ) : (
-                    <>
-                      {stateNumber(item.value)}
-                      <small>/5</small>
-                    </>
-                  )}
-                </b>
-                <span className="state-metric-n">
-                  {item.id === 'sleep'
-                    ? stateCount(item.n, 'ранковий запис', 'ранкові записи', 'ранкових записів')
-                    : item.id === 'satisfaction'
-                      ? stateCount(item.n, 'вечірній запис', 'вечірні записи', 'вечірніх записів')
-                      : stateCount(item.n, 'оцінка', 'оцінки', 'оцінок')}
-                </span>
-                {item.delta != null ? (
-                  <span
-                    className={`state-delta ${item.unit === 'hours' || Math.abs(item.delta) < 0.05 ? '' : item.delta >= 0 ? 'is-up' : 'is-down'}`}
-                  >
-                    {Math.abs(item.delta) < (item.unit === 'hours' ? 5 / 60 : 0.05)
-                      ? '≈ Без змін'
-                      : `${item.delta > 0 ? '↑' : '↓'} ${item.unit === 'hours' ? `${Math.round(Math.abs(item.delta) * 12) * 5} хв` : `${stateNumber(Math.abs(item.delta))} б.`}`}{' '}
-                    проти попередніх {days} днів
-                  </span>
-                ) : (
-                  <span className="state-metric-context">
-                    {item.id === 'sleep'
-                      ? 'Середня зазначена тривалість'
-                      : item.id === 'satisfaction'
-                        ? 'Твоя підсумкова оцінка'
-                        : 'Середнє за часом дня'}
-                  </span>
-                )}
-              </button>
-            ))}
-          </div>
-          <details
-            className="state-subdetails state-method"
-            open={preferences.explanations || undefined}
-          >
-            <summary>Як читати показники</summary>
-            <p className="state-caption">
-              Настрій і енергія — середнє доступних ранкових, денних та вечірніх оцінок з однаковою
-              вагою часу дня. Зміну показуємо, коли склад записів можна зіставити.
-            </p>
-            <p className="state-caption">
-              Попередній період: {stateDate(report.previousFrom)} — {stateDate(report.previousTo)}.
-              Для зміни потрібно щонайменше по 3 оцінки в кожному зіставному часі дня.
-            </p>
-            {primary.map((item) => (
-              <p className="state-caption" key={item.id}>
-                {item.label}: {item.n} відповідей зараз · {item.previousN} у попередньому періоді
-                {item.delta == null ? ' · поки без зіставної зміни' : ''}.
-              </p>
-            ))}
-          </details>
-          <section className="state-insights" aria-label="Спостереження за період">
-            {report.insights.length ? (
-              report.insights.map((item) => (
-                <Insight
-                  key={item.id}
-                  item={item}
-                  report={report}
-                  onDay={reveal}
-                  explanations={preferences.explanations}
-                />
-              ))
-            ) : (
-              <p className="state-empty">
-                Відповіді вже є в огляді. Короткі спостереження з’являться, коли буде достатньо
-                записів для зіставлення.
-              </p>
-            )}
-          </section>
-          <section ref={timeline} className="state-panel state-timeline-panel">
-            <div className="state-section-heading">
-              <h2>Як змінюється стан</h2>
-              <div className="renewal-segments">
-                <button
-                  type="button"
-                  aria-pressed={metric === 'energy'}
-                  onClick={() => setMetric('energy')}
-                >
-                  Енергія
-                </button>
-                <button
-                  type="button"
-                  aria-pressed={metric === 'mood'}
-                  onClick={() => setMetric('mood')}
-                >
-                  Настрій
-                </button>
-              </div>
-            </div>
-            <StateTimeline
-              days={report.current}
-              metric={metric}
-              selected={chosen.date}
-              onSelect={select}
-            />
-            <details key={period} ref={detail} className="state-record-details">
-              <summary>
-                Відповіді за {stateDate(chosen.date)} <span>↗</span>
-              </summary>
-              <label className="renewal-field">
-                <span>День для перегляду</span>
-                <input
-                  type="date"
-                  min={report.from}
-                  max={to}
-                  value={chosen.date}
-                  onChange={(e) => {
-                    if (e.target.value >= report.from && e.target.value <= to)
-                      select(e.target.value);
-                  }}
-                />
-              </label>
-              <StateDayDetail day={chosen} />
-            </details>
-          </section>
-          <StateThemes report={report} onDay={reveal} explanations={preferences.explanations} />
-          <details className="state-panel" onToggle={(e) => setExplorer(e.currentTarget.open)}>
-            <summary>
-              <span>Дослідити власні зв’язки</span>
-              <small>Порівняння · твої пояснення</small>
-            </summary>
-            {explorer && (
-              <div className="state-panel-body">
-                <StateComparisons days={report.current} onDay={reveal} />
-              </div>
-            )}
-          </details>
-        </>
       )}
-      <StateHistory
-        records={records}
-        from={demo ? shiftCheckinDate(to, -41) : s.checkinRaw.from}
-        to={to}
-      />
-      {Object.values(s.checkinRaw.records).some((day) =>
-        Object.values(day).some(
-          (record) => record?.confirmed && ![3, 4].includes(Number(record.questionVersion)),
-        ),
-      ) && (
-        <details className="state-panel" onToggle={(e) => setLegacy(e.currentTarget.open)}>
-          <summary>
-            <span>Попередні формулювання чек-інів</span>
-          </summary>
-          {legacy && (
-            <div className="state-panel-body">
-              <ObservationReview s={s} days={days} setDays={setDays} />
+      <section
+        className="state-mode-panel"
+        aria-label="Огляд за період"
+        hidden={active && mode !== 'overview'}
+      >
+        {active ? (
+          <>
+            <StateOverview
+              report={report}
+              onMetric={openMetric}
+              onWork={() => {
+                pendingScroll.current = 'nav';
+                setWorkEntry((entry) => entry + 1);
+                openMode('links');
+              }}
+              explanations={preferences.explanations}
+            />
+            {remaining.length > 0 && (
+              <details className="state-panel">
+                <summary>Інші спостереження</summary>
+                <div className="state-panel-body state-insights">
+                  {remaining.map((item) => (
+                    <Insight
+                      key={item.id}
+                      item={item}
+                      report={report}
+                      onDay={reveal}
+                      explanations={preferences.explanations}
+                    />
+                  ))}
+                </div>
+              </details>
+            )}
+            <StateThemes report={report} onDay={reveal} explanations={preferences.explanations} />
+          </>
+        ) : (
+          <div className="state-panel state-empty">
+            <h2>Тут з’явиться твій ритм</h2>
+            <p>Після підтверджених чек-інів побачиш стан, зміни й короткі спостереження.</p>
+            <Link className="renewal-primary" to="/checkin">
+              Відкрити чек-ін
+            </Link>
+          </div>
+        )}
+        <StateHistory
+          records={records}
+          from={demo ? shiftCheckinDate(to, -41) : s.checkinRaw.from}
+          to={to}
+        />
+        {Object.values(s.checkinRaw.records).some((day) =>
+          Object.values(day).some(
+            (record) => record?.confirmed && ![3, 4].includes(Number(record.questionVersion)),
+          ),
+        ) && (
+          <details
+            className="state-panel"
+            onToggle={(event) => setLegacy(event.currentTarget.open)}
+          >
+            <summary>
+              <span>Попередні формулювання чек-інів</span>
+            </summary>
+            {legacy && (
+              <div className="state-panel-body">
+                <ObservationReview s={s} days={days} setDays={setDays} />
+              </div>
+            )}
+          </details>
+        )}
+        <Link to="/weekly-report" className="state-quiet-link state-weekly-link">
+          Тижневі огляди <span aria-hidden="true">→</span>
+        </Link>
+      </section>
+      {active && mode === 'rhythm' && (
+        <section className="state-panel state-timeline-panel" aria-label="Ритм чек-інів">
+          <label className="renewal-field">
+            <span>Показник графіка</span>
+            <select
+              value={metric}
+              onChange={(event) => {
+                setMetric(event.target.value as StateMetricKey);
+                setOverlay(null);
+              }}
+            >
+              {Object.entries(stateMetricNames).map(([key, label]) => (
+                <option key={key} value={key}>
+                  {label}
+                </option>
+              ))}
+            </select>
+          </label>
+          {stateHasSlots(metric) && (
+            <div
+              className="renewal-segments state-slot-filter"
+              role="group"
+              aria-label="Частина дня"
+            >
+              {([...stateSlots, 'all'] as const).map((key) => (
+                <button
+                  type="button"
+                  key={key}
+                  aria-pressed={slot === key}
+                  onClick={() => {
+                    setSlot(key);
+                    if (key !== 'all' && key !== overlay?.slot) setOverlay(null);
+                  }}
+                >
+                  {key === 'all' ? 'Усі' : slotNames[key]}
+                </button>
+              ))}
             </div>
           )}
-        </details>
+          {overlay && (
+            <div className="state-overlay">
+              <span>
+                {overlay.label} · {stateDays(overlay.dates.length)}
+                {days === 90 ? ' · виділені їхні тижні' : ''}
+              </span>
+              <button
+                type="button"
+                aria-label="Прибрати виділення днів"
+                onClick={() => setOverlay(null)}
+              >
+                ×
+              </button>
+            </div>
+          )}
+          <StateTimeline
+            days={report.current}
+            previous={report.previous}
+            metric={metric}
+            slot={slot}
+            selected={chosen.date}
+            highlighted={overlay?.dates}
+            onSelect={select}
+          />
+        </section>
       )}
-      <Link to="/weekly-report" className="state-quiet-link state-weekly-link">
-        Тижневі огляди <span>→</span>
-      </Link>
+      {active && linksVisited && (
+        <section
+          className="state-panel state-links-panel"
+          aria-label="Зв’язки й пояснення"
+          hidden={mode !== 'links'}
+        >
+          <StateComparisons
+            key={workEntry}
+            days={report.current}
+            onDay={reveal}
+            onGraph={showEvidence}
+            onContextChange={() =>
+              setSelection((prior) => (prior?.evidencePeriod ? { date: prior.date } : prior))
+            }
+          />
+        </section>
+      )}
+      {active && showDay && (
+        <section ref={detail} className="state-panel state-day-panel" aria-label="Записи дня">
+          <div className="state-day-heading">
+            <h2 tabIndex={-1}>Відповіді за {stateDate(chosen.date)}</h2>
+            <label className="state-day-picker">
+              <span className="state-range-label">День для перегляду</span>
+              <input
+                type="date"
+                min={report.from}
+                max={to}
+                value={chosen.date}
+                onChange={(event) => {
+                  const date = event.target.value;
+                  if (date >= report.from && date <= to)
+                    setSelection({ date, evidencePeriod: mode === 'links' ? period : undefined });
+                }}
+              />
+            </label>
+          </div>
+          <StateDayDetail day={chosen} />
+        </section>
+      )}
     </>
   );
 }

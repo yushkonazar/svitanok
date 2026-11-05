@@ -53,6 +53,8 @@ export type StateReport = Omit<ReturnType<typeof analyzeAdaptive>, 'learning'> &
 };
 export function stateValue(record: Record<string, unknown>, stem: string): any;
 export const STATE_FACTORS: [string, string][];
+export const STATE_WORK_RANGES: [string, string][];
+export function stateOutcomeValue(day: AdaptiveDay, key: string): number | null;
 export function stateDistribution(
   days: AdaptiveDay[],
   slot: string,
@@ -65,7 +67,7 @@ export function compareState(
   days: AdaptiveDay[],
   factor: string,
   outcome: string,
-  options?: { slot?: string; company?: string },
+  options?: { slot?: string; company?: string; workRange?: string },
 ): StateComparison;
 export function stateReport(records: Record<string, any>, to: string, period?: number): StateReport;
 export function demoStateRecords(to: string): Record<string, any>;
