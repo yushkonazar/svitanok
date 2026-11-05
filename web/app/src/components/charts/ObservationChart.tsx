@@ -14,6 +14,7 @@ export function ObservationChart({
   domain,
   onSelect,
   formatDate,
+  formatValue,
 }: {
   points: Observation[];
   label: string;
@@ -23,6 +24,7 @@ export function ObservationChart({
   domain?: [number, number];
   onSelect?: (date: string) => void;
   formatDate?: (date: string) => string;
+  formatValue?: (value: number) => string;
 }) {
   const uid = useId();
   const [selected, setSelected] = useState<number | null>(null);
@@ -42,8 +44,11 @@ export function ObservationChart({
   const timestamps = valid.map((p) => Date.parse(p.date));
   const first = Math.min(...timestamps),
     last = Math.max(...timestamps);
+  const left = formatValue && domain ? 76 : 12;
   const x = (i: number) =>
-    valid.length === 1 ? 180 : 12 + ((timestamps[i] - first) / (last - first || 1)) * 336;
+    valid.length === 1
+      ? (left + 348) / 2
+      : left + ((timestamps[i] - first) / (last - first || 1)) * (348 - left);
   const y = (v: number) => 110 - ((v - min) / (max - min)) * 96;
   const hasGap =
     maxGapDays != null &&
@@ -64,6 +69,7 @@ export function ObservationChart({
     });
   const fmt = (n: number) =>
     n.toLocaleString('uk-UA', { maximumFractionDigits: unit === 'год' || unit === '/5' ? 1 : 4 });
+  const readout = (n: number) => formatValue?.(n) ?? fmt(n) + (unit ? ` ${unit}` : '');
   const selectAt = (event: PointerEvent<SVGSVGElement>) => {
     const bounds = event.currentTarget.getBoundingClientRect();
     if (!bounds.width) return;
@@ -81,7 +87,7 @@ export function ObservationChart({
         <span className="text-xs text-tx2">{date(point.date)}</span>
         <b className="font-mono text-sm">
           {point.approx ? '≈ ' : ''}
-          {fmt(point.value)} {unit}
+          {readout(point.value)}
         </b>
       </div>
       <svg
@@ -98,7 +104,7 @@ export function ObservationChart({
         onPointerUp={(event) => {
           event.currentTarget.releasePointerCapture?.(event.pointerId);
         }}
-        aria-label={`${label}: мінімум ${fmt(lo)}, максимум ${fmt(hi)}. ${valid.length} спостережень.`}
+        aria-label={`${label}: мінімум ${readout(lo)}, максимум ${readout(hi)}. ${valid.length} спостережень.`}
       >
         <defs>
           <linearGradient id={uid} x1="0" y1="0" x2="0" y2="1">
@@ -107,12 +113,19 @@ export function ObservationChart({
           </linearGradient>
         </defs>
         {[32, 72, 110].map((h) => (
-          <line key={h} x1="12" x2="348" y1={h} y2={h} stroke="var(--color-hair)" />
+          <line key={h} x1={left} x2="348" y1={h} y2={h} stroke="var(--color-hair)" />
         ))}
         {domain &&
           [min, (min + max) / 2, max].map((v) => (
-            <text key={v} x="12" y={y(v) - 4} fill="var(--color-tx3)" fontSize="9">
-              {fmt(v)}
+            <text
+              key={v}
+              x={formatValue ? left - 6 : left}
+              y={y(v) + (formatValue ? 3 : -4)}
+              textAnchor={formatValue ? 'end' : 'start'}
+              fill="var(--color-tx3)"
+              fontSize={formatValue ? 11 : 9}
+            >
+              {formatValue?.(v) ?? fmt(v)}
             </text>
           ))}
         {valid.length > 1 && !hasGap && (
@@ -159,16 +172,24 @@ export function ObservationChart({
           onSelect?.(valid[n].date);
         }}
         aria-label={`Дата: ${label}`}
-        aria-valuetext={`${date(point.date)}: ${point.approx ? 'приблизно ' : ''}${fmt(point.value)} ${unit}`}
+        aria-valuetext={`${date(point.date)}: ${point.approx ? 'приблизно ' : ''}${readout(point.value)}`}
       />
       <div className="flex justify-between text-[11px] text-tx3">
         <span>{date(valid[0].date)}</span>
         <span>{date(valid[valid.length - 1].date)}</span>
       </div>
-      <p className="renewal-muted mt-2">
-        Мінімум {fmt(lo)} · максимум {fmt(hi)} {unit}
-        {hasGap ? ' · пропуски не з’єднані лінією' : ''}
-      </p>
+      {(!formatValue || hasGap) && (
+        <p className="renewal-muted mt-2">
+          {formatValue ? (
+            'Пропуски не з’єднані лінією'
+          ) : (
+            <>
+              Мінімум {fmt(lo)} · максимум {fmt(hi)} {unit}
+              {hasGap ? ' · пропуски не з’єднані лінією' : ''}
+            </>
+          )}
+        </p>
+      )}
     </div>
   );
 }
