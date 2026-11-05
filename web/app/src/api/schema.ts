@@ -1195,6 +1195,27 @@ export type MasteryTopic = z.infer<typeof masteryTopicSchema>;
  * поле, якого тоді ще не існувало.
  */
 export const archiveMonthSchema = z.object({
+  observationsV3: z
+    .object({
+      days: int.optional(),
+      confirmedSlots: int.optional(),
+      from: z.string().optional(),
+      to: z.string().optional(),
+      metrics: z.record(
+        z.string(),
+        z.object({
+          n: int.default(0),
+          counts: z.record(z.string(), int).default({}),
+          sum: num.default(0),
+          numericN: int.default(0),
+          average: num.nullable().default(null),
+          label: z.string().optional(),
+          labels: z.record(z.string(), z.string()).optional(),
+          labelCounts: z.record(z.string(), z.record(z.string(), int)).optional(),
+        }),
+      ),
+    })
+    .optional(),
   observationsV2: z
     .object({
       days: int,
