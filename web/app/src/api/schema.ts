@@ -246,6 +246,25 @@ const multi = <T extends z.ZodType>(s: T) =>
     .optional()
     .catch(undefined);
 const checkinV4Fields = {
+  flowRevisionV4: z.literal(2).optional().catch(undefined),
+  energyLevelV4: z.number().int().min(1).max(8).optional().catch(undefined),
+  moodLevelV4: z.number().int().min(1).max(8).optional().catch(undefined),
+  sleepTimingV4: z.enum(['both', 'bedtime', 'wake', 'unknown']).optional().catch(undefined),
+  sleepBedtimeDayV4: z.enum(['previous', 'same']).optional().catch(undefined),
+  sleepBedtimeV4: z.string().max(5).optional().catch(undefined),
+  sleepWakeV4: z.string().max(5).optional().catch(undefined),
+  priorityStepStatusV4: z.enum(['known', 'unknown']).optional().catch(undefined),
+  newPriorityStatusV4: z.enum(['known', 'unknown']).optional().catch(undefined),
+  bedtimePlanStatusV4: z.enum(['known', 'unknown']).optional().catch(undefined),
+  workedTodayV4: z.enum(['yes', 'no', 'unknown']).optional().catch(undefined),
+  homeArrivalStatusV4: z
+    .enum(['same', 'next', 'home', 'away', 'unknown'])
+    .optional()
+    .catch(undefined),
+  homeArrivalTimeV4: z.string().max(5).optional().catch(undefined),
+  workDurationModeV4: z.enum(['exact', 'range', 'unknown']).optional().catch(undefined),
+  workMinutesV4: z.number().int().min(1).max(1440).optional().catch(undefined),
+  workEstimateV4: z.string().max(16).optional().catch(undefined),
   optionLabelsV4: z
     .record(z.string().max(72), z.record(z.string().max(90), z.string().max(155)))
     .optional()

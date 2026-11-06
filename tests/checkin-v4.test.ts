@@ -12,7 +12,9 @@ import {
   plannedDirectionsV4,
   coreCompleteV4,
   nextSleepDateV4,
+  checkinStepsV4,
 } from '../web/core/checkin/adaptive-v4.mjs';
+import { CHECKIN_FLOW_REVISION, recordedStateRating } from '../web/core/checkin/state-ratings.mjs';
 import { adaptiveModel } from '../web/core/checkin/model.mjs';
 import { recordEvent, emptyStore } from '../web/stats-core.mjs';
 import {
@@ -63,7 +65,12 @@ const write = (
 describe('explicit v4 observations', () => {
   it('has three morning/day and five evening steps without moving satisfaction into current mood', () => {
     expect(Object.values(CHECKIN_CARDS_V4).map((c) => c.length)).toEqual([3, 3, 5]);
-    expect(CHECKIN_CARDS_V4.evening[0]!.fields.map((f) => f.id)).toEqual(['energy', 'mood']);
+    expect(CHECKIN_CARDS_V4.evening[0]!.fields.map((f) => f.id)).toEqual([
+      'energyLevelV4',
+      'moodLevelV4',
+      'energy',
+      'mood',
+    ]);
     expect(coreCompleteV4('morning', morning)).toBe(true);
     expect(coreCompleteV4('evening', evening)).toBe(true);
   });
@@ -320,5 +327,65 @@ describe('explicit v4 observations', () => {
       '240_plus',
       'unknown',
     ]);
+  });
+});
+
+describe('revised check-in', () => {
+  const state = {
+    questionVersion: 4,
+    flowRevisionV4: CHECKIN_FLOW_REVISION,
+    energyLevelV4: 6,
+    energyHelpersV4: ['unknown'],
+    moodLevelV4: 8,
+    moodFactorsV4: ['unknown'],
+  };
+  it('requires visible follow-ups for confirmation and keeps the original scale', () => {
+    const complete = {
+      ...state,
+      activitiesV4: ['none'],
+      companyV4: ['private'],
+      priorityPaceV4: 'later',
+    };
+    const withMissingReason = { ...complete, moodFactorsV4: ['conflict'], confirmed: true };
+    const s = write(emptyStore(), 'afternoon', withMissingReason);
+    expect(s.checkins[date]?.afternoon?.confirmed).not.toBe(true);
+    const saved = write(s, 'afternoon', { ...complete, confirmed: true }).checkins[date].afternoon;
+    expect(saved).toMatchObject({ confirmed: true, moodLevelV4: 8, mood: 5, energyLevelV4: 6 });
+    expect(recordedStateRating(saved, 'mood')).toEqual({ value: 8, scale: 8 });
+    expect(recordedStateRating({ mood: 5 }, 'mood')).toEqual({ value: 5, scale: 5 });
+  });
+  it('keeps morning direction as a step and asks about short sleep even when it felt restorative', () => {
+    const draft = clearHiddenV4('morning', {
+      ...state,
+      sleepModeV4: 'main',
+      sleepMinutesV4: 340,
+      sleepDurationStatusV4: 'known',
+      sleepQualityV4: 4,
+      sleepTimingV4: 'unknown',
+    });
+    const steps = checkinStepsV4('morning', draft);
+    expect(steps.map((step) => step.id)).toEqual(['sleep', 'energy', 'mood', 'priority']);
+    expect(steps[0]?.followups.map((step) => step.id)).toEqual(['sleep-poor', 'sleep-good']);
+    expect(steps[2]?.followups.map((step) => step.id)).toContain('mood-context');
+  });
+  it.each([
+    [59, 'lt1h'],
+    [60, '1_4h'],
+    [240, '4_8h'],
+    [480, '8_12h'],
+    [720, '12_plus'],
+  ])('retains exact work duration %s and maps its boundary once', (minutes, range) => {
+    const draft = clearHiddenV4('evening', {
+      ...state,
+      activitiesV4: ['rest'],
+      workedTodayV4: 'yes',
+      workDurationModeV4: 'exact',
+      workMinutesV4: minutes,
+      workRangeV4: 'unknown',
+    });
+    expect(draft).toMatchObject({ workMinutesV4: minutes, workRangeV4: range });
+    const changed = clearHiddenV4('evening', { ...draft, workedTodayV4: 'no' });
+    expect(changed.workMinutesV4).toBeUndefined();
+    expect(changed.workRangeV4).toBeUndefined();
   });
 });

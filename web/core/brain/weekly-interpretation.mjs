@@ -31,6 +31,48 @@ const FACTORS = /** @type {Record<string,string>} */ ({
   missed_food: 'пропущену їжу',
   no_food_time: 'нестачу часу на їжу',
 });
+const weekNames = /** @type {Record<string,string>} */ ({
+  sleep: 'Сон',
+  mood: 'Настрій',
+  energy: 'Енергія',
+  plans: 'Справи',
+});
+/** @param {import('../checkin/state-week.mjs').WeekHighlight[]} highlights */
+function interpretStateWeek(highlights) {
+  const [lead, ...rest] = highlights;
+  if (!lead) return null;
+  const primary = lead.context[0];
+  const secondary = lead.context.find((item) => item.kind !== primary?.kind);
+  const context = [primary, secondary].filter((item) => item != null);
+  const support = primary?.dates.length ? primary.dates : lead.dates;
+  const date = new Intl.DateTimeFormat('uk-UA', {
+    day: 'numeric',
+    month: 'short',
+    timeZone: 'UTC',
+  });
+  return {
+    section: {
+      kind: 'personal',
+      title: lead.title,
+      paragraphs: [
+        lead.text,
+        ...context.map(
+          (item) => `${item.kind === 'reported' ? 'За твоїми відповідями. ' : ''}${item.text}`,
+        ),
+        ...rest.slice(0, 2 - context.length).map((item) => `${weekNames[item.key]} · ${item.text}`),
+      ],
+      evidence: support.length
+        ? [
+            {
+              label: primary ? 'Дні з цим контекстом' : 'Дні з відповідями',
+              value: support.map((key) => date.format(new Date(`${key}T12:00:00Z`))).join(', '),
+            },
+          ]
+        : [],
+    },
+    idea: primary?.idea,
+  };
+}
 
 /** Explanations from bounded evidence. Same-day pairs and explicit reasons are
  * separate evidence; neither is presented as proven causality.
@@ -45,7 +87,11 @@ export function interpretWeeklyReport(details, decision) {
   const energy = current?.patterns?.energy,
     recovery = current?.patterns?.recovery;
   const metrics = current?.observationsV3;
-  if (current) {
+  const state = current?.weekHighlights?.length ? interpretStateWeek(current.weekHighlights) : null;
+  if (state) {
+    sections.push(state.section);
+    if (state.idea) suggestions.push(state.idea);
+  } else if (current) {
     let title = '',
       paragraphs = [],
       evidence = [];

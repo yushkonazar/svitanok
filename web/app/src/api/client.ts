@@ -931,7 +931,8 @@ export async function postEvent(type: string, payload: Record<string, unknown>):
     const result = await res.json();
     if (result.locked) throw new Error('Цей чек-ін уже підтверджений. Онови екран.');
     if (result.expired) throw new Error('Вікно чек-іну вже закрилось. Онови екран.');
-    if (result.incomplete) throw new Error('Для підтвердження дай відповіді на основні питання.');
+    if (result.incomplete)
+      throw new Error('Дай відповіді на показані питання перед підтвердженням.');
   }
 }
 

@@ -2,18 +2,19 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import {
   CHECKIN_CARDS_V4,
   FOLLOWUP_CARDS_V4,
-  contextualCardV4,
+  checkinStepsV4,
+  checkinStepCompleteV4,
   currentPlanV4,
   nextSleepDateV4,
-  eligibleFollowupsV4,
-  followupsV4,
   fieldVisibleV4,
-  validValueV4,
-  coreCompleteV4,
   clearHiddenV4,
-  answerLabelV4,
   type AdaptiveContext,
 } from '../../../../core/checkin/adaptive-v4.mjs';
+import { choiceAnswerLabel } from '../../../../core/checkin/choices.mjs';
+import {
+  recordedStateRating,
+  stateRatingDirection,
+} from '../../../../core/checkin/state-ratings.mjs';
 import type { Card, Field, CheckinPreferences } from '../../../../core/checkin/catalog.mjs';
 import type { CheckinSlot } from '../../api/schema.ts';
 import { ChoiceFieldInput } from './ChoiceFieldInput.tsx';
@@ -21,6 +22,13 @@ import { haptic, setVerticalSwipes } from '../../telegram.ts';
 import { usePresentation } from '../../lib/presentation.ts';
 
 type Answers = Record<string, unknown>;
+const fieldsBySlot = Object.fromEntries(
+  Object.entries(CHECKIN_CARDS_V4).map(([slot, cards]) => [
+    slot,
+    new Set([...cards, ...FOLLOWUP_CARDS_V4].flatMap((c) => c.fields.map((f) => f.id))),
+  ]),
+);
+
 export function AdaptiveFlow({
   slot,
   date,
@@ -46,24 +54,13 @@ export function AdaptiveFlow({
   nowMs: number;
 }) {
   const { explanations } = usePresentation();
-  const core = CHECKIN_CARDS_V4[slot].map((c) => contextualCardV4(c, answers, context));
-  const complete = (c: Card) =>
-    c.fields
-      .filter((f) => !f.optional && fieldVisibleV4(f, answers))
-      .every((f) => validValueV4(f, answers[f.id]));
+  const steps = checkinStepsV4(slot, answers, context);
   const [step, setStep] = useState(() => {
-    const first = core.findIndex(
-      (c) =>
-        !complete(c) ||
-        (c.fields.every((f) => f.optional) &&
-          !c.fields.some((f) => answers[f.id] != null) &&
-          !(Array.isArray(answers.visitedStepsV4) && answers.visitedStepsV4.includes(c.id))),
-    );
-    return first < 0 ? core.length : first;
+    const first = steps.findIndex((card) => !checkinStepCompleteV4(card, answers));
+    return first < 0 ? steps.length : first;
   });
-  const [adding, setAdding] = useState(false);
-  const stage = useRef<HTMLDivElement>(null),
-    previousStep = useRef(step);
+  const stage = useRef<HTMLDivElement>(null);
+  const previousStep = useRef(step);
   useEffect(() => {
     setVerticalSwipes(false);
     return () => setVerticalSwipes(true);
@@ -75,52 +72,39 @@ export function AdaptiveFlow({
   }, [step]);
   useEffect(() => {
     const cleaned = clearHiddenV4(slot, answers, context);
-    const ids = new Set(
-      [...CHECKIN_CARDS_V4[slot], ...FOLLOWUP_CARDS_V4].flatMap((c) => c.fields.map((f) => f.id)),
-    );
     const changed = Object.keys(answers).find(
       (key) =>
-        ids.has(key) &&
+        fieldsBySlot[slot]?.has(key) &&
+        !['energy', 'mood', 'workRangeV4'].includes(key) &&
         answers[key] != null &&
         JSON.stringify(answers[key]) !== JSON.stringify(cleaned[key]),
     );
     if (changed) onChange(changed, cleaned[changed] ?? null);
   }, [slot, answers, context, onChange]);
-  const eligible = eligibleFollowupsV4(slot, answers, context);
-  const branches = followupsV4(slot, answers, context).sort(
-    (a, b) =>
-      FOLLOWUP_CARDS_V4.findIndex((c) => c.id === a.id) -
-      FOLLOWUP_CARDS_V4.findIndex((c) => c.id === b.id),
-  );
-  const card = core[step];
-  const owner = (id: string) =>
-    id.startsWith('sleep') || id === 'bedtime'
-      ? 'sleep'
-      : ['mood-context', 'energy-context', 'morning-context'].includes(id)
-        ? 'state'
-        : id === 'plan-blocked'
-          ? slot === 'afternoon'
-            ? 'progress'
-            : 'outcome'
-          : id.startsWith('development-') || id.startsWith('missing-')
-            ? 'outcome'
-            : 'context';
-  const answered = (c: Card) =>
-    c.fields.some((f) => fieldVisibleV4(f, answers) && answers[f.id] != null);
+
+  const card = steps[step];
+  const firstIncomplete = steps.findIndex((item) => !checkinStepCompleteV4(item, answers));
   const plan = currentPlanV4(context);
-  const formatTime = (at: unknown) =>
-    typeof at === 'string'
-      ? new Date(at).toLocaleTimeString('uk-UA', {
-          timeZone: 'Europe/Kyiv',
-          hour: '2-digit',
-          minute: '2-digit',
-        })
-      : '';
-  const renderField = (f: Field) => {
-    if (!fieldVisibleV4(f, answers)) return null;
-    return (
+  const planAt =
+    plan.at &&
+    new Date(plan.at).toLocaleTimeString('uk-UA', {
+      timeZone: 'Europe/Kyiv',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  const planContext = (
+    <p className="renewal-inset text-sm">
+      <b>
+        {plan.source}
+        {planAt ? ` · ${planAt}` : ''}
+      </b>
+      <br />
+      {plan.text}
+    </p>
+  );
+  const renderField = (f: Field) => (
+    <div key={f.id}>
       <ChoiceFieldInput
-        key={f.id}
         field={f}
         choices={context.choices}
         answers={answers}
@@ -128,26 +112,6 @@ export function AdaptiveFlow({
         date={date}
         onChange={onChange}
       />
-    );
-  };
-  const visibleFields = (card?.fields ?? []).filter((f) => fieldVisibleV4(f, answers));
-  const primaryFields = visibleFields.filter(
-    (f) =>
-      card?.id === 'context' ||
-      !f.optional ||
-      f.id === 'newPriorityV4' ||
-      (f.id.endsWith('Other') &&
-        !card?.fields.find((parent) => parent.id === f.when?.key)?.optional),
-  );
-  const optionalFields = visibleFields.filter((f) => !primaryFields.includes(f));
-  const renderCoreField = (f: Field) => (
-    <div key={f.id}>
-      {renderField(f)}
-      {['developmentPlanV4', 'developmentActualV4'].includes(f.id) && (
-        <p className="renewal-chart-note mt-2">
-          Навчання — поза окремим курсом. Читання для себе не враховуй вдруге в навчанні чи курсі.
-        </p>
-      )}
       {f.id === 'bedtimePlanV4' && nextSleepDateV4(nowMs, answers.bedtimePlanV4) && (
         <p className="renewal-chart-note mt-2">
           План на {nextSleepDateV4(nowMs, answers.bedtimePlanV4)?.split('-').reverse().join('.')} ·
@@ -156,68 +120,51 @@ export function AdaptiveFlow({
       )}
     </div>
   );
-  const optionalTitles: Record<string, string> = {
-    sleep: 'Додати тривалість сну',
-    priority: 'Додати наміри або конкретну справу',
-    time: 'Деталі про вільний час',
-    'next-sleep': 'Наступний сон і замітка дня',
-  };
-  const detail = (c: Card, expanded = true) => (
-    <details key={c.id} className="checkin-followup" open={expanded || undefined}>
-      <summary>
-        <span>{c.title}</span>
-        <span className="text-xs text-tx3">{answered(c) ? 'Додано' : 'За бажанням'}</span>
-      </summary>
-      <div className="flex flex-col gap-5 mt-4">{c.fields.map(renderField)}</div>
-    </details>
-  );
-  function addTopic(id: string) {
-    onChange('detailTopicsV4', [
-      ...new Set([...(Array.isArray(answers.detailTopicsV4) ? answers.detailTopicsV4 : []), id]),
-    ]);
-    const target = core.findIndex((c) => c.id === owner(id));
-    if (target >= 0) setStep(target);
-    setAdding(false);
-  }
-  const moreDetails = (
-    <>
-      <button
-        type="button"
-        className="renewal-link checkin-add-details"
-        aria-expanded={adding}
-        onClick={() => setAdding(!adding)}
-      >
-        ＋ Додати деталі
-      </button>
-      {adding && (
-        <div className="checkin-detail-topics" aria-label="Доступні теми уточнень">
-          {eligible
-            .filter((c) => !card || owner(c.id) === card.id)
-            .map((c) => (
-              <button
-                type="button"
-                className="renewal-secondary"
-                key={c.id}
-                onClick={() => addTopic(c.id)}
-              >
-                {c.title}
-                {answered(c) ? ' ✓' : ''}
-              </button>
-            ))}
-          {!eligible.length && (
-            <p className="renewal-chart-note">Теми з’являться після основних відповідей.</p>
-          )}
-        </div>
-      )}
-    </>
-  );
+  const visible = (section: Card) => section.fields.filter((f) => fieldVisibleV4(f, answers));
+  const inlineSection = (id: string, title: string, fields: Field[]) =>
+    fields.length > 0 && (
+      <section className="checkin-inline-followup" key={id} aria-label={title}>
+        <h4>{title}</h4>
+        {fields.map(renderField)}
+      </section>
+    );
+  const mainFields = card ? visible(card).filter((f) => card.primary.includes(f.id)) : [];
+  const secondaryFields = card ? visible(card).filter((f) => !mainFields.includes(f)) : [];
+  const metric = card?.id === 'energy' || card?.id === 'mood' ? card.id : null;
+  const current = metric && recordedStateRating(answers, metric);
+  const prior = metric && recordedStateRating(context.previous, metric);
+  const previousAt = context.previous.confirmedAtV3 ?? context.previous.answeredAtV3;
+  const previousTime =
+    typeof previousAt === 'string' && Number.isFinite(Date.parse(previousAt))
+      ? new Date(previousAt).toLocaleTimeString('uk-UA', {
+          timeZone: 'Europe/Kyiv',
+          hour: '2-digit',
+          minute: '2-digit',
+        })
+      : null;
+  const direction = current && prior ? stateRatingDirection(prior, current) : null;
+  const deltaText =
+    direction == null
+      ? ''
+      : metric === 'energy'
+        ? direction > 0
+          ? 'сил більше'
+          : direction < 0
+            ? 'сил менше'
+            : 'сили на тому самому рівні'
+        : direction > 0
+          ? 'настрій кращий'
+          : direction < 0
+            ? 'настрій важчий'
+            : 'настрій на тому самому рівні';
+
   return (
     <div
       className="checkin-adaptive-flow"
       onClickCapture={(event) => {
         if (event.detail === 0 || !(event.target instanceof Element)) return;
-        const control = event.target.closest('button, summary'),
-          focused = document.activeElement;
+        const control = event.target.closest('button, summary');
+        const focused = document.activeElement;
         if (
           control instanceof HTMLElement &&
           event.currentTarget.contains(control) &&
@@ -228,10 +175,10 @@ export function AdaptiveFlow({
       }}
     >
       <div className="flex justify-between text-xs text-tx3">
-        <span>{card ? `Крок ${step + 1} із ${core.length}` : 'Перевір відповіді'}</span>
+        <span>{card ? `Крок ${step + 1} із ${steps.length}` : 'Перевір відповіді'}</span>
       </div>
       <div className="renewal-progress">
-        <span style={{ width: `${Math.min(step / core.length, 1) * 100}%` }} />
+        <span style={{ width: `${Math.min(step / Math.max(1, steps.length), 1) * 100}%` }} />
       </div>
       <p role="status" className="checkin-save-status">
         {saveStatus || '\u00a0'}
@@ -241,62 +188,17 @@ export function AdaptiveFlow({
           <div className="checkin-adaptive-card" key={card.id}>
             <h3 className="text-xl font-semibold">{card.title}</h3>
             {explanations && card.help && <p className="renewal-chart-note">{card.help}</p>}
-            {['progress', 'outcome'].includes(card.id) && (
-              <p className="renewal-inset text-sm">
-                <b>
-                  {plan.source}
-                  {plan.at ? ` · ${formatTime(plan.at)}` : ''}
-                </b>
-                <br />
-                {plan.text}
+            {['progress', 'outcome'].includes(card.id) && planContext}
+            {mainFields.map(renderField)}
+            {deltaText && (
+              <p className="renewal-chart-note" aria-label="Порівняння з попереднім записом">
+                Від попереднього чек-іну{previousTime ? ` о ${previousTime}` : ''} {deltaText}.
               </p>
             )}
-            {card.id === 'next-sleep' && (
-              <p className="renewal-chart-note">
-                Запис за {date.slice(8)}.{date.slice(5, 7)}. Наступний основний сон може початися
-                після опівночі; це ще не запис про його тривалість.
-              </p>
+            {inlineSection('details', 'Уточнення', secondaryFields)}
+            {card.followups.map((section) =>
+              inlineSection(section.id, section.title, visible(section)),
             )}
-            {primaryFields.map(renderCoreField)}
-            {card.id === 'state' &&
-              ['energy', 'mood'].some(
-                (id) =>
-                  typeof answers[id] === 'number' && typeof context.previous?.[id] === 'number',
-              ) && (
-                <div className="checkin-state-delta" aria-label="Порівняння з попереднім записом">
-                  <small>
-                    Порівняно з підтвердженим записом
-                    {formatTime(context.previous.confirmedAtV3 ?? context.previous.answeredAtV3)
-                      ? ` о ${formatTime(context.previous.confirmedAtV3 ?? context.previous.answeredAtV3)}`
-                      : ''}
-                  </small>
-                  {(['energy', 'mood'] as const).map((id) =>
-                    typeof answers[id] === 'number' &&
-                    typeof context.previous?.[id] === 'number' ? (
-                      <span key={id}>
-                        {id === 'energy' ? 'Енергія' : 'Настрій'}: {String(context.previous[id])} →{' '}
-                        <b>{String(answers[id])}</b>
-                      </span>
-                    ) : null,
-                  )}
-                </div>
-              )}
-            {optionalFields.length > 0 && (
-              <details
-                className="checkin-followup"
-                open={card.id === 'sleep' || card.id === 'time' || undefined}
-              >
-                <summary>
-                  {optionalTitles[card.id] ?? 'Додати до відповіді'}
-                  <span className="text-xs text-tx3">За бажанням</span>
-                </summary>
-                <div className="flex flex-col gap-5 mt-4">
-                  {optionalFields.map(renderCoreField)}
-                </div>
-              </details>
-            )}
-            {branches.filter((c) => owner(c.id) === card.id).map((c) => detail(c))}
-            {moreDetails}
             <div className="renewal-form-grid checkin-flow-actions">
               <button
                 type="button"
@@ -309,81 +211,63 @@ export function AdaptiveFlow({
               <button
                 type="button"
                 className="renewal-button"
-                disabled={!complete(card)}
+                disabled={!checkinStepCompleteV4(card, answers)}
                 onClick={() => {
-                  if (card.fields.every((f) => f.optional))
-                    onChange('visitedStepsV4', [
-                      ...new Set([
-                        ...(Array.isArray(answers.visitedStepsV4) ? answers.visitedStepsV4 : []),
-                        card.id,
-                      ]),
-                    ]);
                   setStep(step + 1);
-                  setAdding(false);
                   haptic('light');
                 }}
               >
-                {step === core.length - 1 ? 'Перевірити' : 'Далі →'}
+                {step === steps.length - 1 ? 'Перевірити' : 'Далі →'}
               </button>
             </div>
           </div>
         ) : (
           <>
-            {slot !== 'morning' && (
-              <p className="renewal-inset text-sm">
-                <b>
-                  {plan.source}
-                  {plan.at ? ` · ${formatTime(plan.at)}` : ''}
-                </b>
-                <br />
-                {plan.text}
-              </p>
-            )}
-            {explanations && (
-              <p className="renewal-muted">
-                Перевір основні відповіді. Уточнення можна додати за бажанням.
-              </p>
-            )}
-            {[...core, ...branches].filter(answered).map((c) => (
+            {slot !== 'morning' && planContext}
+            {steps.map((item, index) => (
               <button
                 type="button"
-                key={c.id}
+                key={item.id}
                 className="renewal-inset text-left checkin-review-row"
-                onClick={() =>
-                  setStep(
-                    Math.max(
-                      0,
-                      core.findIndex(
-                        (x) => x.id === (core.some((x) => x.id === c.id) ? c.id : owner(c.id)),
-                      ),
-                    ),
-                  )
-                }
+                onClick={() => setStep(index)}
               >
                 <b>
-                  {c.title} <span aria-hidden="true">↗</span>
+                  {item.title} <span aria-hidden="true">↗</span>
                 </b>
                 <span className="flex flex-col gap-1 text-sm text-tx2 mt-2">
-                  {c.fields
-                    .filter((f) => fieldVisibleV4(f, answers) && answers[f.id] != null)
+                  {[item, ...item.followups]
+                    .flatMap(visible)
+                    .filter((f) => answers[f.id] != null)
                     .map((f) => (
                       <span key={f.id}>
-                        {f.label}: {answerLabelV4(f, answers[f.id])}
+                        {f.label} · {choiceAnswerLabel(f, answers[f.id], answers)}
                       </span>
                     ))}
                 </span>
               </button>
             ))}
-            {moreDetails}
+            {firstIncomplete >= 0 && (
+              <button
+                type="button"
+                className="renewal-secondary"
+                onClick={() => setStep(firstIncomplete)}
+              >
+                Завершити крок «{steps[firstIncomplete]?.title}»
+              </button>
+            )}
             <button
               type="button"
               className="renewal-button"
-              disabled={pending || !coreCompleteV4(slot, answers, context.choices)}
+              disabled={pending || firstIncomplete >= 0}
               onClick={onConfirm}
             >
               {pending ? 'Зберігаю…' : 'Підтвердити чек-ін'}
             </button>
-            <button type="button" className="renewal-link" onClick={() => setStep(core.length - 1)}>
+            <button
+              type="button"
+              className="renewal-link"
+              onClick={() => setStep(steps.length - 1)}
+            >
               ← Повернутися
             </button>
           </>

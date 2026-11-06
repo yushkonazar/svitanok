@@ -187,9 +187,17 @@ export function FieldInput({
         ]
       : (field.options ?? []);
   const currentPins = options.filter(([, v]) => displayPins.includes(String(v)));
-  const firstMood = currentPins.length
+  const moodSuggestions = currentPins.length
     ? currentPins
     : options.filter(([, v]) => suggestedMood.includes(String(v)));
+  const firstMood = [
+    ...new Map(
+      [
+        ...moodSuggestions,
+        ...options.filter(([, v]) => selected(v) || ['none', 'unknown'].includes(String(v))),
+      ].map(([label, v]) => [v, [label, v] as const]),
+    ).values(),
+  ];
   const firstMoodIds = new Set(firstMood.map(([, v]) => v));
   return (
     <div className="flex flex-col gap-2">
@@ -197,10 +205,32 @@ export function FieldInput({
         {field.label}
         {field.optional && <span className="text-xs font-normal text-tx3"> · за бажанням</span>}
       </label>
-      {field.help && (!modern || explanations) && (
+      {field.help && (!modern || explanations || field.id === 'workEstimateV4') && (
         <p className="renewal-chart-note">{field.help}</p>
       )}
-      {modern && field.id === 'moodFactorsV4' ? (
+      {modern && ['energyLevelV4', 'moodLevelV4'].includes(field.id) ? (
+        <div className="checkin-scale" role="group" aria-labelledby={`${id}-label`}>
+          {options.map(([label, v]) => {
+            const [, title, description] = label.split(' · ');
+            return (
+              <button
+                key={v}
+                type="button"
+                className="checkin-scale-option"
+                aria-label={`${v} ${title}. ${description}`}
+                aria-pressed={selected(v)}
+                onClick={() => pick(v)}
+              >
+                <span className="checkin-scale-number">{v}</span>
+                <span>
+                  <b>{title}</b>
+                  <small>{description}</small>
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      ) : modern && field.id === 'moodFactorsV4' ? (
         <div className="flex flex-col gap-3" aria-labelledby={`${id}-label`}>
           <div className="flex flex-wrap gap-2">
             {firstMood.map(([label, v]) => option(label, v))}
@@ -210,9 +240,11 @@ export function FieldInput({
             <div className="flex flex-col gap-4 mt-3">
               {[
                 ...new Set(
-                  options.map(([label]) =>
-                    label.includes(' :: ') ? label.split(' :: ')[0] : 'Інші причини',
-                  ),
+                  options
+                    .filter(([, v]) => !firstMoodIds.has(v))
+                    .map(([label]) =>
+                      label.includes(' :: ') ? label.split(' :: ')[0] : 'Інші причини',
+                    ),
                 ),
               ].map((group) => (
                 <div key={group}>
@@ -399,7 +431,9 @@ export function FieldInput({
           <div className="flex flex-wrap gap-2 mt-3">
             {(field.id.startsWith('sleepMinutes')
               ? [240, 360, 420, 480, 540]
-              : [0, 15, 30, 60, 120]
+              : field.id === 'workMinutesV4'
+                ? [240, 360, 480, 600, 720]
+                : [0, 15, 30, 60, 120]
             )
               .filter((n) => !modern || n >= (field.min ?? 0))
               .map((n) => (

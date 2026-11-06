@@ -19,6 +19,25 @@ const personalPeriod = z.object({
   legacy: z.record(z.string(), metric).nullish(),
   observationsV2: z.record(z.string(), metric).nullish(),
   observationsV3: z.record(z.string(), metric).nullish(),
+  weekHighlights: z
+    .array(
+      z.object({
+        key: z.enum(['sleep', 'mood', 'energy', 'plans']),
+        title: z.string(),
+        text: z.string(),
+        samples: number,
+        dates: z.array(z.string()),
+        context: z.array(
+          z.object({
+            kind: z.enum(['observed', 'reported']),
+            text: z.string(),
+            dates: z.array(z.string()),
+            idea: z.string().optional(),
+          }),
+        ),
+      }),
+    )
+    .optional(),
   coverage: z
     .record(
       z.string(),

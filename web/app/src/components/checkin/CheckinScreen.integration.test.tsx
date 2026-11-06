@@ -5,6 +5,7 @@ import { CheckinV3Screen } from './CheckinV3Screen.tsx';
 import { EMPTY_STATS } from '../../api/sample.ts';
 import { SessionExpiredError } from '../../api/client.ts';
 import { setVerticalSwipes } from '../../telegram.ts';
+import { CHECKIN_FLOW_REVISION } from '../../../../core/checkin/state-ratings.mjs';
 
 const api = vi.hoisted(() => ({
   fetchStats: vi.fn(),
@@ -23,6 +24,14 @@ vi.mock('../../telegram.ts', async (original) => ({
   setVerticalSwipes: vi.fn(),
 }));
 let qc: QueryClient;
+const answeredState = {
+  questionVersion: 4,
+  flowRevisionV4: CHECKIN_FLOW_REVISION,
+  energyLevelV4: 5,
+  energyHelpersV4: ['unknown'],
+  moodLevelV4: 5,
+  moodFactorsV4: ['none'],
+};
 const snapshot = () => ({
   stats: {
     ...EMPTY_STATS,
@@ -30,7 +39,7 @@ const snapshot = () => ({
     checkinSlot: 'evening' as const,
     checkinGapIn: 0,
     checkinSlotEndsIn: 120,
-    checkinToday: { evening: { questionVersion: 4, energy: 3, mood: 3, satisfactionV4: 3 } },
+    checkinToday: { evening: { ...answeredState, satisfactionV4: 3 } },
   },
   demo: false,
 });
@@ -97,15 +106,18 @@ function windowSnapshot(extended = false) {
 async function readyToConfirm() {
   const data = snapshot();
   data.stats.checkinToday.evening = {
-    questionVersion: 4,
-    energy: 3,
-    mood: 3,
+    ...answeredState,
     satisfactionV4: 3,
     activitiesV4: ['rest'],
     companyV4: ['alone'],
+    workedTodayV4: 'no',
+    homeArrivalStatusV4: 'home',
+    recoveryTargetV4: 'unknown',
     priorityOutcomeV4: 'noplan',
     developmentActualV4: ['none'],
     freeTimeV4: '1_29',
+    freeTimeEnoughV4: 2,
+    bedtimePlanStatusV4: 'unknown',
     napV4: 'no',
   } as typeof data.stats.checkinToday.evening;
   qc.setQueryData(['stats'], data);
@@ -245,16 +257,16 @@ it('switches explicitly between overlapping slots and keeps their drafts separat
     stats: { ...value.stats, checkinWindows: [afternoon, ...value.stats.checkinWindows] },
   });
   open({ date: '2026-10-07', slot: 'afternoon' });
-  await screen.findByRole('heading', { name: 'Як ти зараз?' });
-  fireEvent.click(screen.getByRole('button', { name: '4 · Радше хороший' }));
+  await screen.findByRole('heading', { name: 'Енергія' });
+  fireEvent.click(screen.getByRole('button', { name: /6 Бадьорий/ }));
   fireEvent.click(screen.getByRole('button', { name: 'Вечір · 07.10' }));
   fireEvent.click(screen.getByRole('button', { name: '← Назад' }));
-  expect(screen.getByRole('button', { name: '3 · Нейтральний або змішаний' })).toHaveAttribute(
+  expect(screen.getByRole('button', { name: /5 Рівний або змішаний/ })).toHaveAttribute(
     'aria-pressed',
     'true',
   );
   fireEvent.click(screen.getByRole('button', { name: 'День · 07.10' }));
-  expect(screen.getByRole('button', { name: '4 · Радше хороший' })).toHaveAttribute(
+  expect(screen.getByRole('button', { name: /6 Бадьорий/ })).toHaveAttribute(
     'aria-pressed',
     'true',
   );
@@ -264,7 +276,7 @@ it('switches explicitly between overlapping slots and keeps their drafts separat
       expect.objectContaining({
         dateKey: '2026-10-07',
         slot: 'afternoon',
-        mood: 4,
+        energyLevelV4: 6,
       }),
     ),
   );
@@ -282,18 +294,18 @@ it('uses the original evening date for a draft after midnight rather than the ne
       checkinRaw: {
         ...EMPTY_STATS.checkinRaw,
         records: {
-          '2026-10-07': { evening: { questionVersion: 4, energy: 3, mood: 3, satisfactionV4: 3 } },
+          '2026-10-07': { evening: { ...answeredState, satisfactionV4: 3 } },
         },
       },
     },
   });
   open({ date: '2026-10-07', slot: 'evening' });
   fireEvent.click(await screen.findByRole('button', { name: '← Назад' }));
-  fireEvent.click(screen.getByRole('button', { name: '4 · Радше хороший' }));
+  fireEvent.click(screen.getByRole('button', { name: /6 Радше хороший/ }));
   await waitFor(() => expect(api.postEvent).toHaveBeenCalled(), { timeout: 3000 });
   expect(api.postEvent).toHaveBeenCalledWith(
     'checkin',
-    expect.objectContaining({ dateKey: '2026-10-07', slot: 'evening', mood: 4 }),
+    expect.objectContaining({ dateKey: '2026-10-07', slot: 'evening', moodLevelV4: 6 }),
   );
   expect(
     qc.getQueryData<{ stats: { checkinToday: unknown } }>(['stats'])?.stats.checkinToday,
@@ -315,7 +327,7 @@ it('does not abandon an in-progress extended slot when the next slot opens', asy
       ...value.stats,
       checkinSlot: 'afternoon' as const,
       checkinServerTime: '2026-10-07T16:30:00.000Z',
-      checkinToday: { afternoon: { questionVersion: 4, energy: 3, mood: 3 } },
+      checkinToday: { afternoon: answeredState },
       checkinWindows: [afternoon],
     },
   };

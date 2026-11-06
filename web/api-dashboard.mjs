@@ -118,6 +118,7 @@ export async function handleVote(/** @type {Request} */ request, /** @type {Env}
  * (Блок P1) проходять через ЦЕ, щоб jobPrefs/mockWeights/stats не дублювались
  * і не розходились між двома джерелами подій.
  */
+/** @returns {Promise<{locked:boolean, expired:boolean, incomplete?:boolean, choicesChanged?:boolean}|undefined>} */
 export async function applyEvent(/** @type {Env} */ env, /** @type {any} */ body) {
   // jobPrefs: памʼять скорера з живої воронки (dismiss/applied→interview→offer).
   //
@@ -219,12 +220,8 @@ export async function applyEvent(/** @type {Env} */ env, /** @type {any} */ body
       ...cleaned.set,
     };
     for (const key of cleaned.clear) delete candidate[key];
-    if (
-      !model.complete(
-        ev.slot,
-        model.clearHidden(ev.slot, candidate, model.context(loaded.checkins, dateKey, ev.slot)),
-      )
-    )
+    const context = model.context(loaded.checkins, dateKey, ev.slot);
+    if (!model.complete(ev.slot, model.clearHidden(ev.slot, candidate, context), context))
       return { locked: false, expired: false, incomplete: true };
   }
   if (
@@ -238,8 +235,13 @@ export async function applyEvent(/** @type {Env} */ env, /** @type {any} */ body
     if (!coreCompleteV2(ev.slot, clearHiddenV2(ev.slot, candidate)))
       return { locked: false, expired: false, incomplete: true };
   }
-  await updateStats(env, (curStore) => recordEvent(curStore, ev, dateKey, nowMin, nowIso));
-  if (body.type === 'checkin') return { locked: false, expired: false };
+  const saved = await updateStats(env, (curStore) =>
+    recordEvent(curStore, ev, dateKey, nowMin, nowIso),
+  );
+  if (body.type === 'checkin') {
+    const incomplete = body.confirmed === true && !saved.checkins?.[dateKey]?.[ev.slot]?.confirmed;
+    return { locked: false, expired: false, ...(incomplete && { incomplete: true }) };
+  }
 }
 
 /** POST /api/event {type, …} -> записати подію у стор статистики.

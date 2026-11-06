@@ -53,6 +53,287 @@
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
 }
+.state-dashboard:has(.state-week) {
+  gap: 7px;
+}
+.state-dashboard:has(.state-week) .state-period {
+  gap: 6px;
+}
+.state-panel.state-week {
+  --week-plot-height: 70px;
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  background:
+    radial-gradient(
+      ellipse at 95% 0%,
+      color-mix(in srgb, var(--color-a2) 10%, transparent),
+      transparent 60%
+    ),
+    var(--color-bg2);
+}
+.state-week-lead {
+  display: grid;
+  gap: 5px;
+}
+.state-week-eyebrow {
+  color: var(--color-a2);
+  font-size: 11px;
+  font-weight: 730;
+}
+.state-week-eyebrow > span {
+  color: var(--color-tx3);
+  font-weight: 500;
+}
+.state-week-lead h2 {
+  margin: 0;
+  font-size: clamp(20px, 5.6vw, 26px);
+  line-height: 1.15;
+  font-weight: 750;
+  letter-spacing: -0.035em;
+  text-wrap: balance;
+}
+.state-week-lead > p:last-child {
+  color: var(--color-tx2);
+  font-size: 12px;
+  line-height: 1.55;
+}
+.state-week-focus,
+.state-week-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+.state-week-focus {
+  border: 1px solid var(--color-hair);
+  border-radius: 12px;
+  padding: 2px;
+}
+.state-week-focus > button {
+  min-height: 42px;
+  border-radius: 9px;
+  color: var(--color-tx2);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 680;
+}
+.state-week-focus > button[aria-pressed='true'] {
+  background: color-mix(in srgb, var(--color-a2) 16%, transparent);
+  color: var(--color-a2);
+}
+.state-week-grid {
+  position: relative;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+}
+.state-week-reference-label,
+.state-week-key {
+  display: flex;
+  justify-content: space-between;
+  gap: 6px;
+  color: var(--color-tx2);
+  font-size: 10px;
+  line-height: 1.4;
+  padding: 0 2px 5px;
+}
+.state-week-key {
+  padding-top: 6px;
+  padding-bottom: 0;
+}
+.state-week-plot {
+  position: absolute;
+  inset: 0 0 auto;
+  height: var(--week-plot-height);
+  pointer-events: none;
+  border-bottom: 1px solid var(--color-hair);
+}
+.state-week-reference {
+  position: absolute;
+  inset: auto 0 var(--week-reference);
+  border-top: 1px dashed var(--color-tx3);
+}
+.state-week-plot svg {
+  width: 100%;
+  height: 100%;
+}
+.state-week-plot line {
+  stroke: var(--color-info);
+  stroke-width: 1.5;
+  opacity: 0.65;
+}
+.state-week-grid > button {
+  z-index: 0;
+  display: grid;
+  grid-template-rows: var(--week-plot-height) auto;
+  min-width: 0;
+  min-height: 44px;
+  border-radius: 8px;
+  color: var(--color-tx2);
+  cursor: pointer;
+}
+.state-week-grid > button[aria-pressed='true'] {
+  background: color-mix(in srgb, var(--color-a2) 12%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-a2) 45%, transparent);
+  color: var(--color-a2);
+}
+.state-week-chart[data-topic='plans'] {
+  --week-plot-height: 50px;
+}
+.state-week-track {
+  position: relative;
+  display: grid;
+  place-items: center;
+}
+.state-week-bar,
+.state-week-dot {
+  position: absolute;
+  background: var(--color-info);
+}
+.state-week-bar {
+  bottom: 0;
+  width: 57%;
+  max-width: 24px;
+  height: var(--week-position);
+  min-height: 2px;
+  border-radius: 5px 5px 1px 1px;
+  background: linear-gradient(
+    to top,
+    color-mix(in srgb, var(--color-info) 35%, transparent),
+    var(--color-info)
+  );
+}
+.state-week-bar[data-short='true'] {
+  background: linear-gradient(
+    to top,
+    color-mix(in srgb, var(--color-a2) 35%, transparent),
+    var(--color-a2)
+  );
+}
+.state-week-dot {
+  bottom: var(--week-position);
+  translate: 0 50%;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+}
+.state-week-grid > button[aria-pressed='true'] .state-week-dot {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-info) 32%, transparent);
+}
+.state-week-gap {
+  color: var(--color-tx3);
+  font-size: 11px;
+}
+.state-week-date {
+  display: grid;
+  padding: 5px 0;
+  font-size: 10px;
+  text-align: center;
+}
+.state-week-date b {
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+}
+.state-week-result {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--color-glass);
+  font-size: 16px;
+  font-weight: 700;
+}
+.state-week-result[data-result='3'] {
+  color: var(--color-pos);
+}
+.state-week-result[data-result='2'] {
+  color: var(--color-info);
+}
+.state-week-result[data-result='1'] {
+  color: var(--color-a2);
+}
+.state-week-evidence {
+  border-top: 1px solid var(--color-hair);
+  color: var(--color-tx2);
+  font-size: 12px;
+  line-height: 1.55;
+}
+.state-week-evidence > summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 16px;
+  align-items: center;
+  padding-top: 9px;
+  min-height: 44px;
+  cursor: pointer;
+  list-style: none;
+}
+.state-week-evidence > summary::-webkit-details-marker {
+  display: none;
+}
+.state-week-evidence > summary::after {
+  content: '+';
+  grid-column: 2;
+  grid-row: 1 / 3;
+  color: var(--color-a2);
+  text-align: center;
+}
+.state-week-evidence[open] > summary::after {
+  content: '−';
+}
+.state-week-evidence small,
+.state-week-context p > b {
+  color: var(--color-tx);
+  font-size: inherit;
+  font-weight: 720;
+}
+.state-week-evidence-body,
+.state-week-context {
+  display: grid;
+  gap: 8px;
+}
+.state-week-evidence-body {
+  padding-top: 9px;
+}
+.state-week-context + .state-week-context {
+  padding-top: 9px;
+  border-top: 1px solid var(--color-hair);
+}
+.state-week-example b {
+  margin-right: 5px;
+}
+.state-week-idea {
+  padding: 8px 10px;
+  border-inline-start: 2px solid var(--color-pos);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--color-pos) 8%, transparent);
+}
+.state-week-day-heading h2 {
+  font-size: 17px;
+  font-weight: 730;
+}
+.state-week-day-prompt {
+  display: flex;
+  min-height: 44px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-top: 3px;
+  color: var(--color-tx2);
+  font-size: 12px;
+}
+.state-week-day-prompt > button {
+  min-height: 44px;
+  flex-shrink: 0;
+}
+@media (prefers-reduced-motion: no-preference) {
+  [data-calm='false'] .state-week-chart {
+    animation: state-week-reveal 0.2s ease-out;
+  }
+  @keyframes state-week-reveal {
+    from {
+      opacity: 0.6;
+      translate: 0 2px;
+    }
+  }
+}
 .state-mode-panel {
   display: grid;
   gap: 12px;
@@ -620,6 +901,23 @@ details.state-panel > summary > small {
   color: var(--color-tx);
   font-weight: 550;
   margin-top: 3px;
+}
+.state-answer-topic {
+  display: grid;
+  gap: 6px;
+  padding: 9px 0;
+  border-top: 1px solid var(--color-hair);
+}
+.state-answer-topic h3 {
+  color: var(--color-tx);
+  font-size: 13px;
+  font-weight: 720;
+}
+.state-answer-context[open] > div {
+  display: grid;
+  gap: 8px;
+  padding: 0 0 8px 10px;
+  border-inline-start: 2px solid color-mix(in srgb, var(--color-pos) 40%, transparent);
 }
 .state-plan {
   display: flex;

@@ -45,7 +45,19 @@ export function coreCompleteV4(
   slot: string,
   a: Record<string, unknown>,
   choices?: unknown,
+  context?: Partial<AdaptiveContext>,
 ): boolean;
+export type CheckinStep = Card & { primary: string[]; followups: Card[] };
+export function checkinStepsV4(
+  slot: string,
+  answers: Record<string, unknown>,
+  context?: Partial<AdaptiveContext>,
+): CheckinStep[];
+export function recordedCheckinStepsV4(
+  slot: string,
+  record: Record<string, unknown>,
+): CheckinStep[];
+export function checkinStepCompleteV4(card: CheckinStep, answers: Record<string, unknown>): boolean;
 export function contextualFieldV4(field: Field, a: Record<string, unknown>): Field;
 export function choiceSnapshotV4(
   slot: string,

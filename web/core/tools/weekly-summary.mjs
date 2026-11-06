@@ -77,6 +77,48 @@ function sources(value) {
 function rows(value, keys, max = 3) {
   return Array.isArray(value) ? value.slice(0, max).map((row) => pick(row, keys)) : [];
 }
+/** @param {any} value */
+const weekDates = (value) =>
+  Array.isArray(value)
+    ? value
+        .filter(
+          (date) =>
+            typeof date === 'string' &&
+            /^\d{4}-\d{2}-\d{2}$/.test(date) &&
+            Number.isFinite(Date.parse(date)),
+        )
+        .slice(0, 7)
+    : [];
+/** @param {any} value */
+function weekHighlights(value) {
+  if (!Array.isArray(value)) return undefined;
+  return value
+    .filter(
+      (item) =>
+        ['sleep', 'mood', 'energy', 'plans'].includes(item?.key) &&
+        typeof item.title === 'string' &&
+        typeof item.text === 'string' &&
+        Number.isFinite(item.samples),
+    )
+    .slice(0, 3)
+    .map((item) => ({
+      ...pick(item, ['key', 'title', 'text', 'samples'], 240),
+      dates: weekDates(item.dates),
+      context: Array.isArray(item.context)
+        ? item.context
+            .filter(
+              (/** @type {any} */ evidence) =>
+                ['observed', 'reported'].includes(evidence?.kind) &&
+                typeof evidence.text === 'string',
+            )
+            .slice(0, 3)
+            .map((/** @type {any} */ evidence) => ({
+              ...pick(evidence, ['kind', 'text', 'idea'], 240),
+              dates: weekDates(evidence.dates),
+            }))
+        : [],
+    }));
+}
 /** @param {any} p */
 function personalPeriod(p) {
   if (!p) return null;
@@ -90,6 +132,7 @@ function personalPeriod(p) {
     period: pick(p.period, PERIOD),
     unknownTimingSlots: p.unknownTimingSlots,
     patterns: summarizeWeeklyPatterns(p.patterns),
+    weekHighlights: weekHighlights(p.weekHighlights),
     legacy: metrics(p.legacy, [
       'sleepHours',
       'sleepQuality',

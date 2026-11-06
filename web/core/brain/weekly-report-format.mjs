@@ -78,27 +78,32 @@ export function weeklyFactDecision(details) {
     });
   }
   const periods = details?.personalPeriods;
-  for (const [key, label] of /** @type {[string,string][]} */ ([
-    ['morning.energy', 'Ранкова енергія'],
-    ['evening.dayScore', 'Оцінка дня'],
-  ])) {
-    const current = periods?.current?.observationsV3?.[key];
-    const previous = periods?.previousWeeks?.[0]?.observationsV3?.[key];
-    const currentN = current?.numericN ?? current?.n,
-      previousN = previous?.numericN ?? previous?.n;
-    if (
-      currentN >= 3 &&
-      previousN >= 3 &&
-      Number.isFinite(current.average) &&
-      Number.isFinite(previous.average)
-    ) {
-      const number = (/** @type {number} */ n) =>
-        new Intl.NumberFormat('uk-UA', { maximumFractionDigits: 1 }).format(n);
-      highlights.push({
-        kind: 'personal',
-        text: `${label}: ${number(current.average)} проти ${number(previous.average)} попереднього тижня; ${currentN} і ${previousN} відповідей тієї самої анкети. Це порівняння з одним тижнем.`,
-      });
-      break;
+  const lead = periods?.current?.weekHighlights?.[0];
+  if (lead) {
+    highlights.push({ kind: 'personal', text: `${lead.title}. ${lead.text}`.slice(0, 360) });
+  } else {
+    for (const [key, label] of /** @type {[string,string][]} */ ([
+      ['morning.energy', 'Ранкова енергія'],
+      ['evening.dayScore', 'Оцінка дня'],
+    ])) {
+      const current = periods?.current?.observationsV3?.[key];
+      const previous = periods?.previousWeeks?.[0]?.observationsV3?.[key];
+      const currentN = current?.numericN ?? current?.n,
+        previousN = previous?.numericN ?? previous?.n;
+      if (
+        currentN >= 3 &&
+        previousN >= 3 &&
+        Number.isFinite(current.average) &&
+        Number.isFinite(previous.average)
+      ) {
+        const number = (/** @type {number} */ n) =>
+          new Intl.NumberFormat('uk-UA', { maximumFractionDigits: 1 }).format(n);
+        highlights.push({
+          kind: 'personal',
+          text: `${label}: ${number(current.average)} проти ${number(previous.average)} попереднього тижня; ${currentN} і ${previousN} відповідей тієї самої анкети. Це порівняння з одним тижнем.`,
+        });
+        break;
+      }
     }
   }
   const finance = details?.finance;
