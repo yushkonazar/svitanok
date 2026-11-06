@@ -53,8 +53,8 @@ export async function writeCheckinDemo(payload: Record<string, unknown>) {
     const model = adaptiveModel(payload, choices),
       context = model.context({ [date]: prior }, date, slot);
     const answers = model.clearHidden(slot, model.clean(slot, payload).set, context);
-    if (!model.complete(slot, answers))
-      throw new Error('Заповни основні відповіді перед підтвердженням.');
+    if (!model.complete(slot, answers, context))
+      throw new Error('Дай відповіді на показані питання перед підтвердженням.');
     const at = new Date().toISOString();
     candidate = {
       ...answers,

@@ -6,6 +6,7 @@ import { adaptiveModel } from '../../../../core/checkin/model.mjs';
 import { choiceAnswerLabel, normalizeChoiceCatalog } from '../../../../core/checkin/choices.mjs';
 import { useEffect, useRef, useState } from 'react';
 import { adaptivePreferences } from '../../../../core/checkin/adaptive-v4.mjs';
+import { CHECKIN_FLOW_REVISION } from '../../../../core/checkin/state-ratings.mjs';
 import {
   useStats,
   useSaveCheckin,
@@ -63,6 +64,28 @@ function writeDraft(key: string, value?: Answers) {
   }
 }
 
+function reviseDraft(answers: Answers): Answers {
+  if (answers.questionVersion !== 4 || answers.flowRevisionV4 === CHECKIN_FLOW_REVISION)
+    return answers;
+  const revised: Answers = { ...answers, flowRevisionV4: CHECKIN_FLOW_REVISION };
+  for (const [answer, status] of [
+    ['sleepMinutesV4', 'sleepDurationStatusV4'],
+    ['napMinutesV4', 'napDurationStatusV4'],
+    ['priorityStepV4', 'priorityStepStatusV4'],
+    ['newPriorityV4', 'newPriorityStatusV4'],
+    ['bedtimePlanV4', 'bedtimePlanStatusV4'],
+  ]) {
+    if (answer && status && revised[answer] != null && revised[status] == null)
+      revised[status] = 'known';
+  }
+  if (typeof answers.workRangeV4 === 'string' && answers.workRangeV4 !== 'unknown') {
+    revised.workedTodayV4 = 'yes';
+    revised.workDurationModeV4 = 'range';
+    revised.workEstimateV4 = answers.workRangeV4;
+  }
+  return revised;
+}
+
 export { AdaptiveFlow } from './AdaptiveFlow.tsx';
 
 function hasAnswers(slot: CheckinSlot, answers: Answers) {
@@ -105,9 +128,13 @@ function AnswerSummary({ slot, answers }: { slot: CheckinSlot; answers: Answers 
                   {Array.isArray(v) ? v.join(', ') : String(v)}
                 </p>
               ))
-          : catalog
-              .flatMap((c) => c.fields)
-              .filter((f) => answers[f.id] != null)
+          : [...new Map(catalog.flatMap((c) => c.fields).map((f) => [f.id, f])).values()]
+              .filter(
+                (f) =>
+                  answers[f.id] != null &&
+                  (answers.flowRevisionV4 !== CHECKIN_FLOW_REVISION ||
+                    !['energy', 'mood', 'workRangeV4'].includes(f.id)),
+              )
               .map((f) => (
                 <p className="text-sm" key={f.id}>
                   {f.label}: <b>{choiceAnswerLabel(f, answers[f.id], answers)}</b>
@@ -289,7 +316,7 @@ export function CheckinV3Screen({
     let local = drafts[key] ?? readDraft(key);
     if (!Object.keys(local).length && !Object.keys(prior).length)
       local = readDraft(key.replace('checkin-v4:', 'checkin-v3:'));
-    return prior.confirmed ? prior : { questionVersion: 4, ...prior, ...local };
+    return prior.confirmed ? prior : reviseDraft({ questionVersion: 4, ...prior, ...local });
   };
   const current = completion?.date === date ? completion.answers : active ? answers(active) : {};
   // useTick can lag behind a just-received snapshot. Never turn a zero gap into +1 minute.

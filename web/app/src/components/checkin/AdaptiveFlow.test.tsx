@@ -4,6 +4,7 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import { AdaptiveFlow } from './AdaptiveFlow.tsx';
 import { adaptivePreferences, clearHiddenV4 } from '../../../../core/checkin/adaptive-v4.mjs';
+import { CHECKIN_FLOW_REVISION } from '../../../../core/checkin/state-ratings.mjs';
 import { setVerticalSwipes } from '../../telegram.ts';
 vi.mock('../../telegram.ts', () => ({
   inTelegram: () => false,
@@ -11,6 +12,8 @@ vi.mock('../../telegram.ts', () => ({
   setVerticalSwipes: vi.fn(),
 }));
 afterEach(cleanup);
+const goodEnergy = { energyLevelV4: 5, energyHelpersV4: ['unknown'] };
+const state = { ...goodEnergy, moodLevelV4: 5, moodFactorsV4: ['none'] };
 function Flow({
   initial = {},
   previousEvening = {},
@@ -26,6 +29,7 @@ function Flow({
 }) {
   const [answers, setAnswers] = useState<Record<string, unknown>>({
     questionVersion: 4,
+    flowRevisionV4: CHECKIN_FLOW_REVISION,
     ...initial,
   });
   const [qc] = useState(
@@ -56,15 +60,17 @@ it('allows sleepless morning without inventing quality or duration', () => {
   render(<Flow />);
   fireEvent.click(screen.getByRole('button', { name: 'Не спав' }));
   expect(screen.queryByText('Наскільки відпочив після цього сну?')).not.toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Далі →' })).toBeDisabled();
+  fireEvent.click(screen.getByRole('button', { name: 'Не знаю' }));
   fireEvent.click(screen.getByRole('button', { name: 'Далі →' }));
-  expect(screen.getByRole('heading', { name: 'Як ти зараз?' })).toBeInTheDocument();
+  expect(screen.getByRole('heading', { name: 'Енергія' })).toBeInTheDocument();
   expect(screen.getByRole('button', { name: 'Далі →' })).toBeDisabled();
 });
 it('offers sleep details, clears inapplicable branches and keeps navigation after them', () => {
   const view = render(<Flow />);
   fireEvent.click(screen.getByRole('button', { name: 'Основний сон' }));
   fireEvent.click(screen.getByRole('button', { name: '2 · Радше не відпочив' }));
-  const sleep = screen.getByText('Що завадило цьому сну?').closest('details')!;
+  const sleep = screen.getByText('Що завадило цьому сну?').closest('section')!;
   fireEvent.click(screen.getByRole('button', { name: 'Прокидався' }));
   expect(screen.getByTestId('answers').textContent).toContain('awakenings');
   expect(
@@ -76,34 +82,46 @@ it('offers sleep details, clears inapplicable branches and keeps navigation afte
   expect(screen.getByTestId('answers').textContent).not.toContain('awakenings');
 });
 it('resumes at the first unanswered required step, or review for a completed draft', () => {
-  const view = render(<Flow initial={{ sleepModeV4: 'none', energy: 3, mood: 3 }} />);
+  const view = render(
+    <Flow
+      initial={{
+        sleepModeV4: 'none',
+        sleepAbsenceV4: ['unknown'],
+        ...state,
+        activitiesV4: ['woke'],
+        companyV4: ['alone'],
+      }}
+    />,
+  );
   expect(screen.getByRole('heading', { name: 'Напрямок цього дня' })).toBeInTheDocument();
   view.unmount();
   render(
     <Flow
       slot="afternoon"
-      initial={{ energy: 3, mood: 3, priorityPaceV4: 'later', visitedStepsV4: ['context'] }}
+      initial={{ ...state, activitiesV4: ['none'], companyV4: ['alone'], priorityPaceV4: 'later' }}
     />,
   );
   expect(screen.getByRole('button', { name: 'Підтвердити чек-ін' })).toBeEnabled();
   expect(screen.queryByText('Обставини плану')).not.toBeInTheDocument();
 });
-it('exposes neutral mood details manually and retains positive and negative reasons together', () => {
-  render(<Flow slot="afternoon" initial={{ energy: 3 }} />);
-  fireEvent.click(screen.getByRole('button', { name: '3 · Нейтральний або змішаний' }));
-  fireEvent.click(screen.getByRole('button', { name: '＋ Додати деталі' }));
-  fireEvent.click(screen.getByRole('button', { name: 'Хочеш додати, що вплинуло на настрій?' }));
+it('opens mood details inline, requires an answer and filters even the expanded list', () => {
+  render(<Flow slot="afternoon" initial={goodEnergy} />);
+  fireEvent.click(screen.getByRole('button', { name: /5 Рівний або змішаний/ }));
+  expect(screen.queryByRole('button', { name: /Додати деталі/ })).not.toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Далі →' })).toBeDisabled();
   fireEvent.click(screen.getByRole('button', { name: 'Гарна погода' }));
   fireEvent.click(screen.getByText('Ще причини'));
   fireEvent.click(screen.getByRole('button', { name: 'Складна розмова з коханою' }));
   expect(screen.getByTestId('answers').textContent).toContain('weather_good');
   expect(screen.getByTestId('answers').textContent).toContain('partner_hard');
-  fireEvent.click(screen.getByRole('button', { name: '5 · Дуже хороший' }));
+  fireEvent.click(screen.getByRole('button', { name: /8 Дуже хороший/ }));
   expect(screen.getByTestId('answers').textContent).not.toContain('partner_hard');
+  expect(screen.queryByRole('button', { name: 'Конфлікт' })).not.toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Далі →' })).toBeEnabled();
 });
 it('keeps independent energy and mood and supports mental fatigue', () => {
   render(<Flow slot="afternoon" />);
-  fireEvent.click(screen.getByRole('button', { name: '1 · Сил майже немає' }));
+  fireEvent.click(screen.getByRole('button', { name: /1 Виснажений/ }));
   expect(screen.getByTestId('answers').textContent).not.toContain('"mood"');
   fireEvent.click(screen.getByRole('button', { name: 'Розумова втома' }));
   fireEvent.click(screen.getByRole('button', { name: 'Фізична втома' }));
@@ -112,7 +130,7 @@ it('keeps independent energy and mood and supports mental fatigue', () => {
   );
 });
 it('supports three independent activities and keeps alone exclusive', () => {
-  render(<Flow slot="afternoon" initial={{ energy: 3, mood: 3 }} />);
+  render(<Flow slot="afternoon" initial={state} />);
   fireEvent.click(screen.getByText('Справи й розвиток'));
   for (const name of ['Навчання', 'Курс', 'Читання для себе'])
     fireEvent.click(screen.getByRole('button', { name }));
@@ -124,7 +142,7 @@ it('supports three independent activities and keeps alone exclusive', () => {
   expect(screen.getByTestId('answers').textContent).toContain('"companyV4":["alone"]');
 });
 it('opens optional Other text only for its selected reason', () => {
-  render(<Flow slot="afternoon" initial={{ energy: 1 }} />);
+  render(<Flow slot="afternoon" initial={{ energyLevelV4: 1 }} />);
   fireEvent.click(screen.getByRole('button', { name: 'Розумова втома' }));
   const buttons = screen.getAllByRole('button', { name: 'Інше' });
   fireEvent.click(buttons[0]);
@@ -140,15 +158,15 @@ it('shows previous subjective scores only after the user answers, with the actua
     />,
   );
   expect(screen.queryByLabelText('Порівняння з попереднім записом')).not.toBeInTheDocument();
-  fireEvent.click(screen.getByRole('button', { name: '2 · Мало сил, справи даються важко' }));
+  fireEvent.click(screen.getByRole('button', { name: /2 Дуже мало сил/ }));
   const delta = screen.getByLabelText('Порівняння з попереднім записом');
   expect(delta).toHaveTextContent('10:20');
-  expect(delta).toHaveTextContent('Енергія: 4 → 2');
+  expect(delta).toHaveTextContent('сил менше');
   expect(delta).not.toHaveTextContent('Настрій');
 });
 it('keeps current card, expanded group and keyboard focus across saving redraws', () => {
   const scroll = vi.spyOn(window, 'scrollTo').mockImplementation(() => {}),
-    initial = { energy: 3, mood: 3 };
+    initial = state;
   const view = render(<Flow slot="afternoon" initial={initial} />);
   fireEvent.click(screen.getByText('Справи й розвиток'));
   const work = screen.getByRole('button', { name: 'Робота' }),
@@ -169,9 +187,9 @@ it('releases pointer focus and scrolls only on explicit step navigation', () => 
     scroll = vi.fn();
   HTMLElement.prototype.scrollIntoView = scroll;
   try {
-    const view = render(<Flow slot="afternoon" />);
-    fireEvent.click(screen.getByRole('button', { name: '3 · Вистачає на звичні справи' }));
-    fireEvent.click(screen.getByRole('button', { name: '3 · Нейтральний або змішаний' }));
+    const view = render(<Flow slot="afternoon" initial={goodEnergy} />);
+    fireEvent.click(screen.getByRole('button', { name: /5 Рівний або змішаний/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Нічого виразного' }));
     expect(scroll).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button', { name: 'Далі →' }));
     expect(scroll).toHaveBeenCalledTimes(1);
@@ -180,7 +198,7 @@ it('releases pointer focus and scrolls only on explicit step navigation', () => 
     work.focus();
     fireEvent.click(work, { detail: 1 });
     expect(work).not.toHaveFocus();
-    view.rerender(<Flow slot="afternoon" pending />);
+    view.rerender(<Flow slot="afternoon" initial={goodEnergy} pending />);
     expect(scroll).toHaveBeenCalledTimes(1);
   } finally {
     HTMLElement.prototype.scrollIntoView = previous;

@@ -67,11 +67,19 @@ export function StateChangeBar({ value, index }: { value: number; index: number 
   );
 }
 
-export function StateLevel({ value, color }: { value: number; color: string }) {
+export function StateLevel({
+  value,
+  color,
+  scale = 5,
+}: {
+  value: number;
+  color: string;
+  scale?: number;
+}) {
   return (
     <span className="state-level" aria-hidden="true">
-      {[1, 2, 3, 4, 5].map((step) => (
-        <i key={step} style={step <= value ? { background: color } : undefined} />
+      {Array.from({ length: scale }, (_, index) => (
+        <i key={index} style={index < value ? { background: color } : undefined} />
       ))}
     </span>
   );

@@ -12,9 +12,9 @@ export const statisticsPeriodKey = (privateMode: boolean) =>
 function initialPeriod(key: string) {
   try {
     const value = Number(localStorage.getItem(key));
-    return [7, 30, 90].includes(value) ? value : 30;
+    return [7, 30, 90].includes(value) ? value : 7;
   } catch {
-    return 30;
+    return 7;
   }
 }
 

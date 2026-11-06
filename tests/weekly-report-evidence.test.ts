@@ -25,7 +25,10 @@ function setup(withPatterns = false) {
       fixture.period,
     ),
   });
-  if (!withPatterns) details.personalPeriods!.current!.patterns = null;
+  if (!withPatterns) {
+    details.personalPeriods!.current!.patterns = null;
+    delete details.personalPeriods!.current!.weekHighlights;
+  }
   const row = {
     id: 'saved',
     period_from: fixture.period.dateFrom,

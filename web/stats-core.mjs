@@ -1351,11 +1351,10 @@ export function recordEvent(store, ev, dateKey, nowMin = null, nowIso = null) {
         }
       }
       if (confirming) {
-        if (
-          [3, 4].includes(merged.questionVersion) &&
-          !adaptiveModel(merged, ev.checkinChoicesV4).complete(ev.slot, merged)
-        )
-          break;
+        if ([3, 4].includes(merged.questionVersion)) {
+          const model = adaptiveModel(merged, ev.checkinChoicesV4);
+          if (!model.complete(ev.slot, merged, model.context(s.checkins, dateKey, ev.slot))) break;
+        }
         if (merged.questionVersion === 2 && !coreCompleteV2(ev.slot, merged)) break;
         // Підтверджувати ПОРОЖНІЙ блок нема сенсу — це замкнуло б добу, де
         // жодної відповіді ще нема, назавжди без жодних даних усередині.

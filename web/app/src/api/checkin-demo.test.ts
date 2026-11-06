@@ -38,7 +38,7 @@ describe('confirmed local check-in preview', () => {
   it('confirms the new format with a real demo timestamp and preserves plan context', async () => {
     await expect(
       writeCheckinDemo({ slot: 'morning', questionVersion: 4, confirmed: true, energy: 3 }),
-    ).rejects.toThrow('основні');
+    ).rejects.toThrow('показані питання');
     await writeCheckinDemo({
       slot: 'morning',
       questionVersion: 4,

@@ -9,7 +9,7 @@ export function adaptiveModel(
   details: Card[];
   clean(slot: string, raw: Answers): { set: Answers; clear: string[] };
   clearHidden(slot: string, a: Answers, context?: Partial<AdaptiveContext>): Answers;
-  complete(slot: string, a: Answers): boolean;
+  complete(slot: string, a: Answers, context?: Partial<AdaptiveContext>): boolean;
   followups(slot: string, a: Answers, context?: Partial<AdaptiveContext>): Card[];
   context(records: Answers, date: string, slot: string): AdaptiveContext;
 };

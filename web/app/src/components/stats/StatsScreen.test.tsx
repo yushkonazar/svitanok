@@ -10,6 +10,7 @@ import {
 } from '../../api/schema.ts';
 import { demoStateRecords } from '../../../../core/checkin/state-analysis.mjs';
 import { appendStateArchive } from '../../../../core/checkin/state-history.mjs';
+import { CHECKIN_FLOW_REVISION } from '../../../../core/checkin/state-ratings.mjs';
 import { StatsScreen, statisticsPeriodKey } from './StatsScreen.tsx';
 
 const mock = vi.hoisted(() => ({
@@ -74,9 +75,9 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-it('opens at 30 days and keeps a private empty account honest with one empty state', () => {
+it('opens at seven days and keeps a private empty account honest with one empty state', () => {
   show();
-  expect(screen.getByRole('button', { name: '30 днів' })).toHaveAttribute('aria-pressed', 'true');
+  expect(screen.getByRole('button', { name: '7 днів' })).toHaveAttribute('aria-pressed', 'true');
   expect(screen.getByText('Тут з’явиться твій ритм')).toBeInTheDocument();
   expect(screen.queryByRole('slider')).not.toBeInTheDocument();
   expect(screen.queryByText('0 /5')).not.toBeInTheDocument();
@@ -93,16 +94,40 @@ it('remembers a supported period independently for demo and private views', () =
   view.unmount();
   mock.privateMode = false;
   view = show();
-  expect(screen.getByRole('button', { name: '30 днів' })).toHaveAttribute('aria-pressed', 'true');
+  expect(screen.getByRole('button', { name: '7 днів' })).toHaveAttribute('aria-pressed', 'true');
   view.unmount();
   localStorage.setItem(statisticsPeriodKey(true), '365');
   mock.privateMode = true;
   show();
-  expect(screen.getByRole('button', { name: '30 днів' })).toHaveAttribute('aria-pressed', 'true');
+  expect(screen.getByRole('button', { name: '7 днів' })).toHaveAttribute('aria-pressed', 'true');
+});
+it('leads with the seven-day finding, opens its source date, and remembers a chosen topic', () => {
+  mock.stats = stats({
+    '2026-10-30': { morning: { confirmed: true, questionVersion: 4, sleepMinutesV4: 450 } },
+    '2026-10-31': { morning: { confirmed: true, questionVersion: 4, sleepMinutesV4: 480 } },
+    '2026-11-04': { morning: { confirmed: true, questionVersion: 4, sleepMinutesV4: 320 } },
+    '2026-11-05': { morning: { confirmed: true, questionVersion: 4, sleepMinutesV4: 340 } },
+  });
+  const view = show();
+  const week = within(screen.getByRole('region', { name: 'Коротко про 7 днів' }));
+  expect(week.getByRole('heading', { name: 'Сон скоротився' })).toBeVisible();
+  expect(week.getByText('Орієнтир · 7 год')).toBeVisible();
+  fireEvent.click(week.getByRole('button', { name: '4 лист., 5 год 20 хв' }));
+  expect(screen.getByRole('heading', { name: 'Відповіді за 4 лист.' })).toBeVisible();
+  fireEvent.click(week.getByRole('button', { name: 'Настрій' }));
+  expect(week.getByRole('button', { name: 'Настрій' })).toHaveAttribute('aria-pressed', 'true');
+  expect(week.getByRole('button', { name: '4 лист., Немає оцінки' })).toHaveAttribute(
+    'aria-pressed',
+    'true',
+  );
+  view.unmount();
+  show();
+  expect(screen.getByRole('button', { name: 'Настрій' })).toHaveAttribute('aria-pressed', 'true');
 });
 it('uses one selected date for all three slot values and resets the day when period changes', () => {
   mock.stats = stats(demoStateRecords(to));
   show();
+  fireEvent.click(screen.getByRole('button', { name: '30 днів' }));
   fireEvent.click(screen.getByRole('button', { name: /Настрій увечері/ }));
   fireEvent.click(screen.getByRole('button', { name: 'Усі' }));
   const slider = screen.getByRole('slider', { name: 'Дата: Настрій' });
@@ -142,6 +167,29 @@ it('opens evidence dates into a readable, deduplicated day with historical custo
   expect(within(detail).getAllByText('Завершити урок')).toHaveLength(1);
   expect(within(detail).queryByText('user_evening')).not.toBeInTheDocument();
 });
+it('shows the exact level and reveals saved reasons under its own topic', () => {
+  mock.stats = stats({
+    [to]: {
+      evening: {
+        confirmed: true,
+        questionVersion: 4,
+        flowRevisionV4: CHECKIN_FLOW_REVISION,
+        moodLevelV4: 7,
+        moodFactorsV4: ['user_evening'],
+        optionLabelsV4: { moodFactorsV4: { user_evening: 'Люди :: Наш вечір' } },
+      },
+    },
+  });
+  show();
+  fireEvent.click(screen.getByRole('button', { name: '5 лист., Хороший' }));
+  const detail = within(screen.getByRole('region', { name: 'Записи вибраного дня' }));
+  fireEvent.click(detail.getByText('Вечір', { exact: true }));
+  const mood = within(detail.getByRole('region', { name: 'Настрій' }));
+  expect(mood.getByText(/7 · Хороший · приємні почуття/)).toBeVisible();
+  expect(mood.getByText('Наш вечір')).not.toBeVisible();
+  fireEvent.click(mood.getByText('Уточнення'));
+  expect(mood.getByText('Наш вечір')).toBeVisible();
+});
 it('keeps gated explanations separate from manual comparisons and filters them by parent mood', async () => {
   mock.stats = stats({
     '2026-11-04': {
@@ -170,6 +218,7 @@ it('keeps gated explanations separate from manual comparisons and filters them b
 it('shows visual scores, keeps exact values in details, and opens the same work group on the chart', () => {
   mock.stats = stats(demoStateRecords(to));
   show();
+  fireEvent.click(screen.getByRole('button', { name: '30 днів' }));
   const overview = screen.getByRole('region', { name: 'Огляд за період' });
   expect(overview.textContent).not.toMatch(/\d\s*\/5/);
   expect(within(overview).getByRole('button', { name: /Основний сон.*год/ })).toBeInTheDocument();

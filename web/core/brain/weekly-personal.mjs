@@ -3,6 +3,8 @@ import { weekBounds } from '../tools/weekly.mjs';
 import { reportPeriod, shiftReportCutoff } from '../report-period.mjs';
 import { kyivParts, shiftDate } from '../finance/planning.mjs';
 import { weeklyPersonalPatterns } from './weekly-patterns.mjs';
+import { adaptiveDay } from '../checkin/adaptive-observations.mjs';
+import { stateWeek } from '../checkin/state-week.mjs';
 
 /** Period metrics, not rolling context windows. Missing legacy timestamps on
  * the unfinished last day are explicitly excluded, never guessed from a slot.
@@ -80,6 +82,14 @@ export function weeklyPersonalPeriods(checkins, asOfMs, period) {
       },
       unknownTimingSlots,
       patterns: weeklyPersonalPatterns(selected),
+      ...(offset === 0 && {
+        weekHighlights: stateWeek(
+          Array.from({ length: days }, (_, i) => {
+            const date = shiftDate(dateFrom, i);
+            return adaptiveDay(date, selected[date] ?? {});
+          }),
+        ).highlights,
+      }),
     };
   };
   return {

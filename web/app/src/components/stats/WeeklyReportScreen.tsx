@@ -142,6 +142,7 @@ function ReportDetails({ report }: { report: Report }) {
     );
   const plan = details.plan,
     finance = details.finance;
+  const personal = details.personalPeriods?.current;
   const financePath = `/finance?analytics=expenses&from=${report.from}&to=${report.to}`;
   return (
     <div className="flex flex-col gap-4">
@@ -189,15 +190,34 @@ function ReportDetails({ report }: { report: Report }) {
       <details className="renewal-card">
         <summary className="cursor-pointer font-bold">Особисті спостереження</summary>
         <div className="mt-4 space-y-4">
-          {details.personalPeriods?.current ? (
+          {!!personal?.weekHighlights?.length && (
+            <div className="space-y-4">
+              {personal.weekHighlights.map((highlight) => (
+                <div key={highlight.key} className="text-sm">
+                  <h3 className="mb-1 font-bold">{highlight.title}</h3>
+                  <p className="text-tx2">{highlight.text}</p>
+                  {highlight.context.map((item) => (
+                    <div key={item.text} className="mt-2 border-l border-a2/30 pl-3">
+                      <p className="text-xs font-bold text-a2">
+                        {item.kind === 'reported' ? 'Твоє пояснення' : 'Зв’язок у записах'}
+                      </p>
+                      <p>{item.text}</p>
+                      {!!item.dates.length && (
+                        <p className="text-xs text-tx3">{item.dates.map(date).join(' · ')}</p>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </div>
+          )}
+          {personal && !personal.weekHighlights?.length ? (
             <>
               <p className="renewal-chart-note">
                 Середні та кількість відповідей за збережений період. Версії анкет показано окремо.
               </p>
               {(['legacy', 'observationsV2', 'observationsV3'] as const).map((version, index) => {
-                const metrics = Object.entries(
-                  details.personalPeriods?.current?.[version] ?? {},
-                ).filter(
+                const metrics = Object.entries(personal[version] ?? {}).filter(
                   ([key, value]) =>
                     metricLabels[key] &&
                     (value.numericN ?? value.n ?? 0) > 0 &&
@@ -220,9 +240,9 @@ function ReportDetails({ report }: { report: Report }) {
                 );
               })}
             </>
-          ) : (
+          ) : !personal ? (
             <p className="renewal-chart-note">Зіставні особисті підсумки не отримано.</p>
-          )}
+          ) : null}
           <Link className="inline-block text-sm font-bold text-a2" to="/stats">
             Переглянути мій стан →
           </Link>

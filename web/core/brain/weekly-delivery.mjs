@@ -27,8 +27,9 @@ export async function weeklyEvidenceFingerprint(quality) {
     legacy: period?.legacy,
     observationsV2: period?.observationsV2,
     observationsV3: period?.observationsV3,
+    weekHighlights: period?.weekHighlights,
   });
-  // Operational costs, collection timestamps, prose and optional warnings are
+  // Operational costs, collection timestamps, model prose and optional warnings are
   // deliberately excluded: another generation is not a new event in the owner's week.
   const data = {
     period: [quality.periodFrom, quality.periodTo],

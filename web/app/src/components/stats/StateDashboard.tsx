@@ -13,6 +13,8 @@ import {
   type StateInsight,
 } from '../../../../core/checkin/state-analysis.mjs';
 import { StateOverview } from './StateOverview.tsx';
+import { stateWeek } from '../../../../core/checkin/state-week.mjs';
+import { StateWeekOverview } from './StateWeekOverview.tsx';
 import { StateTimeline } from './StateTimeline.tsx';
 import { StateDayDetail } from './StateDayDetail.tsx';
 import {
@@ -174,6 +176,8 @@ export function StateDashboard({
     };
   }, [s.checkinRaw.records, s.checkinToday, to, demo]);
   const report = useMemo(() => stateReport(records, to, days), [records, to, days]);
+  const { current } = report;
+  const week = useMemo(() => (days === 7 ? stateWeek(current) : null), [days, current]);
   const [mode, setMode] = useState<Mode>('overview');
   const [metric, setMetric] = useState<StateMetricKey>('energy');
   const [slot, setSlot] = useState<StateSlotFilter>('all');
@@ -290,16 +294,27 @@ export function StateDashboard({
       >
         {active ? (
           <>
-            <StateOverview
-              report={report}
-              onMetric={openMetric}
-              onWork={() => {
-                pendingScroll.current = 'nav';
-                setWorkEntry((entry) => entry + 1);
-                openMode('links');
-              }}
-              explanations={preferences.explanations}
-            />
+            {week ? (
+              <StateWeekOverview
+                signals={week.signals}
+                automatic={week.focus}
+                days={report.current}
+                demo={demo}
+                selected={selection?.date}
+                onSelect={select}
+              />
+            ) : (
+              <StateOverview
+                report={report}
+                onMetric={openMetric}
+                onWork={() => {
+                  pendingScroll.current = 'nav';
+                  setWorkEntry((entry) => entry + 1);
+                  openMode('links');
+                }}
+                explanations={preferences.explanations}
+              />
+            )}
             {remaining.length > 0 && (
               <details className="state-panel">
                 <summary>Інші спостереження</summary>

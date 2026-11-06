@@ -14,8 +14,11 @@ export function adaptiveModel(a, choices) {
           /** @type {KvBlob} */ raw,
           /** @type {KvBlob} */ context = {},
         ) => v4.clearHiddenV4(slot, raw, { ...context, choices }),
-        complete: (/** @type {string} */ slot, /** @type {KvBlob} */ raw) =>
-          v4.coreCompleteV4(slot, raw, choices),
+        complete: (
+          /** @type {string} */ slot,
+          /** @type {KvBlob} */ raw,
+          /** @type {KvBlob} */ context = {},
+        ) => v4.coreCompleteV4(slot, raw, choices, context),
         followups: (
           /** @type {string} */ slot,
           /** @type {KvBlob} */ raw,
