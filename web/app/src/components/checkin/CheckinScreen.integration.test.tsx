@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor, act } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, act, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { MemoryRouter } from 'react-router-dom';
 import { CheckinV3Screen } from './CheckinV3Screen.tsx';
 import { EMPTY_STATS } from '../../api/sample.ts';
 import { SessionExpiredError } from '../../api/client.ts';
@@ -73,7 +74,9 @@ afterEach(() => {
 function open(target?: { date: string | null; slot: string | null }) {
   return render(
     <QueryClientProvider client={qc}>
-      <CheckinV3Screen target={target} />
+      <MemoryRouter>
+        <CheckinV3Screen target={target} />
+      </MemoryRouter>
     </QueryClientProvider>,
   );
 }
@@ -151,9 +154,9 @@ it.each([false, true])(
     const { view, data, button } = await readyToConfirm();
     fireEvent.click(button);
     await screen.findByRole('button', { name: 'Зберігаю…' });
-    expect(await screen.findByRole('button', { name: 'Вечір: Зберігається' })).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Вечір: Підтверджено' })).not.toBeInTheDocument();
-    const section = view.container.querySelector('[data-checkin-slot="evening"]')!;
+    const section = view.container.querySelector<HTMLElement>('[data-checkin-slot="evening"]')!;
+    expect(within(section).getByText('Зберігається')).toBeVisible();
+    expect(within(section).queryByText('Підтверджено')).not.toBeInTheDocument();
     expect(section).toHaveStyle({ minHeight: '1800px' });
     expect(screen.queryByRole('timer')).not.toBeInTheDocument();
     expect(scroll).not.toHaveBeenCalled();
@@ -165,15 +168,16 @@ it.each([false, true])(
       },
     });
     await act(async () => resolve());
-    expect(await screen.findByRole('button', { name: 'Вечір: Підтверджено' })).toBeInTheDocument();
     if (!reduced) {
-      expect(screen.getByText('Чек-ін збережено')).toBeInTheDocument();
+      expect(await screen.findByText('Чек-ін збережено')).toBeInTheDocument();
       expect(section).toHaveStyle({ minHeight: '1800px' });
       expect(setVerticalSwipes).toHaveBeenLastCalledWith(false);
     }
-    await waitFor(() => expect(screen.getByText('✓ Чек-ін підтверджено')).toBeInTheDocument(), {
-      timeout: 2000,
-    });
+    await within(section).findByLabelText(
+      'Переглянути відповіді · Вечір · Підтверджено',
+      {},
+      { timeout: 2000 },
+    );
     expect(scroll).toHaveBeenLastCalledWith({ top: 0, behavior: 'auto' });
     const positions = scroll.mock.calls.map(([value]) => (value as ScrollToOptions).top!);
     expect(positions.every((top, i) => i === 0 || top <= positions[i - 1]!)).toBe(true);
@@ -191,7 +195,7 @@ it('keeps the review open without success animation or scrolling when confirmati
   await screen.findByRole('alert');
   expect(screen.getByRole('button', { name: 'Підтвердити чек-ін' })).toBeEnabled();
   expect(screen.queryByText('Чек-ін збережено')).not.toBeInTheDocument();
-  expect(screen.queryByRole('button', { name: 'Вечір: Підтверджено' })).not.toBeInTheDocument();
+  expect(screen.queryByText('Підтверджено')).not.toBeInTheDocument();
   expect(scroll).not.toHaveBeenCalled();
 });
 it('extends the chosen slot once, with a pending state and a server-confirmed new deadline', async () => {
@@ -259,13 +263,13 @@ it('switches explicitly between overlapping slots and keeps their drafts separat
   open({ date: '2026-10-07', slot: 'afternoon' });
   await screen.findByRole('heading', { name: 'Енергія' });
   fireEvent.click(screen.getByRole('button', { name: /6 Бадьорий/ }));
-  fireEvent.click(screen.getByRole('button', { name: 'Вечір · 07.10' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Продовжити · Вечір' }));
   fireEvent.click(screen.getByRole('button', { name: '← Назад' }));
   expect(screen.getByRole('button', { name: /5 Рівний або змішаний/ })).toHaveAttribute(
     'aria-pressed',
     'true',
   );
-  fireEvent.click(screen.getByRole('button', { name: 'День · 07.10' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Продовжити · День' }));
   expect(screen.getByRole('button', { name: /6 Бадьорий/ })).toHaveAttribute(
     'aria-pressed',
     'true',
@@ -348,12 +352,10 @@ it('does not abandon an in-progress extended slot when the next slot opens', asy
       },
     }),
   );
-  expect(screen.getByRole('button', { name: 'День · 07.10' })).toHaveAttribute(
-    'aria-pressed',
-    'true',
-  );
+  expect(await screen.findByRole('button', { name: 'Відкрити · Вечір' })).toBeEnabled();
+  const row = screen.getByRole('heading', { name: 'День' }).closest('section')!;
   expect(
-    screen.getByRole('heading', { name: 'Що було від попереднього запису' }),
+    within(row).getByRole('heading', { name: 'Що було від попереднього запису' }),
   ).toBeInTheDocument();
 });
 
@@ -464,7 +466,7 @@ it('still blocks private check-in data when the session expires during refresh',
     ).not.toBeInTheDocument(),
   );
 });
-it('uses the next server window for its name and time during the midday pause', async () => {
+it('shows each midday status once, with saved answers in the morning row', async () => {
   const data = windowSnapshot();
   api.fetchStats.mockResolvedValue({
     ...data,
@@ -472,7 +474,7 @@ it('uses the next server window for its name and time during the midday pause', 
       ...data.stats,
       checkinSlot: null,
       checkinServerTime: '2026-10-07T11:30:00Z',
-      checkinToday: null,
+      checkinToday: { morning: { ...answeredState, sleepQualityV4: 4, confirmed: true } },
       checkinWindows: [
         {
           ...data.stats.checkinWindows[0],
@@ -481,12 +483,96 @@ it('uses the next server window for its name and time during the midday pause', 
           endAt: '2026-10-07T19:00:00Z',
           open: false,
         },
+        {
+          ...data.stats.checkinWindows[0],
+          startAt: '2026-10-07T19:00:00Z',
+          endAt: '2026-10-07T23:00:00Z',
+          open: false,
+        },
       ],
     },
   });
-  open();
-  expect(await screen.findByText(/Наступний денний чек-ін/)).toHaveTextContent('18:00');
+  const view = open();
+  const overview = await screen.findByRole('region', { name: 'Чек-іни за сьогодні' });
+  const list = within(overview);
+  expect(list.getByRole('heading', { name: 'День' }).closest('section')).toHaveTextContent(
+    'Від 18:00',
+  );
+  expect(list.getByRole('heading', { name: 'Вечір' }).closest('section')).toHaveTextContent(
+    'Від 22:00',
+  );
+  const times = screen.getAllByText(/(?:18|22):00/, { ignore: 'details:not([open]) *' });
+  expect(times.map((node) => node.textContent)).toEqual(['Від 18:00', 'Від 22:00']);
+  expect(screen.getAllByText('Підтверджено')).toHaveLength(1);
+  expect(screen.queryByText(/Пауза між чек-інами/)).not.toBeInTheDocument();
+  fireEvent.click(list.getByLabelText('Переглянути відповіді · Ранок · Підтверджено'));
+  expect(list.getByText(/Наскільки відпочив після цього сну/)).toBeVisible();
+  fireEvent.click(list.getByText('Історія за тиждень'));
+  fireEvent.click(list.getByRole('button', { name: 'Перейти до чек-інів за 2026-10-07' }));
+  expect(overview).toHaveFocus();
+  expect(screen.queryByRole('region', { name: 'Історія чек-інів' })).not.toBeInTheDocument();
   expect(screen.queryByRole('timer')).not.toBeInTheDocument();
+
+  view.unmount();
+  open({ date: '2026-10-06', slot: 'evening' });
+  expect(await screen.findByText('Далі · День 07.10 о 18:00')).toBeVisible();
+});
+it('keeps a confirmed deep-linked afternoon and weekly history in the same status card', async () => {
+  const date = '2026-11-07';
+  const previousDate = '2026-11-06';
+  const data = windowSnapshot();
+  const evening = {
+    ...data.stats.checkinWindows[0],
+    dateKey: date,
+    startAt: `${date}T20:00:00Z`,
+    endAt: '2026-11-08T02:00:00Z',
+    open: false,
+  };
+  const morning = { ...answeredState, sleepQualityV4: 4, confirmed: true };
+  api.fetchStats.mockResolvedValue({
+    ...data,
+    stats: {
+      ...data.stats,
+      checkinDate: date,
+      checkinServerTime: `${date}T15:27:00Z`,
+      checkinSlot: 'afternoon',
+      checkinToday: {
+        morning,
+        afternoon: { ...answeredState, activitiesV4: ['walk'], confirmed: true },
+      },
+      checkinWindows: [
+        {
+          ...evening,
+          slot: 'afternoon',
+          startAt: `${date}T15:00:00Z`,
+          endAt: evening.startAt,
+          open: true,
+        },
+        evening,
+      ],
+      checkinRaw: {
+        ...data.stats.checkinRaw,
+        records: { [previousDate]: { morning } },
+      },
+    },
+  });
+  open({ date, slot: 'afternoon' });
+  const card = within(await screen.findByRole('region', { name: 'Чек-іни за сьогодні' }));
+  expect(screen.getAllByText('Підтверджено')).toHaveLength(2);
+  expect(screen.getAllByText(/22:00/, { ignore: 'details:not([open]) *' })).toEqual([
+    card.getByText('Від 22:00'),
+  ]);
+  expect(screen.queryByRole('button', { name: /День · 07\.11/ })).not.toBeInTheDocument();
+  fireEvent.click(card.getByLabelText('Переглянути відповіді · День · Підтверджено'));
+  expect(card.getByText('Прогулянка', { exact: true })).toBeVisible();
+
+  fireEvent.click(card.getByText('Історія за тиждень'));
+  fireEvent.click(card.getByRole('button', { name: `Переглянути чек-іни за ${previousDate}` }));
+  const history = within(card.getByRole('region', { name: 'Історія чек-інів' }));
+  expect(history.getByRole('heading', { name: 'Чек-іни за 06.11' })).toBeVisible();
+  fireEvent.click(history.getByText('Відповіді'));
+  expect(history.getByText('4 · Добре відпочив')).toBeVisible();
+  expect(api.postEvent).not.toHaveBeenCalled();
 });
 it('finishes an existing v3 draft with its original answers and revision intact', async () => {
   const data = snapshot();
