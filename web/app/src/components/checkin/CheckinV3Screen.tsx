@@ -4,7 +4,7 @@ import { usePresentation } from '../../lib/presentation.ts';
 import { Link } from 'react-router-dom';
 import { adaptiveModel } from '../../../../core/checkin/model.mjs';
 import { choiceAnswerLabel, normalizeChoiceCatalog } from '../../../../core/checkin/choices.mjs';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { adaptivePreferences } from '../../../../core/checkin/adaptive-v4.mjs';
 import { CHECKIN_FLOW_REVISION } from '../../../../core/checkin/state-ratings.mjs';
 import {
@@ -25,12 +25,13 @@ import { BLOCKS as LEGACY_BLOCKS } from './questions.ts';
 import { AdaptivePreferences } from './AdaptivePreferences.tsx';
 import { useCheckinProgress } from '../../lib/useCheckinProgress.ts';
 import {
+  CHECKIN_DAY_SLOTS as slots,
+  CHECKIN_SLOT_NAMES as names,
   checkinDayProgress,
   checkinDayRecord,
   openCheckinWindows,
   preferredCheckinWindow,
 } from '../../lib/checkinProgress.ts';
-import { CheckinDayProgress } from './CheckinDayProgress.tsx';
 import { CHECKIN_CARDS } from '../../../../core/checkin/catalog.mjs';
 
 type Answers = Record<string, unknown>;
@@ -42,9 +43,13 @@ type Completion = {
   feedbackTop: number;
   phase: 'saving' | 'success' | 'leaving';
 };
-const slots: CheckinSlot[] = ['morning', 'afternoon', 'evening'];
-const names = { morning: 'Ранок', afternoon: 'День', evening: 'Вечір' };
 const icons = { morning: '🌅', afternoon: '☀️', evening: '🌙' };
+const shortDate = (date: string) => `${date.slice(8)}.${date.slice(5, 7)}`;
+const checkinTime = new Intl.DateTimeFormat('uk-UA', {
+  timeZone: 'Europe/Kyiv',
+  hour: '2-digit',
+  minute: '2-digit',
+});
 const draftKey = (date: string, slot: CheckinSlot) =>
   `svitanok:checkin-v4:${inTelegram() ? 'private' : 'demo'}:${date}:${slot}`;
 function readDraft(key: string): Answers {
@@ -98,7 +103,15 @@ function hasAnswers(slot: CheckinSlot, answers: Answers) {
     c.fields.some((f) => answers[f.id] != null),
   );
 }
-function AnswerSummary({ slot, answers }: { slot: CheckinSlot; answers: Answers }) {
+function AnswerSummary({
+  slot,
+  answers,
+  row,
+}: {
+  slot: CheckinSlot;
+  answers: Answers;
+  row?: { label: string; content: ReactNode };
+}) {
   const legacy = ![2, 3, 4].includes(Number(answers.questionVersion));
   const model = adaptiveModel(answers);
   const catalog =
@@ -107,9 +120,12 @@ function AnswerSummary({ slot, answers }: { slot: CheckinSlot; answers: Answers 
       : [...(model.cards[slot] ?? []), ...model.details];
   const old = LEGACY_BLOCKS.find((b) => b.id === slot);
   return (
-    <details className="mt-3">
-      <summary className="renewal-link cursor-pointer">
-        Переглянути {legacy ? 'попередні ' : ''}відповіді
+    <details className={row ? 'checkin-slot-answers' : 'mt-3'}>
+      <summary
+        className={row ? 'checkin-slot-heading' : 'renewal-link cursor-pointer'}
+        aria-label={row?.label}
+      >
+        {row?.content ?? (legacy ? 'Попередні відповіді' : 'Відповіді')}
       </summary>
       <div className="mt-3 flex flex-col gap-3">
         {slot !== 'morning' && typeof answers.planTextV4 === 'string' && (
@@ -182,6 +198,7 @@ export function CheckinV3Screen({
   const upgraded = useRef(false);
   const [completion, setCompletion] = useState<Completion | null>(null);
   const confirming = useRef(false);
+  const overview = useRef<HTMLElement>(null);
   const slotNodes = useRef<Partial<Record<CheckinSlot, HTMLElement>>>({});
   useEffect(() => {
     if (!completion || completion.phase === 'saving') return;
@@ -274,6 +291,7 @@ export function CheckinV3Screen({
     demo = !inTelegram();
   const elapsedMs = Math.max(0, now - (query.data.receivedAtMs ?? query.dataUpdatedAt));
   const serverNow = checkin.serverNow;
+  const today = kyivParts(serverNow).date;
   const openWindows = openCheckinWindows(s, serverNow);
   const defaultWindow = preferredCheckinWindow(s, serverNow);
   // Pin an existing unfinished draft once; a later server window must not replace it.
@@ -307,7 +325,7 @@ export function CheckinV3Screen({
         : s.checkinWindows
           ? null
           : s.checkinSlot;
-  const day = checkinDayRecord(s, date, kyivParts(serverNow).date);
+  const day = checkinDayRecord(s, date, today);
   const dayProgress = checkinDayProgress(s, serverNow, date, checkin.pending);
   const answers = (slot: CheckinSlot): Answers => {
     const stored = day?.[slot] ?? {};
@@ -321,15 +339,29 @@ export function CheckinV3Screen({
   const current = completion?.date === date ? completion.answers : active ? answers(active) : {};
   // useTick can lag behind a just-received snapshot. Never turn a zero gap into +1 minute.
   // Optimistic autosaves update dataUpdatedAt, but must not restart the server countdown.
-  const elapsed = Math.floor(elapsedMs / 60000),
-    left = selectedWindow
-      ? Math.max(0, Math.ceil((Date.parse(selectedWindow.endAt) - serverNow) / 60000))
-      : Math.max(0, (s.checkinSlotEndsIn ?? 0) - elapsed);
+  const elapsed = Math.floor(elapsedMs / 60000);
   const gap = demo ? 0 : Math.max(0, (selectedWindow?.gapIn ?? s.checkinGapIn ?? 0) - elapsed);
   const allowed = !gap || early === `${date}:${active}`;
-  const nextWindow = s.checkinWindows
-    ?.filter((w) => Date.parse(w.startAt) > serverNow)
-    .sort((a, b) => Date.parse(a.startAt) - Date.parse(b.startAt))[0];
+  const otherOpenWindows = openWindows.filter(
+    (w) =>
+      !demo && w.dateKey !== date && !checkinDayRecord(s, w.dateKey, today)?.[w.slot]?.confirmed,
+  );
+  const nextWindow =
+    !demo && !completion && (!active || current.confirmed === true) && !otherOpenWindows.length
+      ? s.checkinWindows
+          ?.filter(
+            (w) =>
+              Date.parse(w.startAt) > serverNow &&
+              !checkinDayRecord(s, w.dateKey, today)?.[w.slot]?.confirmed,
+          )
+          .sort((a, b) => Date.parse(a.startAt) - Date.parse(b.startAt))[0]
+      : undefined;
+  const firstSlot = completion?.date === date ? completion.slot : current.confirmed ? null : active;
+  const rows = firstSlot
+    ? [...dayProgress.items].sort(
+        (a, b) => Number(b.slot === firstSlot) - Number(a.slot === firstSlot),
+      )
+    : dayProgress.items;
   function selectWindow(dateKey: string, slot: CheckinSlot) {
     if (timer.current) clearTimeout(timer.current);
     timer.current = null;
@@ -339,6 +371,11 @@ export function CheckinV3Screen({
     if (draft) save.mutate(draft);
     setSelection({ date: dateKey, slot });
     extend.reset();
+    requestAnimationFrame(() => {
+      const node = slotNodes.current[slot];
+      node?.scrollIntoView?.({ block: 'start', behavior: 'auto' });
+      node?.querySelector('h2')?.focus({ preventScroll: true });
+    });
   }
   function change(slot: CheckinSlot, key: string, value: unknown) {
     const old = answers(slot);
@@ -419,41 +456,7 @@ export function CheckinV3Screen({
   }
   return (
     <div className="checkin-screen flex flex-col gap-5">
-      <div className="flex items-center justify-between gap-3">
-        <h1 className="text-2xl font-semibold">Чек-ін</h1>
-        <button
-          type="button"
-          className="renewal-link text-sm"
-          onClick={() => {
-            const panel = document.getElementById('checkin-preferences');
-            if (panel instanceof HTMLDetailsElement) {
-              panel.open = true;
-              panel.scrollIntoView({ block: 'start', behavior: 'auto' });
-            }
-          }}
-        >
-          Розклад і нагадування
-        </button>
-      </div>
-      <section>
-        <p className="renewal-chart-note mb-2">
-          {date === kyivParts(serverNow).date
-            ? 'Чек-іни за сьогодні'
-            : `Чек-іни за ${date.slice(8)}.${date.slice(5, 7)}`}
-        </p>
-        <CheckinDayProgress
-          progress={dayProgress}
-          selectedSlot={active}
-          onSelect={(slot) => {
-            if (demo) setPreview(slot);
-            else if (openWindows.some((w) => w.dateKey === date && w.slot === slot))
-              selectWindow(date, slot);
-            requestAnimationFrame(() =>
-              slotNodes.current[slot]?.scrollIntoView?.({ block: 'start', behavior: 'auto' }),
-            );
-          }}
-        />
-      </section>
+      <h1 className="text-2xl font-semibold">Чек-ін</h1>
       {demo && (
         <details className="renewal-inset">
           <summary className="renewal-link cursor-pointer">Демо · змінити час доби</summary>
@@ -480,112 +483,33 @@ export function CheckinV3Screen({
           </button>
         </details>
       )}
-      {!demo && (selected || openWindows.length > 1) && (
-        <section className="renewal-inset">
-          <p className="renewal-chart-note">
-            Чек-ін за {date.slice(8)}.{date.slice(5, 7)}.
-            {openWindows.length > 1 && ' Продовжений слот не замінює наступний.'}
-          </p>
-          {selected && !active && (
-            <p role="status" className="mt-2">
-              Цей чек-ін уже закритий. Збережені відповіді залишилися.
-            </p>
-          )}
-          <div className="renewal-segments mt-3">
-            {openWindows.map((w) => (
-              <button
-                key={`${w.dateKey}:${w.slot}`}
-                aria-pressed={date === w.dateKey && active === w.slot}
-                onClick={() => selectWindow(w.dateKey, w.slot)}
-              >
-                {names[w.slot]} · {w.dateKey.slice(8)}.{w.dateKey.slice(5, 7)}
-              </button>
-            ))}
+      <section
+        ref={overview}
+        className="renewal-card checkin-slot-list"
+        aria-label={`Чек-іни за ${date === today ? 'сьогодні' : shortDate(date)}`}
+        tabIndex={-1}
+      >
+        {(date !== today || otherOpenWindows.length > 0) && (
+          <div className="checkin-list-note">
+            {date !== today && <p className="renewal-chart-note">Чек-іни за {shortDate(date)}</p>}
+            {otherOpenWindows.length > 0 && (
+              <div className="flex flex-wrap items-center gap-x-4">
+                <span className="renewal-chart-note">Доступно зараз</span>
+                {otherOpenWindows.map((w) => (
+                  <button
+                    key={`${w.dateKey}:${w.slot}`}
+                    type="button"
+                    className="renewal-link checkin-slot-action"
+                    onClick={() => selectWindow(w.dateKey, w.slot)}
+                  >
+                    {names[w.slot]} · {shortDate(w.dateKey)}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
-        </section>
-      )}
-      {!demo && active && !current.confirmed && selectedWindow && (
-        <section className="renewal-inset">
-          <p role="status" className="renewal-chart-note">
-            {selectedWindow.extended ? 'Продовжено один раз' : 'Відкрито'} до{' '}
-            {new Date(selectedWindow.endAt).toLocaleString('uk-UA', {
-              timeZone: 'Europe/Kyiv',
-              day: '2-digit',
-              month: '2-digit',
-              hour: '2-digit',
-              minute: '2-digit',
-            })}
-            .
-          </p>
-          {selectedWindow.extensionAvailable && !extend.isSuccess && (
-            <button
-              className="renewal-secondary mt-3"
-              disabled={extend.isPending || save.isPending}
-              onClick={() => {
-                setSelection({ date, slot: active });
-                extend.mutate({ dateKey: date, slot: active, key: selectedWindow.key });
-              }}
-            >
-              {extend.isPending ? 'Продовжую…' : 'Ще годину'}
-            </button>
-          )}
-          {extend.isSuccess && !selectedWindow.extended && (
-            <p role="status" className="renewal-chart-note mt-2">
-              Продовжено. Оновлюю термін закриття.
-              <button className="renewal-link ml-2" onClick={() => void query.refetch()}>
-                Оновити
-              </button>
-            </p>
-          )}
-          {extend.error && (
-            <p role="alert" className="text-neg mt-2">
-              {extend.error.message}
-            </p>
-          )}
-        </section>
-      )}
-      {!completion && (!active || current.confirmed === true) && (
-        <section className="renewal-inset checkin-waiting">
-          <span className="renewal-pill">
-            {active ? '✓ Чек-ін підтверджено' : 'Пауза між чек-інами'}
-          </span>
-          {nextWindow ? (
-            <p className="renewal-muted mt-2">
-              Наступний{' '}
-              {{ morning: 'ранковий', afternoon: 'денний', evening: 'вечірній' }[nextWindow.slot]}{' '}
-              чек-ін ·{' '}
-              {new Date(nextWindow.startAt).toLocaleString('uk-UA', {
-                timeZone: 'Europe/Kyiv',
-                day: '2-digit',
-                month: '2-digit',
-                hour: '2-digit',
-                minute: '2-digit',
-              })}
-            </p>
-          ) : (
-            <p className="renewal-chart-note mt-2">
-              {demo
-                ? 'Обери інший час доби в демо вище.'
-                : 'Час наступного вікна поки недоступний.'}
-            </p>
-          )}
-        </section>
-      )}
-      {gap > 0 && !current.confirmed && !allowed && (
-        <section className="renewal-card">
-          <h2 className="font-semibold">Дай дню трохи часу</h2>
-          <p className="renewal-muted mt-3">
-            Від попереднього запису ще не минуло три години. Рекомендований наступний запис — через{' '}
-            {gap} хв.
-          </p>
-          <button className="renewal-secondary mt-4" onClick={() => setEarly(`${date}:${active}`)}>
-            Хочу записати стан зараз
-          </button>
-        </section>
-      )}
-      {[...slots]
-        .sort((a, b) => Number(b === active) - Number(a === active))
-        .map((slot) => {
+        )}
+        {rows.map(({ slot, description, state }) => {
           const finishing =
             completion?.slot === slot && completion.date === date ? completion : null;
           const value = finishing
@@ -593,6 +517,52 @@ export function CheckinV3Screen({
               : answers(slot),
             live = slot === active || finishing != null,
             confirmed = value.confirmed === true;
+          const saving = finishing ? finishing.phase === 'saving' : state === 'saving';
+          const saved = hasAnswers(slot, value);
+          const slotWindow = live && !demo ? selectedWindow : undefined;
+          const canOpen =
+            !live &&
+            !confirmed &&
+            !saving &&
+            openWindows.some((w) => w.dateKey === date && w.slot === slot);
+          const rowAction = saved ? 'Продовжити' : 'Відкрити';
+          let status = description;
+          if (saving) status = 'Зберігається';
+          else if (finishing) status = '';
+          else if (confirmed) status = 'Підтверджено';
+          else if (live) {
+            if (demo) status = 'Демо проходження';
+            else if (slotWindow) {
+              const end = Date.parse(slotWindow.endAt);
+              const endDate = kyivParts(end).date;
+              const deadline =
+                endDate === date
+                  ? checkinTime.format(end)
+                  : `${shortDate(endDate)}, ${checkinTime.format(end)}`;
+              status = `${slotWindow.extended ? 'Продовжено один раз до' : saved ? 'Чернетка · до' : 'До'} ${deadline}`;
+            } else {
+              const left = Math.max(0, (s.checkinSlotEndsIn ?? 0) - elapsed);
+              status = `${saved ? 'Чернетка' : 'Відкрито'} · ще ${left} хв`;
+            }
+          } else if (slot === selected?.slot && state === 'closed') {
+            status = 'Цей чек-ін уже закритий';
+          }
+          const title = (
+            <>
+              <span aria-hidden="true">{icons[slot]}</span> {names[slot]}
+            </>
+          );
+          const statusText = status && (
+            <span
+              className="checkin-slot-state"
+              data-done={(confirmed && !saving) || undefined}
+              role={saving ? 'status' : undefined}
+            >
+              {confirmed && !saving && <span aria-hidden="true">✓ </span>}
+              {status}
+            </span>
+          );
+          const showAnswerRow = saved && !finishing && !saving && !canOpen && (!live || confirmed);
           const Flow = value.questionVersion === 3 ? LegacyAdaptiveFlow : AdaptiveFlow;
           return (
             <section
@@ -600,29 +570,94 @@ export function CheckinV3Screen({
               ref={(node) => {
                 slotNodes.current[slot] = node ?? undefined;
               }}
-              className={`renewal-card checkin-slot-card ${live && !confirmed ? 'is-live' : 'is-folded'}`}
+              className="checkin-slot-card"
               style={finishing ? { minHeight: finishing.height } : undefined}
               data-checkin-slot={slot}
               data-completion={finishing?.phase}
-              aria-busy={finishing?.phase === 'saving' || undefined}
+              aria-busy={saving || undefined}
               onClickCapture={() => {
-                if (live && !demo && !selected && s.checkinWindows) setSelection({ date, slot });
+                if (live && !confirmed && !demo && !selected && s.checkinWindows)
+                  setSelection({ date, slot });
               }}
             >
-              <div className="flex items-center justify-between gap-3">
-                <h2 className="font-semibold">
-                  {icons[slot]} {names[slot]}
-                </h2>
-                <span className="renewal-chart-note">
-                  {confirmed
-                    ? '✓ Підтверджено'
-                    : live
-                      ? demo
-                        ? 'Демо проходження'
-                        : `${hasAnswers(slot, value) ? 'Чернетка' : 'Відкрито'} · ще ${left} хв`
-                      : dayProgress.items.find((item) => item.slot === slot)?.description}
-                </span>
-              </div>
+              {showAnswerRow ? (
+                <AnswerSummary
+                  slot={slot}
+                  answers={value}
+                  row={{
+                    label: `${confirmed ? 'Переглянути відповіді' : 'Переглянути чернетку'} · ${names[slot]} · ${status}`,
+                    content: (
+                      <>
+                        <span className="checkin-slot-name">{title}</span>
+                        {statusText}
+                      </>
+                    ),
+                  }}
+                />
+              ) : (
+                <div className="checkin-slot-heading">
+                  <h2 className="checkin-slot-name" tabIndex={-1}>
+                    {title}
+                  </h2>
+                  {canOpen ? (
+                    <button
+                      type="button"
+                      className="renewal-link checkin-slot-action"
+                      aria-label={`${rowAction} · ${names[slot]}`}
+                      onClick={() => selectWindow(date, slot)}
+                    >
+                      {rowAction}
+                    </button>
+                  ) : (
+                    statusText
+                  )}
+                </div>
+              )}
+              {slotWindow && !confirmed && !finishing && !saving && (
+                <>
+                  {slotWindow.extensionAvailable && !extend.isSuccess && (
+                    <button
+                      type="button"
+                      className="renewal-link checkin-slot-action"
+                      disabled={extend.isPending || save.isPending}
+                      onClick={() => {
+                        setSelection({ date, slot });
+                        extend.mutate({ dateKey: date, slot, key: slotWindow.key });
+                      }}
+                    >
+                      {extend.isPending ? 'Продовжую…' : 'Ще годину'}
+                    </button>
+                  )}
+                  {extend.isSuccess && !slotWindow.extended && (
+                    <p role="status" className="renewal-chart-note mt-2">
+                      Продовжено. Оновлюю термін закриття.
+                      <button className="renewal-link ml-2" onClick={() => void query.refetch()}>
+                        Оновити
+                      </button>
+                    </p>
+                  )}
+                  {extend.error && (
+                    <p role="alert" className="text-neg mt-2">
+                      {extend.error.message}
+                    </p>
+                  )}
+                </>
+              )}
+              {live && !confirmed && !allowed && (
+                <div className="renewal-inset mt-3">
+                  <h3 className="font-semibold">Дай дню трохи часу</h3>
+                  <p className="renewal-chart-note mt-2">
+                    Рекомендований наступний запис — через {gap} хв.
+                  </p>
+                  <button
+                    className="renewal-secondary mt-3"
+                    onClick={() => setEarly(`${date}:${slot}`)}
+                  >
+                    Хочу записати стан зараз
+                  </button>
+                  {saved && <AnswerSummary slot={slot} answers={value} />}
+                </div>
+              )}
               {finishing && finishing.phase !== 'saving' ? (
                 <div
                   className="checkin-completion"
@@ -640,7 +675,7 @@ export function CheckinV3Screen({
                   </p>
                 </div>
               ) : live && !confirmed && allowed ? (
-                <div className="mt-5" inert={finishing?.phase === 'saving' || undefined}>
+                <div className="mt-5" inert={saving || undefined}>
                   {value.questionVersion === 3 && (
                     <p className="renewal-chart-note mb-4">
                       Цю чернетку почато в попередній формі. Заверши її зі збереженими відповідями;
@@ -655,7 +690,7 @@ export function CheckinV3Screen({
                     answers={value}
                     morning={answers('morning')}
                     p={p}
-                    pending={save.isPending || finishing?.phase === 'saving'}
+                    pending={save.isPending || saving}
                     saveStatus={
                       localPending?.slot === slot && localPending.date === date
                         ? 'Чернетка на пристрої · очікує збереження'
@@ -676,100 +711,98 @@ export function CheckinV3Screen({
                     )}
                   />
                 </div>
-              ) : hasAnswers(slot, value) ? (
-                <AnswerSummary slot={slot} answers={value} />
-              ) : (
-                <>
-                  {explanations && (
-                    <p className="renewal-chart-note mt-3">
-                      Відповіді з’являться після проходження.
-                    </p>
-                  )}
-                </>
-              )}
+              ) : null}
             </section>
           );
         })}
-      {save.error && (
-        <p role="alert" className="renewal-inset text-neg">
-          {save.error.message}
-        </p>
-      )}
-      {(query.isError || settings.isError) && (
-        <section role="status" className="renewal-inset">
-          <p className="renewal-chart-note">
-            Не вдалося оновити дані. Твої відповіді збережені в чернетці; можна продовжувати.
-          </p>
-          <button
-            className="renewal-link mt-3"
-            onClick={() => {
-              if (query.isError) void query.refetch();
-              if (settings.isError) void settings.refetch();
-            }}
-          >
-            Повторити оновлення
-          </button>
-        </section>
-      )}
-      <section className="renewal-card">
-        <h2 className="font-semibold">Ритм тижня</h2>
-        {explanations && (
-          <p className="renewal-chart-note mt-1">
-            Підтверджені чек-іни; чернетки не позначені як завершені.
+        {nextWindow && nextWindow.dateKey !== date && (
+          <p className="checkin-list-note renewal-chart-note">
+            Далі · {names[nextWindow.slot]} {shortDate(nextWindow.dateKey)} о{' '}
+            {checkinTime.format(Date.parse(nextWindow.startAt))}
           </p>
         )}
-        <div className="renewal-week-grid mt-4">
-          {Array.from({ length: 7 }, (_, i) => {
-            const d = shiftDate(date, i - 6);
-            const count = checkinDayProgress(s, serverNow, d, checkin.pending).completed;
-            return (
-              <button
-                type="button"
-                key={d}
-                className="checkin-history-day"
-                aria-pressed={historyDate === d}
-                aria-label={`Переглянути чек-іни за ${d}`}
-                onClick={() => setHistoryDate(historyDate === d ? null : d)}
-              >
-                <small>
-                  {new Date(d + 'T12:00:00Z').toLocaleDateString('uk-UA', { weekday: 'short' })}
-                </small>
-                <span data-filled={count > 0}>{count ? `${count}/3` : '·'}</span>
-                <small>{d.slice(8)}</small>
-              </button>
-            );
-          })}
-        </div>
-      </section>
-      {historyDate && (
-        <section className="renewal-card" aria-label="Історія чек-інів">
-          <div className="flex justify-between">
-            <h2 className="font-semibold">
-              {historyDate.slice(8)}.{historyDate.slice(5, 7)} · записи
-            </h2>
-            <button className="renewal-link" onClick={() => setHistoryDate(null)}>
-              Закрити
+        {save.error && (
+          <p role="alert" className="checkin-list-note text-neg">
+            {save.error.message}
+          </p>
+        )}
+        {(query.isError || settings.isError) && (
+          <div role="status" className="checkin-list-note">
+            <p className="renewal-chart-note">
+              Не вдалося оновити дані. Твої відповіді збережені в чернетці, можна продовжувати.
+            </p>
+            <button
+              type="button"
+              className="renewal-link mt-3"
+              onClick={() => {
+                if (query.isError) void query.refetch();
+                if (settings.isError) void settings.refetch();
+              }}
+            >
+              Повторити оновлення
             </button>
           </div>
-          {slots.map((slot) => {
-            const entry = checkinDayRecord(s, historyDate, kyivParts(serverNow).date)?.[slot] ?? {};
-            return (
-              <div className="renewal-inset mt-3" key={slot}>
-                <b>{names[slot]}</b> ·{' '}
-                {entry.confirmed
-                  ? '✓ Підтверджено'
-                  : Object.keys(entry).length
-                    ? 'Чернетка · не підтверджено'
-                    : 'Немає запису'}
-                {Object.keys(entry).length > 0 && <AnswerSummary slot={slot} answers={entry} />}
-              </div>
-            );
-          })}
-          <Link to="/stats" className="renewal-link mt-4">
-            Динаміка й детальні спостереження ↗
-          </Link>
-        </section>
-      )}
+        )}
+        <details className="checkin-week-history">
+          <summary className="renewal-link">Історія за тиждень</summary>
+          <div className="px-4 pb-4">
+            {explanations && (
+              <p className="renewal-chart-note mb-3">
+                Кількість підтверджених чек-інів за кожен день.
+              </p>
+            )}
+            <div className="renewal-week-grid">
+              {Array.from({ length: 7 }, (_, i) => {
+                const d = shiftDate(date, i - 6);
+                const count = checkinDayProgress(s, serverNow, d, checkin.pending).completed;
+                return (
+                  <button
+                    type="button"
+                    key={d}
+                    className="checkin-history-day"
+                    aria-pressed={d !== date ? historyDate === d : undefined}
+                    aria-label={
+                      d === date ? `Перейти до чек-інів за ${d}` : `Переглянути чек-іни за ${d}`
+                    }
+                    onClick={() => {
+                      if (d === date) {
+                        setHistoryDate(null);
+                        overview.current?.scrollIntoView?.({ block: 'start', behavior: 'auto' });
+                        overview.current?.focus({ preventScroll: true });
+                      } else setHistoryDate(historyDate === d ? null : d);
+                    }}
+                  >
+                    <small>
+                      {new Date(d + 'T12:00:00Z').toLocaleDateString('uk-UA', { weekday: 'short' })}
+                    </small>
+                    <span data-filled={count > 0}>{count ? `${count}/3` : '·'}</span>
+                    <small>{d.slice(8)}</small>
+                  </button>
+                );
+              })}
+            </div>
+            {historyDate && historyDate !== date && (
+              <section className="mt-4" aria-label="Історія чек-інів">
+                <h2 className="font-semibold">Чек-іни за {shortDate(historyDate)}</h2>
+                {slots.map((slot) => {
+                  const entry = checkinDayRecord(s, historyDate, today)?.[slot] ?? {};
+                  const saved = hasAnswers(slot, entry);
+                  return (
+                    <div className="mt-3 border-t border-hair pt-2" key={slot}>
+                      <b>{names[slot]}</b> ·{' '}
+                      {entry.confirmed ? 'Підтверджено' : saved ? 'Чернетка' : 'Немає запису'}
+                      {saved && <AnswerSummary slot={slot} answers={entry} />}
+                    </div>
+                  );
+                })}
+                <Link to="/stats" className="renewal-link mt-4 inline-block">
+                  Динаміка й детальні спостереження ↗
+                </Link>
+              </section>
+            )}
+          </div>
+        </details>
+      </section>
       <AdaptivePreferences />
     </div>
   );
