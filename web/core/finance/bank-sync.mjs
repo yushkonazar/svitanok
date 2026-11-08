@@ -1,5 +1,11 @@
-import { statement, clientInfo, STATEMENT_PAGE, MonoTooSoonError } from '../adapters/mono.mjs';
-import { readMonoAccounts, writeMonoAccounts, ingestTransaction } from './store.mjs';
+import {
+  statement,
+  clientInfo,
+  STATEMENT_PAGE,
+  MonoApiError,
+  MonoTooSoonError,
+} from '../adapters/mono.mjs';
+import { readMonoAccounts, writeMonoClientAccounts, ingestTransaction } from './store.mjs';
 import { claimMonoStatementRefresh, claimMonoClientRefresh } from './bank-refresh.mjs';
 export const BANK_SYNC_KEY = 'mono_bank_refresh';
 const WINDOW = 31 * 86400;
@@ -79,17 +85,9 @@ export async function advanceBankSync(ctx, env, job, nowMs) {
     try {
       await claimMonoClientRefresh(env, nowMs);
       const info = await clientInfo(env);
-      if (!info.accounts.length) throw new Error('Monobank did not return accounts');
-      const observedAt = new Date().toISOString();
-      const accounts = info.accounts.map((a) => ({
-        id: a.id,
-        currency: a.currency,
-        maskedPan: a.maskedPan,
-        balanceMinor: a.balanceMinor,
-        creditLimitMinor: a.creditLimitMinor,
-        asOf: observedAt,
-      }));
-      await writeMonoAccounts(env, accounts, Date.parse(observedAt));
+      const observedMs = Date.now();
+      const accounts = await writeMonoClientAccounts(env, info, observedMs);
+      if (!accounts.length) throw new Error('Monobank did not return accounts or jars');
       if (!job.balancesOnly && job.index === 0 && !job.chunks && job.accountId) {
         job.tasks = await bankRefreshTasks(env, job.accountId, job.transactionId, nowMs);
       } else
@@ -98,13 +96,14 @@ export async function advanceBankSync(ctx, env, job, nowMs) {
           if (fresh) task.account = fresh;
         }
       job.accountsDone = true;
-      job.balanceUpdatedAt = observedAt;
+      job.balanceUpdatedAt = new Date(observedMs).toISOString();
       job.phase = job.resumePhase ?? 'fetch';
       delete job.resumePhase;
       job.message = null;
+      job.failures = 0;
     } catch (error) {
       if (error instanceof MonoTooSoonError) {
-        job.message = 'Чекаємо дозволеного банком проміжку для оновлення залишків карток.';
+        job.message = 'Чекаємо дозволеного банком проміжку для оновлення залишків рахунків.';
         await ctx.storage.put('bank-refresh', job);
         await ctx.storage.setAlarm(Date.now() + 61000);
         await publishBankSync(env, job);
@@ -135,6 +134,7 @@ export async function advanceBankSync(ctx, env, job, nowMs) {
         item,
         account: task.account.id,
         accountCurrency: task.account.currency,
+        bankKind: task.account.bankKind,
         silent: true,
         versioned: true,
         checkedAt: job.pageObservedAt ?? new Date(nowMs).toISOString(),
@@ -156,6 +156,7 @@ export async function advanceBankSync(ctx, env, job, nowMs) {
           JSON.stringify({
             bankMissingFromStatement: true,
             bankCheckedAt: new Date(nowMs).toISOString(),
+            bankCheckSource: 'statement',
           }),
           task.account.id,
           new Date(task.fromS * 1000).toISOString(),
@@ -173,6 +174,7 @@ export async function advanceBankSync(ctx, env, job, nowMs) {
         delete job.windowStartedAt;
       }
     }
+    job.failures = 0;
     await ctx.storage.put('bank-refresh', job);
     await ctx.storage.setAlarm(Date.now() + 50);
     await publishBankSync(env, job);
@@ -212,6 +214,7 @@ export async function advanceBankSync(ctx, env, job, nowMs) {
     job.chunks = chunks.length;
     job.phase = 'ingest';
     job.message = null;
+    job.failures = 0;
     await ctx.storage.put('bank-refresh', job);
     await ctx.storage.setAlarm(Date.now() + 50);
     await publishBankSync(env, job);
@@ -223,6 +226,7 @@ export async function advanceBankSync(ctx, env, job, nowMs) {
       await publishBankSync(env, job);
       return;
     }
+    if (error instanceof MonoApiError && error.retryable) throw error;
     if (job.chunks)
       await ctx.storage.delete(Array.from({ length: job.chunks }, (_, n) => `bank-page-${n}`));
     job.active = false;

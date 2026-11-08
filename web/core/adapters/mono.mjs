@@ -82,6 +82,12 @@ export function numericToAlpha(code) {
   return CURRENCY_ALPHA[/** @type {keyof typeof CURRENCY_ALPHA} */ (n)] ?? `#${n}`;
 }
 
+/** Opaque bank identifiers may use standard or URL-safe base64.
+ * @param {unknown} value @returns {value is string} */
+export function isMonoAccountId(value) {
+  return typeof value === 'string' && /^[A-Za-z0-9_+=/-]{1,128}$/.test(value);
+}
+
 /**
  * Запит до Mono з таймаутом. Текст помилки - сервіс і статус, без URL і без
  * токена.
@@ -120,8 +126,8 @@ async function call(env, path, init, what) {
 /**
  * @typedef {{ id: string, currency: string, currencyCode: number, type: string,
  *   maskedPan: string | null, iban: string | null,
- *   balanceMinor: number | null, creditLimitMinor: number | null }} MonoAccount
- * @typedef {{ name: string, webHookUrl: string | null, accounts: MonoAccount[] }} MonoClientInfo
+ *   balanceMinor: number | null, creditLimitMinor: number | null, title?: string }} MonoAccount
+ * @typedef {{ name: string, webHookUrl: string | null, accounts: MonoAccount[], jars: MonoAccount[] }} MonoClientInfo
  */
 
 /**
@@ -132,11 +138,12 @@ async function call(env, path, init, what) {
 export async function clientInfo(env) {
   const raw = await call(env, '/personal/client-info', { method: 'GET' }, 'Mono client-info');
   const accounts = Array.isArray(raw?.accounts) ? raw.accounts : [];
+  const jars = Array.isArray(raw?.jars) ? raw.jars : [];
   return {
     name: typeof raw?.name === 'string' ? raw.name : '',
     webHookUrl: typeof raw?.webHookUrl === 'string' && raw.webHookUrl ? raw.webHookUrl : null,
     accounts: accounts
-      .filter((/** @type {any} */ a) => typeof a?.id === 'string' && a.id)
+      .filter((/** @type {any} */ a) => isMonoAccountId(a?.id))
       .map((/** @type {any} */ a) => ({
         id: String(a.id),
         currency: numericToAlpha(a.currencyCode),
@@ -147,6 +154,20 @@ export async function clientInfo(env) {
         balanceMinor: Number.isSafeInteger(a.balance) ? a.balance : null,
         creditLimitMinor:
           Number.isSafeInteger(a.creditLimit) && a.creditLimit >= 0 ? a.creditLimit : null,
+      })),
+    jars: jars
+      .filter((/** @type {any} */ jar) => isMonoAccountId(jar?.id))
+      .map((/** @type {any} */ jar) => ({
+        id: String(jar.id),
+        currency: numericToAlpha(jar.currencyCode),
+        currencyCode: Number(jar.currencyCode) || 0,
+        type: 'jar',
+        title:
+          typeof jar.title === 'string' ? jar.title.replace(/\s+/g, ' ').trim().slice(0, 120) : '',
+        maskedPan: null,
+        iban: null,
+        balanceMinor: Number.isSafeInteger(jar.balance) ? jar.balance : null,
+        creditLimitMinor: null,
       })),
   };
 }
@@ -207,7 +228,8 @@ export function parseStatementItem(raw) {
     amount,
     operationAmount: opAmount,
     currency: numericToAlpha(raw?.currencyCode),
-    hold: raw?.hold === true,
+    // Only an explicit final bank status can clear a pending authorization.
+    hold: raw?.hold !== false,
     balance: Number.isInteger(Number(raw?.balance)) ? Number(raw.balance) : null,
     comment:
       typeof raw?.comment === 'string' && raw.comment
@@ -226,7 +248,7 @@ export function parseStatementItem(raw) {
  */
 export async function statement(env, win) {
   const account = String(win.account ?? '').trim();
-  if (!/^[A-Za-z0-9_-]{1,64}$/.test(account)) throw new Error('Mono statement: чужий id рахунку');
+  if (!isMonoAccountId(account)) throw new Error('Mono statement: чужий id рахунку');
   const fromS = Math.floor(win.fromS);
   const toS = Math.floor(win.toS);
   if (!Number.isFinite(fromS) || !Number.isFinite(toS) || toS <= fromS) {

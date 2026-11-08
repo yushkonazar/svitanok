@@ -91,7 +91,7 @@ export class MonoReconcileDO extends DurableObject {
             await this.ctx.storage.delete(
               Array.from({ length: job.chunks }, (_, n) => `bank-page-${n}`),
             );
-        } else job.message = 'Тимчасова помилка запису. Оновлення буде повторено автоматично.';
+        } else job.message = 'Тимчасова помилка звірки. Спробую оновити дані ще раз.';
         await this.ctx.storage.put('bank-refresh', job);
         // Also retries publishing a completed/error status after a database outage.
         await this.ctx.storage.setAlarm(Date.now() + 30000);

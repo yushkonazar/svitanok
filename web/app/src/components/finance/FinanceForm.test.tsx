@@ -748,7 +748,7 @@ for (const kind of ['payment-paid', 'goal-move', 'taxi-settle', 'transfer'] as c
             ? 'Як розрахувались?'
             : 'Як обліковуємо переказ?';
     fireEvent.change(screen.getByLabelText(label), { target: { value: 'bank' } });
-    fireEvent.change(screen.getByLabelText('Картка для оновлення виписки'), {
+    fireEvent.change(screen.getByLabelText('Рахунок для оновлення виписки'), {
       target: { value: 'all' },
     });
     vi.mocked(refreshFinanceBank).mockResolvedValueOnce({ finance: f, demo: true });
@@ -792,12 +792,12 @@ it('shows payments from all cards initially and refreshes the card of the select
   ];
   open({ kind: 'payment-paid', id: f.payments[0]!.id }, f);
   fireEvent.change(screen.getByLabelText('Як сплачено?'), { target: { value: 'bank' } });
-  expect(screen.getByLabelText('Картка для оновлення виписки')).toHaveValue('all');
+  expect(screen.getByLabelText('Рахунок для оновлення виписки')).toHaveValue('all');
   expect(screen.getByRole('option', { name: /Apple з іншої картки/ })).toBeInTheDocument();
   fireEvent.change(screen.getByLabelText('Банківська операція'), {
     target: { value: 'apple-other-card' },
   });
-  expect(screen.getByLabelText('Картка для оновлення виписки')).toHaveValue('mono:second');
+  expect(screen.getByLabelText('Рахунок для оновлення виписки')).toHaveValue('mono:second');
   vi.mocked(refreshFinanceBank).mockResolvedValueOnce({ finance: f, demo: true });
   fireEvent.click(screen.getByRole('button', { name: 'Оновити список Monobank ↻' }));
   await waitFor(() =>

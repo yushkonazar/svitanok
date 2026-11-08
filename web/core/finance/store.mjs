@@ -45,7 +45,8 @@ function db(env) {
 
 /**
  * @typedef {{ id: string, currency: string, maskedPan: string | null,
- * balanceMinor?: number|null, creditLimitMinor?: number|null, asOf?: string }} StoredAccount
+ * balanceMinor?: number|null, creditLimitMinor?: number|null, asOf?: string,
+ * bankKind?: 'jar', name?: string }} StoredAccount
  */
 
 /**
@@ -64,6 +65,7 @@ export async function readMonoAccounts(env) {
       id: String(a.id),
       currency: String(a.currency ?? 'UAH'),
       maskedPan: a.maskedPan ? String(a.maskedPan) : null,
+      ...(a.bankKind === 'jar' ? { bankKind: 'jar', name: String(a.name ?? '') } : {}),
       ...(Number.isSafeInteger(a.balanceMinor) ? { balanceMinor: a.balanceMinor } : {}),
       ...(Number.isSafeInteger(a.creditLimitMinor) && a.creditLimitMinor >= 0
         ? { creditLimitMinor: a.creditLimitMinor }
@@ -90,6 +92,30 @@ export async function writeMonoAccounts(env, accounts, nowMs) {
     },
     nowMs,
   );
+}
+
+/** The same owner catalog backs statement reads, webhook admission and balance views.
+ * @param {Env} env @param {import('../adapters/mono.mjs').MonoClientInfo} info @param {number} nowMs
+ * @returns {Promise<StoredAccount[]>} */
+export async function writeMonoClientAccounts(env, info, nowMs) {
+  /** @type {Map<string, StoredAccount>} */
+  const accounts = new Map();
+  const asOf = new Date(nowMs).toISOString();
+  for (const account of [...info.accounts, ...info.jars]) {
+    if (accounts.has(account.id)) continue;
+    accounts.set(account.id, {
+      id: account.id,
+      currency: account.currency,
+      maskedPan: account.maskedPan,
+      balanceMinor: account.balanceMinor,
+      creditLimitMinor: account.creditLimitMinor,
+      asOf,
+      ...(account.type === 'jar' ? { bankKind: 'jar', name: account.title } : {}),
+    });
+  }
+  const snapshot = [...accounts.values()];
+  if (snapshot.length) await writeMonoAccounts(env, snapshot, nowMs);
+  return snapshot;
 }
 
 /** Поріг «велика покупка» власника (копійки); немає факту - типовий. @param {Env} env */
@@ -129,7 +155,7 @@ export async function readMerchantRules(env) {
  *
  * @param {Env} env
  * @param {{ item: import('../adapters/mono.mjs').MonoStatementItem, account: string,
- *   accountCurrency: string, test?: boolean, silent?: boolean, versioned?:boolean,
+ *   accountCurrency: string, bankKind?: 'jar', test?: boolean, silent?: boolean, versioned?:boolean,
  *   checkedAt?:string, checkSource?:'statement'|'webhook' }} input
  * @returns {Promise<{ inserted: boolean, updated?: boolean, tx: StoredTx | null }>}
  */
@@ -167,7 +193,7 @@ export async function ingestTransaction(env, input) {
   let flags = [];
   /** @type {number | null} */
   let duplicateMinutes = null;
-  if (!input.silent) {
+  if (!input.silent && input.bankKind !== 'jar') {
     const [known, dupAt, prevSame, inSubscriptions, threshold] = await Promise.all([
       merchantSeenBefore(env, key, item.timeS * 1000),
       duplicateAt(env, key, item.operationAmount, item.timeS * 1000),
@@ -215,6 +241,7 @@ export async function ingestTransaction(env, input) {
   const raw = {
     ...item,
     account,
+    ...(input.bankKind === 'jar' ? { financeKind: 'unclassified' } : {}),
     ...(input.test ? { test: 1 } : {}),
     ...(input.checkedAt
       ? {

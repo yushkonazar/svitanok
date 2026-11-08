@@ -34,6 +34,7 @@ export const financeTxSchema = z.object({
   bankVerifiedByOwner: z.boolean().optional(),
   bankAmountChanged: z.boolean().optional(),
   bankCheckedAt: z.string().nullable().optional(),
+  bankCheckSource: z.string().nullable().optional(),
   reference: z.string().nullable(),
   balanceCoveredBy: z.string().nullable().optional(),
   personalTaxiType: z.string().nullable().optional(),
@@ -193,6 +194,17 @@ export const financeSchema = z.object({
   categories: z.array(z.string()),
   merchantAliases: z.record(z.string(), z.string()).optional(),
   accounts: z.array(financeAccountSchema),
+  bankJars: z
+    .array(
+      z.object({
+        id: z.string(),
+        name: z.string(),
+        currency: z.string(),
+        balanceMinor: money.nullable(),
+        asOf: z.string().nullable(),
+      }),
+    )
+    .optional(),
   transactions: z.array(financeTxSchema),
   policies: z.array(taxiPolicySchema),
   taxiEntries: z.array(taxiEntrySchema),

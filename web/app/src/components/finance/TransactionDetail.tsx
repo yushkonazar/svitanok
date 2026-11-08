@@ -5,6 +5,7 @@ import { postFinance } from '../../api/client.ts';
 import { FINANCE_QUERY } from '../../api/finance-hooks.ts';
 import { moneyLabel } from '../../lib/financeView.ts';
 import { useFinanceAction } from './useFinanceAction.ts';
+import { financeTime } from './analytics-format.ts';
 
 export function TransactionDetail({
   transaction: tx,
@@ -84,17 +85,23 @@ export function TransactionDetail({
           списується повторно.
         </p>
       )}
-      {tx.bankHold && (
+      {tx.bankHold && !tx.bankMissingFromStatement && (
         <p className="renewal-inset">
           {tx.bankVerifiedByOwner
-            ? 'Ти підтвердив успішну оплату. банк ще обробляє операцію; банківський стан збережено окремо.'
-            : 'Банк ще позначає операцію як таку, що обробляється. У банківському застосунку оплата вже може бути успішною. Для підв’язування звір її в банку й підтвердь це у відповідній формі.'}
+            ? 'Ти підтвердив оплату. Очікую остаточного статусу від Monobank.'
+            : 'Очікую остаточного статусу від Monobank. Свіжі операції Світанок звіряє автоматично.'}
         </p>
       )}
       {tx.bankMissingFromStatement && (
         <p className="renewal-inset">
-          Банк не повернув цей запис під час повної звірки його дат. Це не підтвердження списання.
-          Перевір історію Monobank перед обліком.
+          {tx.bankVerifiedByOwner ? 'Ти підтвердив оплату. ' : ''}У звіреній виписці операція
+          відсутня. Перевір її в Monobank перед обліком.
+        </p>
+      )}
+      {tx.bankCheckedAt && (
+        <p className="renewal-muted">
+          {tx.bankCheckSource === 'statement' ? 'Звірено за випискою' : 'Дані від Monobank'} ·{' '}
+          {financeTime(tx.bankCheckedAt)}
         </p>
       )}
       {tx.bankAmountChanged && (

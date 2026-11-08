@@ -33,13 +33,17 @@ import {
   monoReconcileComplete,
   monoReconcileRelease,
 } from '../mono-reconcile/client.mjs';
-import { claimMonoStatementRefresh, claimMonoClientRefresh } from './bank-refresh.mjs';
+import {
+  claimMonoStatementRefresh,
+  claimMonoClientRefresh,
+  recheckRecentMonoHolds,
+} from './bank-refresh.mjs';
 import { MONO_RECONCILE_LEASE_MS } from '../mono-reconcile/contract.mjs';
 import {
   hasAnyTransaction,
   ingestTransaction,
   readMonoAccounts,
-  writeMonoAccounts,
+  writeMonoClientAccounts,
 } from './store.mjs';
 
 /** Година й хвилина звірки за Києвом (07 §7). */
@@ -57,10 +61,11 @@ export const SESSION_MAX_MS = 4 * 3_600_000;
 export const TRANSIENT_ALERT_AFTER_MS = 15 * 60_000;
 
 /**
+ * @typedef {Pick<import('./store.mjs').StoredAccount, 'id'|'currency'|'bankKind'>} ReconcileAccount
  * @typedef {{ date: string, phase: 'client' | 'statement' | 'done', idx: number,
  *   initial: boolean, fromS: number, toS: number, imported: number, loud: number,
  *   startedMs: number, alerted: boolean, transientSinceMs: number,
- *   transientAlerted: boolean, cursorToS?:number|null }} ReconcileState
+ *   transientAlerted: boolean, cursorToS?:number|null, statementAccounts?: ReconcileAccount[] }} ReconcileState
  */
 
 /** Стан сеансу з KV; null - сеансу ще не було. @param {Env} env
@@ -94,6 +99,7 @@ function normalizeState(saved) {
     transientSinceMs: Number.isFinite(raw.transientSinceMs) ? raw.transientSinceMs : 0,
     transientAlerted: raw.transientAlerted === true,
     cursorToS: Number.isFinite(raw.cursorToS) ? raw.cursorToS : null,
+    ...(Array.isArray(raw.statementAccounts) ? { statementAccounts: raw.statementAccounts } : {}),
   };
 }
 
@@ -153,8 +159,22 @@ export async function monoReconcileTask(env, nowMs = Date.now()) {
   // цієї умови фаза client-info крутилася б щопʼять хвилин разом з алертом.
   const startNow = !accounts.length && !running && state?.date !== today;
   if (!running && !startNew && !startNow) {
-    if (claim.canonical) await monoReconcileRelease(env, claim.token);
-    return { skipped: state?.date === today ? 'done' : 'not-due' };
+    try {
+      return (
+        (await recheckRecentMonoHolds(env, accounts, nowMs)) ?? {
+          skipped: state?.date === today ? 'done' : 'not-due',
+        }
+      );
+    } catch (error) {
+      if (error instanceof MonoTooSoonError) return { skipped: 'too-soon' };
+      console.error(
+        'mono-reconcile: повторна перевірка hold не вдалася',
+        error instanceof MonoApiError ? error.status : 'local-or-invalid-statement',
+      );
+      return { failed: 'pending' };
+    } finally {
+      if (claim.canonical) await monoReconcileRelease(env, claim.token);
+    }
   }
   const live = running ? /** @type {ReconcileState} */ (state) : freshState(today, nowMs);
   let completed = false;
@@ -181,7 +201,7 @@ export async function monoReconcileTask(env, nowMs = Date.now()) {
 
   try {
     if (live.phase === 'client') return await phaseClient(env, live, nowMs, writeState);
-    return await phaseStatement(env, live, accounts, nowMs, writeState);
+    return await phaseStatement(env, live, live.statementAccounts ?? accounts, nowMs, writeState);
   } catch (/** @type {any} */ e) {
     if (e instanceof MonoTooSoonError) {
       // Не збій: наступний тік через 5 хв - Mono вже пустить.
@@ -231,21 +251,12 @@ export async function monoReconcileTask(env, nowMs = Date.now()) {
 async function phaseClient(env, state, nowMs, writeState) {
   await claimMonoClientRefresh(env, nowMs);
   const info = await clientInfo(env);
-  const accounts = info.accounts.map((a) => ({
-    id: a.id,
-    currency: a.currency,
-    maskedPan: a.maskedPan,
-    balanceMinor: a.balanceMinor,
-    creditLimitMinor: a.creditLimitMinor,
-    asOf: new Date(nowMs).toISOString(),
-  }));
+  const accounts = await writeMonoClientAccounts(env, info, nowMs);
   if (!accounts.length) {
     await sendSystemAlert(env, '⚠️ Mono не віддав жодного рахунку - звірка без цілі.', nowMs);
     await writeState({ ...state, phase: 'done' });
     return { skipped: 'no-accounts' };
   }
-  await writeMonoAccounts(env, accounts, nowMs);
-
   let rearmed = false;
   const origin = String(env.MINI_APP_URL ?? '').replace(/\/+$/, '');
   if (!origin) {
@@ -277,6 +288,7 @@ async function phaseClient(env, state, nowMs, writeState) {
     fromS,
     toS,
     cursorToS: null,
+    statementAccounts: accounts.map(({ id, currency, bankKind }) => ({ id, currency, bankKind })),
     transientSinceMs: 0,
   });
   return { accounts: accounts.length, rearmed, initial };
@@ -285,7 +297,7 @@ async function phaseClient(env, state, nowMs, writeState) {
 /**
  * Фаза 2: виписка одного рахунку за тік.
  * @param {Env} env @param {ReconcileState} state
- * @param {import('./store.mjs').StoredAccount[]} accounts @param {number} nowMs
+ * @param {ReconcileAccount[]} accounts @param {number} nowMs
  * @param {(state: ReconcileState) => Promise<void>} writeState
  */
 async function phaseStatement(env, state, accounts, nowMs, writeState) {
@@ -317,6 +329,7 @@ async function phaseStatement(env, state, accounts, nowMs, writeState) {
       item,
       account: account.id,
       accountCurrency: account.currency,
+      bankKind: account.bankKind,
       silent: state.initial,
       checkedAt: new Date(nowMs).toISOString(),
       checkSource: 'statement',
@@ -367,7 +380,7 @@ async function finish(env, state, nowMs) {
       },
       nowMs,
     );
-  const messages = state.transientAlerted ? ['✅ Звірку Monobank відновлено й завершено.'] : [];
+  const messages = state.alerted ? ['✅ Звірку Monobank відновлено й завершено.'] : [];
   if (state.initial && state.imported) {
     messages.push(`Завантажив історію Mono за ${INITIAL_DAYS} діб: ${state.imported} транзакцій.`);
   } else if (state.loud > ANNOUNCE_MAX) {

@@ -14,11 +14,12 @@ export function AccountsPanel({
   onRefreshBank?: (accountId: string) => void;
   bankBusy?: boolean;
 }) {
+  const jars = f.bankJars ?? [];
   return (
     <details className="renewal-card renewal-disclosure">
       <summary className="renewal-section-head cursor-pointer">
         <h2 className="text-lg font-bold">Рахунки та інструменти</h2>
-        <span className="renewal-pill">{f.accounts.length}</span>
+        <span className="renewal-pill">{f.accounts.length + jars.length}</span>
       </summary>
       <p className="renewal-muted mb-4">
         Власні залишки, кредитні кошти й способи перенесення грошей.
@@ -102,6 +103,35 @@ export function AccountsPanel({
           )}
         </AccountCollection>
       </div>
+      {jars.length > 0 && (
+        <section className="mt-4 space-y-2">
+          <h3 className="font-semibold">Банки Monobank</h3>
+          <div className="finance-account-grid">
+            {jars.map((jar) => (
+              <article key={jar.id} className="finance-account">
+                <h4 className="font-semibold break-words">{jar.name}</h4>
+                <p className="finance-account-balance">
+                  {jar.balanceMinor == null
+                    ? 'Залишок невідомий'
+                    : moneyLabel(jar.balanceMinor, jar.currency)}
+                </p>
+                {jar.asOf && (
+                  <small className="renewal-muted">Дані за {financeTime(jar.asOf)}</small>
+                )}
+                {onRefreshBank && (
+                  <button
+                    className="renewal-link"
+                    disabled={bankBusy}
+                    onClick={() => onRefreshBank(jar.id)}
+                  >
+                    Оновити виписку ↻
+                  </button>
+                )}
+              </article>
+            ))}
+          </div>
+        </section>
+      )}
       <div className="finance-tool-grid mt-4">
         <button className="renewal-secondary" onClick={() => onAction({ kind: 'transfer' })}>
           ⇄ Переказ між рахунками

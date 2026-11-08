@@ -7,8 +7,7 @@
 //      порівняння константночасне;
 //   2. стеля тіла (StatementItem - менше кілобайта; 8 КБ із запасом);
 //   3. форма: type=StatementItem і мінімальні поля, інакше 400 без роботи;
-//   4. `account` мусить бути СЕРЕД рахунків власника з client-info - чужий
-//      рахунок означає, що адресу знає хтось третій (S-4-12: відкинути + алерт).
+//   4. Імпортуємо лише `account` з перевіреного каталогу рахунків і банок.
 //
 // Шлях НАВМИСНО під префіксом `/api/`: правило WAF зони - starts_with(uri.path,
 // "/api/") з винятками `/api/telegram` і `/api/agent-step`, тож ліміт 60/10 с
@@ -22,7 +21,7 @@
 
 import { json, readJsonBody } from '../../http-core.mjs';
 import { constantTimeEqual } from '../../tg-core.mjs';
-import { parseStatementItem } from '../adapters/mono.mjs';
+import { isMonoAccountId, parseStatementItem } from '../adapters/mono.mjs';
 import { sendSystemAlert } from '../tg/outbox.mjs';
 import { ingestTransaction, readMonoAccounts } from './store.mjs';
 import { announceTransaction } from './notify.mjs';
@@ -83,9 +82,9 @@ export async function handleMonoWebhook(request, env, ctx = undefined, nowMs = D
   if (!parsedBody.ok) return json({ ok: false, error: parsedBody.error }, parsedBody.status);
   const body = /** @type {any} */ (parsedBody.body);
   if (body?.type !== 'StatementItem') return json({ ok: false, error: 'bad-type' }, 400);
-  const account = String(body?.data?.account ?? '').trim();
+  const account = body?.data?.account;
   const item = parseStatementItem(body?.data?.statementItem);
-  if (!account || !item) return json({ ok: false, error: 'bad-item' }, 400);
+  if (!isMonoAccountId(account) || !item) return json({ ok: false, error: 'bad-item' }, 400);
 
   const accounts = await readMonoAccounts(env).catch((/** @type {any} */ e) => {
     console.error('mono: рахунки власника не прочитані', e?.message);
@@ -94,16 +93,18 @@ export async function handleMonoWebhook(request, env, ctx = undefined, nowMs = D
   if (accounts == null) return json({ ok: false, error: 'accounts-unavailable' }, 503);
   const known = accounts.find((a) => a.id === account);
   if (!known) {
-    // S-4-12. Порожній список означає «client-info ще не питали» - і це теж
-    // привід відмовити: приймати транзакції на неперевірений рахунок не можна,
-    // а `mono-reconcile` заповнить список протягом пʼяти хвилин і добере
-    // пропущене з виписки.
+    // A valid delivery may refer to a newly opened account. Acknowledge transport
+    // so Mono keeps the hook registered. Only the trusted statement can backfill it.
     const reason = accounts.length
-      ? `Mono прислав транзакцію на невідомий рахунок ${account.slice(0, 12)}… - відкинув.`
-      : 'Mono прислав транзакцію, а списку рахунків ще немає (client-info) - відкинув, звірка добере.';
-    console.error(`mono: ${reason}`);
-    await alertOncePerDay(env, reason, nowMs);
-    return json({ ok: false, error: 'unknown-account' }, 400);
+      ? 'Mono надіслав операцію для невідомого рахунку. Перевірю список рахунків і банок під час звірки.'
+      : 'Mono надіслав операцію до оновлення списку рахунків. Звірка перевірить виписки доступних рахунків.';
+    console.warn(`mono: ${reason}`);
+    const alert = alertOncePerDay(env, reason, nowMs).catch(() => {
+      console.error('mono: не вдалося поставити в чергу сповіщення про невідомий рахунок');
+    });
+    if (ctx?.waitUntil) ctx.waitUntil(alert);
+    else await alert;
+    return json({ ok: true, ignored: 'unverified-account' });
   }
 
   const work = async () => {
@@ -112,6 +113,7 @@ export async function handleMonoWebhook(request, env, ctx = undefined, nowMs = D
         item,
         account,
         accountCurrency: known.currency,
+        bankKind: known.bankKind,
         checkedAt: new Date(nowMs).toISOString(),
         checkSource: 'webhook',
       });

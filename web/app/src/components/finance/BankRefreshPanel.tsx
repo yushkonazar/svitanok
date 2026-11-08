@@ -17,23 +17,25 @@ export function BankRefreshPanel({
   error?: string;
 }) {
   const status = finance.bankSync;
+  const sources = [
+    ...finance.accounts.filter((a) => a.kind === 'mono'),
+    ...(finance.bankJars ?? []),
+  ];
   return (
     <div className="renewal-inset">
       <label className="renewal-field">
-        Картка для оновлення виписки
+        Рахунок для оновлення виписки
         <select
           value={accountId}
           onChange={(e) => onAccountChange(e.target.value)}
           disabled={busy || !!status?.active}
         >
-          <option value="all">Усі картки Monobank</option>
-          {finance.accounts
-            .filter((a) => a.kind === 'mono')
-            .map((a) => (
-              <option key={a.id} value={a.id}>
-                {a.name}
-              </option>
-            ))}
+          <option value="all">Усі рахунки й банки Monobank</option>
+          {sources.map((a) => (
+            <option key={a.id} value={a.id}>
+              {a.name}
+            </option>
+          ))}
         </select>
       </label>
       <button

@@ -290,6 +290,7 @@ export async function readFinanceWorkspace(env, nowMs = Date.now(), range, optio
     source: 'ledger',
   }));
   // Reads only cached metadata and our D1; never calls Monobank on Mini App open.
+  const bankJars = [];
   for (const bank of await readMonoAccounts(env)) {
     const latest = await db
       .prepare(
@@ -297,6 +298,30 @@ export async function readFinanceWorkspace(env, nowMs = Date.now(), range, optio
       )
       .bind(bank.id)
       .first();
+    const freshSnapshot =
+      bank.asOf && (!latest?.at || Date.parse(bank.asOf) > Date.parse(String(latest.at)));
+    const available = freshSnapshot
+      ? (bank.balanceMinor ?? null)
+      : latest?.balance == null
+        ? (bank.balanceMinor ?? null)
+        : Number(latest.balance);
+    const asOf = freshSnapshot
+      ? (bank.asOf ?? null)
+      : latest?.at == null
+        ? (bank.asOf ?? null)
+        : String(latest.at);
+    // Jars are displayed as a separate savings snapshot. The existing budget
+    // and goal ledger keeps its own balance boundaries.
+    if (bank.bankKind === 'jar') {
+      bankJars.push({
+        id: `mono:${bank.id}`,
+        name: bank.name || 'Банка Monobank',
+        currency: bank.currency,
+        balanceMinor: available,
+        asOf,
+      });
+      continue;
+    }
     const row = accounts.find((a) => a.monoId === bank.id);
     const accountId = row?.id ?? `mono:${bank.id}`;
     const storedOverride = creditLimits[accountId];
@@ -308,13 +333,6 @@ export async function readFinanceWorkspace(env, nowMs = Date.now(), range, optio
       limitChangedAt != null && (!bank.asOf || limitChangedAt > Date.parse(bank.asOf));
     const manualLimit = Number.isSafeInteger(override) && override >= 0;
     const creditLimit = manualLimit ? override : (bank.creditLimitMinor ?? null);
-    const freshSnapshot =
-      bank.asOf && (!latest?.at || Date.parse(bank.asOf) > Date.parse(String(latest.at)));
-    const available = freshSnapshot
-      ? (bank.balanceMinor ?? null)
-      : latest?.balance == null
-        ? (bank.balanceMinor ?? null)
-        : Number(latest.balance);
     const account = {
       id: accountId,
       name: row?.name ?? `Monobank ${bank.maskedPan ?? bank.currency}`,
@@ -329,11 +347,7 @@ export async function readFinanceWorkspace(env, nowMs = Date.now(), range, optio
       availableMinor: available,
       creditLimitMinor: creditLimit,
       creditLimitSource: manualLimit ? 'manual' : creditLimit === null ? 'unknown' : 'bank',
-      asOf: freshSnapshot
-        ? bank.asOf
-        : latest?.at == null
-          ? (bank.asOf ?? null)
-          : String(latest.at),
+      asOf,
       monoId: bank.id,
       source: latest ? 'monobank' : 'opening',
     };
@@ -383,6 +397,7 @@ export async function readFinanceWorkspace(env, nowMs = Date.now(), range, optio
       ...rows(8).map((p) => String(p.category)),
     ]),
     accounts,
+    bankJars,
     transactions,
     policies,
     taxiEntries,
