@@ -144,6 +144,8 @@
   margin-left: auto;
   overflow-wrap: anywhere;
   font-size: 11px;
+  font-family: var(--font-amount);
+  font-weight: 500;
   font-variant-numeric: tabular-nums;
   color: var(--color-tx);
 }
@@ -200,12 +202,13 @@
   gap: 4px;
 }
 .today-finance-main strong {
-  font:
-    650 clamp(18px, 5.5vw, 25px) 'JetBrains Mono Variable',
-    monospace;
-  letter-spacing: -0.055em;
+  font: 500 clamp(16px, 4.6vw, 23px) var(--font-amount);
+  letter-spacing: -0.04em;
   line-height: 1.25;
   overflow-wrap: anywhere;
+}
+.today-finance-main .today-updated-value {
+  font-variant-numeric: proportional-nums;
 }
 .today-finance-main .renewal-eyebrow {
   display: flex;
@@ -237,6 +240,7 @@
 .today-last-operation .finance-transaction-amount {
   flex-shrink: 0;
   font-size: 11px;
+  font-variant-numeric: proportional-nums;
 }
 .today-quick-action {
   font-size: 12px;

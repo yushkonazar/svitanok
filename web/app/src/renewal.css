@@ -25,8 +25,14 @@
   flex-wrap: wrap;
 }
 .finance-budget-amount {
+  font-family: var(--font-amount);
   font-size: 14px;
+}
+.finance-transaction-amount {
+  font-family: var(--font-amount);
+  font-weight: 500;
   font-variant-numeric: tabular-nums;
+  letter-spacing: -0.035em;
 }
 .finance-budget-actions {
   margin-bottom: 0;
@@ -453,10 +459,8 @@
   font-size: 12px;
 }
 .renewal-big {
-  font:
-    600 32px 'JetBrains Mono Variable',
-    monospace;
-  letter-spacing: -0.06em;
+  font: 500 32px var(--font-amount);
+  letter-spacing: -0.04em;
   overflow-wrap: anywhere;
 }
 .renewal-metrics {

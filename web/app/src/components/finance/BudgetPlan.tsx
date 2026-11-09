@@ -8,7 +8,7 @@ import { moneyLabel } from '../../lib/financeView.ts';
 import { parseMoney, kyivParts, shiftDate, sumMoney } from '../../../../core/finance/planning.mjs';
 import { financeCategoryLabel } from '../../../../core/finance/categories.mjs';
 import { Sheet } from './FinanceSheet.tsx';
-import { financeDate, financeDay } from './analytics-format.ts';
+import { compactAmount, financeDate, financeDay } from './analytics-format.ts';
 import { usePresentation } from '../../lib/presentation.ts';
 
 export function BudgetPlan({
@@ -265,40 +265,54 @@ function BudgetWeek({
       day.amount = sumMoney([day.amount, -transaction.amountUah]);
   }
   const hasHistory = (date: string) => knownSince != null && date >= knownSince;
-  const label = (day: (typeof days)[number]) =>
-    !hasHistory(day.date)
-      ? 'Історія недоступна'
-      : day.missingAmount
-        ? `Відомо ${moneyLabel(day.amount)} · Є витрати без суми в ₴`
-        : moneyLabel(day.amount);
+  const label = (day: (typeof days)[number]) => {
+    if (!hasHistory(day.date)) return 'Історія недоступна';
+    if (!day.missingAmount) return moneyLabel(day.amount);
+    return day.amount > 0
+      ? `Відомо ${moneyLabel(day.amount)} · Є витрати без суми в ₴`
+      : 'Є витрати без суми в ₴';
+  };
   const max = Math.max(1, ...days.map((day) => day.amount));
   const active = selected ? byDate.get(selected) : null;
   return (
     <div className="finance-budget-mini">
-      <span className="renewal-chart-note">Витрати · останні 7 днів</span>
+      <span className="renewal-chart-note">Витрати · останні 7 днів · ₴</span>
       <div className="finance-spark-bars" role="group" aria-label="Вибрати день витрат">
-        {days.map((day) => (
-          <button
-            type="button"
-            key={day.date}
-            className="finance-spark-day"
-            aria-pressed={day.date === selected}
-            aria-label={`${financeDate(day.date)} · ${label(day)}${day.date === today ? ' · День триває' : ''}`}
-            onClick={() => setSelected(day.date === selected ? null : day.date)}
-          >
-            <span className="finance-spark-track" aria-hidden="true">
-              {!hasHistory(day.date) ? (
-                <b className="finance-spark-unknown">?</b>
-              ) : (
-                <span
-                  data-partial={day.date === today || day.missingAmount}
-                  style={{ height: `max(2px, ${(day.amount / max) * 100}%)` }}
-                />
-              )}
-            </span>
-            <time dateTime={day.date}>{financeDay(day.date)}</time>
-          </button>
-        ))}
+        {days.map((day) => {
+          const known = hasHistory(day.date);
+          const rounded = Math.round(day.amount / 100) * 100;
+          const shortAmount =
+            day.amount > 0 && day.amount < 100
+              ? '<1'
+              : compactAmount(rounded, rounded >= 100_000 ? 2 : undefined);
+          const [amount, unit] = shortAmount.split(/\s+/);
+          return (
+            <button
+              type="button"
+              key={day.date}
+              className="finance-spark-day"
+              aria-pressed={day.date === selected}
+              aria-label={`${financeDate(day.date)} · ${label(day)}${day.date === today ? ' · День триває' : ''}`}
+              onClick={() => setSelected(day.date === selected ? null : day.date)}
+            >
+              <span className="finance-spark-value" aria-hidden="true">
+                {known && (day.missingAmount && day.amount === 0 ? '—' : amount)}
+                {known && unit && <small>{unit}</small>}
+              </span>
+              <span className="finance-spark-track" aria-hidden="true">
+                {known ? (
+                  <span
+                    data-partial={day.date === today || day.missingAmount}
+                    style={{ height: `max(2px, ${(day.amount / max) * 100}%)` }}
+                  />
+                ) : (
+                  <b className="finance-spark-unknown">?</b>
+                )}
+              </span>
+              <time dateTime={day.date}>{financeDay(day.date)}</time>
+            </button>
+          );
+        })}
       </div>
       {active && (
         <div className="finance-spark-selection">
@@ -317,7 +331,8 @@ function BudgetWeek({
       )}
       {explanations && (
         <p className="renewal-chart-note">
-          Торкнися дня для деталей. Знак «?» позначає відсутність історії.
+          Торкнися дня, щоб побачити точну суму. Пунктир позначає неповні дані, «?» — відсутність
+          історії.
         </p>
       )}
       <details className="mt-2">

@@ -108,15 +108,55 @@ function provider(node: React.ReactNode) {
   );
 }
 
-it('reveals cents on touch or keyboard selection, while the chart shows all seven dates', () => {
+it('shows compact amounts in the chart and reveals exact cents on day selection', () => {
+  const expense = finance.transactions[0]!;
+  finance.transactions.push(
+    { ...expense, id: 'cents', at: '2026-10-29T12:00:00Z', amountMinor: -99, amountUah: -99 },
+    {
+      ...expense,
+      id: 'large',
+      at: '2026-10-28T12:00:00Z',
+      amountMinor: -99_990_001,
+      amountUah: -99_990_001,
+    },
+  );
   const { container } = provider(<BudgetPlan finance={finance} nowMs={NOW} />);
   const chart = screen.getByRole('group', { name: 'Вибрати день витрат' });
   expect(within(chart).getAllByRole('button')).toHaveLength(7);
   expect(container.querySelector('.finance-spark-selection')).toBeNull();
-  expect(within(chart).getByText('30.10')).toBeVisible();
-  fireEvent.click(within(chart).getByRole('button', { name: /30 жовтня/ }));
+  const day = within(chart).getByRole('button', { name: /30 жовтня/ });
+  expect(within(day).getByText('30.10')).toBeVisible();
+  expect(day.querySelector('.finance-spark-value')).toHaveTextContent(/1,2\s*тис\./);
+  expect(within(chart).getByText('<1')).toBeVisible();
+  expect(
+    within(chart)
+      .getByRole('button', { name: /28 жовтня/ })
+      .querySelector('.finance-spark-value'),
+  ).toHaveTextContent(/1\s*млн/);
+  fireEvent.click(day);
   expect(container.querySelector('.finance-spark-selection')).toHaveTextContent(/1\s234,56/);
   expect(within(chart).getByRole('button', { name: /1 листопада.*День триває/ })).toBeVisible();
+});
+
+it('distinguishes missing history and missing currency values from zero expenses', () => {
+  const knownExpense = finance.transactions[0]!;
+  finance.transactions = [
+    knownExpense,
+    {
+      ...knownExpense,
+      id: 'unconverted',
+      at: '2026-11-01T12:00:00Z',
+      currency: 'EUR',
+      amountUah: null,
+    },
+  ];
+  provider(<BudgetPlan finance={finance} nowMs={NOW} />);
+  const unknownDay = screen.getByRole('button', { name: /29 жовтня.*Історія недоступна/ });
+  const emptyDay = screen.getByRole('button', { name: /31 жовтня/ });
+  const unconvertedDay = screen.getByRole('button', { name: /1 листопада.*Є витрати без суми/ });
+  expect(within(unknownDay).getByText('?')).toBeVisible();
+  expect(emptyDay.querySelector('.finance-spark-value')).toHaveTextContent(/^0$/);
+  expect(unconvertedDay.querySelector('.finance-spark-value')).toHaveTextContent(/^—$/);
 });
 
 it('shows all seven exact daily amounts with cents and positive zero for empty known days', () => {
