@@ -1,10 +1,11 @@
 import { LegacyAdaptiveFlow } from './LegacyAdaptiveFlow.tsx';
 import { AdaptiveFlow } from './AdaptiveFlow.tsx';
 import { usePresentation } from '../../lib/presentation.ts';
+import { useReducedMotion } from '../../lib/useReducedMotion.ts';
 import { Link } from 'react-router-dom';
 import { adaptiveModel } from '../../../../core/checkin/model.mjs';
 import { choiceAnswerLabel, normalizeChoiceCatalog } from '../../../../core/checkin/choices.mjs';
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { adaptivePreferences } from '../../../../core/checkin/adaptive-v4.mjs';
 import { CHECKIN_FLOW_REVISION } from '../../../../core/checkin/state-ratings.mjs';
 import {
@@ -42,7 +43,7 @@ type Completion = {
   answers: Answers;
   height: number;
   feedbackTop: number;
-  phase: 'saving' | 'success' | 'leaving';
+  phase: 'saving' | 'success' | 'closing' | 'reordering';
 };
 const icons = { morning: '🌅', afternoon: '☀️', evening: '🌙' };
 const shortDate = (date: string) => `${date.slice(8)}.${date.slice(5, 7)}`;
@@ -183,7 +184,9 @@ export function CheckinV3Screen({
     extend = useExtendCheckin(),
     now = useTick(1000);
   const checkin = useCheckinProgress(query, now);
-  const { explanations } = usePresentation();
+  const { explanations, calm } = usePresentation();
+  const reducedMotion = useReducedMotion();
+  const animateCompletion = !calm && !reducedMotion;
   const [historyDate, setHistoryDate] = useState<string | null>(null);
   const [preview, setPreview] = useState<CheckinSlot>('morning'),
     [drafts, setDrafts] = useState<Record<string, Answers>>({}),
@@ -199,43 +202,110 @@ export function CheckinV3Screen({
   const upgraded = useRef(false);
   const [completion, setCompletion] = useState<Completion | null>(null);
   const confirming = useRef(false);
+  const focusAfterCompletion = useRef<CheckinSlot | null>(null);
   const overview = useRef<HTMLElement>(null);
   const slotNodes = useRef<Partial<Record<CheckinSlot, HTMLElement>>>({});
+  const previousTops = useRef<Partial<Record<CheckinSlot, number>>>({});
+  const completing = completion != null && completion.phase !== 'saving';
   useEffect(() => {
-    if (!completion || completion.phase === 'saving') return;
+    if (!completing) return;
     setVerticalSwipes(false);
-    const reduced = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true;
+    return () => setVerticalSwipes(true);
+  }, [completing]);
+  useLayoutEffect(() => {
+    if (!completion) {
+      const slot = focusAfterCompletion.current;
+      focusAfterCompletion.current = null;
+      if (slot && document.activeElement === document.body)
+        slotNodes.current[slot]?.querySelector('summary')?.focus({ preventScroll: true });
+      return;
+    }
+    if (completion.phase === 'saving') return;
     if (completion.phase === 'success') {
       const pause = setTimeout(
-        () => setCompletion((c) => (c ? { ...c, phase: 'leaving' } : null)),
-        reduced ? 0 : 450,
+        () => setCompletion((c) => (c ? { ...c, phase: 'closing' } : null)),
+        animateCompletion ? 450 : 0,
       );
+      return () => clearTimeout(pause);
+    }
+    if (completion.phase === 'reordering') {
+      let cancelled = false;
+      // React puts the rows in chronological order. Start each animation from
+      // its previous position so this DOM change is never a visible jump.
+      const animations = animateCompletion
+        ? slots.flatMap((slot) => {
+            const node = slotNodes.current[slot];
+            const previous = previousTops.current[slot];
+            if (!node?.animate || previous == null) return [];
+            const offset = previous - node.getBoundingClientRect().top;
+            if (Math.abs(offset) < 1) return [];
+            const frames: Keyframe[] = [{ transform: `translateY(${offset}px)` }];
+            if (slot === completion.slot)
+              frames.push({
+                offset: 0.62,
+                transform: `translateY(${offset * 0.23}px) scale(0.985)`,
+              });
+            frames.push({ transform: 'translateY(0)' });
+            return node.animate(frames, { duration: 380, easing: 'cubic-bezier(.25,.65,.28,1)' });
+          })
+        : [];
+      void Promise.allSettled(animations.map((animation) => animation.finished)).then(() => {
+        if (cancelled) return;
+        confirming.current = false;
+        setCompletion(null);
+      });
       return () => {
-        clearTimeout(pause);
-        setVerticalSwipes(true);
+        cancelled = true;
+        animations.forEach((animation) => animation.cancel());
       };
     }
-    // Keep the old section height until the viewport is at the top. Removing
-    // a long form first lets WebKit clamp scrollY before smooth scrolling starts.
+
+    const card = slotNodes.current[completion.slot];
+    const list = overview.current;
     const from = window.scrollY;
+    const height = card?.getBoundingClientRect().height ?? 0;
+    const style = card && getComputedStyle(card);
+    // Measure the compact row while keeping the old height in the layout.
+    // That leaves enough scroll range to travel back to the list as it closes.
+    const compactHeight =
+      card && style
+        ? (card.firstElementChild?.getBoundingClientRect().height ?? 0) +
+          (parseFloat(style.paddingTop) || 0) +
+          (parseFloat(style.paddingBottom) || 0) +
+          card.offsetHeight -
+          card.clientHeight
+        : height;
+    const collapse = Math.max(0, height - compactHeight);
+    const top = list
+      ? from +
+        list.getBoundingClientRect().top -
+        (parseFloat(getComputedStyle(list).scrollMarginTop) || 0)
+      : from;
+    const scrollLimit =
+      (document.scrollingElement ?? document.documentElement).scrollHeight -
+      window.innerHeight -
+      collapse;
+    const to = list ? Math.max(0, Math.min(from, top, scrollLimit)) : from;
     let start: number | undefined;
     let frame: number;
     const tick = (time: number) => {
       start ??= time;
-      const progress = reduced ? 1 : Math.min(1, (time - start) / 650);
-      window.scrollTo({ top: from * Math.pow(1 - progress, 3), behavior: 'auto' });
+      const progress = animateCompletion ? Math.min(1, (time - start) / 480) : 1;
+      const eased = progress * progress * (3 - 2 * progress);
+      if (card) card.style.minHeight = `${height - collapse * eased}px`;
+      if (from !== to) window.scrollTo({ top: from + (to - from) * eased, behavior: 'auto' });
       if (progress < 1) frame = requestAnimationFrame(tick);
       else {
-        confirming.current = false;
-        setCompletion(null);
+        card?.style.removeProperty('min-height');
+        previousTops.current = Object.fromEntries(
+          slots.map((slot) => [slot, slotNodes.current[slot]?.getBoundingClientRect().top]),
+        );
+        setCompletion((c) => (c ? { ...c, phase: 'reordering' } : null));
       }
     };
     frame = requestAnimationFrame(tick);
-    return () => {
-      cancelAnimationFrame(frame);
-      setVerticalSwipes(true);
-    };
-  }, [completion]);
+    return () => cancelAnimationFrame(frame);
+  }, [completion, animateCompletion]);
   useEffect(() => {
     if (!settings.data || upgraded.current || settings.data.settings.checkin?.version === 3) return;
     upgraded.current = true;
@@ -297,7 +367,7 @@ export function CheckinV3Screen({
   const defaultWindow = preferredCheckinWindow(s, serverNow);
   // Pin an existing unfinished draft once; a later server window must not replace it.
   // This guarded adjustment changes its own condition on the next render.
-  if (!demo && !selection && !target?.date && defaultWindow) {
+  if (!demo && !completion && !selection && !target?.date && defaultWindow) {
     const value = checkinDayRecord(s, defaultWindow.dateKey)?.[defaultWindow.slot];
     if (value && !value.confirmed && hasAnswers(defaultWindow.slot, value))
       setSelection({ date: defaultWindow.dateKey, slot: defaultWindow.slot });
@@ -311,11 +381,13 @@ export function CheckinV3Screen({
   const selectedWindow = selected
     ? s.checkinWindows?.find((w) => w.dateKey === selected.date && w.slot === selected.slot)
     : defaultWindow;
-  const date = demo
-    ? (s.checkinDate ?? kyivParts(now).date)
-    : (selected?.date ?? selectedWindow?.dateKey ?? s.checkinDate ?? kyivParts(now).date);
+  const date =
+    completion?.date ??
+    (demo
+      ? (s.checkinDate ?? kyivParts(now).date)
+      : (selected?.date ?? selectedWindow?.dateKey ?? s.checkinDate ?? kyivParts(now).date));
   const p = adaptivePreferences(settings.data?.settings.checkin);
-  const active = demo
+  const availableSlot = demo
     ? preview
     : selectedWindow
       ? openWindows.includes(selectedWindow)
@@ -326,6 +398,7 @@ export function CheckinV3Screen({
         : s.checkinWindows
           ? null
           : s.checkinSlot;
+  const active = completion?.slot ?? availableSlot;
   const day = checkinDayRecord(s, date, today);
   const dayProgress = checkinDayProgress(s, serverNow, date, checkin.pending);
   const answers = (slot: CheckinSlot): Answers => {
@@ -357,13 +430,15 @@ export function CheckinV3Screen({
           )
           .sort((a, b) => Date.parse(a.startAt) - Date.parse(b.startAt))[0]
       : undefined;
-  const firstSlot = completion?.date === date ? completion.slot : current.confirmed ? null : active;
+  const reordering = completion?.phase === 'reordering';
+  const firstSlot = reordering ? null : (completion?.slot ?? (current.confirmed ? null : active));
   const rows = firstSlot
     ? [...dayProgress.items].sort(
         (a, b) => Number(b.slot === firstSlot) - Number(a.slot === firstSlot),
       )
     : dayProgress.items;
   function selectWindow(dateKey: string, slot: CheckinSlot) {
+    if (confirming.current) return;
     if (timer.current) clearTimeout(timer.current);
     timer.current = null;
     const draft = pendingDraft.current;
@@ -409,7 +484,9 @@ export function CheckinV3Screen({
   function confirm(slot: CheckinSlot) {
     if (confirming.current) return;
     confirming.current = true;
-    const bounds = slotNodes.current[slot]?.getBoundingClientRect();
+    const card = slotNodes.current[slot];
+    focusAfterCompletion.current = card?.contains(document.activeElement) ? slot : null;
+    const bounds = card?.getBoundingClientRect();
     const height = bounds?.height ?? 0;
     setCompletion({
       date,
@@ -450,6 +527,7 @@ export function CheckinV3Screen({
         },
         onError: () => {
           confirming.current = false;
+          focusAfterCompletion.current = null;
           setCompletion(null);
         },
       },
@@ -489,6 +567,7 @@ export function CheckinV3Screen({
         className="renewal-card checkin-slot-list"
         aria-label={`Чек-іни за ${date === today ? 'сьогодні' : shortDate(date)}`}
         tabIndex={-1}
+        inert={completion?.phase === 'closing' || reordering || undefined}
       >
         {(date !== today || otherOpenWindows.length > 0) && (
           <div className="checkin-list-note">
@@ -513,6 +592,7 @@ export function CheckinV3Screen({
         {rows.map(({ slot, description, state }) => {
           const finishing =
             completion?.slot === slot && completion.date === date ? completion : null;
+          const compact = finishing?.phase === 'closing' || finishing?.phase === 'reordering';
           const value = finishing
               ? { ...finishing.answers, confirmed: finishing.phase !== 'saving' }
               : answers(slot),
@@ -529,7 +609,7 @@ export function CheckinV3Screen({
           const rowAction = saved ? 'Продовжити' : 'Відкрити';
           let status = description;
           if (saving) status = 'Зберігається';
-          else if (finishing) status = '';
+          else if (finishing && !compact) status = '';
           else if (confirmed) status = 'Підтверджено';
           else if (live) {
             if (demo) status = 'Демо проходження';
@@ -563,7 +643,8 @@ export function CheckinV3Screen({
               {status}
             </span>
           );
-          const showAnswerRow = saved && !finishing && !saving && !canOpen && (!live || confirmed);
+          const showAnswerRow =
+            saved && (!finishing || compact) && !saving && !canOpen && (!live || confirmed);
           const Flow = value.questionVersion === 3 ? LegacyAdaptiveFlow : AdaptiveFlow;
           return (
             <section
@@ -572,7 +653,7 @@ export function CheckinV3Screen({
                 slotNodes.current[slot] = node ?? undefined;
               }}
               className="checkin-slot-card"
-              style={finishing ? { minHeight: finishing.height } : undefined}
+              style={finishing && !reordering ? { minHeight: finishing.height } : undefined}
               data-checkin-slot={slot}
               data-completion={finishing?.phase}
               aria-busy={saving || undefined}
@@ -659,12 +740,13 @@ export function CheckinV3Screen({
                   {saved && <AnswerSummary slot={slot} answers={value} />}
                 </div>
               )}
-              {finishing && finishing.phase !== 'saving' ? (
+              {finishing && (finishing.phase === 'success' || finishing.phase === 'closing') ? (
                 <div
                   className="checkin-completion"
                   style={{ top: finishing.feedbackTop }}
                   role="status"
                   aria-live="polite"
+                  aria-hidden={finishing.phase === 'closing' || undefined}
                 >
                   <svg className="checkin-completion-mark" viewBox="0 0 48 48" aria-hidden="true">
                     <circle cx="24" cy="24" r="21" />
