@@ -1,43 +1,31 @@
 // Звірка з Mono (07 §7 `mono-reconcile`, S-4-9, S-4-11, S-4-12, 01 §3.6).
 //
-// Щодня о 23:30 Києва: перевірити, що вебхук стоїть на нашій адресі, і
+// Щодня о 23:30 Києва: перевірити стан вебхука й
 // перечитати виписку за 31 добу - дедуп за id закриває все, що вебхук не доніс
 // (Mono знімає адресу після кількох невдач і не повторює доставку).
 //
 // ⚠️ Ліміт Mono - один запит на 60 секунд на КОЖЕН читальний ендпоїнт, тому
-// задача робить РІВНО ОДИН зовнішній виклик за тік планувальника (тік = 5 хв
-// > 60 с) і тримає крок у KV. Це ж дає безкоштовно S-4-11: первинне
+// задача читає одну сторінку виписки за тік планувальника (5 хв)
+// і зберігає крок у MonoReconcileDO. Первинне
 // завантаження за 31 добу йде рахунок за рахунком, по одному на тік.
 //
 // Список рахунків (`facts.setting.mono_accounts`) - ще й бар'єр вебхука
-// (S-4-12), тому фаза `client` вмикається САМА, у будь-яку годину, поки
-// списку немає: інакше перший день після встановлення секрету вебхук
-// відмовляв би всім транзакціям до 23:30.
+// (S-4-12), тому без каталогу задача запускає фазу `client` без очікування
+// вечора. Між сеансами опрацьовує відкладені події й холди.
 
 import { kyivDateKey, kyivHour, kyivMinuteOfDay } from '../../kyiv-time.mjs';
 import { sendSystemAlert } from '../tg/outbox.mjs';
-import {
-  MonoApiError,
-  MonoTooSoonError,
-  clientInfo,
-  setWebhook,
-  statement,
-  STATEMENT_PAGE,
-} from '../adapters/mono.mjs';
+import { MonoApiError, MonoTooSoonError, setWebhook, STATEMENT_PAGE } from '../adapters/mono.mjs';
 import { isLoud } from './rules.mjs';
 import { runFactsSet } from '../tools/facts.mjs';
 import { announceTransaction } from './notify.mjs';
-import { monoWebhookUrl } from './webhook.mjs';
+import { monoWebhookUrl, recoverMonoWebhooks } from './webhook.mjs';
 import {
   monoReconcileClaim,
   monoReconcileComplete,
   monoReconcileRelease,
 } from '../mono-reconcile/client.mjs';
-import {
-  claimMonoStatementRefresh,
-  claimMonoClientRefresh,
-  recheckRecentMonoHolds,
-} from './bank-refresh.mjs';
+import { readMonoStatement, readMonoClientInfo, recheckMonoHolds } from './bank-refresh.mjs';
 import { MONO_RECONCILE_LEASE_MS } from '../mono-reconcile/contract.mjs';
 import {
   hasAnyTransaction,
@@ -161,7 +149,8 @@ export async function monoReconcileTask(env, nowMs = Date.now()) {
   if (!running && !startNew && !startNow) {
     try {
       return (
-        (await recheckRecentMonoHolds(env, accounts, nowMs)) ?? {
+        (await recoverMonoWebhooks(env, accounts, nowMs)) ??
+        (await recheckMonoHolds(env, accounts, nowMs)) ?? {
           skipped: state?.date === today ? 'done' : 'not-due',
         }
       );
@@ -204,7 +193,7 @@ export async function monoReconcileTask(env, nowMs = Date.now()) {
     return await phaseStatement(env, live, live.statementAccounts ?? accounts, nowMs, writeState);
   } catch (/** @type {any} */ e) {
     if (e instanceof MonoTooSoonError) {
-      // Не збій: наступний тік через 5 хв - Mono вже пустить.
+      // Наступні тіки поважатимуть проміжок, який повернув банк.
       console.log('mono-reconcile: Mono просить зачекати, спробую наступним тіком');
       return { skipped: 'too-soon' };
     }
@@ -249,8 +238,7 @@ export async function monoReconcileTask(env, nowMs = Date.now()) {
  * @param {(state: ReconcileState) => Promise<void>} writeState
  */
 async function phaseClient(env, state, nowMs, writeState) {
-  await claimMonoClientRefresh(env, nowMs);
-  const info = await clientInfo(env);
+  const info = await readMonoClientInfo(env, nowMs);
   const accounts = await writeMonoClientAccounts(env, info, nowMs);
   if (!accounts.length) {
     await sendSystemAlert(env, '⚠️ Mono не віддав жодного рахунку - звірка без цілі.', nowMs);
@@ -263,14 +251,14 @@ async function phaseClient(env, state, nowMs, writeState) {
     console.error('mono-reconcile: MINI_APP_URL не заданий - адресу вебхука не перевірити');
   } else {
     const expected = monoWebhookUrl(env, origin);
-    if (info.webHookUrl !== expected) {
+    if (!info.webHookUrl) {
       await setWebhook(env, expected);
       rearmed = true;
+      await sendSystemAlert(env, '⚠️ Вебхук Mono був порожній - поставив заново.', nowMs);
+    } else if (info.webHookUrl !== expected) {
       await sendSystemAlert(
         env,
-        info.webHookUrl
-          ? '⚠️ Вебхук Mono вказував не на нас - поставив свою адресу заново.'
-          : '⚠️ Вебхук Mono був порожній - поставив заново.',
+        '⚠️ У Monobank налаштовано іншу адресу вебхука. Виписки Світанок звіряє за розкладом.',
         nowMs,
       );
     }
@@ -306,12 +294,15 @@ async function phaseStatement(env, state, accounts, nowMs, writeState) {
     await writeState({ ...state, phase: 'done' });
     return await finish(env, state, nowMs);
   }
-  await claimMonoStatementRefresh(env, nowMs);
-  const items = await statement(env, {
-    account: account.id,
-    fromS: state.fromS,
-    toS: state.cursorToS ?? state.toS,
-  });
+  const items = await readMonoStatement(
+    env,
+    {
+      account: account.id,
+      fromS: state.fromS,
+      toS: state.cursorToS ?? state.toS,
+    },
+    nowMs,
+  );
   const oldest = items.length ? Math.min(...items.map((item) => item.timeS)) : null;
   if (
     items.length >= STATEMENT_PAGE &&

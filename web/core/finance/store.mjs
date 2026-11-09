@@ -13,6 +13,7 @@
 // курсу з памʼяті моделі.
 
 import { runFactsGet, runFactsSet } from '../tools/facts.mjs';
+import { isMonoSendId } from '../adapters/mono.mjs';
 import {
   DUPLICATE_WINDOW_MS,
   HISTORY_MONTHS,
@@ -46,7 +47,8 @@ function db(env) {
 /**
  * @typedef {{ id: string, currency: string, maskedPan: string | null,
  * balanceMinor?: number|null, creditLimitMinor?: number|null, asOf?: string,
- * bankKind?: 'jar', name?: string }} StoredAccount
+ * bankKind?: 'jar', name?: string, sendId?: string, goalMinor?: number,
+ * jarsReported?: boolean }} StoredAccount
  */
 
 /**
@@ -66,6 +68,9 @@ export async function readMonoAccounts(env) {
       currency: String(a.currency ?? 'UAH'),
       maskedPan: a.maskedPan ? String(a.maskedPan) : null,
       ...(a.bankKind === 'jar' ? { bankKind: 'jar', name: String(a.name ?? '') } : {}),
+      ...(isMonoSendId(a.sendId) ? { sendId: a.sendId } : {}),
+      ...(Number.isSafeInteger(a.goalMinor) && a.goalMinor > 0 ? { goalMinor: a.goalMinor } : {}),
+      ...(typeof a.jarsReported === 'boolean' ? { jarsReported: a.jarsReported } : {}),
       ...(Number.isSafeInteger(a.balanceMinor) ? { balanceMinor: a.balanceMinor } : {}),
       ...(Number.isSafeInteger(a.creditLimitMinor) && a.creditLimitMinor >= 0
         ? { creditLimitMinor: a.creditLimitMinor }
@@ -110,7 +115,11 @@ export async function writeMonoClientAccounts(env, info, nowMs) {
       balanceMinor: account.balanceMinor,
       creditLimitMinor: account.creditLimitMinor,
       asOf,
-      ...(account.type === 'jar' ? { bankKind: 'jar', name: account.title } : {}),
+      jarsReported: info.jarsReported,
+      ...(account.sendId ? { sendId: account.sendId } : {}),
+      ...(account.type === 'jar'
+        ? { bankKind: 'jar', name: account.title, goalMinor: account.goalMinor }
+        : {}),
     });
   }
   const snapshot = [...accounts.values()];
@@ -174,6 +183,7 @@ export async function ingestTransaction(env, input) {
       env,
       existing,
       item,
+      account,
       accountCurrency,
       input.versioned ?? false,
       input.checkedAt,
@@ -275,9 +285,11 @@ export async function ingestTransaction(env, input) {
     ? (
         await db(env).batch([
           insertion,
-          db(env).prepare(
-            "UPDATE finance_settings SET version=version+1 WHERE id='owner' AND changes()>0",
-          ),
+          db(env)
+            .prepare(
+              "UPDATE finance_settings SET version=version+1 WHERE id='owner' AND changes()>0",
+            )
+            .bind(),
         ])
       )[0]
     : await insertion.run();
@@ -311,13 +323,14 @@ export async function ingestTransaction(env, input) {
  * Later statements can also correct an already posted amount. A delayed webhook
  * cannot reopen a settled authorization or overwrite a later statement amount.
  * @param {Env} env @param {KvBlob} existing
- * @param {import('../adapters/mono.mjs').MonoStatementItem} item @param {string} accountCurrency @param {boolean} versioned
+ * @param {import('../adapters/mono.mjs').MonoStatementItem} item @param {string} account @param {string} accountCurrency @param {boolean} versioned
  * @param {string} [checkedAt] @param {'statement'|'webhook'} [checkSource] @param {number} [attempt]
  */
 async function refreshExisting(
   env,
   existing,
   item,
+  account,
   accountCurrency,
   versioned,
   checkedAt,
@@ -332,6 +345,7 @@ async function refreshExisting(
     raw = {};
   }
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) raw = {};
+  if (raw.account !== account) return false;
   const held = raw?.hold === true || raw?.hold === 1;
   if (!held && item.hold) return false;
   if (!held && checkSource === 'webhook') return false;
@@ -360,6 +374,15 @@ async function refreshExisting(
           operationAmount: item.operationAmount,
           balance: item.balance,
           currency: item.currency,
+          financeBankAmountChanged: Boolean(
+            raw.financeBankVerifiedByOwner &&
+            ((raw.financeConfirmedAmountMinor != null &&
+              raw.financeConfirmedAmountMinor !== (amountUah ?? item.amount)) ||
+              (raw.financeConfirmedOriginalAmountMinor != null &&
+                raw.financeConfirmedOriginalAmountMinor !== item.operationAmount) ||
+              (raw.financeConfirmedOriginalCurrency != null &&
+                raw.financeConfirmedOriginalCurrency !== item.currency)),
+          ),
         }
       : {}),
     ...(checkedAt ? { bankCheckedAt: checkedAt, bankCheckSource: checkSource } : {}),
@@ -369,13 +392,12 @@ async function refreshExisting(
   const updating = db(env)
     .prepare(
       `UPDATE transactions SET ${updateAmounts ? 'amount=?,amount_uah=?,currency=?,balance=?,at=?,' : ''}
-         raw_json = ${updateAmounts ? `json_set(json_patch((${safeRaw}), ?),'$.financeBankAmountChanged',json(CASE WHEN json_extract((${safeRaw}),'$.financeBankVerifiedByOwner')=1 AND json_extract((${safeRaw}),'$.financeConfirmedAmountMinor') IS NOT NULL AND json_extract((${safeRaw}),'$.financeConfirmedAmountMinor')<>? THEN 'true' ELSE 'false' END))` : `json_patch((${safeRaw}),?)`}
+         raw_json = json_patch((${safeRaw}),?)
        WHERE id = ? AND COALESCE(raw_json,'{}') = ?`,
     )
     .bind(
       ...(updateAmounts ? [item.operationAmount, amountUah, item.currency, item.balance, at] : []),
       JSON.stringify(patch),
-      ...(updateAmounts ? [amountUah ?? item.amount] : []),
       item.id,
       existing.raw_json ?? '{}',
     );
@@ -392,9 +414,11 @@ async function refreshExisting(
     ? (
         await db(env).batch([
           updating,
-          db(env).prepare(
-            "UPDATE finance_settings SET version=version+1 WHERE id='owner' AND changes()>0",
-          ),
+          db(env)
+            .prepare(
+              "UPDATE finance_settings SET version=version+1 WHERE id='owner' AND changes()>0",
+            )
+            .bind(),
         ])
       )[0]
     : await updating.run();
@@ -410,6 +434,7 @@ async function refreshExisting(
         env,
         fresh,
         item,
+        account,
         accountCurrency,
         versioned,
         checkedAt,

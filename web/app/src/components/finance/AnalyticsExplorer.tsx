@@ -9,6 +9,7 @@ import { FINANCE_QUERY } from '../../api/finance-hooks.ts';
 import type { Finance } from '../../api/finance-schema.ts';
 import type { AnalyticsRequest } from '../../api/finance-analytics-schema.ts';
 import { financeCategoryLabel } from '../../../../core/finance/categories.mjs';
+import { needsBankHoldConfirmation } from '../../../../core/finance/payment-link.mjs';
 import { financeRange, financeDate, paymentsCount } from './analytics-format.ts';
 import { moneyLabel } from '../../lib/financeView.ts';
 import { Sheet } from './FinanceSheet.tsx';
@@ -99,7 +100,13 @@ export function AnalyticsOperations({
   const exact = options.transactionId
     ? query.data?.pages[0]?.items.find((tx) => tx.id === options.transactionId)
     : null;
-  const active = selected ?? exact;
+  const activeId = selected?.id ?? exact?.id;
+  const active = activeId
+    ? (finance.transactions.find((tx) => tx.id === activeId) ??
+      query.data?.pages.flatMap((page) => page.items).find((tx) => tx.id === activeId) ??
+      selected ??
+      exact)
+    : null;
   if (editing && active)
     return (
       <FinanceForm
@@ -272,7 +279,7 @@ export function AnalyticsOperations({
                       minute: '2-digit',
                     })}{' '}
                     · {financeCategoryLabel(tx.category)}
-                    {tx.bankHold && !tx.bankVerifiedByOwner ? ' · обробляється банком' : ''}
+                    {needsBankHoldConfirmation(tx) ? ' · очікує звірки' : ''}
                   </small>
                 </button>
               ))}

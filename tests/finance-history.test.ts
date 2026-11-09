@@ -4,7 +4,7 @@ import { workerEnv } from './helpers/env.js';
 import { executeFinanceCommand, readFinanceWorkspace } from '../web/core/finance/workspace.mjs';
 import { buildFinanceReport, validateReportRange } from '../web/core/finance/reporting.mjs';
 import { nextPaymentDate, calculateTaxiWeek } from '../web/core/finance/planning.mjs';
-import { writeMonoAccounts } from '../web/core/finance/store.mjs';
+import { ingestTransaction, writeMonoAccounts } from '../web/core/finance/store.mjs';
 const NOW = Date.parse('2026-10-08T15:00:00Z');
 function setup() {
   const d1 = d1FromSqlite([
@@ -75,6 +75,93 @@ function setup() {
   return { d1, env, send, bank, shift };
 }
 describe('finance history, actual settlements and linked transfers', () => {
+  it('records owner confirmation for the exact amount while preserving the bank hold and ledger', async () => {
+    const { env, bank, send, d1 } = setup();
+    const at = '2026-10-08T12:00:00.000Z';
+    await bank('held', -35000, at, true);
+    const proof = {
+      transactionId: 'held',
+      confirmed: true,
+      amountMinor: -35000,
+      amountUah: -35000,
+      currency: 'UAH',
+    };
+    await expect(send('bank-hold-review', { ...proof, amountUah: -34000 })).rejects.toThrow(
+      /Сума операції/,
+    );
+    await send('bank-hold-review', proof);
+    expect(
+      (await readFinanceWorkspace(env, NOW)).transactions.find((tx) => tx.id === 'held'),
+    ).toMatchObject({
+      bankHold: true,
+      bankVerifiedByOwner: true,
+      bankVerifiedAt: new Date(NOW).toISOString(),
+      amountMinor: -35000,
+    });
+    expect(d1.db.prepare('SELECT count(*) AS count FROM transactions').get()!.count).toBe(1);
+    const correction = {
+      id: 'held',
+      timeS: Date.parse(at) / 1000,
+      description: 'Переказ',
+      mcc: 4829,
+      amount: -36000,
+      operationAmount: -36000,
+      currency: 'UAH',
+      hold: true,
+      balance: null,
+      comment: null,
+    };
+    await ingestTransaction(env, {
+      item: { ...correction, amount: -100 },
+      account: 'other-account',
+      accountCurrency: 'UAH',
+      checkedAt: new Date(NOW + 1000).toISOString(),
+      checkSource: 'statement',
+    });
+    expect(
+      (await readFinanceWorkspace(env, NOW)).transactions.find((tx) => tx.id === 'held')
+        ?.amountMinor,
+    ).toBe(-35000);
+    await ingestTransaction(env, {
+      item: correction,
+      account: 'card',
+      accountCurrency: 'UAH',
+      checkedAt: new Date(NOW + 2000).toISOString(),
+      checkSource: 'statement',
+    });
+    expect(
+      (await readFinanceWorkspace(env, NOW)).transactions.find((tx) => tx.id === 'held'),
+    ).toMatchObject({
+      bankHold: true,
+      bankVerifiedByOwner: true,
+      bankAmountChanged: true,
+      amountMinor: -36000,
+    });
+    d1.db
+      .prepare(
+        "UPDATE transactions SET raw_json=json_set(raw_json,'$.financeReference',?) WHERE id='held'",
+      )
+      .run('existing-link');
+    await expect(
+      send('bank-hold-review', { ...proof, amountMinor: -36000, amountUah: -36000 }),
+    ).rejects.toThrow(/пов’язаний запис/);
+    expect(
+      (await readFinanceWorkspace(env, NOW)).transactions.find((tx) => tx.id === 'held'),
+    ).toMatchObject({ bankAmountChanged: true, reference: 'existing-link' });
+    d1.db
+      .prepare(
+        "UPDATE transactions SET raw_json=json_remove(raw_json,'$.financeReference') WHERE id='held'",
+      )
+      .run();
+    await send('bank-hold-review', { transactionId: 'held', confirmed: false });
+    expect(
+      (await readFinanceWorkspace(env, NOW)).transactions.find((tx) => tx.id === 'held'),
+    ).toMatchObject({
+      bankHold: true,
+      bankVerifiedByOwner: false,
+      amountMinor: -36000,
+    });
+  });
   it('stores actual fleet payment, changes cash once, keeps formula and edits only the difference', async () => {
     const { env, send, shift } = setup();
     await shift();

@@ -15,17 +15,23 @@
 // `/webhook/mono`, як у чернетці 01 §3.6) тихо вивела б публічний ендпоїнт
 // з-під ліміту, а WAF із репозиторію не налаштувати.
 //
-// Відповідаємо 200 ОДРАЗУ після перевірок, робота - у waitUntil: Mono вважає
-// вебхук зламаним після кількох невдач і знімає адресу. Втрачене через збій
-// обробки добере `mono-reconcile` з виписки (дедуп за id).
+// Для відомого рахунку облік виконується у waitUntil. Подію з невідомого
+// рахунку відкладаємо до перевірки каталогу. Пропущене добирає виписка.
 
 import { json, readJsonBody } from '../../http-core.mjs';
 import { constantTimeEqual } from '../../tg-core.mjs';
-import { isMonoAccountId, parseStatementItem } from '../adapters/mono.mjs';
+import { isMonoAccountId, MonoTooSoonError, parseStatementItem } from '../adapters/mono.mjs';
 import { sendSystemAlert } from '../tg/outbox.mjs';
-import { ingestTransaction, readMonoAccounts } from './store.mjs';
+import { ingestTransaction, readMonoAccounts, writeMonoClientAccounts } from './store.mjs';
+import { readMonoClientInfo } from './bank-refresh.mjs';
 import { announceTransaction } from './notify.mjs';
 import { monoAlertClaim } from '../mono-alert-gate/client.mjs';
+import {
+  claimMonoWebhookCatalogRefresh,
+  completeMonoWebhook,
+  enqueueMonoWebhook,
+  readMonoWebhookInbox,
+} from '../mono-reconcile/client.mjs';
 import {
   MONO_UNKNOWN_ALERT_KEY,
   MONO_UNKNOWN_ALERT_WINDOW_MS,
@@ -93,8 +99,14 @@ export async function handleMonoWebhook(request, env, ctx = undefined, nowMs = D
   if (accounts == null) return json({ ok: false, error: 'accounts-unavailable' }, 503);
   const known = accounts.find((a) => a.id === account);
   if (!known) {
-    // A valid delivery may refer to a newly opened account. Acknowledge transport
-    // so Mono keeps the hook registered. Only the trusted statement can backfill it.
+    // Persist temporarily outside the ledger. Catalog proof is still required
+    // before this delivery can become an operation.
+    let queued;
+    try {
+      queued = await enqueueMonoWebhook(env, account, item, nowMs);
+    } catch {
+      return json({ ok: false, error: 'inbox-unavailable' }, 503);
+    }
     const reason = accounts.length
       ? 'Mono надіслав операцію для невідомого рахунку. Перевірю список рахунків і банок під час звірки.'
       : 'Mono надіслав операцію до оновлення списку рахунків. Звірка перевірить виписки доступних рахунків.';
@@ -104,7 +116,11 @@ export async function handleMonoWebhook(request, env, ctx = undefined, nowMs = D
     });
     if (ctx?.waitUntil) ctx.waitUntil(alert);
     else await alert;
-    return json({ ok: true, ignored: 'unverified-account' });
+    return json(
+      queued
+        ? { ok: true, queued: 'unverified-account' }
+        : { ok: true, ignored: 'unverified-account' },
+    );
   }
 
   const work = async () => {
@@ -119,13 +135,52 @@ export async function handleMonoWebhook(request, env, ctx = undefined, nowMs = D
       });
       if (inserted && tx) await announceTransaction(env, tx, nowMs);
     } catch (/** @type {any} */ e) {
-      // 200 уже віддано - Mono не повторить. Пропуск закриє звірка о 23:30.
+      // Після 200 Mono не повторює доставку. Відкладемо її до звірки.
       console.error(`mono: транзакція ${item.id} не оброблена (звірка добере)`, e?.message);
+      await enqueueMonoWebhook(env, account, item, nowMs).catch(() => false);
     }
   };
   if (ctx?.waitUntil) ctx.waitUntil(work());
   else await work();
   return json({ ok: true });
+}
+
+/** Replay after the bank catalog confirms ownership. No queued data enters the
+ * ledger while its account is missing from that catalog.
+ * @param {Env} env @param {import('./store.mjs').StoredAccount[]} accounts @param {number} nowMs */
+export async function recoverMonoWebhooks(env, accounts, nowMs) {
+  const pending = await readMonoWebhookInbox(env, nowMs);
+  if (!pending.length) return null;
+  let roster = new Map(accounts.map((account) => [account.id, account]));
+  if (
+    pending.some((entry) => !roster.has(entry.account)) &&
+    (await claimMonoWebhookCatalogRefresh(env, nowMs))
+  ) {
+    try {
+      const fresh = await writeMonoClientAccounts(env, await readMonoClientInfo(env, nowMs), nowMs);
+      if (fresh.length) roster = new Map(fresh.map((account) => [account.id, account]));
+    } catch (error) {
+      if (!(error instanceof MonoTooSoonError))
+        console.error('mono: каталог для відкладених подій недоступний');
+    }
+  }
+  let recovered = 0;
+  for (const entry of pending.filter((candidate) => roster.has(candidate.account)).slice(0, 4)) {
+    const account = roster.get(entry.account);
+    if (!account) continue;
+    await ingestTransaction(env, {
+      item: entry.item,
+      account: account.id,
+      accountCurrency: account.currency,
+      bankKind: account.bankKind,
+      checkedAt: new Date(entry.receivedAt).toISOString(),
+      checkSource: 'webhook',
+      silent: true,
+    });
+    await completeMonoWebhook(env, entry.receipt);
+    recovered++;
+  }
+  return recovered ? { recoveredMonoWebhooks: recovered } : null;
 }
 
 /**

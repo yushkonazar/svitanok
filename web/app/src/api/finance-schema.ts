@@ -1,6 +1,11 @@
 import { z } from 'zod';
 
 const money = z.number().int().safe();
+const monoFundingUrl = z
+  .string()
+  .regex(/^https:\/\/send\.monobank\.ua\/(?:jar\/)?[A-Za-z0-9_-]{1,64}$/)
+  .optional()
+  .catch(undefined);
 export const financeAccountSchema = z.object({
   id: z.string(),
   name: z.string(),
@@ -17,6 +22,7 @@ export const financeAccountSchema = z.object({
   lastMovementAt: z.string().nullable().optional(),
   monoId: z.string().nullable(),
   source: z.string(),
+  fundingUrl: monoFundingUrl,
 });
 export const financeTxSchema = z.object({
   id: z.string(),
@@ -29,11 +35,14 @@ export const financeTxSchema = z.object({
   kind: z.string(),
   accountId: z.string().nullable(),
   bank: z.boolean(),
+  bankAccountId: z.string().optional(),
   bankHold: z.boolean().optional(),
   bankMissingFromStatement: z.boolean().optional(),
   bankVerifiedByOwner: z.boolean().optional(),
   bankAmountChanged: z.boolean().optional(),
   bankCheckedAt: z.string().nullable().optional(),
+  bankRecheckedAt: z.string().nullable().optional(),
+  bankVerifiedAt: z.string().nullable().optional(),
   bankCheckSource: z.string().nullable().optional(),
   reference: z.string().nullable(),
   balanceCoveredBy: z.string().nullable().optional(),
@@ -194,6 +203,15 @@ export const financeSchema = z.object({
   categories: z.array(z.string()),
   merchantAliases: z.record(z.string(), z.string()).optional(),
   accounts: z.array(financeAccountSchema),
+  bankCatalog: z
+    .object({
+      checkedAt: z.string().nullable(),
+      accounts: z.number().int().nonnegative(),
+      jars: z.number().int().nonnegative(),
+      jarListing: z.enum(['available', 'omitted', 'unknown']),
+    })
+    .nullable()
+    .optional(),
   bankJars: z
     .array(
       z.object({
@@ -202,6 +220,8 @@ export const financeSchema = z.object({
         currency: z.string(),
         balanceMinor: money.nullable(),
         asOf: z.string().nullable(),
+        goalMinor: money.optional(),
+        fundingUrl: monoFundingUrl,
       }),
     )
     .optional(),

@@ -4,6 +4,10 @@ import { MONO_RECONCILE_KEY } from './contract.mjs';
 
 const STATE_KEY = 'state';
 const LEASE_KEY = 'lease';
+const INBOX_KEY = 'webhook-inbox';
+const INBOX_MAX = 48;
+const INBOX_TTL_MS = 7 * 86_400_000;
+const INBOX_CATALOG_INTERVAL_MS = 3_600_000;
 
 export class MonoReconcileDO extends DurableObject {
   #operations = Promise.resolve();
@@ -16,6 +20,60 @@ export class MonoReconcileDO extends DurableObject {
       () => undefined,
     );
     return next;
+  }
+
+  async #webhooks() {
+    return /** @type {import('./client.mjs').QueuedMonoWebhook[]} */ (
+      (await this.ctx.storage.get(INBOX_KEY)) ?? []
+    );
+  }
+
+  /** @param {string} account @param {import('../adapters/mono.mjs').MonoStatementItem} item @param {number} receivedAt */
+  async enqueueWebhook(account, item, receivedAt) {
+    return this.#serial(async () => {
+      const entries = await this.#webhooks();
+      const active = entries.filter((entry) => entry.receivedAt > receivedAt - INBOX_TTL_MS);
+      const previous = active.find(
+        (entry) => entry.account === account && entry.item.id === item.id,
+      );
+      if (previous && (previous.receivedAt > receivedAt || (!previous.item.hold && item.hold)))
+        return true;
+      if (!previous && active.length >= INBOX_MAX) return false;
+      await this.ctx.storage.put(INBOX_KEY, [
+        ...active.filter((entry) => entry !== previous),
+        { receipt: crypto.randomUUID(), account, item, receivedAt },
+      ]);
+      return true;
+    });
+  }
+
+  /** @param {number} nowMs */
+  async readWebhookInbox(nowMs) {
+    return this.#serial(async () => {
+      const entries = await this.#webhooks();
+      const active = entries.filter((entry) => entry.receivedAt > nowMs - INBOX_TTL_MS);
+      if (active.length !== entries.length) await this.ctx.storage.put(INBOX_KEY, active);
+      return active;
+    });
+  }
+
+  /** @param {string} receipt */
+  async completeWebhook(receipt) {
+    return this.#serial(async () => {
+      const entries = await this.#webhooks();
+      const remaining = entries.filter((entry) => entry.receipt !== receipt);
+      if (remaining.length !== entries.length) await this.ctx.storage.put(INBOX_KEY, remaining);
+    });
+  }
+
+  /** @param {number} nowMs */
+  async claimWebhookCatalogRefresh(nowMs) {
+    return this.#serial(async () => {
+      const nextAt = Number(await this.ctx.storage.get('webhook-catalog-next-at')) || 0;
+      if (nowMs < nextAt) return false;
+      await this.ctx.storage.put('webhook-catalog-next-at', nowMs + INBOX_CATALOG_INTERVAL_MS);
+      return true;
+    });
   }
 
   /** @param {unknown} accountId @param {unknown} [transactionId] @param {number} [nowMs] @param {boolean} [balancesOnly] */

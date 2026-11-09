@@ -312,7 +312,7 @@ it('paginates operations and edits the existing bank category without requiring 
       expect.objectContaining({ cursor: 'cursor' }),
     ),
   );
-  fireEvent.click(screen.getByRole('button', { name: /Маркет.*обробляється банком/ }));
+  fireEvent.click(await screen.findByRole('button', { name: /Маркет.*очікує звірки/ }));
   fireEvent.click(screen.getByRole('button', { name: 'Уточнити категорію та тип' }));
   fireEvent.change(screen.getByLabelText('Категорія'), { target: { value: 'кафе й ресторани' } });
   fireEvent.click(screen.getByRole('button', { name: 'Зберегти тип і категорію' }));

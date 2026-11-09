@@ -2,6 +2,7 @@ import { validDate } from '../ops/system-period.mjs';
 import { validateReportRange } from './reporting.mjs';
 import { kyivParts, shiftDate, sumMoney } from './planning.mjs';
 import { reportPeriod, shiftReportCutoff } from '../report-period.mjs';
+import { needsBankHoldConfirmation } from './payment-link.mjs';
 /** Calendar periods shared by the assistant and dashboard, without 24h DST arithmetic.
  * @param {string} period @param {number} [nowMs] */
 export function analyticsPeriod(period, nowMs = Date.now()) {
@@ -101,7 +102,7 @@ export function analyticsSelection(params, nowMs = Date.now()) {
 /** @param {import('./analytics.mjs').AnalyticsTransaction} tx
  * @param {import('./analytics.mjs').AnalyticsSelection} s @param {Record<string,string>} [aliases] */
 export function matchesAnalytics(tx, s, aliases = {}) {
-  const pending = Boolean(tx.bankHold && !tx.bankVerifiedByOwner);
+  const pending = needsBankHoldConfirmation(tx);
   return (
     (s.account === 'all' || tx.accountId === s.account) &&
     (!s.category || tx.category === s.category) &&
@@ -194,7 +195,7 @@ export function analyticsAccumulator(selection, aliases = {}, catalog = false) {
         else quality.possibleDuplicateCount++;
       }
       if (tx.bankAmountChanged) quality.amountChangedCount++;
-      if (tx.bankHold && !tx.bankVerifiedByOwner) {
+      if (needsBankHoldConfirmation(tx)) {
         quality.pendingCount++;
         if (tx.kind === 'expense' && tx.amountUah != null && tx.amountUah < 0)
           quality.pendingMinor = sumMoney([quality.pendingMinor, -tx.amountUah]);

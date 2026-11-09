@@ -2,7 +2,10 @@ import { financeSchema, type Finance, type FinanceCommand } from './finance-sche
 import { financeCategories } from '../../../core/finance/categories.mjs';
 import { validateMerchantAliases } from '../../../core/finance/analytics.mjs';
 import { financeDisplay } from '../../../core/finance/display.mjs';
-import { bankPaymentAmount } from '../../../core/finance/payment-link.mjs';
+import {
+  bankPaymentAmount,
+  needsBankHoldConfirmation,
+} from '../../../core/finance/payment-link.mjs';
 import { fixedDebtPayment, interestDebtPayment } from '../../../core/finance/payments.mjs';
 import {
   calculateTaxiWeek,
@@ -378,7 +381,7 @@ export function writeFinanceDemo(command: FinanceCommand) {
       const bank = f.transactions.find((t) => t.id === p.transactionId);
       if (
         !bank?.bank ||
-        (bank.bankHold && p.bankHoldConfirmed !== true) ||
+        (needsBankHoldConfirmation(bank) && p.bankHoldConfirmed !== true) ||
         bank.bankMissingFromStatement ||
         bank.reference ||
         bank.currency !== 'UAH' ||
@@ -578,7 +581,7 @@ export function writeFinanceDemo(command: FinanceCommand) {
         p.transactionId &&
         (!bankTx ||
           !bankTx.bank ||
-          (bankTx.bankHold && p.bankHoldConfirmed !== true) ||
+          (needsBankHoldConfirmation(bankTx) && p.bankHoldConfirmed !== true) ||
           bankTx.bankMissingFromStatement ||
           bankTx.reference ||
           bankTx.currency !== 'UAH' ||
@@ -647,7 +650,7 @@ export function writeFinanceDemo(command: FinanceCommand) {
       if (
         p.transactionId &&
         (!bank?.bank ||
-          (bank.bankHold && p.bankHoldConfirmed !== true) ||
+          (needsBankHoldConfirmation(bank) && p.bankHoldConfirmed !== true) ||
           bank.bankMissingFromStatement ||
           bank.reference ||
           bank.currency !== 'UAH' ||
@@ -945,7 +948,7 @@ export function writeFinanceDemo(command: FinanceCommand) {
         p.transactionId &&
         (!bankTx ||
           !bankTx.bank ||
-          (bankTx.bankHold && p.bankHoldConfirmed !== true) ||
+          (needsBankHoldConfirmation(bankTx) && p.bankHoldConfirmed !== true) ||
           bankTx.bankMissingFromStatement ||
           bankTx.reference ||
           bankPaymentAmount(bankTx) !== -amount)
@@ -997,6 +1000,25 @@ export function writeFinanceDemo(command: FinanceCommand) {
           },
           ...(f.events ?? []),
         ];
+      break;
+    }
+    case 'bank-hold-review': {
+      const bank = f.transactions.find((transaction) => transaction.id === p.transactionId);
+      if (!bank?.bank || !bank.bankHold || typeof p.confirmed !== 'boolean')
+        throw new Error('Обери операцію, яка очікує статусу Monobank');
+      if (bank.reference && (!p.confirmed || bank.bankAmountChanged))
+        throw new Error('Спочатку від’єднай пов’язаний запис');
+      if (
+        p.confirmed &&
+        (bank.bankMissingFromStatement ||
+          p.amountMinor !== bank.amountMinor ||
+          p.currency !== bank.currency ||
+          p.amountUah !== bank.amountUah)
+      )
+        throw new Error('Онови екран і звір операцію ще раз');
+      bank.bankVerifiedByOwner = p.confirmed;
+      bank.bankVerifiedAt = p.confirmed ? now : null;
+      bank.bankAmountChanged = false;
       break;
     }
     case 'transaction-attention': {

@@ -12,6 +12,7 @@ import { financeReviewContext } from '../web/core/finance/review.mjs';
 import {
   claimMonoClientRefresh,
   claimMonoStatementRefresh,
+  readMonoStatement,
 } from '../web/core/finance/bank-refresh.mjs';
 import { bankRefreshTasks } from '../web/core/finance/bank-sync.mjs';
 const NOW = Date.parse('2026-10-12T18:00:00Z');
@@ -496,6 +497,21 @@ it('uses independent client-info and statement cooldowns, shared with nightly re
   await expect(claimMonoStatementRefresh(env, NOW + 1000)).rejects.toThrow(/Mono/);
   await expect(claimMonoClientRefresh(env, NOW + 60000)).resolves.toBeUndefined();
 });
+it('shares the provider Retry-After across manual and scheduled statement reads', async () => {
+  const { env } = await setup();
+  const fetcher = vi
+    .fn(async () => Response.json([]))
+    .mockResolvedValueOnce(new Response('', { status: 429, headers: { 'Retry-After': '180' } }));
+  bankFetch(fetcher);
+  const window = { account: 'card', fromS: NOW / 1000 - 3600, toS: NOW / 1000 };
+  await expect(readMonoStatement(env, window, NOW)).rejects.toMatchObject({ retryAfterMs: 180000 });
+  await expect(readMonoStatement(env, window, NOW + 61000)).rejects.toMatchObject({
+    retryAfterMs: 119000,
+  });
+  await expect(claimMonoClientRefresh(env, NOW + 61000)).resolves.toBeUndefined();
+  await expect(readMonoStatement(env, window, NOW + 180000)).resolves.toEqual([]);
+  expect(fetcher).toHaveBeenCalledTimes(2);
+});
 it('retries a temporary statement failure and imports the recovered row once', async () => {
   const { env, collector } = await setup();
   const statement = vi
@@ -518,13 +534,25 @@ it('retries a temporary statement failure and imports the recovered row once', a
   expect(workspace.bankSync).toMatchObject({ active: false, phase: 'done' });
 });
 
-it('discovers jars during a manual refresh and keeps their balances separate from spending accounts', async () => {
+it('discovers jars and bank-hosted funding links without counting savings as available cash', async () => {
   const { env, collector } = await setup();
   const fetcher = vi.fn(async (url: string) =>
     url.endsWith('/personal/client-info')
       ? Response.json({
-          accounts: clientRows,
-          jars: [{ id: 'jar', title: 'Резерв', currencyCode: 980, balance: 200000 }],
+          accounts: clientRows.map((card) => ({
+            ...card,
+            sendId: card.id === 'card' ? 'CardPublic1' : 'https://invalid.example/path',
+          })),
+          jars: [
+            {
+              id: 'jar',
+              sendId: 'JarPublic1',
+              title: 'Резерв',
+              currencyCode: 980,
+              balance: 200000,
+              goal: 900000,
+            },
+          ],
         })
       : Response.json([]),
   );
@@ -533,6 +561,13 @@ it('discovers jars during a manual refresh and keeps their balances separate fro
   await collector.alarm();
   const workspace = await readFinanceWorkspace(env, NOW);
   expect(workspace.accounts.map((account) => account.id)).not.toContain('mono:jar');
+  expect(workspace.accounts.find((account) => account.id === 'mono:card')).toMatchObject({
+    fundingUrl: 'https://send.monobank.ua/CardPublic1',
+  });
+  expect(workspace.accounts.find((account) => account.id === 'mono:second')).not.toHaveProperty(
+    'fundingUrl',
+  );
+  expect(workspace.bankCatalog).toMatchObject({ accounts: 2, jars: 1, jarListing: 'available' });
   expect(workspace.bankJars).toEqual([
     {
       id: 'mono:jar',
@@ -540,6 +575,8 @@ it('discovers jars during a manual refresh and keeps their balances separate fro
       currency: 'UAH',
       balanceMinor: 200000,
       asOf: new Date(NOW).toISOString(),
+      fundingUrl: 'https://send.monobank.ua/jar/JarPublic1',
+      goalMinor: 900000,
     },
   ]);
   expect(

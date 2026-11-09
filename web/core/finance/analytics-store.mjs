@@ -11,7 +11,7 @@ const RAW = "CASE WHEN json_valid(raw_json) THEN raw_json ELSE '{}' END";
 const value = (/** @type {string} */ key) => `json_extract((${RAW}),'$.${key}')`;
 const BANK = `COALESCE(${value('account')},'') <> ''`;
 const ACCOUNT = `COALESCE(${value('financeAccount')},CASE WHEN ${BANK} THEN 'mono:' || ${value('account')} ELSE NULL END)`;
-const PENDING = `COALESCE(${value('hold')},0) <> 0 AND COALESCE(${value('financeBankVerifiedByOwner')},0) = 0`;
+const PENDING = `COALESCE(${value('hold')},0) <> 0 AND (COALESCE(${value('financeBankVerifiedByOwner')},0) = 0 OR COALESCE(${value('financeBankAmountChanged')},0) <> 0)`;
 const KIND = `CASE WHEN COALESCE(${value('bankMissingFromStatement')},0) <> 0 AND (${PENDING}) THEN 'unclassified' ELSE COALESCE(${value('financeKind')},CASE WHEN amount < 0 THEN CASE WHEN category = 'перекази й готівка' THEN 'unclassified' ELSE 'expense' END ELSE 'unclassified' END) END`;
 /** @param {string|null} cursor */
 function readCursor(cursor) {

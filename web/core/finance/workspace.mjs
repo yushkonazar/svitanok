@@ -1,7 +1,7 @@
 import { financeCategories } from './categories.mjs';
 import { parseFinanceAttention } from './attention-state.mjs';
 import { financeDisplay } from './display.mjs';
-import { bankPaymentAmount } from './payment-link.mjs';
+import { bankPaymentAmount, needsBankHoldConfirmation } from './payment-link.mjs';
 import { fixedDebtPayment, isDebtKind, interestDebtPayment, interestQuote } from './payments.mjs';
 import { NOT_TEST_SQL, readMonoAccounts } from './store.mjs';
 import {
@@ -40,16 +40,24 @@ export function financeTransactionOf(row) {
     category: String(row.category ?? 'інше'),
     description: String(row.description ?? ''),
     kind:
-      raw.bankMissingFromStatement && raw.hold && !raw.financeBankVerifiedByOwner
+      raw.bankMissingFromStatement &&
+      raw.hold &&
+      (!raw.financeBankVerifiedByOwner || raw.financeBankAmountChanged)
         ? 'unclassified'
         : String(raw.financeKind ?? inferred),
     accountId: raw.financeAccount ?? (raw.account ? `mono:${raw.account}` : null),
+    ...(typeof raw.account === 'string' && raw.account
+      ? { bankAccountId: `mono:${raw.account}` }
+      : {}),
     bank: Boolean(raw.account),
     bankHold: Boolean(raw.hold),
     bankMissingFromStatement: Boolean(raw.bankMissingFromStatement),
     bankVerifiedByOwner: Boolean(raw.financeBankVerifiedByOwner),
     bankAmountChanged: Boolean(raw.financeBankAmountChanged),
     bankCheckedAt: typeof raw.bankCheckedAt === 'string' ? raw.bankCheckedAt : null,
+    bankRecheckedAt: typeof raw.bankRecheckedAt === 'string' ? raw.bankRecheckedAt : null,
+    bankVerifiedAt:
+      typeof raw.financeBankVerifiedAt === 'string' ? raw.financeBankVerifiedAt : null,
     reference: raw.financeReference ?? null,
     balanceCoveredBy: raw.financeBalanceCoveredBy ?? null,
     principalMinor: raw.financePrincipalMinor ?? null,
@@ -290,8 +298,9 @@ export async function readFinanceWorkspace(env, nowMs = Date.now(), range, optio
     source: 'ledger',
   }));
   // Reads only cached metadata and our D1; never calls Monobank on Mini App open.
+  const bankSources = await readMonoAccounts(env);
   const bankJars = [];
-  for (const bank of await readMonoAccounts(env)) {
+  for (const bank of bankSources) {
     const latest = await db
       .prepare(
         `SELECT balance, at FROM transactions WHERE json_extract(raw_json, '$.account') = ? AND balance IS NOT NULL AND ${NOT_TEST_SQL} ORDER BY at DESC LIMIT 1`,
@@ -310,6 +319,11 @@ export async function readFinanceWorkspace(env, nowMs = Date.now(), range, optio
       : latest?.at == null
         ? (bank.asOf ?? null)
         : String(latest.at);
+    const funding = bank.sendId
+      ? {
+          fundingUrl: `https://send.monobank.ua/${bank.bankKind === 'jar' ? 'jar/' : ''}${bank.sendId}`,
+        }
+      : {};
     // Jars are displayed as a separate savings snapshot. The existing budget
     // and goal ledger keeps its own balance boundaries.
     if (bank.bankKind === 'jar') {
@@ -319,6 +333,8 @@ export async function readFinanceWorkspace(env, nowMs = Date.now(), range, optio
         currency: bank.currency,
         balanceMinor: available,
         asOf,
+        ...funding,
+        ...(bank.goalMinor ? { goalMinor: bank.goalMinor } : {}),
       });
       continue;
     }
@@ -350,6 +366,7 @@ export async function readFinanceWorkspace(env, nowMs = Date.now(), range, optio
       asOf,
       monoId: bank.id,
       source: latest ? 'monobank' : 'opening',
+      ...funding,
     };
     if (row) Object.assign(row, account);
     else accounts.push(/** @type {any} */ (account));
@@ -398,6 +415,19 @@ export async function readFinanceWorkspace(env, nowMs = Date.now(), range, optio
     ]),
     accounts,
     bankJars,
+    bankCatalog: bankSources.length
+      ? {
+          checkedAt: bankSources[0]?.asOf ?? null,
+          accounts: bankSources.length - bankJars.length,
+          jars: bankJars.length,
+          jarListing:
+            bankSources[0]?.jarsReported === true
+              ? 'available'
+              : bankSources[0]?.jarsReported === false
+                ? 'omitted'
+                : 'unknown',
+        }
+      : null,
     transactions,
     policies,
     taxiEntries,
@@ -510,7 +540,7 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
       throw new FinanceConflict('ID вже використано для іншої операції');
     return { ok: true, duplicate: true };
   }
-  const metadataEdit = ['classify', 'transaction-edit'].includes(type);
+  const metadataEdit = ['classify', 'transaction-edit', 'bank-hold-review'].includes(type);
   const state = await readFinanceWorkspace(env, nowMs, undefined, {
     omitTransactions: metadataEdit || type === 'merchant-aliases',
   });
@@ -620,6 +650,36 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
     ]);
   } else if (type === 'event-seen') {
     update('UPDATE finance_events SET seen_at = ? WHERE id = ?', [now, text(payload.eventId)]);
+  } else if (type === 'bank-hold-review') {
+    const tx = state.transactions.find((candidate) => candidate.id === payload.transactionId);
+    if (!tx?.bank || !tx.bankHold || typeof payload.confirmed !== 'boolean')
+      throw new FinanceValidation('Обери операцію, яка очікує статусу Monobank');
+    if (tx.reference && (!payload.confirmed || tx.bankAmountChanged))
+      throw new FinanceValidation('Спочатку від’єднай пов’язаний запис');
+    if (payload.confirmed) {
+      if (tx.bankMissingFromStatement)
+        throw new FinanceValidation('Спершу звір операцію з випискою');
+      if (
+        payload.amountMinor !== tx.amountMinor ||
+        payload.currency !== tx.currency ||
+        payload.amountUah !== tx.amountUah
+      )
+        throw new FinanceConflict('Сума операції змінилась. Онови екран і звір її ще раз.');
+    }
+    const patch = payload.confirmed
+      ? bankVerification(tx, { bankHoldConfirmed: true }, now)
+      : {
+          financeBankVerifiedByOwner: null,
+          financeBankVerifiedAt: null,
+          financeConfirmedAmountMinor: null,
+          financeConfirmedOriginalAmountMinor: null,
+          financeConfirmedOriginalCurrency: null,
+          financeBankAmountChanged: null,
+        };
+    update("UPDATE transactions SET raw_json=json_patch(COALESCE(raw_json,'{}'),?) WHERE id=?", [
+      JSON.stringify(patch),
+      tx.id,
+    ]);
   } else if (type === 'bank-transfer-history-reconcile') {
     const ids = payload.transactionIds;
     if (!Array.isArray(ids) || !ids.length || ids.length > 50 || new Set(ids).size !== ids.length)
@@ -814,7 +874,7 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
     if (
       !bankTx ||
       !bankTx.bank ||
-      (bankTx.bankHold && payload.bankHoldConfirmed !== true) ||
+      (needsBankHoldConfirmation(bankTx) && payload.bankHoldConfirmed !== true) ||
       bankTx.bankMissingFromStatement ||
       bankTx.reference ||
       bankTx.currency !== 'UAH' ||
@@ -1133,7 +1193,7 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
       payload.transactionId &&
       (!bankTx ||
         !bankTx.bank ||
-        (bankTx.bankHold && payload.bankHoldConfirmed !== true) ||
+        (needsBankHoldConfirmation(bankTx) && payload.bankHoldConfirmed !== true) ||
         bankTx.bankMissingFromStatement ||
         bankTx.reference ||
         bankTx.currency !== 'UAH' ||
@@ -1272,7 +1332,7 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
       payload.transactionId &&
       (!bankTx ||
         !bankTx.bank ||
-        (bankTx.bankHold && payload.bankHoldConfirmed !== true) ||
+        (needsBankHoldConfirmation(bankTx) && payload.bankHoldConfirmed !== true) ||
         bankTx.bankMissingFromStatement ||
         bankTx.reference ||
         bankTx.currency !== 'UAH' ||
@@ -1800,7 +1860,7 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
       payload.transactionId &&
       (!existingTx ||
         !existingTx.bank ||
-        (existingTx.bankHold && payload.bankHoldConfirmed !== true) ||
+        (needsBankHoldConfirmation(existingTx) && payload.bankHoldConfirmed !== true) ||
         existingTx.bankMissingFromStatement ||
         existingTx.reference ||
         bankPaymentAmount(existingTx) !== -amount ||
@@ -2012,6 +2072,9 @@ function bankVerification(tx, payload, at) {
         financeBankVerifiedByOwner: true,
         financeBankVerifiedAt: at,
         financeConfirmedAmountMinor: bankPaymentAmount(tx),
+        financeConfirmedOriginalAmountMinor: tx.amountMinor,
+        financeConfirmedOriginalCurrency: tx.currency,
+        financeBankAmountChanged: false,
       }
     : {};
 }

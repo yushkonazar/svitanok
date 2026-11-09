@@ -24,7 +24,10 @@ import { TaxiTransition } from './TaxiTransition.tsx';
 import { DebtSetup } from './DebtSetup.tsx';
 import { debtSetup } from '../../lib/debtSetup.ts';
 import { financeCategoryLabel } from '../../../../core/finance/categories.mjs';
-import { bankPaymentAmount } from '../../../../core/finance/payment-link.mjs';
+import {
+  bankPaymentAmount,
+  needsBankHoldConfirmation,
+} from '../../../../core/finance/payment-link.mjs';
 import {
   PAYMENT_KIND_LABELS,
   isDebtKind,
@@ -515,7 +518,7 @@ function FinanceFormBody({
   );
   const bankOwnerConfirmation = () => {
     const tx = f.transactions.find((t) => t.id === v.bankTransactionId);
-    return tx?.bankHold ? (
+    return needsBankHoldConfirmation(tx) ? (
       <div className="renewal-inset">
         <p className="renewal-muted">
           У даних Monobank операція ще обробляється. Якщо в застосунку банку вона вже успішна, можеш
@@ -827,7 +830,7 @@ function FinanceFormBody({
       }
       const linked = p.transactionId ? f.transactions.find((t) => t.id === p.transactionId) : null;
       // Classification only changes metadata; confirmation is for payment linking.
-      if (request.kind !== 'classify' && linked?.bankHold) {
+      if (request.kind !== 'classify' && needsBankHoldConfirmation(linked)) {
         if (v.bankHoldConfirmed !== 'true')
           throw new Error('Підтвердь, що ця операція вже успішна в застосунку Monobank.');
         p.bankHoldConfirmed = true;

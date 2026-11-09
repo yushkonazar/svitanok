@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import type { Finance } from '../../api/finance-schema.ts';
+import { needsBankHoldConfirmation } from '../../../../core/finance/payment-link.mjs';
 import { isTerminalTopup } from '../../../../core/finance/display.mjs';
 import { moneyLabel } from '../../lib/financeView.ts';
 import { useFinanceAction } from './useFinanceAction.ts';
@@ -48,7 +49,7 @@ export function TerminalSuggestions({
         </label>
       )}
       {candidates.map((t) => {
-        const hold = t.bankHold && !t.bankVerifiedByOwner,
+        const hold = needsBankHoldConfirmation(t),
           verified = confirmed.includes(t.id);
         const existing = finance.transactions.filter(
           (x) =>

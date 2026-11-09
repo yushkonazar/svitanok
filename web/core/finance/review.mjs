@@ -1,6 +1,7 @@
 import { matchesAnalytics } from './analytics.mjs';
 import { isDebtKind, fixedDebtPayment, interestDebtPayment } from './payments.mjs';
 import { kyivParts, shiftDate, sumMoney } from './planning.mjs';
+import { needsBankHoldConfirmation } from './payment-link.mjs';
 
 /** @typedef {Awaited<ReturnType<typeof import('./workspace.mjs').readFinanceWorkspace>>} Workspace */
 const DETAIL_LIMIT = 40;
@@ -49,7 +50,7 @@ export function financeReviewAccumulator(selection, payments, aliases) {
       !matchesAnalytics(tx, selection, aliases)
     )
       return;
-    const held = Boolean(tx.bankHold && !tx.bankVerifiedByOwner);
+    const held = needsBankHoldConfirmation(tx);
     const row = {
       id: tx.id,
       at: tx.at,
@@ -60,7 +61,7 @@ export function financeReviewAccumulator(selection, payments, aliases) {
       currency: tx.currency,
       kind: tx.kind,
       bankHold: Boolean(tx.bankHold),
-      ownerVerified: Boolean(tx.bankVerifiedByOwner),
+      ownerVerified: Boolean(tx.bankVerifiedByOwner && !held),
       checkedAt: tx.bankCheckedAt ?? null,
       checkSource: tx.bankCheckSource ?? null,
       missingFromStatement: Boolean(tx.bankMissingFromStatement),
@@ -87,7 +88,7 @@ export function financeReviewAccumulator(selection, payments, aliases) {
       pendingExpenseMinor = sumMoney([pendingExpenseMinor, value]);
       pendingExpenseCount++;
     }
-    if (tx.bankHold && tx.bankVerifiedByOwner) ownerConfirmedCount++;
+    if (tx.bankHold && tx.bankVerifiedByOwner && !held) ownerConfirmedCount++;
     const contract = tx.reference ? contracts.get(tx.reference) : null;
     if (contract?.kind === 'subscription' || tx.flags?.includes('subscription')) {
       subscriptionExpenseMinor = sumMoney([subscriptionExpenseMinor, value]);
