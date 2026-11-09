@@ -1613,6 +1613,14 @@ html[data-theme='light'] .renewal-page-heading-compact {
 .checkin-slot-card[data-completion='saving'] .checkin-adaptive-flow {
   pointer-events: none;
 }
+.checkin-slot-card[data-completion='closing'] {
+  overflow: hidden;
+}
+.checkin-slot-card[data-completion='reordering'] {
+  z-index: 1;
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--color-pos) 8%, var(--color-bg2));
+}
 .checkin-completion {
   position: absolute;
   left: 20px;
@@ -1623,10 +1631,9 @@ html[data-theme='light'] .renewal-page-heading-compact {
   gap: 12px;
   text-align: center;
   animation: checkin-completed 0.3s ease-out both;
-  transition: opacity 0.3s ease;
 }
-[data-completion='leaving'] .checkin-completion {
-  opacity: 0;
+[data-completion='closing'] .checkin-completion {
+  animation: checkin-completion-dismiss 0.22s ease-in both;
 }
 .checkin-completion-mark {
   width: 56px;
@@ -1651,6 +1658,12 @@ html[data-theme='light'] .renewal-page-heading-compact {
     transform: translateY(0);
   }
 }
+@keyframes checkin-completion-dismiss {
+  to {
+    opacity: 0;
+    transform: translateY(-8px) scale(0.98);
+  }
+}
 @keyframes checkin-mark {
   from {
     stroke-dashoffset: 36;
@@ -1661,6 +1674,7 @@ html[data-theme='light'] .renewal-page-heading-compact {
 }
 @media (prefers-reduced-motion: reduce) {
   .checkin-completion,
+  [data-completion='closing'] .checkin-completion,
   .checkin-completion-mark path {
     animation: none;
     transition: none;

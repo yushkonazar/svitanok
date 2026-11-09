@@ -106,44 +106,73 @@ function windowSnapshot(extended = false) {
     },
   };
 }
-async function readyToConfirm() {
-  const data = snapshot();
-  data.stats.checkinToday.evening = {
+async function readyToConfirm(slot: 'afternoon' | 'evening' = 'evening') {
+  const initial = snapshot();
+  const answers = {
     ...answeredState,
-    satisfactionV4: 3,
-    activitiesV4: ['rest'],
-    companyV4: ['alone'],
-    workedTodayV4: 'no',
-    homeArrivalStatusV4: 'home',
-    recoveryTargetV4: 'unknown',
-    priorityOutcomeV4: 'noplan',
-    developmentActualV4: ['none'],
-    freeTimeV4: '1_29',
-    freeTimeEnoughV4: 2,
-    bedtimePlanStatusV4: 'unknown',
-    napV4: 'no',
-  } as typeof data.stats.checkinToday.evening;
+    ...(slot === 'afternoon'
+      ? { activitiesV4: ['none'], companyV4: ['alone'], priorityPaceV4: 'later' }
+      : {
+          satisfactionV4: 3,
+          activitiesV4: ['rest'],
+          companyV4: ['alone'],
+          workedTodayV4: 'no',
+          homeArrivalStatusV4: 'home',
+          recoveryTargetV4: 'unknown',
+          priorityOutcomeV4: 'noplan',
+          developmentActualV4: ['none'],
+          freeTimeV4: '1_29',
+          freeTimeEnoughV4: 2,
+          bedtimePlanStatusV4: 'unknown',
+          napV4: 'no',
+        }),
+  };
+  const data = {
+    ...initial,
+    stats: { ...initial.stats, checkinSlot: slot, checkinToday: { [slot]: answers } },
+  };
   qc.setQueryData(['stats'], data);
   api.fetchStats.mockResolvedValue(data);
   const view = open();
   await screen.findByRole('button', { name: 'Підтвердити чек-ін' });
   return { view, data, button: screen.getByRole('button', { name: 'Підтвердити чек-ін' }) };
 }
-it.each([false, true])(
-  'preserves height until an acknowledged completion returns to the top (reduced motion: %s)',
-  async (reduced) => {
+it.each([
+  { slot: 'afternoon', reduced: false, name: 'День', offset: -52, moves: 2 },
+  { slot: 'evening', reduced: false, name: 'Вечір', offset: -104, moves: 3 },
+  { slot: 'evening', reduced: true, name: 'Вечір', offset: 0, moves: 0 },
+] as const)(
+  'closes a confirmed $slot check-in before reordering (reduced motion: $reduced)',
+  async ({ slot, reduced, name, offset, moves }) => {
     const scroll = vi.spyOn(window, 'scrollTo').mockImplementation(() => {});
     vi.spyOn(window, 'scrollY', 'get').mockReturnValue(1600);
-    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({
-      height: 1800,
-      top: -1400,
-    } as DOMRect);
+    vi.spyOn(document.documentElement, 'scrollHeight', 'get').mockReturnValue(5000);
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (
+      this: HTMLElement,
+    ) {
+      const siblings = Array.from(
+        this.parentElement?.querySelectorAll('[data-checkin-slot]') ?? [],
+      );
+      const top = -1400 + Math.max(0, siblings.indexOf(this)) * 52;
+      const height = this.dataset.checkinSlot
+        ? parseFloat(this.style.minHeight) ||
+          (this.dataset.checkinSlot === slot && !this.querySelector('summary') ? 1800 : 52)
+        : 28;
+      return { top, height } as DOMRect;
+    });
     vi.stubGlobal('matchMedia', () => ({ matches: reduced }));
-    let clock = 0;
-    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) =>
-      setTimeout(() => callback((clock += 100)), 1),
-    );
-    vi.stubGlobal('cancelAnimationFrame', (id: number) => clearTimeout(id));
+    const frames = new Map<number, FrameRequestCallback>();
+    let lastFrame = 0;
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+      frames.set(++lastFrame, callback);
+      return lastFrame;
+    });
+    vi.stubGlobal('cancelAnimationFrame', (id: number) => frames.delete(id));
+    const advance = (time: number) => {
+      const pending = [...frames.values()];
+      frames.clear();
+      act(() => pending.forEach((callback) => callback(time)));
+    };
     let resolve!: () => void;
     api.postEvent.mockImplementationOnce(
       () =>
@@ -151,10 +180,22 @@ it.each([false, true])(
           resolve = done;
         }),
     );
-    const { view, data, button } = await readyToConfirm();
+    const { view, data, button } = await readyToConfirm(slot);
+    const list = view.container.querySelector<HTMLElement>('.checkin-slot-list')!;
+    list.style.scrollMarginTop = '20px';
+    const sections = () => Array.from(list.querySelectorAll<HTMLElement>('[data-checkin-slot]'));
+    const order = () => sections().map((row) => row.dataset.checkinSlot);
+    const section = sections()[0]!;
+    expect(section).toHaveAttribute('data-checkin-slot', slot);
+    let resolveMoves!: () => void;
+    const finished = new Promise<void>((done) => {
+      resolveMoves = done;
+    });
+    const animate = vi.fn((_keyframes: Keyframe[]) => ({ finished, cancel: vi.fn() }));
+    for (const row of sections()) Object.defineProperty(row, 'animate', { value: animate });
+    button.focus();
     fireEvent.click(button);
     await screen.findByRole('button', { name: 'Зберігаю…' });
-    const section = view.container.querySelector<HTMLElement>('[data-checkin-slot="evening"]')!;
     expect(within(section).getByText('Зберігається')).toBeVisible();
     expect(within(section).queryByText('Підтверджено')).not.toBeInTheDocument();
     expect(section).toHaveStyle({ minHeight: '1800px' });
@@ -164,7 +205,7 @@ it.each([false, true])(
       ...data,
       stats: {
         ...data.stats,
-        checkinToday: { evening: { ...data.stats.checkinToday.evening, confirmed: true } },
+        checkinToday: { [slot]: { ...data.stats.checkinToday[slot], confirmed: true } },
       },
     });
     await act(async () => resolve());
@@ -173,15 +214,37 @@ it.each([false, true])(
       expect(section).toHaveStyle({ minHeight: '1800px' });
       expect(setVerticalSwipes).toHaveBeenLastCalledWith(false);
     }
-    await within(section).findByLabelText(
-      'Переглянути відповіді · Вечір · Підтверджено',
-      {},
-      { timeout: 2000 },
+    await waitFor(() => expect(section).toHaveAttribute('data-completion', 'closing'));
+    expect(order()[0]).toBe(slot);
+    expect(animate).not.toHaveBeenCalled();
+    advance(0);
+    if (!reduced) {
+      advance(240);
+      expect(parseFloat(section.style.minHeight)).toBeLessThan(1800);
+      expect(order()[0]).toBe(slot);
+      expect(animate).not.toHaveBeenCalled();
+      advance(480);
+      expect(section).toHaveAttribute('data-completion', 'reordering');
+      expect(list).toHaveAttribute('inert');
+      expect(
+        animate.mock.calls.some(
+          ([keyframes]) => keyframes[0]?.transform === `translateY(${offset}px)`,
+        ),
+      ).toBe(true);
+    }
+    expect(order()).toEqual(['morning', 'afternoon', 'evening']);
+    expect(animate).toHaveBeenCalledTimes(moves);
+    await act(async () => resolveMoves());
+    const summary = within(section).getByLabelText(
+      `Переглянути відповіді · ${name} · Підтверджено`,
     );
-    expect(scroll).toHaveBeenLastCalledWith({ top: 0, behavior: 'auto' });
+    expect(summary).toHaveFocus();
+    expect(list).not.toHaveAttribute('inert');
+    expect(section).not.toHaveAttribute('data-completion');
+    expect(scroll).toHaveBeenLastCalledWith({ top: 180, behavior: 'auto' });
     const positions = scroll.mock.calls.map(([value]) => (value as ScrollToOptions).top!);
     expect(positions.every((top, i) => i === 0 || top <= positions[i - 1]!)).toBe(true);
-    if (reduced) expect(positions).toEqual([0]);
+    if (reduced) expect(positions).toEqual([180]);
     expect(section).toHaveStyle({ minHeight: '' });
     await waitFor(() => expect(setVerticalSwipes).toHaveBeenLastCalledWith(true));
     expect(api.postEvent).toHaveBeenCalledTimes(1);
