@@ -1,5 +1,3 @@
-@import '@fontsource/lora/600-italic.css';
-
 .renewal-finance {
   --finance-fact: #75d6bf;
   --finance-plan: #b5bccd;
@@ -9,39 +7,6 @@ html[data-theme='light'] .renewal-finance {
   --finance-fact: #137b6a;
   --finance-plan: #646c7d;
   --finance-projection: #6a50bb;
-}
-.finance-heading {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-}
-.finance-heading h1 {
-  margin-top: 4px;
-  font-size: clamp(23px, 7vw, 34px);
-  font-weight: 750;
-  letter-spacing: -0.04em;
-  line-height: 1.12;
-}
-.finance-heading h1 > span,
-.finance-heading h1 > em {
-  display: block;
-}
-.finance-heading h1 > em {
-  color: var(--color-a2);
-  font-family: 'Lora', Georgia, serif;
-  font-style: italic;
-  font-weight: 600;
-  letter-spacing: -0.03em;
-}
-html[data-theme='light'] .finance-heading h1 > em {
-  color: #9e4825;
-}
-.finance-heading-intro {
-  margin-top: 8px;
-  color: var(--color-tx2);
-  font-size: 13px;
-  line-height: 1.4;
 }
 .finance-overview {
   background:

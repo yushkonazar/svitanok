@@ -20,6 +20,7 @@ import { ForecastPlan } from './ForecastPlan.tsx';
 import { AccountsPanel } from './AccountsPanel.tsx';
 import { FinanceForm, type FinanceFormRequest } from './FinanceForm.tsx';
 import { FinanceOverview } from './FinanceOverview.tsx';
+import { PageHeading } from '../ui/PageHeading.tsx';
 import { TerminalSuggestions } from './TerminalSuggestions.tsx';
 import { FinanceMilestone } from './FinanceMilestone.tsx';
 import { TransactionAmount } from './TransactionAmount.tsx';
@@ -376,47 +377,47 @@ export function FinanceScreen() {
           </button>
         </div>
       )}
-      <header className="finance-heading">
-        <div className="min-w-0">
-          <p className="renewal-eyebrow">Фінанси</p>
-          <h1>
-            <span>Знати, що є.</span> <em>Планувати далі.</em>
-          </h1>
-          <p className="finance-heading-intro">Малі кроки теж ведуть до цілей.</p>
-        </div>
-        <div className="finance-heading-actions">
-          <button
-            className="renewal-secondary"
-            onClick={() => setForm({ kind: 'settings' })}
-            aria-label="Налаштування фінансів"
-          >
-            ⚙
-          </button>
-          <button
-            className="renewal-secondary"
-            aria-label="Аналітика та звіти"
-            title="Аналітика та звіти"
-            onClick={() => {
-              overviewScroll.current = window.scrollY;
-              setAnalyticsTab('overview');
-            }}
-          >
-            <svg
-              width="22"
-              height="22"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.8"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              aria-hidden="true"
+      <PageHeading
+        compact
+        eyebrow="Фінанси"
+        title="Знати, що є."
+        accent="Планувати далі."
+        note="Малі кроки теж ведуть до цілей."
+        action={
+          <div className="finance-heading-actions">
+            <button
+              className="renewal-secondary"
+              onClick={() => setForm({ kind: 'settings' })}
+              aria-label="Налаштування фінансів"
             >
-              <path d="M4 4v16h16M8 16v-4m5 4V8m5 8V5" />
-            </svg>
-          </button>
-        </div>
-      </header>
+              ⚙
+            </button>
+            <button
+              className="renewal-secondary"
+              aria-label="Аналітика та звіти"
+              title="Аналітика та звіти"
+              onClick={() => {
+                overviewScroll.current = window.scrollY;
+                setAnalyticsTab('overview');
+              }}
+            >
+              <svg
+                width="22"
+                height="22"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.8"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M4 4v16h16M8 16v-4m5 4V8m5 8V5" />
+              </svg>
+            </button>
+          </div>
+        }
+      />
       {data.demo && (
         <div className="renewal-inset renewal-muted">
           Демонстраційний облік. Зміни зберігаються лише в цьому браузері й не стосуються твоїх

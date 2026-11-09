@@ -19,6 +19,7 @@ import { resetCheckinDemo } from '../../api/checkin-demo.ts';
 import { type CheckinSlot } from '../../api/schema.ts';
 import { inTelegram, haptic, setVerticalSwipes } from '../../telegram.ts';
 import { LoadingSkeleton, ErrorState } from '../ui/states.tsx';
+import { PageHeading } from '../ui/PageHeading.tsx';
 import { useTick } from '../../lib/useTick.ts';
 import { kyivParts, shiftDate } from '../../../../core/finance/planning.mjs';
 import { BLOCKS as LEGACY_BLOCKS } from './questions.ts';
@@ -456,7 +457,7 @@ export function CheckinV3Screen({
   }
   return (
     <div className="checkin-screen flex flex-col gap-5">
-      <h1 className="text-2xl font-semibold">Чек-ін</h1>
+      <PageHeading compact eyebrow="Чек-ін" title="Мить для себе." accent="Як ти сьогодні?" />
       {demo && (
         <details className="renewal-inset">
           <summary className="renewal-link cursor-pointer">Демо · змінити час доби</summary>

@@ -103,7 +103,9 @@ afterEach(() => {
 });
 it('starts with compact unduplicated stories and opens the real headline with one actions panel', () => {
   const view = mount();
-  expect(screen.getByRole('heading', { name: 'Новини', level: 1 })).toBeVisible();
+  expect(
+    screen.getByRole('heading', { name: 'Світ у русі. Поглянь ширше.', level: 1 }),
+  ).toBeVisible();
   expect(screen.getAllByText('Перша подія')).toHaveLength(1);
   fireEvent.click(screen.getByRole('button', { name: 'Відкрити: Перша подія' }));
   expect(screen.getByRole('heading', { name: 'Перша подія', level: 1 })).toBeVisible();
@@ -420,7 +422,7 @@ it('saves directly from a card without marking it read and rolls back a failed s
     title: 'Перша подія',
     category: 'Головне',
   });
-  expect(screen.getByRole('heading', { name: 'Новини' })).toBeVisible();
+  expect(screen.getByRole('heading', { name: 'Світ у русі. Поглянь ширше.' })).toBeVisible();
   expect(mocks.story).not.toHaveBeenCalled();
   expect(mocks.feedback).not.toHaveBeenCalled();
 });
@@ -445,7 +447,7 @@ it('follows directly from a card only after acknowledgement without opening or r
     'aria-pressed',
     'true',
   );
-  expect(screen.getByRole('heading', { name: 'Новини' })).toBeVisible();
+  expect(screen.getByRole('heading', { name: 'Світ у русі. Поглянь ширше.' })).toBeVisible();
   expect(mocks.story).toHaveBeenCalledTimes(1);
 });
 

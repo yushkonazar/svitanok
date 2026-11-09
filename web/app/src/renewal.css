@@ -1,3 +1,5 @@
+@import '@fontsource/lora/600-italic.css';
+
 .renewal-card {
   padding: 20px;
   border: 1px solid var(--color-glassb);
@@ -601,6 +603,46 @@
   font-weight: 400;
   color: var(--color-a2);
   letter-spacing: -0.8px;
+}
+.renewal-page-heading-compact {
+  --heading-accent: var(--color-a2);
+  gap: 12px;
+  margin-bottom: 0;
+}
+html[data-theme='light'] .renewal-page-heading-compact {
+  --heading-accent: #9e4825;
+}
+.renewal-page-heading-compact .renewal-eyebrow {
+  margin-bottom: 5px;
+}
+.renewal-page-heading-compact .renewal-title {
+  font-size: clamp(23px, 7vw, 34px);
+  font-weight: 750;
+  letter-spacing: -0.04em;
+  line-height: 1.12;
+}
+.renewal-page-heading-compact .renewal-title em {
+  color: var(--heading-accent);
+  font-family: 'Lora', Georgia, serif;
+  font-style: italic;
+  font-weight: 600;
+  letter-spacing: -0.03em;
+}
+.renewal-page-heading-compact .renewal-muted {
+  margin-top: 8px;
+  font-size: 12px;
+  line-height: 1.4;
+}
+.renewal-page-heading-note {
+  margin-top: 10px;
+  padding: 6px 10px;
+  border-inline-start: 3px solid var(--heading-accent, var(--color-a2));
+  border-radius: 0 8px 8px 0;
+  background: color-mix(in srgb, var(--heading-accent, var(--color-a2)) 11%, transparent);
+  color: var(--color-tx);
+  font-size: clamp(15px, 4.2vw, 17px);
+  font-weight: 700;
+  line-height: 1.4;
 }
 .renewal-card {
   padding: 20px;

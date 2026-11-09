@@ -15,6 +15,7 @@ import { readBlock, newsDataSchema, type NewsSnapshot } from '../../api/briefing
 import { SessionExpired } from '../ui/SessionExpired.tsx';
 import { LoadingSkeleton, ErrorState } from '../ui/states.tsx';
 import { UpdatedValue } from '../ui/UpdatedValue.tsx';
+import { PageHeading } from '../ui/PageHeading.tsx';
 import { newsSource } from '../../lib/newsSource.ts';
 import {
   EMPTY_NEWS_READER,
@@ -476,26 +477,27 @@ export function NewsScreen() {
       },
     });
   };
+  const edition = generated ? `Добірка · ${dateLabel(generated)}` : 'Остання доступна добірка';
   return (
     <div className="news-reader">
-      <header className="news-reader-heading">
-        <div>
-          <h1>Новини</h1>
-          <p>
-            {brief.data?.demo ? 'Демо · ' : ''}
-            {generated ? `Добірка · ${dateLabel(generated)}` : 'Остання доступна добірка'}
-          </p>
-        </div>
-        <button
-          type="button"
-          className="news-refresh"
-          aria-label="Оновити новини"
-          disabled={refresh.isPending || live.isFetching}
-          onClick={refreshFeed}
-        >
-          <NewsIcon name="refresh" />
-        </button>
-      </header>
+      <PageHeading
+        compact
+        eyebrow="Новини"
+        title="Світ у русі."
+        accent="Поглянь ширше."
+        description={brief.data?.demo ? `Демо · ${edition}` : edition}
+        action={
+          <button
+            type="button"
+            className="news-refresh"
+            aria-label="Оновити новини"
+            disabled={refresh.isPending || live.isFetching}
+            onClick={refreshFeed}
+          >
+            <NewsIcon name="refresh" />
+          </button>
+        }
+      />
       {explanations && (
         <p className="news-explanation">
           Стрічка об’єднує всі твої теми за часом публікації. У «Головне» — пріоритетні події, в

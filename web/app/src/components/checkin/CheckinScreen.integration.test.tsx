@@ -494,6 +494,8 @@ it('shows each midday status once, with saved answers in the morning row', async
   });
   const view = open();
   const overview = await screen.findByRole('region', { name: 'Чек-іни за сьогодні' });
+  const heading = screen.getByRole('heading', { level: 1, name: 'Мить для себе. Як ти сьогодні?' });
+  expect(heading.compareDocumentPosition(overview) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   const list = within(overview);
   expect(list.getByRole('heading', { name: 'День' }).closest('section')).toHaveTextContent(
     'Від 18:00',
