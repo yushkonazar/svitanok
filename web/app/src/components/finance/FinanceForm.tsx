@@ -51,6 +51,7 @@ export type FinanceFormKind =
   | 'taxi-personal'
   | 'account'
   | 'taxi'
+  | 'taxi-target'
   | 'policy'
   | 'taxi-transition'
   | 'goal'
@@ -87,6 +88,7 @@ const TITLES: Record<FinanceFormKind, string> = {
   'taxi-personal': 'Особистий дохід таксі',
   account: 'Додати рахунок',
   taxi: 'Записати зміну таксі',
+  'taxi-target': 'Ціль заробітку',
   policy: 'Умови роботи таксі',
   'taxi-transition': 'Зміна авто й перезмінки',
   goal: 'Нова фінансова ціль',
@@ -143,6 +145,14 @@ function FinanceFormBody({
   const policy = f.policies.filter((p) => Date.parse(p.effectiveAt) <= Date.now()).at(-1)!;
   const settlement = f.settlements.find((w) => w.weekKey === request.id);
   const settleWeek = f.taxiWeeks.find((w) => w.key === request.id);
+  const targetPeriod = request.kind === 'taxi-target' ? taxiWeek(Date.now(), f.policies) : null;
+  const nextTargetPeriod = targetPeriod ? taxiWeek(targetPeriod.to, f.policies) : null;
+  const targetKey =
+    request.id === nextTargetPeriod?.key ? nextTargetPeriod?.key : targetPeriod?.key;
+  const targetText = (key: string | undefined) => {
+    const amount = key ? f.forecast.taxiTargets?.[key] : undefined;
+    return amount ? String(amount / 100) : '';
+  };
   const [v, setValues] = useState<Record<string, string>>({
     amount: returnGoal
       ? String(returnGoal.amountMinor / 100)
@@ -294,6 +304,8 @@ function FinanceFormBody({
     effective: 'now',
     policyPreset: 'custom',
     taxiPeriodKey: entry?.periodKey ?? '',
+    taxiTargetPeriod: targetKey ?? '',
+    taxiTargetAmount: targetText(targetKey),
     transactionKind:
       transaction?.amountMinor != null && transaction.amountMinor < 0 ? 'expense' : 'income',
   });
@@ -345,6 +357,7 @@ function FinanceFormBody({
   const set = (key: string, value: string) =>
     setValues((prev) => {
       const next = { ...prev, [key]: value };
+      if (key === 'taxiTargetPeriod') next.taxiTargetAmount = targetText(value);
       if (key === 'bankRefreshAccountId') {
         next.bankTransactionId = '';
         next.bankHoldConfirmed = 'false';
@@ -450,6 +463,7 @@ function FinanceFormBody({
           [
             'amount',
             'planAmount',
+            'taxiTargetAmount',
             'opening',
             'balance',
             'credit',
@@ -596,7 +610,7 @@ function FinanceFormBody({
       setPending(false);
     }
   };
-  const submit = async () => {
+  const submit = async (clearTaxiTarget = false) => {
     if (submitting.current) return;
     setError('');
     if (uncertain && attempt.current) {
@@ -731,6 +745,10 @@ function FinanceFormBody({
           dayComplete: v.dayComplete !== 'false',
           note: v.note,
         });
+      } else if (request.kind === 'taxi-target') {
+        const targetMinor = clearTaxiTarget ? null : inputMoney('taxiTargetAmount');
+        if (targetMinor === 0) throw new Error('Вкажи додатну суму цілі');
+        Object.assign(p, { periodKey: v.taxiTargetPeriod, targetMinor });
       } else if (request.kind === 'policy') {
         type = 'taxi-policy';
         const fixed = v.policyPreset === 'hybrid';
@@ -868,7 +886,7 @@ function FinanceFormBody({
           throw new Error('Підтвердь, що ця операція вже успішна в застосунку Monobank.');
         p.bankHoldConfirmed = true;
       }
-      const fingerprint = JSON.stringify({ request, v });
+      const fingerprint = JSON.stringify({ request, v, clearTaxiTarget });
       if (attempt.current?.fingerprint !== fingerprint)
         attempt.current = {
           fingerprint,
@@ -1105,6 +1123,23 @@ function FinanceFormBody({
                   Початковий залишок не є доходом. Підключена картка Monobank відображається окремо
                   з банківським балансом.
                 </p>
+              </>
+            )}
+            {targetPeriod && nextTargetPeriod && (
+              <>
+                {select('taxiTargetPeriod', 'Робочий період', [
+                  [targetPeriod.key, `Поточний · ${taxiPeriodLabel(targetPeriod.key, f.policies)}`],
+                  [
+                    nextTargetPeriod.key,
+                    `Наступний · ${taxiPeriodLabel(nextTargetPeriod.key, f.policies)}`,
+                  ],
+                ])}
+                {field('taxiTargetAmount', 'Бажаний заробіток за формулою парку, ₴')}
+                {f.forecast.taxiTargets?.[v.taxiTargetPeriod] && (
+                  <button type="button" className="renewal-link" onClick={() => void submit(true)}>
+                    Прибрати ціль
+                  </button>
+                )}
               </>
             )}
             {kind === 'taxi' && (
@@ -1824,7 +1859,9 @@ function FinanceFormBody({
                         ? 'Зберегти тип і категорію'
                         : kind === 'goal-remove'
                           ? 'Видалити ціль'
-                          : 'Підтвердити й зберегти'}
+                          : kind === 'taxi-target'
+                            ? 'Зберегти ціль'
+                            : 'Підтвердити й зберегти'}
             </button>
           )}
         </form>

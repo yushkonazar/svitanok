@@ -33,6 +33,22 @@ export function chooseIncomeModel(chronological) {
       : 'median';
   return { selected, folds, mae: scores.find((s) => s.name === selected)?.mae ?? null, scores };
 }
+/** A conditional estimate for one more completed shift. The range is the
+ * observed spread of comparable shifts, rather than a calibrated probability.
+ * @param {number[]} chronological */
+export function forecastNextTaxiShift(chronological) {
+  const sample = chronological.slice(-16);
+  if (sample.length < 4) return null;
+  const { selected } = chooseIncomeModel(sample);
+  const estimateMinor = Math.round((predictors[selected] ?? median)(sample.slice(-8).reverse()));
+  return {
+    estimateMinor,
+    lowerMinor: Math.min(...sample),
+    upperMinor: Math.max(...sample),
+    samples: sample.length,
+    model: selected,
+  };
+}
 /** Empirical remaining-work scenarios, repriced using the current historical taxi rules.
  * Estimates are cashflow at handover, not spendable money today or promised income.
  * @param {any} finance @param {number} nowMs */

@@ -4,6 +4,13 @@ export function chooseIncomeModel(values: number[]): {
   mae: number | null;
   scores: { name: string; mae: number | null }[];
 };
+export function forecastNextTaxiShift(values: number[]): {
+  estimateMinor: number;
+  lowerMinor: number;
+  upperMinor: number;
+  samples: number;
+  model: string;
+} | null;
 export interface TaxiIncomeProjection {
   status: string;
   reason: string;

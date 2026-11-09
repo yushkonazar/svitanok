@@ -18,6 +18,7 @@ import {
   taxiEntryWeek,
   taxiPeriodStart,
   prepareTaxiTransition,
+  setTaxiPeriodTarget,
   sumMoney,
 } from '../../../core/finance/planning.mjs';
 
@@ -750,7 +751,16 @@ export function writeFinanceDemo(command: FinanceCommand) {
       f.merchantAliases = validateMerchantAliases(p.aliases);
       break;
     case 'forecast-settings':
-      f.forecast = { incomes: p.incomes as Finance['forecast']['incomes'] };
+      f.forecast = { ...f.forecast, incomes: p.incomes as Finance['forecast']['incomes'] };
+      break;
+    case 'taxi-target':
+      f.forecast.taxiTargets = setTaxiPeriodTarget(
+        f.forecast.taxiTargets ?? {},
+        p.periodKey,
+        p.targetMinor,
+        f.policies,
+        Date.parse(now),
+      );
       break;
     case 'budget': {
       const b = {

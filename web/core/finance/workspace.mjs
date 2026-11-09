@@ -7,6 +7,7 @@ import { fixedDebtPayment, isDebtKind, interestDebtPayment, interestQuote } from
 import { NOT_TEST_SQL, readMonoAccounts } from './store.mjs';
 import {
   minor,
+  MAX_MINOR,
   sumMoney,
   kyivParts,
   shiftDate,
@@ -16,6 +17,7 @@ import {
   taxiWeek,
   taxiEntryWeek,
   taxiPeriodStart,
+  setTaxiPeriodTarget,
   prepareTaxiTransition,
   nextPaymentDate,
 } from './planning.mjs';
@@ -223,6 +225,16 @@ export async function readFinanceWorkspace(env, nowMs = Date.now(), range, optio
   const settings = rows(0)[0];
   if (!settings) throw new Error('Finance migration required');
   const creditLimits = jsonObject(settings.credit_limits_json);
+  const forecast = jsonObject(settings.forecast_json);
+  const taxiTargets = Object.fromEntries(
+    Object.entries(forecast.taxiTargets ?? {}).filter(
+      ([, amount]) =>
+        typeof amount === 'number' &&
+        Number.isSafeInteger(amount) &&
+        amount > 0 &&
+        amount <= MAX_MINOR,
+    ),
+  );
   // Refuse misleading incomplete arithmetic instead of silently truncating it.
   if (
     rows(3).length > 5000 ||
@@ -436,9 +448,8 @@ export async function readFinanceWorkspace(env, nowMs = Date.now(), range, optio
     settlements,
     reserveMinor,
     forecast: {
-      incomes: Array.isArray(jsonObject(settings.forecast_json).incomes)
-        ? jsonObject(settings.forecast_json).incomes
-        : [],
+      incomes: Array.isArray(forecast.incomes) ? forecast.incomes : [],
+      taxiTargets,
     },
     goals: rows(5).map((r) => ({
       id: String(r.id),
@@ -1464,9 +1475,25 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
       source: choice(x.source ?? 'unspecified', ['taxi', 'other', 'unspecified']),
     }));
     update('UPDATE finance_settings SET forecast_json = ? WHERE id = ?', [
-      JSON.stringify({ incomes }),
+      JSON.stringify({ ...state.forecast, incomes }),
       'owner',
     ]);
+  } else if (type === 'taxi-target') {
+    try {
+      const targets = setTaxiPeriodTarget(
+        state.forecast.taxiTargets,
+        payload.periodKey,
+        payload.targetMinor,
+        state.policies,
+        nowMs,
+      );
+      update('UPDATE finance_settings SET forecast_json = ? WHERE id = ?', [
+        JSON.stringify({ ...state.forecast, taxiTargets: targets }),
+        'owner',
+      ]);
+    } catch (error) {
+      throw new FinanceValidation(error instanceof Error ? error.message : 'Некоректна ціль');
+    }
   } else if (type === 'budget') {
     const category = text(payload.category),
       period = choice(payload.period, ['day', 'week', 'month']);

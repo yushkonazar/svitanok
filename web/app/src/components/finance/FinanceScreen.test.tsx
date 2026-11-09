@@ -8,7 +8,11 @@ import { readFinanceDemo } from '../../api/finance-demo.ts';
 import { setVerticalSwipes } from '../../telegram.ts';
 import { useFinance } from '../../api/finance-hooks.ts';
 import type { Finance } from '../../api/finance-schema.ts';
-import { calculateTaxiWeek, taxiPeriodStart } from '../../../../core/finance/planning.mjs';
+import {
+  calculateTaxiWeek,
+  taxiPeriodStart,
+  taxiWeek,
+} from '../../../../core/finance/planning.mjs';
 vi.mock('../../api/client.ts', async (original) => ({
   ...(await original<typeof import('../../api/client.ts')>()),
   refreshFinanceBank: vi.fn(),
@@ -52,6 +56,7 @@ function taxiHistoryFixture() {
   vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-10-16T11:00:00Z'));
   const f = readFinanceDemo(),
     original = f.policies[0]!;
+  f.generatedAt = new Date(Date.now()).toISOString();
   const cut = '2026-10-16T09:00:00.000Z';
   f.policies = [
     original,
@@ -115,6 +120,7 @@ function taxiHistoryFixture() {
 }
 it('opens taxi terms from the taxi shortcut and keeps general finance settings separate', () => {
   renderFinance('/finance');
+  fireEvent.click(screen.getByText('Каса, умови та дії', { selector: 'summary' }));
   fireEvent.click(screen.getByRole('button', { name: 'Налаштувати таксі ↗' }));
   const taxi = screen.getByRole('dialog', { name: 'Умови роботи таксі' });
   expect(within(taxi).getByLabelText('Профіль')).toBeInTheDocument();
@@ -127,6 +133,39 @@ it('opens taxi terms from the taxi shortcut and keeps general finance settings s
   const settings = screen.getByRole('dialog', { name: 'Налаштування фінансів' });
   expect(within(settings).getByLabelText('Типовий період фінансового огляду')).toBeInTheDocument();
   expect(within(settings).queryByLabelText('Профіль')).not.toBeInTheDocument();
+});
+
+it('switches the taxi chart to a specific shift and edits the correct period target', () => {
+  const finance = taxiHistoryFixture();
+  const current = taxiWeek(Date.now(), finance.policies);
+  const next = taxiWeek(current.to, finance.policies);
+  const first = {
+    ...finance.taxiEntries[0]!,
+    id: 'current-one',
+    policyId: 'hybrid',
+    at: '2026-10-16T10:00:00.000Z',
+  };
+  finance.taxiEntries.push(first, { ...first, id: 'current-two', at: '2026-10-16T10:30:00.000Z' });
+  finance.forecast.taxiTargets = { [current.key]: 500000, [next.key]: 600000 };
+  renderFinance('/finance', finance);
+
+  const card = within(screen.getByRole('region', { name: 'Робота · таксі' }));
+  expect(card.getByText('50 / 50')).toBeVisible();
+  expect(card.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '60');
+  expect(card.getByRole('img', { name: 'Заробіток від початку періоду' })).toBeVisible();
+  fireEvent.click(card.getByRole('button', { name: 'По змінах' }));
+  fireEvent.change(card.getByRole('slider', { name: 'Обрати зміну' }), { target: { value: '0' } });
+  fireEvent.click(card.getByRole('button', { name: 'Уточнити зміну' }));
+  const shift = within(screen.getByRole('dialog', { name: 'Уточнити зміну таксі' }));
+  expect(shift.getByDisplayValue('13:00')).toBeInTheDocument();
+  fireEvent.click(shift.getByRole('button', { name: 'Закрити' }));
+
+  fireEvent.click(card.getByRole('button', { name: /Наступна перезмінка/ }));
+  const target = within(screen.getByRole('dialog', { name: 'Ціль заробітку' }));
+  expect(target.getByLabelText('Робочий період')).toHaveValue(next.key);
+  expect(target.getByLabelText('Бажаний заробіток за формулою парку, ₴')).toHaveValue('6000');
+  fireEvent.change(target.getByLabelText('Робочий період'), { target: { value: current.key } });
+  expect(target.getByLabelText('Бажаний заробіток за формулою парку, ₴')).toHaveValue('5000');
 });
 it('opens the taxi entry form from a linked plan and closes the deep link cleanly', () => {
   renderFinance('/finance?action=taxi');

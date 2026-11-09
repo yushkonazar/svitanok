@@ -140,6 +140,23 @@ export function taxiEntryWeek(entry, policies = []) {
     ? taxiWeek(taxiPeriodStart(entry.periodKey, policies), policies)
     : taxiWeek(Date.parse(entry.at), policies);
 }
+/** A target belongs to an exact handover period, including changes of car or schedule.
+ * @param {Record<string, number>} targets @param {unknown} key @param {unknown} amount
+ * @param {TaxiPolicy[]} policies @param {number} nowMs */
+export function setTaxiPeriodTarget(targets, key, amount, policies, nowMs) {
+  const current = taxiWeek(nowMs, policies);
+  const next = taxiWeek(current.to, policies);
+  if (key !== current.key && key !== next.key)
+    throw new Error('Обери поточну або наступну перезмінку');
+  const updated = { ...targets };
+  if (amount === null) delete updated[key];
+  else {
+    const value = minor(amount);
+    if (!value) throw new Error('Вкажи додатну суму цілі');
+    updated[key] = value;
+  }
+  return updated;
+}
 /** @typedef {{ id: string, effectiveAt: string, fareBps: number, commissionBps: number, fuelBps: number, tipsBps?: number, thresholdMinor: number|null, bonusFareBps: number, periodStart?: boolean, weekDay?:number, weekHour?:number, weekMinute?:number, vehicleName?:string }} TaxiPolicy */
 /** @typedef {{ id: string, at: string, policyId: string, periodKey?: string|null, netCashMinor: number, commissionMinor: number, fuelMinor: number, tipsMinor: number, directMinor: number, receivedCashMinor?: number, paidWorkMinor?: number, commissionReported?: boolean, cashReported?: boolean, note?: string }} TaxiEntry */
 /** @param {TaxiPolicy} policy */
@@ -217,6 +234,23 @@ export function prepareTaxiTransition(
     updates,
   };
 }
+/** @typedef {{grossMinor:number,commissionMinor:number,fuelMinor:number,tipsMinor:number,directMinor:number}} TaxiTotals */
+/** @param {TaxiTotals} totals @param {TaxiPolicy} policy @param {number} [fareBps] */
+export function taxiEarnings(totals, policy, fareBps = policy.fareBps) {
+  const extrasMinor = sumMoney([
+    share(totals.tipsMinor, policy.tipsBps ?? 5000),
+    totals.directMinor,
+  ]);
+  return {
+    extrasMinor,
+    earnedMinor: sumMoney([
+      share(totals.grossMinor, fareBps),
+      -share(totals.commissionMinor, policy.commissionBps),
+      -share(totals.fuelMinor, policy.fuelBps),
+      extrasMinor,
+    ]),
+  };
+}
 /** The confirmed bonus applies to the ENTIRE business week. Recompute from
  * entries, never append a second income when the threshold is crossed.
  * @param {TaxiEntry[]} entries @param {TaxiPolicy[]} policies @param {number} nowMs */
@@ -236,29 +270,29 @@ export function calculateTaxiWeek(entries, policies, nowMs) {
     const groupGross = sumMoney(rows.map((e) => e.netCashMinor + e.commissionMinor));
     const commission = sumMoney(rows.map((e) => e.commissionMinor));
     const fuel = sumMoney(rows.map((e) => e.fuelMinor));
-    const extras = sumMoney([
-      share(sumMoney(rows.map((e) => e.tipsMinor)), policy.tipsBps ?? 5000),
-      sumMoney(rows.map((e) => e.directMinor)),
-    ]);
     const boosted = policy.thresholdMinor !== null && gross > policy.thresholdMinor;
     const fareBps = boosted ? policy.bonusFareBps : policy.fareBps;
     // Round shares once per policy/week, not each day: no accumulated penny drift.
-    const earned = sumMoney([
-      share(groupGross, fareBps),
-      -share(commission, policy.commissionBps),
-      -share(fuel, policy.fuelBps),
-      extras,
-    ]);
+    const earnings = taxiEarnings(
+      {
+        grossMinor: groupGross,
+        commissionMinor: commission,
+        fuelMinor: fuel,
+        tipsMinor: sumMoney(rows.map((e) => e.tipsMinor)),
+        directMinor: sumMoney(rows.map((e) => e.directMinor)),
+      },
+      policy,
+      fareBps,
+    );
     return [
       {
         policyId: policy.id,
         grossMinor: groupGross,
         commissionMinor: commission,
         fuelMinor: fuel,
-        extrasMinor: extras,
         fareBps,
         boosted,
-        earnedMinor: earned,
+        ...earnings,
       },
     ];
   });

@@ -7,6 +7,7 @@ import { applyRule, RETENTION } from '../web/core/retention/cleanup.mjs';
 import { runFinanceQuery } from '../web/core/tools/finance.mjs';
 import { queueMiniAppNotice, miniAppPaymentRemindTask } from '../web/core/finance/reminders.mjs';
 import { interestDebtPayment } from '../web/core/finance/payments.mjs';
+import { taxiWeek } from '../web/core/finance/planning.mjs';
 
 const NOW = Date.parse('2026-10-08T15:00:00Z');
 function setup() {
@@ -35,6 +36,77 @@ function setup() {
   };
   return { d1, env: workerEnv({ DB: d1.stub }) };
 }
+it('keeps taxi targets attached to their exact periods and preserves them when updating forecast settings', async () => {
+  const { env } = setup();
+  const initial = await readFinanceWorkspace(env, NOW);
+  const current = taxiWeek(NOW, initial.policies);
+  const next = taxiWeek(current.to, initial.policies);
+  const target = {
+    id: 'current-target',
+    version: initial.version,
+    type: 'taxi-target',
+    payload: { periodKey: current.key, targetMinor: 720000 },
+  };
+  await executeFinanceCommand(env, target, NOW);
+  await executeFinanceCommand(env, target, NOW);
+  await expect(executeFinanceCommand(env, { ...target, id: 'stale-target' }, NOW)).rejects.toThrow(
+    /Дані змінилися/,
+  );
+  await expect(
+    executeFinanceCommand(
+      env,
+      {
+        ...target,
+        id: 'expired-target',
+        version: initial.version + 1,
+      },
+      current.to,
+    ),
+  ).rejects.toThrow(/поточну або наступну/);
+  await executeFinanceCommand(
+    env,
+    {
+      ...target,
+      id: 'next-target',
+      version: initial.version + 1,
+      payload: { periodKey: next.key, targetMinor: 800000 },
+    },
+    NOW,
+  );
+  const income = {
+    name: 'Окреме надходження',
+    amountMinor: 10000,
+    nextDate: '2026-10-20',
+    recurrence: 'once',
+  };
+  await executeFinanceCommand(
+    env,
+    {
+      id: 'forecast-income',
+      version: initial.version + 2,
+      type: 'forecast-settings',
+      payload: { incomes: [income] },
+    },
+    NOW,
+  );
+  const afterRollover = await readFinanceWorkspace(env, current.to);
+  expect(afterRollover.forecast.taxiTargets).toEqual({ [current.key]: 720000, [next.key]: 800000 });
+  await executeFinanceCommand(
+    env,
+    {
+      ...target,
+      id: 'remove-target',
+      version: afterRollover.version,
+      payload: { periodKey: next.key, targetMinor: null },
+    },
+    current.to,
+  );
+  const result = await readFinanceWorkspace(env, current.to);
+  expect(result.forecast.taxiTargets).toEqual({ [current.key]: 720000 });
+  expect(result.forecast.incomes).toMatchObject([income]);
+  expect(result.transactions).toEqual(initial.transactions);
+});
+
 it('links an international card subscription using the UAH debit, not the merchant currency; retry is idempotent', async () => {
   const { env, d1 } = setup();
   await executeFinanceCommand(

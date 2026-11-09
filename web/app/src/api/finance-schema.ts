@@ -268,6 +268,7 @@ export const financeSchema = z.object({
   reserveMinor: money,
   forecast: z
     .object({
+      taxiTargets: z.record(z.string(), money.positive()).optional(),
       incomes: z.array(
         z.object({
           id: z.string(),

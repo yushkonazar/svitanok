@@ -5,7 +5,11 @@ import {
   type TaxiEntry,
   type TaxiPolicy,
 } from '../web/core/finance/planning.mjs';
-import { taxiIncomeForecast, chooseIncomeModel } from '../web/core/finance/income-forecast.mjs';
+import {
+  taxiIncomeForecast,
+  chooseIncomeModel,
+  forecastNextTaxiShift,
+} from '../web/core/finance/income-forecast.mjs';
 const DAY = 86400000,
   NOW = Date.parse('2026-10-08T10:00:00Z');
 const policy: TaxiPolicy = {
@@ -45,6 +49,21 @@ function fixture(policies = [policy]) {
   taxiEntries.push({ ...entry(period.from + DAY, 'actual'), receivedCashMinor: 20000 });
   return { policies, taxiEntries, taxiWeeks, settlements: [] };
 }
+it('fits the next shift using chronological validation once there is enough history', () => {
+  expect(forecastNextTaxiShift([1000, 2000, 3000])).toBeNull();
+  expect(forecastNextTaxiShift([1000, 2000, 3000, 4000])).toEqual({
+    estimateMinor: 2500,
+    lowerMinor: 1000,
+    upperMinor: 4000,
+    samples: 4,
+    model: 'median',
+  });
+  expect(forecastNextTaxiShift([1000, 2000, 3000, 4000, 5000, 6000])).toMatchObject({
+    estimateMinor: 6000,
+    model: 'last',
+  });
+});
+
 describe('taxi cashflow forecast', () => {
   it('keeps missing work history explicitly unavailable rather than returning a fabricated forecast', () => {
     expect(taxiIncomeForecast({}, NOW)).toMatchObject({ status: 'unavailable' });
