@@ -26,6 +26,39 @@ function App() {
   });
   return data ? <BudgetPlan finance={data.finance} nowMs={1791633600000} /> : null;
 }
+it('reveals the exact amount only for the chosen day and opens that plan’s operations', () => {
+  const finance = readFinanceDemo();
+  const budget = finance.budgets.find((row) => row.purpose === 'expense')!;
+  finance.budgets = [budget];
+  finance.transactions = [
+    {
+      ...finance.transactions[0],
+      at: '2026-10-08T09:00:00.000Z',
+      kind: 'expense',
+      currency: 'UAH',
+      amountMinor: -24350,
+      amountUah: -24350,
+      category: budget.categories[0],
+    },
+  ];
+  const onDay = vi.fn();
+  render(
+    <QueryClientProvider client={new QueryClient()}>
+      <BudgetPlan finance={finance} nowMs={Date.parse('2026-10-09T11:00:00Z')} onDay={onDay} />
+    </QueryClientProvider>,
+  );
+  expect(screen.queryByRole('button', { name: /Операції дня/ })).not.toBeInTheDocument();
+  const chart = screen.getByRole('group', { name: 'Вибрати день витрат' });
+  fireEvent.click(within(chart).getByRole('button', { name: /8 жовтня.*243,50/ }));
+  expect(within(chart).getByRole('button', { name: /8 жовтня.*243,50/ })).toHaveAttribute(
+    'aria-pressed',
+    'true',
+  );
+  fireEvent.click(screen.getByRole('button', { name: /Операції дня/ }));
+  expect(onDay).toHaveBeenCalledWith('2026-10-08', budget.categories);
+  fireEvent.click(within(chart).getByRole('button', { name: /9 жовтня.*0,00.*День триває/ }));
+  expect(screen.queryByRole('button', { name: /Операції дня/ })).not.toBeInTheDocument();
+});
 it('updates the visible plan immediately, preserves its hierarchy, reconfigures the template and deletes planning without deleting transactions', async () => {
   const initialTxs = readFinanceDemo().transactions.length;
   render(

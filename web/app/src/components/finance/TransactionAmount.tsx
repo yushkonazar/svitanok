@@ -2,14 +2,16 @@ import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import type { Finance } from '../../api/finance-schema.ts';
 import { financeDisplay } from '../../../../core/finance/display.mjs';
 import { moneyLabel } from '../../lib/financeView.ts';
-import { expenseBand } from '../../lib/expensePalette.ts';
+import { amountBand } from '../../lib/expensePalette.ts';
 import { useReducedMotion } from '../../lib/useReducedMotion.ts';
 export function TransactionAmount({
   transaction: t,
   display: settings,
+  animate = true,
 }: {
   transaction: Finance['transactions'][number];
   display?: Finance['display'];
+  animate?: boolean;
 }) {
   const display = financeDisplay(settings),
     ref = useRef<HTMLSpanElement>(null),
@@ -17,7 +19,7 @@ export function TransactionAmount({
     [uah, setUah] = useState(false);
   const foreign = t.currency !== 'UAH' && t.amountUah != null;
   const reduced = useReducedMotion(),
-    cycling = foreign && display.currencyCycle && display.animations && !reduced;
+    cycling = animate && foreign && display.currencyCycle && display.animations && !reduced;
   useEffect(() => {
     if (!cycling) return;
     let visible = true;
@@ -42,13 +44,20 @@ export function TransactionAmount({
       observer?.disconnect();
     };
   }, [cycling]);
-  const band =
-    t.kind === 'expense' && t.amountUah != null && t.amountUah < 0
-      ? expenseBand(t.amountUah, display.expenseThresholds)
-      : null;
-  const both = foreign
-    ? `${moneyLabel(t.amountMinor, t.currency)} · ${moneyLabel(t.amountUah!)}`
-    : moneyLabel(t.amountMinor, t.currency);
+  const amountUah = t.amountUah ?? (t.currency === 'UAH' ? t.amountMinor : null);
+  const incoming = t.amountMinor > 0;
+  const band = amountUah
+    ? amountBand(
+        amountUah,
+        incoming ? display.inflowThresholds : display.expenseThresholds,
+        incoming ? 'in' : 'out',
+      )
+    : null;
+  const signedMoney = (amount: number, currency?: string) =>
+    `${amount > 0 ? '+' : ''}${moneyLabel(amount, currency)}`;
+  const original = signedMoney(t.amountMinor, t.currency);
+  const hryvnias = foreign ? signedMoney(t.amountUah!) : null;
+  const both = hryvnias ? `${original} · ${hryvnias}` : original;
   return (
     <span
       ref={ref}
@@ -58,10 +67,11 @@ export function TransactionAmount({
       onMouseLeave={() => {
         paused.current = false;
       }}
-      className={`finance-transaction-amount ${band ? 'finance-expense-tone' : t.amountMinor > 0 ? 'text-pos' : ''}`}
+      className={`finance-transaction-amount${band ? (incoming ? ' finance-inflow-tone' : ' finance-expense-tone') : ''}`}
+      data-amount-band={band?.rank}
       style={
         band
-          ? ({ '--expense-dark': band.dark, '--expense-light': band.light } as CSSProperties)
+          ? ({ '--amount-dark': band.dark, '--amount-light': band.light } as CSSProperties)
           : undefined
       }
       title={band ? `${both} · ${band.label}` : both}
@@ -70,16 +80,16 @@ export function TransactionAmount({
       {cycling ? (
         <span className="finance-currency-stack" aria-hidden="true">
           <span className="finance-currency-value" data-visible={!uah}>
-            {moneyLabel(t.amountMinor, t.currency)}
+            {original}
           </span>
           <span className="finance-currency-value" data-visible={uah}>
-            {moneyLabel(t.amountUah!)}
+            {hryvnias}
           </span>
         </span>
       ) : (
         <span className="finance-currency-static" aria-hidden="true">
-          <span className="finance-currency-value">{moneyLabel(t.amountMinor, t.currency)}</span>
-          {foreign && <span className="finance-currency-value">{moneyLabel(t.amountUah!)}</span>}
+          <span className="finance-currency-value">{original}</span>
+          {hryvnias && <span className="finance-currency-value">{hryvnias}</span>}
         </span>
       )}
     </span>

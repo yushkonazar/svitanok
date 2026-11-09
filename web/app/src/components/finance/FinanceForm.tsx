@@ -18,7 +18,10 @@ import {
 } from '../../../../core/finance/planning.mjs';
 import { haptic } from '../../telegram.ts';
 import { Sheet } from './FinanceSheet.tsx';
+import { FinanceDisplaySettings } from './FinanceDisplaySettings.tsx';
 import { moneyLabel } from '../../lib/financeView.ts';
+import { isBankPayment } from '../../lib/todayPayment.ts';
+import { goalBalances } from '../../../../core/finance/savings-forecast.mjs';
 import { taxiPeriodLabel } from '../../lib/taxiPeriods.ts';
 import { TaxiTransition } from './TaxiTransition.tsx';
 import { DebtSetup } from './DebtSetup.tsx';
@@ -52,6 +55,7 @@ export type FinanceFormKind =
   | 'taxi-transition'
   | 'goal'
   | 'goal-move'
+  | 'goal-remove'
   | 'budget'
   | 'template'
   | 'payment'
@@ -66,7 +70,12 @@ export type FinanceFormKind =
 export interface FinanceFormRequest {
   kind: FinanceFormKind;
   id?: string;
-  defaults?: { category?: string; description?: string };
+  defaults?: {
+    category?: string;
+    description?: string;
+    returnGoal?: { accountId: string; amountMinor: number; mode: 'reserve' | 'cash' | 'bank' };
+    bankTransactionId?: string;
+  };
 }
 const TITLES: Record<FinanceFormKind, string> = {
   expense: 'Записати витрату',
@@ -82,6 +91,7 @@ const TITLES: Record<FinanceFormKind, string> = {
   'taxi-transition': 'Зміна авто й перезмінки',
   goal: 'Нова фінансова ціль',
   'goal-move': 'Кошти на ціль',
+  'goal-remove': 'Видалити ціль',
   budget: 'Налаштувати бюджет',
   template: 'План 50 / 30 / 20',
   payment: 'Додати платіж',
@@ -114,10 +124,17 @@ function FinanceFormBody({
   onOpenForm?: (request: FinanceFormRequest) => void;
 }) {
   const query = useQueryClient();
+  const [settingsTab, setSettingsTab] = useState<'accounting' | 'display'>('accounting');
+  const [displayLocked, setDisplayLocked] = useState(false);
   const today = kyivParts(Date.now());
   const budget = f.budgets.find((b) => b.id === request.id);
   const payment = f.payments.find((p) => p.id === request.id);
-  const goal = request.kind === 'goal' ? f.goals.find((g) => g.id === request.id) : undefined;
+  const goals = f.goals.filter((g) => !g.deletedAt);
+  const goal = request.kind === 'goal' ? goals.find((g) => g.id === request.id) : undefined;
+  const goalToRemove =
+    request.kind === 'goal-remove' ? goals.find((g) => g.id === request.id) : undefined;
+  const balancesOnGoal = goalToRemove ? goalBalances(f.goalMoves, goalToRemove.id) : [];
+  const returnGoal = request.defaults?.returnGoal;
   const transaction = f.transactions.find((t) => t.id === request.id);
   const selectedAccount = f.accounts.find((a) => a.id === request.id);
   const entry =
@@ -127,35 +144,41 @@ function FinanceFormBody({
   const settlement = f.settlements.find((w) => w.weekKey === request.id);
   const settleWeek = f.taxiWeeks.find((w) => w.key === request.id);
   const [v, setValues] = useState<Record<string, string>>({
-    amount: goal
-      ? String(goal.targetMinor / 100)
-      : payment
-        ? request.kind === 'payment-close' &&
-          (payment.overpaymentTotalMinor != null || payment.interestMethod)
-          ? ''
-          : String(
-              (request.kind === 'payment-close' && payment.remainingMinor != null
-                ? payment.remainingMinor + (payment.feeMinor ?? 0)
-                : request.kind === 'payment-paid' &&
-                    payment.remainingMinor != null &&
-                    ((payment.rateBps ?? 0) === 0 || payment.interestMethod)
-                  ? (interestDebtPayment(payment)?.amountMinor ??
-                    fixedDebtPayment(payment)?.amountMinor ??
-                    Math.min(payment.amountMinor, payment.remainingMinor + (payment.feeMinor ?? 0)))
-                  : payment.amountMinor) / 100,
-            )
-        : request.kind === 'edit-transaction' && transaction
-          ? String(Math.abs(transaction.amountMinor) / 100)
-          : ['taxi-settle', 'taxi-settlement-edit'].includes(request.kind)
-            ? String(
-                Math.abs(
-                  request.kind === 'taxi-settlement-edit'
-                    ? (settlement?.amountMinor ?? 0)
-                    : (settleWeek?.settlementMinor ?? 0),
-                ) / 100,
+    amount: returnGoal
+      ? String(returnGoal.amountMinor / 100)
+      : goal
+        ? String(goal.targetMinor / 100)
+        : payment
+          ? request.kind === 'payment-close' &&
+            (payment.overpaymentTotalMinor != null || payment.interestMethod)
+            ? ''
+            : String(
+                (request.kind === 'payment-close' && payment.remainingMinor != null
+                  ? payment.remainingMinor + (payment.feeMinor ?? 0)
+                  : request.kind === 'payment-paid' &&
+                      payment.remainingMinor != null &&
+                      ((payment.rateBps ?? 0) === 0 || payment.interestMethod)
+                    ? (interestDebtPayment(payment)?.amountMinor ??
+                      fixedDebtPayment(payment)?.amountMinor ??
+                      Math.min(
+                        payment.amountMinor,
+                        payment.remainingMinor + (payment.feeMinor ?? 0),
+                      ))
+                    : payment.amountMinor) / 100,
               )
-            : '',
+          : request.kind === 'edit-transaction' && transaction
+            ? String(Math.abs(transaction.amountMinor) / 100)
+            : ['taxi-settle', 'taxi-settlement-edit'].includes(request.kind)
+              ? String(
+                  Math.abs(
+                    request.kind === 'taxi-settlement-edit'
+                      ? (settlement?.amountMinor ?? 0)
+                      : (settleWeek?.settlementMinor ?? 0),
+                  ) / 100,
+                )
+              : '',
     accountId:
+      returnGoal?.accountId ??
       selectedAccount?.id ??
       entry?.accountId ??
       f.accounts.find((a) => a.kind === 'cash')?.id ??
@@ -192,8 +215,8 @@ function FinanceFormBody({
     note: entry?.note ?? '',
     opening: '',
     accountKind: 'bank',
-    goalId: request.id ?? f.goals[0]?.id ?? '',
-    direction: 'add',
+    goalId: request.id ?? goals[0]?.id ?? '',
+    direction: returnGoal ? 'return' : 'add',
     settlementDirection:
       (request.kind === 'taxi-settlement-edit'
         ? (settlement?.amountMinor ?? 0)
@@ -202,10 +225,15 @@ function FinanceFormBody({
         : 'receive',
     settlementNote: request.kind === 'taxi-settlement-edit' ? (settlement?.note ?? '') : '',
     transferMode: 'manual',
-    bankRefreshAccountId: transaction?.bank ? (transaction.accountId ?? 'all') : 'all',
+    bankRefreshAccountId:
+      returnGoal?.mode === 'bank'
+        ? returnGoal.accountId
+        : transaction?.bank
+          ? (transaction.accountId ?? 'all')
+          : 'all',
     bankHoldConfirmed: 'false',
     manualTransactionId: '',
-    goalMoveMode: 'reserve',
+    goalMoveMode: returnGoal?.mode ?? 'reserve',
     goalPlan: goal?.planAmountMinor != null ? 'true' : 'false',
     planAmount: goal?.planAmountMinor == null ? '' : String(goal.planAmountMinor / 100),
     planPeriod: goal?.planPeriod ?? 'week',
@@ -250,8 +278,8 @@ function FinanceFormBody({
         : '',
     remindDays: String(payment?.remindDays ?? 3),
     paymentStatus: payment?.status ?? 'active',
-    paymentMode: 'manual',
-    bankTransactionId: '',
+    paymentMode: request.defaults?.bankTransactionId ? 'bank' : 'manual',
+    bankTransactionId: request.defaults?.bankTransactionId ?? '',
     incomePeriod: f.settings.incomePeriod,
     taxiVisible: String(f.settings.taxiVisible),
     paymentReminders: String(f.settings.paymentReminders),
@@ -549,7 +577,8 @@ function FinanceFormBody({
       else void query.invalidateQueries({ queryKey: FINANCE_QUERY });
       setUncertain(false);
       haptic('success');
-      onClose();
+      if (returnGoal && onOpenForm) onOpenForm({ kind: 'goal-remove', id: v.goalId });
+      else onClose();
     } catch (e) {
       const unknown = e instanceof FinanceSaveUncertainError;
       setUncertain(unknown);
@@ -726,7 +755,11 @@ function FinanceFormBody({
           planAmountMinor: v.goalPlan === 'true' ? inputMoney('planAmount') : null,
           planPeriod: v.goalPlan === 'true' ? v.planPeriod : null,
         });
-      else if (request.kind === 'goal-move') {
+      else if (request.kind === 'goal-remove') {
+        if (!goalToRemove) throw new Error('Ціль не знайдена');
+        if (balancesOnGoal.length) throw new Error('Спочатку поверни залишок із цілі');
+        p.goalId = goalToRemove.id;
+      } else if (request.kind === 'goal-move') {
         const bank =
           v.goalMoveMode === 'bank'
             ? f.transactions.find((t) => t.id === v.bankTransactionId)
@@ -848,7 +881,7 @@ function FinanceFormBody({
   };
   const kind = request.kind;
   const close = () => {
-    if (!pending) onClose();
+    if (!pending && !displayLocked) onClose();
   };
   const title = entry
     ? 'Уточнити зміну таксі'
@@ -866,14 +899,49 @@ function FinanceFormBody({
             type="button"
             className="renewal-secondary"
             onClick={close}
-            disabled={pending}
+            disabled={pending || displayLocked}
             aria-label="Закрити"
           >
             ×
           </button>
         </div>
+        {kind === 'settings' && (
+          <>
+            <div
+              className="renewal-segments mb-4"
+              role="group"
+              aria-label="Розділ налаштувань фінансів"
+            >
+              <button
+                type="button"
+                aria-pressed={settingsTab === 'accounting'}
+                disabled={pending || uncertain || displayLocked}
+                onClick={() => setSettingsTab('accounting')}
+              >
+                Облік
+              </button>
+              <button
+                type="button"
+                aria-pressed={settingsTab === 'display'}
+                disabled={pending || uncertain || displayLocked}
+                onClick={() => setSettingsTab('display')}
+              >
+                Вигляд і прогноз
+              </button>
+            </div>
+            <div hidden={settingsTab !== 'display'}>
+              <FinanceDisplaySettings
+                finance={f}
+                onClose={onClose}
+                embedded
+                onLockChange={setDisplayLocked}
+              />
+            </div>
+          </>
+        )}
         <form
-          className="flex flex-col gap-4"
+          className={settingsTab === 'display' ? 'hidden' : 'flex flex-col gap-4'}
+          hidden={settingsTab === 'display'}
           onSubmit={(e) => {
             e.preventDefault();
             void submit();
@@ -1202,17 +1270,70 @@ function FinanceFormBody({
                 </p>
               </>
             )}
+            {kind === 'goal-remove' && (
+              <>
+                {goalToRemove ? (
+                  <>
+                    <b>{goalToRemove.name}</b>
+                    {balancesOnGoal.length ? (
+                      <>
+                        <p>Перед видаленням поверни залишки з цілі.</p>
+                        {balancesOnGoal.map(({ accountId, amountMinor, movementKind }) => {
+                          const source = f.accounts.find((a) => a.id === accountId);
+                          const mode =
+                            movementKind === 'reserve'
+                              ? 'reserve'
+                              : source?.kind === 'mono'
+                                ? 'bank'
+                                : 'cash';
+                          return (
+                            <button
+                              key={`${accountId}:${movementKind}`}
+                              type="button"
+                              className="renewal-secondary text-left"
+                              disabled={amountMinor < 0 || !source}
+                              onClick={() =>
+                                onOpenForm?.({
+                                  kind: 'goal-move',
+                                  id: goalToRemove.id,
+                                  defaults: { returnGoal: { accountId, amountMinor, mode } },
+                                })
+                              }
+                            >
+                              Повернути {moneyLabel(amountMinor)} · {source?.name ?? 'Рахунок'} ·{' '}
+                              {mode === 'reserve' ? 'резерв' : 'переказ'}
+                            </button>
+                          );
+                        })}
+                      </>
+                    ) : (
+                      <p>Ціль зникне зі списку й прогнозу. Історія внесків збережеться.</p>
+                    )}
+                  </>
+                ) : (
+                  <p>Ціль уже видалено.</p>
+                )}
+              </>
+            )}
             {kind === 'goal-move' && (
               <>
-                {select(
-                  'goalId',
-                  'Ціль',
-                  f.goals.map((g) => [g.id, g.name]),
+                {returnGoal ? (
+                  <p>
+                    <b>{goals.find((g) => g.id === v.goalId)?.name}</b> · Повернення у вільні кошти
+                  </p>
+                ) : (
+                  <>
+                    {select(
+                      'goalId',
+                      'Ціль',
+                      goals.map((g) => [g.id, g.name]),
+                    )}
+                    {select('direction', 'Дія', [
+                      ['add', 'Виділити на ціль'],
+                      ['return', 'Повернути у вільні кошти'],
+                    ])}
+                  </>
                 )}
-                {select('direction', 'Дія', [
-                  ['add', 'Виділити на ціль'],
-                  ['return', 'Повернути у вільні кошти'],
-                ])}
                 {select('goalMoveMode', 'Спосіб внеску', [
                   ['reserve', 'Зарезервувати на моєму рахунку'],
                   ['cash', 'Фактично відкласти готівку / переказати з ручного рахунку'],
@@ -1511,13 +1632,9 @@ function FinanceFormBody({
                       ...f.transactions
                         .filter(
                           (t) =>
-                            t.bank &&
+                            isBankPayment(t) &&
                             (v.bankRefreshAccountId === 'all' ||
                               t.accountId === v.bankRefreshAccountId) &&
-                            !t.bankMissingFromStatement &&
-                            !t.reference &&
-                            (bankPaymentAmount(t) ?? 0) < 0 &&
-                            ['expense', 'unclassified', 'transfer'].includes(t.kind) &&
                             (t.id === v.bankTransactionId ||
                               `${t.description} ${-(bankPaymentAmount(t) ?? 0) / 100} ${kyivParts(Date.parse(t.at)).date}`
                                 .toLocaleLowerCase('uk-UA')
@@ -1691,21 +1808,25 @@ function FinanceFormBody({
               Назад
             </button>
           )}
-          <button type="submit" className="renewal-button mt-2" disabled={pending}>
-            {pending
-              ? 'Зберігаю…'
-              : uncertain
-                ? 'Перевірити збереження'
-                : guidedDebt && debtStep < 2
-                  ? debtStep === 0
-                    ? 'Далі: уже сплачені платежі'
-                    : 'Перевірити розрахунок'
-                  : kind === 'policy'
-                    ? 'Підтвердити нові умови'
-                    : kind === 'classify'
-                      ? 'Зберегти тип і категорію'
-                      : 'Підтвердити й зберегти'}
-          </button>
+          {(kind !== 'goal-remove' || uncertain || (goalToRemove && !balancesOnGoal.length)) && (
+            <button type="submit" className="renewal-button mt-2" disabled={pending}>
+              {pending
+                ? 'Зберігаю…'
+                : uncertain
+                  ? 'Перевірити збереження'
+                  : guidedDebt && debtStep < 2
+                    ? debtStep === 0
+                      ? 'Далі: уже сплачені платежі'
+                      : 'Перевірити розрахунок'
+                    : kind === 'policy'
+                      ? 'Підтвердити нові умови'
+                      : kind === 'classify'
+                        ? 'Зберегти тип і категорію'
+                        : kind === 'goal-remove'
+                          ? 'Видалити ціль'
+                          : 'Підтвердити й зберегти'}
+            </button>
+          )}
         </form>
       </div>
     </Sheet>

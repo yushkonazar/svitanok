@@ -2,6 +2,7 @@ import { useLayoutEffect, useRef, useState } from 'react';
 import type { Finance } from '../../api/finance-schema.ts';
 import { PaymentCard } from './PaymentCard.tsx';
 import type { FinanceFormRequest } from './FinanceForm.tsx';
+import { isDuePayment, isOpenPayment, possibleBankPayment } from '../../lib/todayPayment.ts';
 
 type Payment = Finance['payments'][number];
 const GROUPS = [
@@ -16,26 +17,36 @@ export function PaymentGroups({
   payments,
   onOpen,
   onAction,
+  today,
+  transactions,
 }: {
   payments: Payment[];
   onOpen: (id: string) => void;
   onAction: (request: FinanceFormRequest) => void;
+  today?: string;
+  transactions?: Finance['transactions'];
 }) {
-  const active = payments.filter((p) => p.status === 'active');
+  const active = payments.filter(isOpenPayment);
   if (!active.length)
     return (
       <p className="renewal-muted mt-3">
         Активних платежів немає. Додай підписку, кредит або інший платіж.
       </p>
     );
+  const due = today ? active.filter((p) => isDuePayment(p, today)) : [];
+  const groups = due.length
+    ? [{ key: 'due', label: 'На підтвердження', kinds: [] }, ...GROUPS]
+    : GROUPS;
   return (
     <div className="renewal-payment-groups">
-      {GROUPS.map((group) => {
-        const items = active
-          .filter((p) => group.kinds.includes(p.kind))
-          .sort(
-            (a, b) => a.nextDate.localeCompare(b.nextDate) || a.name.localeCompare(b.name, 'uk'),
-          );
+      {groups.map((group) => {
+        const items = (
+          group.key === 'due'
+            ? due
+            : active.filter((p) => group.kinds.includes(p.kind) && !due.includes(p))
+        ).sort(
+          (a, b) => a.nextDate.localeCompare(b.nextDate) || a.name.localeCompare(b.name, 'uk'),
+        );
         return items.length ? (
           <PaymentRail
             key={group.key}
@@ -43,6 +54,7 @@ export function PaymentGroups({
             payments={items}
             onOpen={onOpen}
             onAction={onAction}
+            transactions={group.key === 'due' ? transactions : undefined}
           />
         ) : null;
       })}
@@ -55,11 +67,13 @@ function PaymentRail({
   payments,
   onOpen,
   onAction,
+  transactions,
 }: {
   group: (typeof GROUPS)[number];
   payments: Payment[];
   onOpen: (id: string) => void;
   onAction: (request: FinanceFormRequest) => void;
+  transactions?: Finance['transactions'];
 }) {
   const rail = useRef<HTMLDivElement>(null);
   const order = JSON.stringify(payments.map((p) => [p.id, p.nextDate]));
@@ -127,18 +141,28 @@ function PaymentRail({
           );
         }}
       >
-        {payments.map((p) => (
-          <PaymentCard
-            key={p.id}
-            payment={p}
-            compact
-            onOpen={() => onOpen(p.id)}
-            onPay={() => onAction({ kind: 'payment-paid', id: p.id })}
-            onEdit={() => onAction({ kind: 'payment', id: p.id })}
-            onCloseDebt={() => onAction({ kind: 'payment-close', id: p.id })}
-            onCancel={() => onAction({ kind: 'payment-cancel', id: p.id })}
-          />
-        ))}
+        {payments.map((p) => {
+          const candidate = transactions && possibleBankPayment(p, transactions);
+          return (
+            <PaymentCard
+              key={p.id}
+              payment={p}
+              compact
+              onOpen={() => onOpen(p.id)}
+              reviewBank={!!candidate}
+              onPay={() =>
+                onAction({
+                  kind: 'payment-paid',
+                  id: p.id,
+                  ...(candidate ? { defaults: { bankTransactionId: candidate.id } } : {}),
+                })
+              }
+              onEdit={() => onAction({ kind: 'payment', id: p.id })}
+              onCloseDebt={() => onAction({ kind: 'payment-close', id: p.id })}
+              onCancel={() => onAction({ kind: 'payment-cancel', id: p.id })}
+            />
+          );
+        })}
       </div>
       {payments.length > 1 && (
         <div className="renewal-payment-navigation">

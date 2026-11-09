@@ -7,6 +7,7 @@ import { budgetRows, orderedBudgets, budgetLimit, periodWindow } from '../../lib
 import { budgetAnalysisAccumulator } from '../../../../core/finance/budget-analysis.mjs';
 import { quantile } from '../../../../core/finance/adaptive-model.mjs';
 import { moneyLabel } from '../../lib/financeView.ts';
+import { usePresentation } from '../../lib/presentation.ts';
 import {
   financeDay,
   financeMonth,
@@ -34,6 +35,7 @@ export function BudgetHistoryChart({
 }) {
   const { ref, width: chartWidth } = useChartWidth();
   const [selected, setSelected] = useState('');
+  const { explanations } = usePresentation();
   const activeKey = points.some((p) => p.key === selected) ? selected : '';
   const max = Math.max(1, ...points.flatMap((p) => [p.actual, p.plan ?? 0]));
   const count = Math.max(1, points.length),
@@ -79,9 +81,13 @@ export function BudgetHistoryChart({
                 height={Math.max(0.5, h)}
                 rx="2"
                 fill={
-                  p.plan != null && p.actual > p.plan ? 'var(--color-neg)' : 'var(--color-info)'
+                  p.plan != null && p.actual > p.plan
+                    ? 'var(--color-neg)'
+                    : 'var(--finance-fact, var(--color-pos))'
                 }
-                opacity={p.partial ? 0.65 : 0.9}
+                opacity={p.partial ? 0.55 : 0.92}
+                stroke={p.partial ? 'var(--finance-plan, var(--color-tx2))' : undefined}
+                strokeDasharray={p.partial ? '3 2' : undefined}
               />
               {plan != null && (
                 <line
@@ -89,8 +95,8 @@ export function BudgetHistoryChart({
                   x2={x + width * 0.88}
                   y1={plan}
                   y2={plan}
-                  stroke="var(--color-a2)"
-                  strokeWidth="3"
+                  stroke="var(--finance-plan, var(--color-tx2))"
+                  strokeWidth="2"
                 />
               )}
               {(i %
@@ -122,10 +128,10 @@ export function BudgetHistoryChart({
           );
         })}
       </svg>
-      <p className="renewal-chart-note">
-        Стовпчики — факт, риски — план. Напівпрозорий стовпчик — неповний період. Усі точні суми
-        доступні в таблиці.
-      </p>
+      <p className="renewal-chart-note">Стовпчики — факт, лінії — план.</p>
+      {explanations && (
+        <p className="renewal-chart-note">Пунктирна обводка позначає неповний період.</p>
+      )}
       {onSelect && (
         <label className="renewal-field mt-3">
           Період бюджету

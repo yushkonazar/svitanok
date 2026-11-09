@@ -1,4 +1,4 @@
-import { financeDate, financeTime, counted, plural } from './analytics-format.ts';
+import { financeDate, counted } from './analytics-format.ts';
 import { lazy, Suspense, useState, useLayoutEffect, useEffect, useRef } from 'react';
 import { setVerticalSwipes } from '../../telegram.ts';
 import { useTick } from '../../lib/useTick.ts';
@@ -8,6 +8,9 @@ import { useQueryClient } from '@tanstack/react-query';
 import { BankRefreshPanel } from './BankRefreshPanel.tsx';
 import { isSessionExpired, refreshFinanceBank } from '../../api/client.ts';
 import { financeView, moneyLabel } from '../../lib/financeView.ts';
+import { usePresentation } from '../../lib/presentation.ts';
+import { isDuePayment, isOpenPayment, possibleBankPayment } from '../../lib/todayPayment.ts';
+import { isTerminalTopup } from '../../../../core/finance/display.mjs';
 import { sumMoney, calculateTaxiWeek } from '../../../../core/finance/planning.mjs';
 import { taxiPeriodLabel, taxiScheduleLabel, taxiVehicleName } from '../../lib/taxiPeriods.ts';
 import { LoadingSkeleton, ErrorState } from '../ui/states.tsx';
@@ -16,12 +19,10 @@ import { BudgetPlan } from './BudgetPlan.tsx';
 import { ForecastPlan } from './ForecastPlan.tsx';
 import { AccountsPanel } from './AccountsPanel.tsx';
 import { FinanceForm, type FinanceFormRequest } from './FinanceForm.tsx';
-import { PageHeading } from '../ui/PageHeading.tsx';
-import { FinanceDisplaySettings } from './FinanceDisplaySettings.tsx';
+import { FinanceOverview } from './FinanceOverview.tsx';
 import { TerminalSuggestions } from './TerminalSuggestions.tsx';
 import { FinanceMilestone } from './FinanceMilestone.tsx';
 import { TransactionAmount } from './TransactionAmount.tsx';
-import { paymentSchedule } from '../../../../core/finance/payments.mjs';
 import { savingsForecast } from '../../../../core/finance/savings-forecast.mjs';
 import './finance-renewal.css';
 import type { AnalyticsTab } from './FinanceAnalytics.tsx';
@@ -65,7 +66,7 @@ export function FinanceScreen() {
     return () => setVerticalSwipes(true);
   }, []);
   const { data, isLoading, error, refetch } = useFinance();
-  const [displayOpen, setDisplayOpen] = useState(false);
+  const { explanations } = usePresentation();
   useEffect(() => {
     document.documentElement.dataset.financeMotion =
       data?.finance.display?.animations === false ? 'off' : 'on';
@@ -102,8 +103,7 @@ export function FinanceScreen() {
       return false;
     }
   });
-  const togglePayments = () => {
-    const next = !paymentsExpanded;
+  const setPaymentListExpanded = (next: boolean) => {
     setPaymentsExpanded(next);
     try {
       localStorage.setItem('svitanok.finance.paymentsExpanded', String(next));
@@ -210,7 +210,8 @@ export function FinanceScreen() {
       />
     );
   const f = data.finance,
-    view = financeView(f, days);
+    view = financeView(f, days, nowMs);
+  const today = kyivParts(nowMs).date;
   const taxi = calculateTaxiWeek(f.taxiEntries, f.policies, nowMs);
   const activePolicy = f.policies.filter((p) => Date.parse(p.effectiveAt) <= nowMs).at(-1)!;
   const latestWeek = f.taxiWeeks.find((w) => w.key === taxi.key);
@@ -220,13 +221,25 @@ export function FinanceScreen() {
   const operations = view.txs.filter(
     (t) => operationsSource === 'all' || (operationsSource === 'mono' ? t.bank : !t.bank),
   );
-  const nearest = f.payments
-    .filter((p) => p.status === 'active')
-    .sort((a, b) => a.nextDate.localeCompare(b.nextDate))[0];
+  const due = f.payments.filter((p) => isDuePayment(p, today));
+  const goals = f.goals.filter((goal) => !goal.deletedAt);
   const goalOutlook = savingsForecast(f, 42, nowMs);
   const pendingTransactions = f.transactions.filter(
     (t) => t.duplicateSuspected && t.attention?.status !== 'different',
   );
+  const reviewCount = new Set(
+    [
+      ...pendingTransactions,
+      ...view.unclassified,
+      ...f.transactions
+        .filter((t) => isTerminalTopup(t) && kyivParts(Date.parse(t.at)).date === today)
+        .slice(0, 3),
+    ].map((t) => t.id),
+  ).size;
+  const openPayment = (id: string) => {
+    overviewScroll.current = window.scrollY;
+    setDetailId(id);
+  };
   const openTransaction = (id: string) => {
     overviewScroll.current = window.scrollY;
     setDetailId(null);
@@ -260,7 +273,6 @@ export function FinanceScreen() {
       }}
     />
   );
-  const today = kyivParts(nowMs).date;
   if (activeAnalytics)
     return (
       <Suspense fallback={<LoadingSkeleton />}>
@@ -325,7 +337,14 @@ export function FinanceScreen() {
           payment={detail}
           onBack={closeDetail}
           onEdit={() => setForm({ kind: 'payment', id: detail.id })}
-          onPay={() => setForm({ kind: 'payment-paid', id: detail.id })}
+          onPay={() => {
+            const bank = possibleBankPayment(detail, f.transactions);
+            setForm({
+              kind: 'payment-paid',
+              id: detail.id,
+              defaults: bank ? { bankTransactionId: bank.id } : undefined,
+            });
+          }}
           onCloseDebt={() => setForm({ kind: 'payment-close', id: detail.id })}
           onCancel={() => setForm({ kind: 'payment-cancel', id: detail.id })}
         />
@@ -357,82 +376,41 @@ export function FinanceScreen() {
           </button>
         </div>
       )}
-      <PageHeading
-        eyebrow="ГРОШІ БЕЗ ТУМАНУ"
-        title="Знати, що є."
-        accent="Планувати далі."
-        description="Рахунки, витрати й зобов’язання в одному місці."
-        action={
-          <div className="finance-heading-actions">
-            <button
-              className="renewal-secondary"
-              onClick={() => setForm({ kind: 'settings' })}
-              aria-label="Налаштування фінансів"
+      <header className="finance-heading">
+        <h1>Фінанси</h1>
+        <div className="finance-heading-actions">
+          <button
+            className="renewal-secondary"
+            onClick={() => setForm({ kind: 'settings' })}
+            aria-label="Налаштування фінансів"
+          >
+            ⚙
+          </button>
+          <button
+            className="renewal-secondary"
+            aria-label="Аналітика та звіти"
+            title="Аналітика та звіти"
+            onClick={() => {
+              overviewScroll.current = window.scrollY;
+              setAnalyticsTab('overview');
+            }}
+          >
+            <svg
+              width="22"
+              height="22"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.8"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
             >
-              ⚙
-            </button>
-            <button
-              className="renewal-secondary"
-              aria-label="Аналітика та звіти"
-              title="Аналітика та звіти"
-              onClick={() => {
-                overviewScroll.current = window.scrollY;
-                setAnalyticsTab('overview');
-              }}
-            >
-              <svg
-                width="22"
-                height="22"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.8"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                aria-hidden="true"
-              >
-                <path d="M4 4v16h16M8 16v-4m5 4V8m5 8V5" />
-              </svg>
-            </button>
-          </div>
-        }
-      />
-      <button className="renewal-link self-end" onClick={() => setDisplayOpen(true)}>
-        Вигляд і прогноз
-      </button>
-      {displayOpen && <FinanceDisplaySettings finance={f} onClose={() => setDisplayOpen(false)} />}
-      <FinanceMilestone finance={f} />
-      {!!pendingTransactions.length && (
-        <section className="renewal-card">
-          <h2 className="text-lg font-bold">Списання для перевірки</h2>
-          <p className="renewal-muted">
-            Схожі операції — не обов’язково дублікати. Підтвердь, якщо це різні покупки.
-          </p>
-          {pendingTransactions.slice(0, pendingLimit).map((t) => (
-            <button
-              key={t.id}
-              className="renewal-list-row w-full text-left"
-              onClick={() => openTransaction(t.id)}
-            >
-              <span>
-                {t.description}
-                <small>
-                  {t.attention?.status === 'reviewing'
-                    ? 'Чекає твоєї перевірки'
-                    : 'Можливе повторне списання'}{' '}
-                  · {new Date(t.at).toLocaleDateString('uk-UA', { timeZone: 'Europe/Kyiv' })}
-                </small>
-              </span>
-              <strong>{moneyLabel(t.amountMinor, t.currency)}</strong>
-            </button>
-          ))}
-          {pendingTransactions.length > pendingLimit && (
-            <button className="renewal-link" onClick={() => setPendingLimit((limit) => limit + 10)}>
-              Показати ще ({pendingTransactions.length - pendingLimit})
-            </button>
-          )}
-        </section>
-      )}
+              <path d="M4 4v16h16M8 16v-4m5 4V8m5 8V5" />
+            </svg>
+          </button>
+        </div>
+      </header>
       {data.demo && (
         <div className="renewal-inset renewal-muted">
           Демонстраційний облік. Зміни зберігаються лише в цьому браузері й не стосуються твоїх
@@ -448,90 +426,24 @@ export function FinanceScreen() {
           </button>
         </div>
       )}
-      <section
-        className="renewal-card renewal-money-hero"
-        style={{
-          background:
-            'radial-gradient(ellipse at 100% 0%,rgba(255,164,92,.13),transparent 65%),var(--color-bg2)',
+      <FinanceOverview
+        finance={f}
+        view={view}
+        today={today}
+        explanations={explanations}
+        onAction={setForm}
+        onExplain={() => setExplainOpen(true)}
+        onPayment={openPayment}
+        onPayments={() => {
+          setPaymentListExpanded(true);
+          document.getElementById('finance-payments')?.scrollIntoView?.({ block: 'start' });
         }}
-      >
-        <div className="renewal-section-head">
-          <span className="renewal-eyebrow">ВІЛЬНІ КОШТИ</span>
-          <span className="renewal-muted">Зараз</span>
-        </div>
-        <div
-          className="renewal-big"
-          style={{ color: view.available < 0 ? 'var(--color-neg)' : 'var(--color-a2)' }}
-        >
-          {view.unknownBalances ? '—' : moneyLabel(view.available)}
-        </div>
-        <p className="renewal-muted mt-2">
-          {view.unknownBalances
-            ? 'Потрібно підтвердити залишки й кредитний ліміт картки або доповнити комісію й готівку змін таксі.'
-            : 'Власні кошти на рахунках мінус резерв парку та зарезервовані кошти на цілі. Кредитний ліміт не є твоїми грошима.'}
-        </p>
-        <div className="renewal-finance-actions mt-4">
-          <button className="renewal-button" onClick={() => setForm({ kind: 'expense' })}>
-            Записати витрату
-          </button>
-          <button className="renewal-secondary" onClick={() => setForm({ kind: 'income' })}>
-            Додати дохід
-          </button>
-        </div>
-        <button className="renewal-link mt-3" onClick={() => setExplainOpen(true)}>
-          Як порахована ця сума?
-        </button>
-        <div className="renewal-metrics">
-          <div className="renewal-metric">
-            <span className="renewal-muted">
-              {nearest ? 'Найближча оплата' : 'Зарезервовано на цілі'}
-            </span>
-            <strong>
-              {nearest
-                ? moneyLabel(paymentSchedule(nearest, 1)[0]?.payment ?? nearest.amountMinor)
-                : moneyLabel(view.allocated)}
-            </strong>
-            {nearest && (
-              <button className="renewal-link" onClick={() => setDetailId(nearest.id)}>
-                <time dateTime={nearest.nextDate}>
-                  {new Date(nearest.nextDate + 'T12:00:00Z').toLocaleDateString('uk-UA', {
-                    day: 'numeric',
-                    month: 'short',
-                  })}
-                </time>
-                <span>{nearest.name} ↗</span>
-              </button>
-            )}
-          </div>
-          <div className="renewal-metric">
-            <span className="renewal-muted">Залишити для парку</span>
-            <strong className="text-a2">{moneyLabel(f.reserveMinor)}</strong>
-          </div>
-        </div>
-        <button className="renewal-link mt-4" onClick={() => setAnalyticsTab('overview')}>
-          Рух коштів і зміни за період ↗
-        </button>
-        <p className="renewal-chart-note mt-3">
-          {(() => {
-            const dates = f.accounts
-              .filter((a) => a.kind === 'mono' && a.asOf)
-              .map((a) => a.asOf!)
-              .sort();
-            return dates.length ? `Найновіші дані залишків: ${financeTime(dates.at(-1)!)}. ` : '';
-          })()}
-          {bankBusy || f.bankSync?.active
-            ? 'Monobank оновлюється…'
-            : f.bankSync?.completedAt
-              ? `Остання повна звірка Monobank: ${new Date(f.bankSync.completedAt).toLocaleString('uk-UA', { timeZone: 'Europe/Kyiv', dateStyle: 'short', timeStyle: 'short' })}`
-              : 'Час звірки Monobank ще не зафіксовано.'}
-        </p>
-
-        {f.accounts.some((a) => a.currency !== 'UAH') && (
-          <p className="renewal-muted mt-3">
-            Валютні рахунки показані окремо й не підсумовані з гривнею.
-          </p>
-        )}
-      </section>
+        onSavings={() =>
+          document.getElementById('finance-goals')?.scrollIntoView?.({ block: 'start' })
+        }
+        onTaxi={setTaxiHistoryKey}
+      />
+      <FinanceMilestone finance={f} />
 
       {f.settings.taxiVisible && (
         <section className="renewal-card">
@@ -558,23 +470,21 @@ export function FinanceScreen() {
           </button>
           <div className="renewal-metrics mb-3">
             <div className="renewal-metric">
-              <span className="renewal-muted">Чиста каса · після комісії</span>
-              <strong>{moneyLabel(taxi.netCashMinor)}</strong>
-            </div>
-            <div className="renewal-metric">
-              <span className="renewal-muted">Брудна каса</span>
-              <strong>{moneyLabel(taxi.grossMinor)}</strong>
-            </div>
-            <div className="renewal-metric">
-              <span className="renewal-muted">Заробіток за формулою</span>
+              <span className="renewal-muted">Заробіток за період</span>
               <strong className="text-pos">{moneyLabel(taxi.earnedMinor)}</strong>
             </div>
-            <div className="renewal-metric">
-              <span className="renewal-muted">
-                {(latestWeek?.settlementMinor ?? 0) < 0 ? 'Залишити для парку' : 'Парк доплатить'}
-              </span>
-              <strong>{moneyLabel(Math.abs(latestWeek?.settlementMinor ?? 0))}</strong>
-            </div>
+            {latestWeek && (
+              <div className="renewal-metric">
+                <span className="renewal-muted">Розрахунок</span>
+                <strong>
+                  {latestWeek.settled
+                    ? 'Закрито'
+                    : latestWeek.complete
+                      ? 'Попередній'
+                      : 'Бракує даних'}
+                </strong>
+              </div>
+            )}
           </div>
           {latestWeek?.complete === false && (
             <p className="renewal-inset renewal-muted mt-3">
@@ -584,12 +494,6 @@ export function FinanceScreen() {
           )}
           <button className="renewal-button mt-4 w-full" onClick={() => setForm({ kind: 'taxi' })}>
             + Записати зміну
-          </button>
-          <button
-            className="renewal-secondary mt-3 w-full"
-            onClick={() => setForm({ kind: 'taxi-personal' })}
-          >
-            Особистий дохід · решта, чайові, поїздка
           </button>
           {awaitingTaxi && (
             <div
@@ -621,23 +525,31 @@ export function FinanceScreen() {
               </button>
             </div>
           )}
-          <p className="renewal-muted mt-2">
-            Додатково особисто за тиждень:{' '}
-            {moneyLabel(
-              sumMoney(
-                f.transactions
-                  .filter(
-                    (t) =>
-                      t.personalTaxiType &&
-                      t.kind === 'income' &&
-                      Date.parse(t.at) >= taxi.from &&
-                      Date.parse(t.at) < taxi.to,
-                  )
-                  .map((t) => t.amountUah ?? 0),
-              ),
-            )}
-            . Уже враховано в готівці та надходженнях.
-          </p>
+          <div className="renewal-section-head flex-wrap mt-2">
+            <p className="renewal-muted">
+              Особистий дохід за період ·{' '}
+              {moneyLabel(
+                sumMoney(
+                  f.transactions
+                    .filter(
+                      (t) =>
+                        t.personalTaxiType &&
+                        t.kind === 'income' &&
+                        Date.parse(t.at) >= taxi.from &&
+                        Date.parse(t.at) < taxi.to,
+                    )
+                    .map((t) => t.amountUah ?? 0),
+                ),
+              )}
+            </p>
+            <button
+              className="renewal-link"
+              aria-label="Записати особистий дохід таксі"
+              onClick={() => setForm({ kind: 'taxi-personal' })}
+            >
+              Записати +
+            </button>
+          </div>
           <button
             className="renewal-secondary mt-3 w-full"
             onClick={() => {
@@ -671,6 +583,14 @@ export function FinanceScreen() {
             </details>
             <div className="renewal-metrics">
               <div className="renewal-metric">
+                <span className="renewal-muted">Чиста каса · після комісії</span>
+                <strong>{moneyLabel(taxi.netCashMinor)}</strong>
+              </div>
+              <div className="renewal-metric">
+                <span className="renewal-muted">Брудна каса</span>
+                <strong>{moneyLabel(taxi.grossMinor)}</strong>
+              </div>
+              <div className="renewal-metric">
                 <span className="renewal-muted">Повна комісія</span>
                 <strong>{moneyLabel(sumMoney(taxi.groups.map((g) => g.commissionMinor)))}</strong>
               </div>
@@ -686,14 +606,16 @@ export function FinanceScreen() {
                 <span className="renewal-muted">Отримана готівка</span>
                 <strong>{moneyLabel(latestWeek?.heldMinor ?? 0)}</strong>
               </div>
-              <div className="renewal-metric">
-                <span className="renewal-muted">
-                  {(latestWeek?.settlementMinor ?? 0) < 0 ? 'Повернути парку' : 'Парк доплатить'}
-                </span>
-                <strong className="text-a2">
-                  {moneyLabel(Math.abs(latestWeek?.settlementMinor ?? 0))}
-                </strong>
-              </div>
+              {latestWeek && !latestWeek.settled && latestWeek.settlementMinor !== 0 && (
+                <div className="renewal-metric">
+                  <span className="renewal-muted">
+                    {latestWeek.settlementMinor < 0 ? 'Повернути парку' : 'Парк доплатить'}
+                  </span>
+                  <strong className="text-a2">
+                    {moneyLabel(Math.abs(latestWeek.settlementMinor))}
+                  </strong>
+                </div>
+              )}
             </div>
             <p className="renewal-muted mt-3">
               Поточні умови: каса {activePolicy.fareBps / 100}%, комісія{' '}
@@ -711,15 +633,20 @@ export function FinanceScreen() {
                 />
               </div>
             )}
-            <p className="renewal-muted mt-3">
-              Заробіток є розрахунком, не другим надходженням на рахунок. Пальне з паливної картки
-              не списується з особистих коштів.
-            </p>
+            {explanations && (
+              <p className="renewal-muted mt-3">
+                Заробіток є розрахунком, не другим надходженням на рахунок. Пальне з паливної картки
+                не списується з особистих коштів.
+              </p>
+            )}
           </details>
         </section>
       )}
 
-      <section className="renewal-card">
+      <section
+        id="finance-payments"
+        className={`renewal-card${!paymentsExpanded && due.length ? ' finance-payments-attention' : ''}`}
+      >
         <div className="renewal-section-head renewal-payment-head">
           <h2 className="text-lg font-bold">Платежі, кредити й підписки</h2>
           <button className="renewal-link" onClick={() => setForm({ kind: 'payment' })}>
@@ -731,20 +658,21 @@ export function FinanceScreen() {
           className="renewal-secondary w-full"
           aria-expanded={paymentsExpanded}
           aria-controls="finance-payment-list"
-          onClick={togglePayments}
+          onClick={() => setPaymentListExpanded(!paymentsExpanded)}
         >
           {paymentsExpanded
             ? 'Приховати список'
-            : `Показати список (${f.payments.filter((p) => p.status === 'active' || p.status === 'paused').length})`}
+            : due.length
+              ? `${counted(due.length, 'оплата', 'оплати', 'оплат')} на підтвердження ›`
+              : `Показати список (${f.payments.filter((p) => isOpenPayment(p) || p.status === 'paused').length})`}
         </button>
         <div id="finance-payment-list" hidden={!paymentsExpanded}>
           <PaymentGroups
             payments={f.payments}
+            today={today}
+            transactions={f.transactions}
             onAction={setForm}
-            onOpen={(id) => {
-              overviewScroll.current = window.scrollY;
-              setDetailId(id);
-            }}
+            onOpen={openPayment}
           />
           {f.payments.some((p) => p.status === 'paused') && (
             <details className="mt-3">
@@ -850,27 +778,61 @@ export function FinanceScreen() {
             </button>
           ))}
         </div>
-        {!!view.unclassified.length && (
-          <button
-            className="renewal-inset finance-unclassified-action mb-3"
-            onClick={() =>
-              setOperationExplorer({
-                request: { from: shiftDate(today, 1 - days), to: today },
-                kind: 'unclassified',
-                title: 'Операції для уточнення',
-              })
-            }
-          >
-            {counted(view.unclassified.length, 'операція', 'операції', 'операцій')}{' '}
-            {plural(view.unclassified.length, 'потребує', 'потребують', 'потребують')} уточнення
-            типу ↗
-            <small className="block renewal-chart-note">
-              Відкрити всі невизначені операції за обрані дні. Надходження не зараховані в дохід
-              автоматично.
-            </small>
-          </button>
+        {reviewCount > 0 && (
+          <details className="renewal-inset finance-review">
+            <summary className="renewal-section-head">
+              <b>Потребують перевірки</b>
+              <span className="renewal-pill">{reviewCount}</span>
+            </summary>
+            {pendingTransactions.slice(0, pendingLimit).map((t) => (
+              <button
+                key={t.id}
+                className="renewal-list-row w-full text-left"
+                onClick={() => openTransaction(t.id)}
+              >
+                <span>
+                  {t.description}
+                  <small>
+                    {t.attention?.status === 'reviewing'
+                      ? 'Чекає твоєї перевірки'
+                      : 'Можливе повторне списання'}
+                    {' · '}
+                    {financeDate(kyivParts(Date.parse(t.at)).date)}
+                  </small>
+                </span>
+                <TransactionAmount transaction={t} display={f.display} />
+              </button>
+            ))}
+            {pendingTransactions.length > pendingLimit && (
+              <button
+                className="renewal-link"
+                onClick={() => setPendingLimit((limit) => limit + 10)}
+              >
+                Показати ще ({pendingTransactions.length - pendingLimit})
+              </button>
+            )}
+            {view.unclassified.length > 0 && (
+              <button
+                className="renewal-link"
+                onClick={() =>
+                  setOperationExplorer({
+                    request: { from: shiftDate(today, 1 - days), to: today },
+                    kind: 'unclassified',
+                    title: 'Операції для уточнення',
+                  })
+                }
+              >
+                Уточнити тип операцій ↗
+              </button>
+            )}
+            {explanations && pendingTransactions.length > 0 && (
+              <p className="renewal-chart-note">
+                Звір схожі списання, перш ніж позначати їх дублем.
+              </p>
+            )}
+            <TerminalSuggestions finance={f} onOpen={openTransaction} />
+          </details>
         )}
-        <TerminalSuggestions finance={f} onOpen={openTransaction} />
         <div className="renewal-segments my-3" aria-label="Період останніх операцій">
           {[7, 30].map((n) => (
             <button key={n} aria-pressed={days === n} onClick={() => setDays(n)}>
@@ -937,7 +899,19 @@ export function FinanceScreen() {
         )}
         {!operations.length && <p className="renewal-muted">За цей період операцій немає.</p>}
       </section>
-      <BudgetPlan finance={f} nowMs={nowMs} onAnalyze={() => setAnalyticsTab('budgets')} />
+      <BudgetPlan
+        finance={f}
+        nowMs={nowMs}
+        onAnalyze={() => setAnalyticsTab('budgets')}
+        onDay={(date, categories) =>
+          setOperationExplorer({
+            request: { from: date, to: date },
+            categories: JSON.stringify(categories),
+            kind: 'expense',
+            title: `Витрати · ${financeDate(date)}`,
+          })
+        }
+      />
       <ForecastPlan
         finance={f}
         nowMs={nowMs}
@@ -951,14 +925,15 @@ export function FinanceScreen() {
         }}
       />
 
-      <section className="renewal-card">
+      <section className="renewal-card" id="finance-goals">
         <div className="renewal-section-head">
           <h2 className="text-lg font-bold">Мої цілі</h2>
           <button className="renewal-link" onClick={() => setForm({ kind: 'goal' })}>
             Ціль +
           </button>
         </div>
-        {f.goals.map((g) => {
+        {!goals.length && <p className="renewal-muted">Ще немає цілей.</p>}
+        {goals.map((g) => {
           const allocated = sumMoney(
             f.goalMoves.filter((m) => m.goalId === g.id).map((m) => m.amountMinor),
           );
@@ -966,69 +941,80 @@ export function FinanceScreen() {
             next = outlook?.events[0];
           return (
             <div key={g.id} className="mb-5">
-              {next && (
-                <p className="renewal-chart-note mt-3">
-                  Очікуваний внесок: {moneyLabel(next.amount)} · орієнтовно {financeDate(next.date)}
-                  . Дати внесків гнучкі.{outlook?.adaptive ? ' Темп адаптовано до історії.' : ''}
-                </p>
-              )}
-              <div className="renewal-section-head flex-wrap">
-                <b className="text-sm w-full">{g.name}</b>
-                <button
-                  className="renewal-link"
-                  onClick={() => setForm({ kind: 'goal', id: g.id })}
-                >
-                  Налаштувати
-                </button>
-                <button
-                  className="renewal-link"
-                  onClick={() => setForm({ kind: 'goal-move', id: g.id })}
-                >
-                  Внесок / повернення
-                </button>
+              <div className="renewal-section-head">
+                <b className="text-sm">{g.name}</b>
+                <details className="finance-goal-menu">
+                  <summary className="renewal-secondary" aria-label={`Дії для цілі ${g.name}`}>
+                    ⋯
+                  </summary>
+                  <div className="renewal-inset finance-goal-menu-actions">
+                    <button
+                      className="renewal-link"
+                      onClick={() => setForm({ kind: 'goal', id: g.id })}
+                    >
+                      Редагувати
+                    </button>
+                    <button
+                      className="renewal-link text-neg"
+                      onClick={() => setForm({ kind: 'goal-remove', id: g.id })}
+                    >
+                      Видалити ціль
+                    </button>
+                  </div>
+                </details>
               </div>
               <p className="renewal-muted">
                 {moneyLabel(allocated)} із {moneyLabel(g.targetMinor)}
                 {g.deadline ? ` · орієнтир цілі ${financeDate(g.deadline)}` : ''}
               </p>
               <Progress percent={(allocated / g.targetMinor) * 100} />
-              {g.planAmountMinor != null && g.planPeriod && (
-                <p className="renewal-inset renewal-muted mt-3">
-                  План: {moneyLabel(g.planAmountMinor)} / {PERIOD[g.planPeriod]}. У поточному
-                  періоді внесено{' '}
-                  {moneyLabel(
-                    sumMoney(
-                      f.goalMoves
-                        .filter((m) => {
-                          const date = kyivParts(Date.parse(m.at)).date;
-                          const dow = (new Date(`${today}T00:00:00Z`).getUTCDay() + 6) % 7;
-                          const from =
-                            g.planPeriod === 'day'
-                              ? today
-                              : g.planPeriod === 'week'
-                                ? shiftDate(today, -dow)
-                                : `${today.slice(0, 7)}-01`;
-                          return m.goalId === g.id && date >= from && Date.parse(m.at) <= nowMs;
-                        })
-                        .map((m) => m.amountMinor),
-                    ),
-                  )}
-                  . План не створює автоматичного списання.
+              <button
+                className="renewal-link mt-2"
+                onClick={() => setForm({ kind: 'goal-move', id: g.id })}
+              >
+                Внесок / повернення
+              </button>
+              {next && (
+                <p className="renewal-chart-note">
+                  Очікуваний внесок · {moneyLabel(next.amount)} · {financeDate(next.date)}
                 </p>
+              )}
+              {g.planAmountMinor != null && g.planPeriod && (
+                <details className="mt-2">
+                  <summary className="renewal-link">План внесків</summary>
+                  <p className="renewal-chart-note mt-1">
+                    План: {moneyLabel(g.planAmountMinor)} / {PERIOD[g.planPeriod]}. У поточному
+                    періоді внесено{' '}
+                    {moneyLabel(
+                      sumMoney(
+                        f.goalMoves
+                          .filter((m) => {
+                            const date = kyivParts(Date.parse(m.at)).date;
+                            const dow = (new Date(`${today}T00:00:00Z`).getUTCDay() + 6) % 7;
+                            const from =
+                              g.planPeriod === 'day'
+                                ? today
+                                : g.planPeriod === 'week'
+                                  ? shiftDate(today, -dow)
+                                  : `${today.slice(0, 7)}-01`;
+                            return m.goalId === g.id && date >= from && Date.parse(m.at) <= nowMs;
+                          })
+                          .map((m) => m.amountMinor),
+                      ),
+                    )}
+                    .{explanations && ' План не створює автоматичного списання.'}
+                  </p>
+                </details>
               )}
             </div>
           );
         })}
-        <p className="renewal-muted">
-          Резерв на власних рахунках: {moneyLabel(view.allocated)}. Окремо переказано на цілі:{' '}
-          {moneyLabel(
-            sumMoney(
-              f.goalMoves.filter((m) => m.movementKind === 'external').map((m) => m.amountMinor),
-            ),
-          )}
-          . Переказані внески входять у прогрес цілей; вони вже зменшили залишок рахунку й повторно
-          з вільної суми не віднімаються.
-        </p>
+        {goals.length > 0 && (
+          <p className="renewal-chart-note">
+            Резерв · {moneyLabel(view.allocated)} · Переказано окремо ·{' '}
+            {moneyLabel(view.externalSavings)}
+          </p>
+        )}
       </section>
 
       <AccountsPanel
@@ -1064,18 +1050,7 @@ export function FinanceScreen() {
           }}
         />
       )}
-      {activeForm && (
-        <FinanceForm
-          key={`${activeForm.kind}-${activeForm.id ?? ''}`}
-          request={activeForm}
-          finance={f}
-          onClose={() => {
-            setForm(null);
-            setParams({}, { replace: true });
-          }}
-          onOpenForm={setForm}
-        />
-      )}
+      {formNode}
       {taxiHistoryKey !== null && !activeForm && (
         <TaxiHistory
           finance={f}

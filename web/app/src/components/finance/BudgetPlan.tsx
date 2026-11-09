@@ -8,18 +8,22 @@ import { moneyLabel } from '../../lib/financeView.ts';
 import { parseMoney, kyivParts, shiftDate, sumMoney } from '../../../../core/finance/planning.mjs';
 import { financeCategoryLabel } from '../../../../core/finance/categories.mjs';
 import { Sheet } from './FinanceSheet.tsx';
-import { amountNumber, compactAmount, financeDay } from './analytics-format.ts';
+import { financeDate, financeDay } from './analytics-format.ts';
+import { usePresentation } from '../../lib/presentation.ts';
 
 export function BudgetPlan({
   finance: f,
   nowMs,
   onAnalyze,
+  onDay,
 }: {
   finance: Finance;
   nowMs: number;
   onAnalyze?: () => void;
+  onDay?: (date: string, categories: string[]) => void;
 }) {
   const query = useQueryClient();
+  const { explanations } = usePresentation();
   const [editing, setEditing] = useState<{
     id?: string;
     parentId?: string;
@@ -55,6 +59,7 @@ export function BudgetPlan({
     }
   };
   const rows = orderedBudgets(budgetRows(f, nowMs));
+  const today = kyivParts(nowMs).date;
   const knownSince = f.transactions.map((t) => kyivParts(Date.parse(t.at)).date).sort()[0] ?? null;
   const move = (b: Budget, direction: number) => {
     const ids = orderedBudgets(f.budgets).map((x) => x.id);
@@ -81,36 +86,17 @@ export function BudgetPlan({
           Бюджет +
         </button>
       </div>
-      <p className="renewal-muted mb-4">
-        Ліміти допомагають керувати витратами. Прогноз оцінює витрати за історією; у налаштуваннях
-        можна обрати розрахунок за ввімкненими планами.
-      </p>
+      {explanations && (
+        <p className="renewal-muted mb-4">
+          Джерело прогнозу витрат можна змінити в налаштуваннях фінансів.
+        </p>
+      )}
       {!rows.length && (
         <p className="renewal-muted mb-4">Почни з основного плану або однієї категорії.</p>
       )}
       {rows.map((b) => {
         const siblings = rows.filter((x) => (x.parentId ?? null) === (b.parentId ?? null));
         const i = siblings.findIndex((x) => x.id === b.id);
-        const today = kyivParts(nowMs).date;
-        const recent = Array.from({ length: 7 }, (_, i) => shiftDate(today, i - 6)).map((date) => ({
-          date,
-          unknown: !knownSince || date < knownSince,
-          amount: Math.abs(
-            sumMoney(
-              f.transactions
-                .filter(
-                  (t) =>
-                    t.kind === 'expense' &&
-                    t.amountUah != null &&
-                    t.amountUah < 0 &&
-                    b.categories.includes(t.category) &&
-                    kyivParts(Date.parse(t.at)).date === date,
-                )
-                .map((t) => t.amountUah!),
-            ),
-          ),
-        }));
-        const max = Math.max(1, ...recent.map((p) => p.amount));
         return (
           <article
             key={b.id}
@@ -150,65 +136,25 @@ export function BudgetPlan({
               <span style={{ width: `${b.progress}%` }} />
             </div>
             <p className="renewal-chart-note">
-              {b.left < 0 ? 'Понад план' : 'Ще доступно в цьому періоді'}
-              {b.goalId ? ` · ${f.goals.find((g) => g.id === b.goalId)?.name ?? 'Ціль'}` : ''}
+              {b.left < 0 ? 'Понад план' : 'Залишок за період'}
+              {b.goalId &&
+                (() => {
+                  const goal = f.goals.find((g) => g.id === b.goalId);
+                  return goal?.deletedAt
+                    ? ' · Ціль видалено, внески зупинено'
+                    : ` · ${goal?.name ?? 'Ціль'}`;
+                })()}
             </p>
             {b.purpose === 'expense' && (
-              <div className="finance-budget-mini">
-                <span className="renewal-chart-note">Витрати · останні 7 днів · ₴</span>
-                <div
-                  className="finance-spark-bars"
-                  role="list"
-                  aria-label="Щоденні витрати за останні сім днів"
-                >
-                  {recent.map((p) => (
-                    <div
-                      key={p.date}
-                      role="listitem"
-                      className="finance-spark-day"
-                      aria-label={`${financeDay(p.date)}: ${p.unknown ? 'недостатньо збереженої історії' : moneyLabel(p.amount)}${p.date === today ? ' · сьогодні, день триває' : ''}`}
-                    >
-                      <b className="finance-spark-value" aria-hidden="true">
-                        <span className="finance-spark-full">
-                          {p.unknown ? '?' : amountNumber(p.amount)}
-                        </span>
-                        <span className="finance-spark-compact">
-                          {(p.unknown ? '?' : compactAmount(Math.round(p.amount / 100) * 100))
-                            .split(/\s+/)
-                            .map((part, index) => (
-                              <span key={index}>{part}</span>
-                            ))}
-                        </span>
-                      </b>
-                      <span className="finance-spark-track" aria-hidden="true">
-                        <span
-                          data-today={p.date === today}
-                          style={{ height: `${(p.amount / max) * 100}%` }}
-                        />
-                      </span>
-                      <time dateTime={p.date}>{financeDay(p.date)}</time>
-                    </div>
-                  ))}
-                </div>
-                <dl className="finance-spark-exact" aria-label="Точні щоденні суми у гривнях">
-                  {recent.map((p) => (
-                    <div key={p.date}>
-                      <dt>
-                        <time dateTime={p.date}>{financeDay(p.date)}</time>
-                      </dt>
-                      <dd>{p.unknown ? '?' : amountNumber(p.amount)}</dd>
-                    </div>
-                  ))}
-                </dl>
-                <p className="renewal-chart-note">
-                  <span className="finance-spark-wide-note">Точні суми над стовпчиками. </span>
-                  <span className="finance-spark-narrow-note">
-                    Підписи стовпчиків округлено; точні суми — під графіком.{' '}
-                  </span>
-                  Сьогоднішній день ще триває. «?» — недостатньо збереженої історії, а не нуль
-                  витрат.
-                </p>
-              </div>
+              <BudgetWeek
+                budget={b}
+                transactions={f.transactions}
+                today={today}
+                nowMs={nowMs}
+                knownSince={knownSince}
+                explanations={explanations}
+                onDay={onDay}
+              />
             )}
             {b.children > 0 && (
               <p className={`renewal-chart-note ${b.childAllocation > b.limit ? 'text-neg' : ''}`}>
@@ -280,6 +226,118 @@ export function BudgetPlan({
   );
 }
 
+function BudgetWeek({
+  budget,
+  transactions,
+  today,
+  nowMs,
+  knownSince,
+  explanations,
+  onDay,
+}: {
+  budget: Budget;
+  transactions: Finance['transactions'];
+  today: string;
+  nowMs: number;
+  knownSince: string | null;
+  explanations: boolean;
+  onDay?: (date: string, categories: string[]) => void;
+}) {
+  const [selected, setSelected] = useState<string | null>(null);
+  const days = Array.from({ length: 7 }, (_, index) => ({
+    date: shiftDate(today, index - 6),
+    amount: 0,
+    missingAmount: false,
+  }));
+  const byDate = new Map(days.map((day) => [day.date, day]));
+  for (const transaction of transactions) {
+    const time = Date.parse(transaction.at);
+    if (
+      transaction.kind !== 'expense' ||
+      time > nowMs ||
+      !budget.categories.includes(transaction.category)
+    )
+      continue;
+    const day = byDate.get(kyivParts(time).date);
+    if (!day) continue;
+    if (transaction.amountUah == null && transaction.amountMinor < 0) day.missingAmount = true;
+    if (transaction.amountUah != null && transaction.amountUah < 0)
+      day.amount = sumMoney([day.amount, -transaction.amountUah]);
+  }
+  const hasHistory = (date: string) => knownSince != null && date >= knownSince;
+  const label = (day: (typeof days)[number]) =>
+    !hasHistory(day.date)
+      ? 'Історія недоступна'
+      : day.missingAmount
+        ? `Відомо ${moneyLabel(day.amount)} · Є витрати без суми в ₴`
+        : moneyLabel(day.amount);
+  const max = Math.max(1, ...days.map((day) => day.amount));
+  const active = selected ? byDate.get(selected) : null;
+  return (
+    <div className="finance-budget-mini">
+      <span className="renewal-chart-note">Витрати · останні 7 днів</span>
+      <div className="finance-spark-bars" role="group" aria-label="Вибрати день витрат">
+        {days.map((day) => (
+          <button
+            type="button"
+            key={day.date}
+            className="finance-spark-day"
+            aria-pressed={day.date === selected}
+            aria-label={`${financeDate(day.date)} · ${label(day)}${day.date === today ? ' · День триває' : ''}`}
+            onClick={() => setSelected(day.date === selected ? null : day.date)}
+          >
+            <span className="finance-spark-track" aria-hidden="true">
+              {!hasHistory(day.date) ? (
+                <b className="finance-spark-unknown">?</b>
+              ) : (
+                <span
+                  data-partial={day.date === today || day.missingAmount}
+                  style={{ height: `max(2px, ${(day.amount / max) * 100}%)` }}
+                />
+              )}
+            </span>
+            <time dateTime={day.date}>{financeDay(day.date)}</time>
+          </button>
+        ))}
+      </div>
+      {active && (
+        <div className="finance-spark-selection">
+          <p aria-live="polite">
+            <b>
+              {financeDate(active.date)} · {label(active)}
+            </b>
+            {active.date === today && <small className="block renewal-muted">День триває</small>}
+          </p>
+          {onDay && hasHistory(active.date) && (active.amount > 0 || active.missingAmount) && (
+            <button className="renewal-link" onClick={() => onDay(active.date, budget.categories)}>
+              Операції дня ↗
+            </button>
+          )}
+        </div>
+      )}
+      {explanations && (
+        <p className="renewal-chart-note">
+          Торкнися дня для деталей. Знак «?» позначає відсутність історії.
+        </p>
+      )}
+      <details className="mt-2">
+        <summary className="renewal-link">Усі дні</summary>
+        <dl className="finance-spark-exact">
+          {days.map((day) => (
+            <div key={day.date}>
+              <dt>
+                {financeDate(day.date)}
+                {day.date === today ? ' · День триває' : ''}
+              </dt>
+              <dd>{label(day)}</dd>
+            </div>
+          ))}
+        </dl>
+      </details>
+    </div>
+  );
+}
+
 function BudgetEditor({
   finance: f,
   request,
@@ -325,7 +383,9 @@ function BudgetEditor({
           0) / 100,
       ),
     );
-  const [goalId, setGoal] = useState(old?.goalId ?? ''),
+  const [goalId, setGoal] = useState(
+      f.goals.some((g) => g.id === old?.goalId && g.deletedAt) ? '' : (old?.goalId ?? ''),
+    ),
     [forecast, setForecast] = useState(old?.forecastEnabled ?? Boolean(parentId));
   const [categories, setCategories] = useState(old?.categories ?? []),
     [search, setSearch] = useState('');
@@ -544,7 +604,7 @@ function BudgetEditor({
                 <select disabled={pending} value={goalId} onChange={(e) => setGoal(e.target.value)}>
                   <option value="">Усі фінансові цілі</option>
                   {f.goals
-                    .filter((g) => g.status === 'active')
+                    .filter((g) => g.status === 'active' && !g.deletedAt)
                     .map((g) => (
                       <option key={g.id} value={g.id}>
                         {g.name}

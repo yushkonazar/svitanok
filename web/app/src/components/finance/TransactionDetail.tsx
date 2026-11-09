@@ -7,6 +7,7 @@ import { moneyLabel } from '../../lib/financeView.ts';
 import { useFinanceAction } from './useFinanceAction.ts';
 import { financeTime } from './analytics-format.ts';
 import { needsBankHoldConfirmation } from '../../../../core/finance/payment-link.mjs';
+import { TransactionAmount } from './TransactionAmount.tsx';
 
 export function TransactionDetail({
   transaction: tx,
@@ -101,13 +102,11 @@ export function TransactionDetail({
         ← {backLabel}
       </button>
       <h1 className="text-xl font-bold">{tx.description || 'Операція'}</h1>
-      <strong>{moneyLabel(tx.amountMinor, tx.currency)}</strong>
-      {tx.currency !== 'UAH' && (
-        <p className="renewal-inset">
-          {tx.amountUah == null
-            ? 'Гривнева сума цієї операції невідома. Поточний курс не підставляється.'
-            : `${tx.bank ? 'Фактичне списання з рахунку' : 'Зафіксована гривнева сума'}: ${moneyLabel(tx.amountUah)}. Історичний еквівалент збережено разом з операцією.`}
-        </p>
+      <div className="self-start text-lg">
+        <TransactionAmount transaction={tx} display={finance?.display} animate={false} />
+      </div>
+      {tx.currency !== 'UAH' && tx.amountUah == null && (
+        <p className="renewal-inset">Гривнева сума цієї операції невідома.</p>
       )}
       <p className="renewal-muted">
         {tx.category} · {new Date(tx.at).toLocaleString('uk-UA', { timeZone: 'Europe/Kyiv' })}

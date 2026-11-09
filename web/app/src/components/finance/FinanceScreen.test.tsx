@@ -28,6 +28,7 @@ vi.mock('./PaymentDetail.tsx', () => ({
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
   vi.mocked(refreshFinanceBank).mockReset();
 });
 
@@ -133,6 +134,105 @@ it('opens the taxi entry form from a linked plan and closes the deep link cleanl
   expect(within(dialog).getByLabelText('Каса після комісії, ₴')).toBeInTheDocument();
   fireEvent.click(within(dialog).getByRole('button', { name: 'Закрити' }));
   expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+});
+it('opens the personal taxi income form from the balance even with the taxi section hidden', () => {
+  const finance = readFinanceDemo();
+  finance.settings.taxiVisible = false;
+  renderFinance('/finance', finance);
+  const first = screen.getByRole('region', { name: 'Вільні кошти' });
+  fireEvent.click(within(first).getByRole('button', { name: 'Особистий дохід' }));
+  const dialog = screen.getByRole('dialog', { name: 'Особистий дохід таксі' });
+  expect(within(dialog).getByRole('option', { name: 'Чайові готівкою' })).toBeInTheDocument();
+  expect(within(dialog).getByLabelText('Що сталося')).toHaveValue('change');
+});
+it('shows a taxi receivable and a reserve separately on the first screen', () => {
+  const finance = readFinanceDemo();
+  const base = {
+    grossMinor: 0,
+    earnedMinor: 0,
+    heldMinor: 0,
+    settled: false,
+    complete: true,
+    closed: true,
+  };
+  finance.taxiWeeks = [
+    { ...base, key: '2026-10-05', settlementMinor: 62000 },
+    { ...base, key: '2026-09-28', settlementMinor: -34000 },
+  ];
+  finance.reserveMinor = 34000;
+  renderFinance('/finance', finance);
+  const overview = within(screen.getByRole('region', { name: 'Вільні кошти' }));
+  expect(overview.getByRole('button', { name: /Таксопарк має доплатити.*620,00/ })).toBeVisible();
+  expect(
+    overview.getByRole('button', { name: /Зарезервовано для таксопарку.*340,00/ }),
+  ).toBeVisible();
+});
+it('opens a prefilled return instead of letting an allocated goal be deleted', () => {
+  const finance = readFinanceDemo();
+  const goal = { ...finance.goals[0], name: 'Прага', id: 'prague' };
+  finance.goals = [goal];
+  finance.goalMoves = [
+    {
+      id: 'reserve-prague',
+      goalId: goal.id,
+      accountId: 'cash',
+      amountMinor: 12300,
+      at: new Date().toISOString(),
+      movementKind: 'reserve',
+    },
+  ];
+  renderFinance('/finance', finance);
+  fireEvent.click(screen.getByLabelText('Дії для цілі Прага'));
+  fireEvent.click(screen.getByRole('button', { name: 'Видалити ціль' }));
+  const removal = within(screen.getByRole('dialog', { name: 'Видалити ціль' }));
+  expect(removal.queryByRole('button', { name: 'Видалити ціль' })).not.toBeInTheDocument();
+  fireEvent.click(removal.getByRole('button', { name: /Повернути 123,00/ }));
+  const form = within(screen.getByRole('dialog', { name: 'Кошти на ціль' }));
+  expect(form.getByText(/Повернення у вільні кошти/)).toBeInTheDocument();
+  expect(form.getByLabelText('Сума, ₴')).toHaveValue('123');
+});
+it('keeps the collapsed payment alert visible with motion off and opens the bank review form', () => {
+  const finance = readFinanceDemo();
+  vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-10-16T11:00:00Z'));
+  vi.stubGlobal('localStorage', { getItem: () => null, setItem: vi.fn() });
+  finance.display = { ...finance.display!, animations: false };
+  finance.payments = [
+    {
+      ...finance.payments[0],
+      name: 'Megogo',
+      nextDate: '2026-10-16',
+      kind: 'subscription',
+      amountMinor: 15500,
+      remainingMinor: null,
+      installmentsLeft: null,
+      status: 'active',
+    },
+    { ...finance.payments[0], id: 'paused', nextDate: '2026-10-14', status: 'paused' },
+  ];
+  finance.transactions = [
+    {
+      ...finance.transactions[0],
+      id: 'matched-debit',
+      description: 'MEGOGO subscription',
+      at: '2026-10-16T09:00:00.000Z',
+      amountUah: -15500,
+      amountMinor: -15500,
+      currency: 'UAH',
+      kind: 'expense',
+      bank: true,
+      reference: null,
+    },
+  ];
+  renderFinance('/finance', finance);
+  const block = screen
+    .getByRole('heading', { name: 'Платежі, кредити й підписки' })
+    .closest('section')!;
+  expect(block).toHaveClass('finance-payments-attention');
+  fireEvent.click(within(block).getByRole('button', { name: /1 оплата на підтвердження/ }));
+  expect(block).not.toHaveClass('finance-payments-attention');
+  fireEvent.click(within(block).getByRole('button', { name: 'Перевірити списання' }));
+  const dialog = screen.getByRole('dialog', { name: 'Підтвердити оплату' });
+  expect(within(dialog).getByLabelText('Банківська операція')).toHaveValue('matched-debit');
 });
 it('keeps an open expense and cached balances mounted when a background refresh fails', () => {
   const finance = readFinanceDemo();

@@ -4,6 +4,7 @@ import { moneyLabel } from '../../lib/financeView.ts';
 import { kyivParts } from '../../../../core/finance/planning.mjs';
 import { useTick } from '../../lib/useTick.ts';
 import { useEffect, useRef } from 'react';
+import { isDuePayment } from '../../lib/todayPayment.ts';
 import {
   PAYMENT_KIND_LABELS,
   isDebtKind,
@@ -19,6 +20,7 @@ export function PaymentCard({
   onCloseDebt,
   onCancel,
   compact = false,
+  reviewBank = false,
 }: {
   payment: Finance['payments'][number];
   onOpen: () => void;
@@ -27,10 +29,11 @@ export function PaymentCard({
   onCloseDebt: () => void;
   onCancel: () => void;
   compact?: boolean;
+  reviewBank?: boolean;
 }) {
   const date = new Date(p.nextDate + 'T12:00:00Z');
   const today = kyivParts(useTick(30_000)).date;
-  const due = p.status === 'active' && p.nextDate <= today;
+  const due = isDuePayment(p, today);
   const ref = useRef<HTMLElement>(null);
   useEffect(() => {
     const element = ref.current;
@@ -101,7 +104,7 @@ export function PaymentCard({
       </div>
       <div className="renewal-payment-actions">
         <button className="renewal-button" onClick={onPay}>
-          Підтвердити оплату
+          {reviewBank ? 'Перевірити списання' : 'Підтвердити оплату'}
         </button>
         <button className="renewal-secondary" onClick={onEdit}>
           Налаштувати

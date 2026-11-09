@@ -1,6 +1,9 @@
 export const DEFAULT_THRESHOLDS: number[];
 export interface FinanceDisplay {
+  paletteVersion: 2;
   expenseThresholds: number[];
+  inflowThresholds: number[];
+  overviewMetric: 'payment' | 'savings' | 'taxi';
   currencyCycle: boolean;
   animations: boolean;
   expenseForecast: 'history' | 'plan';

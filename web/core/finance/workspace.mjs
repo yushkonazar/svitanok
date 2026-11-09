@@ -1,6 +1,7 @@
 import { financeCategories } from './categories.mjs';
 import { parseFinanceAttention } from './attention-state.mjs';
 import { financeDisplay } from './display.mjs';
+import { goalBalances } from './savings-forecast.mjs';
 import { bankPaymentAmount, needsBankHoldConfirmation } from './payment-link.mjs';
 import { fixedDebtPayment, isDebtKind, interestDebtPayment, interestQuote } from './payments.mjs';
 import { NOT_TEST_SQL, readMonoAccounts } from './store.mjs';
@@ -448,6 +449,7 @@ export async function readFinanceWorkspace(env, nowMs = Date.now(), range, optio
       planAmountMinor: r.plan_amount_minor == null ? null : Number(r.plan_amount_minor),
       planPeriod: r.plan_period == null ? null : String(r.plan_period),
       planStartedAt: r.plan_started_at == null ? null : String(r.plan_started_at),
+      deletedAt: r.deleted_at == null ? null : String(r.deleted_at),
     })),
     goalMoves: rows(6).map((r) => ({
       id: String(r.id),
@@ -639,7 +641,11 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
   if (type === 'display-settings') {
     let display;
     try {
-      display = financeDisplay(payload);
+      display = financeDisplay({
+        ...payload,
+        inflowThresholds: payload.inflowThresholds ?? state.display.inflowThresholds,
+        overviewMetric: payload.overviewMetric ?? state.display.overviewMetric,
+      });
     } catch (error) {
       throw new FinanceValidation(
         error instanceof Error ? error.message : 'Перевір налаштування вигляду',
@@ -1273,7 +1279,8 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
     const target = minor(payload.targetMinor);
     if (!target) throw new FinanceValidation('Ціль має бути більшою за нуль');
     const previousGoal = payload.goalId ? state.goals.find((g) => g.id === payload.goalId) : null;
-    if (payload.goalId && !previousGoal) throw new FinanceValidation('Ціль не знайдена');
+    if (payload.goalId && (!previousGoal || previousGoal.deletedAt))
+      throw new FinanceValidation('Ціль не знайдена');
     const status = choice(payload.status ?? previousGoal?.status ?? 'active', [
       'active',
       'paused',
@@ -1318,9 +1325,26 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
         plan_started_at: now,
         created_at: now,
       });
+  } else if (type === 'goal-remove') {
+    const goal = state.goals.find((g) => g.id === payload.goalId && !g.deletedAt);
+    if (!goal) throw new FinanceValidation('Ціль не знайдена');
+    if (goalBalances(state.goalMoves, goal.id).length)
+      throw new FinanceValidation('Спочатку поверни залишок із цілі');
+    update('UPDATE finance_goals SET deleted_at = ? WHERE id = ?', [now, goal.id]);
+    for (const budget of state.budgets.filter((b) => b.goalId === goal.id)) {
+      update('UPDATE finance_budgets SET forecast_enabled = 0 WHERE id = ?', [budget.id]);
+      insert('finance_budget_versions', {
+        id: `${id}:${budget.id}`,
+        budget_id: budget.id,
+        valid_from: now,
+        definition_json: JSON.stringify({ ...budget, forecastEnabled: false }),
+        removed: 0,
+        sequence: version + 1,
+      });
+    }
   } else if (type === 'goal-move') {
     const goal = state.goals.find((g) => g.id === payload.goalId);
-    if (!goal) throw new FinanceValidation('Ціль не знайдена');
+    if (!goal || goal.deletedAt) throw new FinanceValidation('Ціль не знайдена');
     const bankTx = payload.transactionId
       ? state.transactions.find((t) => t.id === payload.transactionId)
       : null;
@@ -1506,7 +1530,10 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
             ? text(payload.goalId)
             : null
         : null;
-    if (goalId && !state.goals.some((g) => g.id === goalId && g.status === 'active'))
+    if (
+      goalId &&
+      !state.goals.some((g) => g.id === goalId && g.status === 'active' && !g.deletedAt)
+    )
       throw new FinanceValidation('Обери активну ціль');
     const sortOrder = existingBudget?.sortOrder ?? state.budgets.length;
     const forecastEnabled =

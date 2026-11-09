@@ -1,4 +1,24 @@
 import { kyivParts, shiftDate, sumMoney } from './planning.mjs';
+
+/** @param {{goalId:string,accountId:string,amountMinor:number,movementKind?:string}[]} moves
+ * @param {string} goalId */
+export function goalBalances(moves, goalId) {
+  /** @type {Map<string,{accountId:string,amountMinor:number,movementKind:'reserve'|'external'}>} */
+  const balances = new Map();
+  for (const move of moves) {
+    if (move.goalId !== goalId) continue;
+    const movementKind = move.movementKind === 'external' ? 'external' : 'reserve';
+    const key = `${movementKind}:${move.accountId}`;
+    const previous = balances.get(key)?.amountMinor ?? 0;
+    balances.set(key, {
+      movementKind,
+      accountId: move.accountId,
+      amountMinor: sumMoney([previous, move.amountMinor]),
+    });
+  }
+  return [...balances.values()].filter((balance) => balance.amountMinor !== 0);
+}
+
 /** @param {string} date @param {string} period */
 function cycleStart(date, period) {
   if (period === 'day') return date;
@@ -12,7 +32,8 @@ export function savingsForecast(finance, days, nowMs) {
     until = shiftDate(today, days - 1);
   return (finance.goals ?? [])
     .filter(
-      (/** @type {any} */ g) => g.status === 'active' && g.planAmountMinor > 0 && g.planPeriod,
+      (/** @type {any} */ g) =>
+        !g.deletedAt && g.status === 'active' && g.planAmountMinor > 0 && g.planPeriod,
     )
     .map((/** @type {any} */ g) => {
       const moves = finance.goalMoves.filter(

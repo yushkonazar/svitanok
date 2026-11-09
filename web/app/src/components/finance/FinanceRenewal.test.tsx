@@ -120,12 +120,23 @@ it('validates custom boundaries before saving and keeps all settings explicit', 
   fireEvent.change(inputs[1]!, { target: { value: '1200' } });
   fireEvent.click(screen.getByRole('button', { name: 'Додати межу' }));
   fireEvent.change(screen.getAllByLabelText('До суми, ₴')[3]!, { target: { value: '10000' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Надходження' }));
+  fireEvent.change(screen.getAllByLabelText('До суми, ₴')[0]!, { target: { value: '30' } });
+  fireEvent.change(screen.getByLabelText('Додатковий показник першого екрана'), {
+    target: { value: 'savings' },
+  });
   fireEvent.click(screen.getByRole('button', { name: 'Зберегти' }));
   await waitFor(() =>
     expect(postFinance).toHaveBeenCalledWith(
       expect.objectContaining({
         type: 'display-settings',
-        payload: expect.objectContaining({ expenseThresholds: [20000, 120000, 300000, 1000000] }),
+        payload: expect.objectContaining({
+          expenseThresholds: [20000, 120000, 300000, 1000000],
+          inflowThresholds: [
+            3000, 10000, 20000, 35000, 50000, 75000, 100000, 150000, 250000, 500000,
+          ],
+          overviewMetric: 'savings',
+        }),
       }),
     ),
   );
@@ -164,16 +175,51 @@ it('offers terminal classification inline and links own cash with a single confi
   );
   expect(postFinance).toHaveBeenCalledTimes(1);
 });
-it('keeps incoming topups green before and after their classification as own transfers', () => {
+it('keeps incoming topups on the same amount band after their classification as own transfers', () => {
   for (const kind of ['unclassified', 'transfer', 'income']) {
     const { container, unmount } = render(
       <TransactionAmount
         transaction={{ ...foreign(), kind, amountMinor: 50000, amountUah: 50000, currency: 'UAH' }}
       />,
     );
-    expect(container.querySelector('.finance-transaction-amount')).toHaveClass('text-pos');
+    const amount = container.querySelector('.finance-transaction-amount');
+    expect(amount).toHaveClass('finance-inflow-tone');
+    expect(amount).toHaveAttribute('data-amount-band', '4');
     unmount();
   }
+});
+it('uses a custom inflow scale and keeps large outgoing transfers on the final expense band', () => {
+  const display = {
+    ...readFinanceDemo().display!,
+    expenseThresholds: [5000],
+    inflowThresholds: [500],
+  };
+  const tx = {
+    ...foreign(),
+    kind: 'transfer',
+    amountMinor: -800000,
+    amountUah: -800000,
+    currency: 'UAH',
+  };
+  const { container, rerender } = render(<TransactionAmount transaction={tx} display={display} />);
+  const amount = () => container.querySelector('.finance-transaction-amount');
+  expect(amount()).toHaveClass('finance-expense-tone');
+  expect(amount()).toHaveAttribute('data-amount-band', '1');
+  rerender(
+    <TransactionAmount
+      transaction={{ ...tx, amountMinor: 501, amountUah: 501 }}
+      display={display}
+    />,
+  );
+  expect(amount()).toHaveClass('finance-inflow-tone');
+  expect(amount()).toHaveAttribute('data-amount-band', '1');
+  rerender(
+    <TransactionAmount
+      transaction={{ ...tx, amountMinor: 500, amountUah: 500 }}
+      display={display}
+    />,
+  );
+  expect(amount()).toHaveAttribute('data-amount-band', '0');
 });
 it('prompts only for the current Kyiv day and displays the actual bank time', () => {
   vi.useFakeTimers();

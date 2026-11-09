@@ -14,3 +14,7 @@ export interface SavingsForecast {
   description: string;
 }
 export function savingsForecast(finance: any, days: number, nowMs: number): SavingsForecast[];
+export function goalBalances(
+  moves: { goalId: string; accountId: string; amountMinor: number; movementKind?: string }[],
+  goalId: string,
+): { accountId: string; amountMinor: number; movementKind: 'reserve' | 'external' }[];

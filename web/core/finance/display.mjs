@@ -2,6 +2,20 @@ export const DEFAULT_THRESHOLDS = [
   5000, 10000, 20000, 35000, 50000, 75000, 100000, 150000, 250000, 500000,
 ];
 const LEGACY_THRESHOLDS = [20000, 100000, 300000];
+/** @param {unknown} value @param {string} label */
+function amountThresholds(value, label) {
+  const thresholds = Array.isArray(value) ? value : DEFAULT_THRESHOLDS;
+  if (
+    thresholds.length > 20 ||
+    thresholds.some(
+      (n, i) => !Number.isSafeInteger(n) || n <= 0 || (i > 0 && n <= thresholds[i - 1]),
+    )
+  )
+    throw new Error(
+      `Межі ${label} мають зростати, бути додатними та не повторюватися (до 20 меж).`,
+    );
+  return [...thresholds];
+}
 /** @param {any} value */
 export function financeDisplay(value) {
   const x = value && typeof value === 'object' ? value : {};
@@ -12,21 +26,13 @@ export function financeDisplay(value) {
     x.expenseThresholds.every(
       (/** @type {number} */ n, /** @type {number} */ i) => n === LEGACY_THRESHOLDS[i],
     );
-  const thresholds =
-    Array.isArray(x.expenseThresholds) && !previousDefault
-      ? x.expenseThresholds
-      : DEFAULT_THRESHOLDS;
-  if (
-    thresholds.length > 20 ||
-    thresholds.some(
-      (/** @type {any} */ n, /** @type {number} */ i) =>
-        !Number.isSafeInteger(n) || n <= 0 || (i > 0 && n <= thresholds[i - 1]),
-    )
-  )
-    throw new Error('Межі витрат мають зростати, бути додатними та не повторюватися (до 20 меж).');
   return {
     paletteVersion: 2,
-    expenseThresholds: [...thresholds],
+    expenseThresholds: amountThresholds(previousDefault ? null : x.expenseThresholds, 'витрат'),
+    inflowThresholds: amountThresholds(x.inflowThresholds, 'надходжень'),
+    overviewMetric: ['payment', 'savings', 'taxi'].includes(x.overviewMetric)
+      ? x.overviewMetric
+      : 'payment',
     currencyCycle: x.currencyCycle !== false,
     animations: x.animations !== false,
     expenseForecast: ['history', 'plan'].includes(x.expenseForecast)

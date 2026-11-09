@@ -1,4 +1,5 @@
 import type { Finance } from '../../api/finance-schema.ts';
+import { usePresentation } from '../../lib/presentation.ts';
 export function BankRefreshPanel({
   finance,
   accountId,
@@ -17,6 +18,7 @@ export function BankRefreshPanel({
   error?: string;
 }) {
   const status = finance.bankSync;
+  const { explanations } = usePresentation();
   const sources = [
     ...finance.accounts.filter((a) => a.kind === 'mono'),
     ...(finance.bankJars ?? []),
@@ -74,7 +76,7 @@ export function BankRefreshPanel({
               .
             </>
           )}
-          Позначка обробки може залишитися, поки банк не оновить передані дані.
+          {explanations && ' Позначка обробки може залишитися до наступного оновлення банку.'}
         </p>
       ) : message ? (
         <p className="renewal-muted" role="status">
