@@ -58,6 +58,7 @@ export function TaxiHistory({
   const days = workdays(calculated?.entries ?? []),
     previousDays = workdays(previous?.entries ?? []);
   const expected = settlement?.expectedMinor ?? week?.settlementMinor ?? 0;
+  const target = f.forecast.taxiTargets?.[key];
   const total = (field: 'commissionMinor' | 'fuelMinor' | 'tipsMinor') =>
     sumMoney(calculated?.entries.map((e) => e[field]) ?? []);
   const metrics: [string, number][] =
@@ -182,6 +183,14 @@ export function TaxiHistory({
                 </div>
               ))}
             </div>
+            {target && (
+              <p className="renewal-inset">
+                Ціль перезмінки · <b>{moneyLabel(target)}</b>
+                {calculated?.entries.every((entry) => entry.commissionReported !== false) && (
+                  <> · {percentLabel(((calculated?.earnedMinor ?? 0) / target) * 100)} виконано</>
+                )}
+              </p>
+            )}
             {previous && calculated && week.complete && days > 0 && previousDays > 0 && (
               <section className="renewal-inset">
                 <h3 className="font-bold">Порівняння з попередньою перезмінкою</h3>

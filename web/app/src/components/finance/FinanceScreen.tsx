@@ -11,8 +11,7 @@ import { financeView, moneyLabel } from '../../lib/financeView.ts';
 import { usePresentation } from '../../lib/presentation.ts';
 import { isDuePayment, isOpenPayment, possibleBankPayment } from '../../lib/todayPayment.ts';
 import { isTerminalTopup } from '../../../../core/finance/display.mjs';
-import { sumMoney, calculateTaxiWeek } from '../../../../core/finance/planning.mjs';
-import { taxiPeriodLabel, taxiScheduleLabel, taxiVehicleName } from '../../lib/taxiPeriods.ts';
+import { sumMoney } from '../../../../core/finance/planning.mjs';
 import { LoadingSkeleton, ErrorState } from '../ui/states.tsx';
 import { SessionExpired } from '../ui/SessionExpired.tsx';
 import { BudgetPlan } from './BudgetPlan.tsx';
@@ -34,6 +33,7 @@ import { TransactionDetail } from './TransactionDetail.tsx';
 import { PaymentGroups } from './PaymentGroups.tsx';
 import { FinanceExplanation } from './FinanceExplanation.tsx';
 import { TaxiHistory } from './TaxiHistory.tsx';
+import { TaxiWorkCard } from './TaxiWorkCard.tsx';
 import { PaymentCalendar } from './PaymentCalendar.tsx';
 import { kyivParts, shiftDate } from '../../../../core/finance/planning.mjs';
 import { resetFinanceDemo } from '../../api/finance-demo.ts';
@@ -213,10 +213,6 @@ export function FinanceScreen() {
   const f = data.finance,
     view = financeView(f, days, nowMs);
   const today = kyivParts(nowMs).date;
-  const taxi = calculateTaxiWeek(f.taxiEntries, f.policies, nowMs);
-  const activePolicy = f.policies.filter((p) => Date.parse(p.effectiveAt) <= nowMs).at(-1)!;
-  const latestWeek = f.taxiWeeks.find((w) => w.key === taxi.key);
-  const awaitingTaxi = f.taxiWeeks.find((w) => w.closed && !w.settled);
   const detail = f.payments.find((p) => p.id === detailId);
   const transaction = f.transactions.find((t) => t.id === transactionId);
   const operations = view.txs.filter(
@@ -453,201 +449,13 @@ export function FinanceScreen() {
       <FinanceMilestone finance={f} />
 
       {f.settings.taxiVisible && (
-        <section className="renewal-card">
-          <div className="renewal-section-head">
-            <div>
-              <p className="renewal-eyebrow mb-2">РОБОТА · ТАКСІ</p>
-              <h2 className="text-lg font-bold">{taxiVehicleName(taxi.from, f.policies)}</h2>
-            </div>
-            <button className="renewal-link" onClick={() => setForm({ kind: 'policy' })}>
-              Налаштувати таксі ↗
-            </button>
-          </div>
-          <p className="renewal-chart-note mb-3">{taxiPeriodLabel(taxi.key, f.policies)}, Київ</p>
-          <button
-            className="renewal-link mb-3"
-            onClick={() =>
-              setForm({
-                kind: 'expense',
-                defaults: { category: 'догляд за авто', description: 'Мийка автомобіля' },
-              })
-            }
-          >
-            Особиста витрата · мийка, догляд за авто
-          </button>
-          <div className="renewal-metrics mb-3">
-            <div className="renewal-metric">
-              <span className="renewal-muted">Заробіток за період</span>
-              <strong className="text-pos">{moneyLabel(taxi.earnedMinor)}</strong>
-            </div>
-            {latestWeek && (
-              <div className="renewal-metric">
-                <span className="renewal-muted">Розрахунок</span>
-                <strong>
-                  {latestWeek.settled
-                    ? 'Закрито'
-                    : latestWeek.complete
-                      ? 'Попередній'
-                      : 'Бракує даних'}
-                </strong>
-              </div>
-            )}
-          </div>
-          {latestWeek?.complete === false && (
-            <p className="renewal-inset renewal-muted mt-3">
-              Попередній розрахунок: ще не вказано комісію або отриману готівку. Відкрий деталі й
-              доповни зміну.
-            </p>
-          )}
-          <button className="renewal-button mt-4 w-full" onClick={() => setForm({ kind: 'taxi' })}>
-            + Записати зміну
-          </button>
-          {awaitingTaxi && (
-            <div
-              className="renewal-inset flex flex-col gap-3 mt-3"
-              role="region"
-              aria-label="Нерозрахована перезмінка"
-            >
-              <b>Попередній період очікує розрахунку</b>
-              <p className="renewal-chart-note">
-                {taxiPeriodLabel(awaitingTaxi.key, f.policies)}, Київ
-              </p>
-              <p>
-                {awaitingTaxi.settlementMinor < 0
-                  ? 'За формулою повернути парку'
-                  : 'За формулою отримати від парку'}
-                : <b>{moneyLabel(Math.abs(awaitingTaxi.settlementMinor))}</b>
-              </p>
-              <button
-                className="renewal-button w-full"
-                onClick={() =>
-                  awaitingTaxi.complete
-                    ? setForm({ kind: 'taxi-settle', id: awaitingTaxi.key })
-                    : setTaxiHistoryKey(awaitingTaxi.key)
-                }
-              >
-                {awaitingTaxi.complete
-                  ? 'Підтвердити оплату перезмінки'
-                  : 'Доповнити записи періоду'}
-              </button>
-            </div>
-          )}
-          <div className="renewal-section-head flex-wrap mt-2">
-            <p className="renewal-muted">
-              Особистий дохід за період ·{' '}
-              {moneyLabel(
-                sumMoney(
-                  f.transactions
-                    .filter(
-                      (t) =>
-                        t.personalTaxiType &&
-                        t.kind === 'income' &&
-                        Date.parse(t.at) >= taxi.from &&
-                        Date.parse(t.at) < taxi.to,
-                    )
-                    .map((t) => t.amountUah ?? 0),
-                ),
-              )}
-            </p>
-            <button
-              className="renewal-link"
-              aria-label="Записати особистий дохід таксі"
-              onClick={() => setForm({ kind: 'taxi-personal' })}
-            >
-              Записати +
-            </button>
-          </div>
-          <button
-            className="renewal-secondary mt-3 w-full"
-            onClick={() => {
-              setTaxiHistoryKey('');
-            }}
-          >
-            Історія перезмінок
-          </button>
-          <details className="mt-3">
-            <summary className="renewal-link cursor-pointer">Каса, умови та розрахунки</summary>
-            <button className="renewal-secondary mt-3" onClick={() => setForm({ kind: 'policy' })}>
-              Змінити умови роботи
-            </button>
-            <p className="renewal-muted mt-3">
-              Перезмінка: {taxiScheduleLabel(nowMs, f.policies)}.
-            </p>
-            <details className="renewal-inset mt-3">
-              <summary className="renewal-link cursor-pointer">
-                Додатково · зміна авто чи дня перезмінки
-              </summary>
-              <p className="renewal-muted mt-3">
-                Розділити поточний період, зберегти попередні розрахунки й почати облік нового авто.
-              </p>
-              <button
-                type="button"
-                className="renewal-secondary mt-3 w-full"
-                onClick={() => setForm({ kind: 'taxi-transition' })}
-              >
-                Змінити авто / розклад
-              </button>
-            </details>
-            <div className="renewal-metrics">
-              <div className="renewal-metric">
-                <span className="renewal-muted">Чиста каса · після комісії</span>
-                <strong>{moneyLabel(taxi.netCashMinor)}</strong>
-              </div>
-              <div className="renewal-metric">
-                <span className="renewal-muted">Брудна каса</span>
-                <strong>{moneyLabel(taxi.grossMinor)}</strong>
-              </div>
-              <div className="renewal-metric">
-                <span className="renewal-muted">Повна комісія</span>
-                <strong>{moneyLabel(sumMoney(taxi.groups.map((g) => g.commissionMinor)))}</strong>
-              </div>
-              <div className="renewal-metric">
-                <span className="renewal-muted">Пальне парку</span>
-                <strong>{moneyLabel(sumMoney(taxi.groups.map((g) => g.fuelMinor)))}</strong>
-              </div>
-              <div className="renewal-metric">
-                <span className="renewal-muted">Чайові до поділу</span>
-                <strong>{moneyLabel(sumMoney(taxi.entries.map((g) => g.tipsMinor)))}</strong>
-              </div>
-              <div className="renewal-metric">
-                <span className="renewal-muted">Отримана готівка</span>
-                <strong>{moneyLabel(latestWeek?.heldMinor ?? 0)}</strong>
-              </div>
-              {latestWeek && !latestWeek.settled && latestWeek.settlementMinor !== 0 && (
-                <div className="renewal-metric">
-                  <span className="renewal-muted">
-                    {latestWeek.settlementMinor < 0 ? 'Повернути парку' : 'Парк доплатить'}
-                  </span>
-                  <strong className="text-a2">
-                    {moneyLabel(Math.abs(latestWeek.settlementMinor))}
-                  </strong>
-                </div>
-              )}
-            </div>
-            <p className="renewal-muted mt-3">
-              Поточні умови: каса {activePolicy.fareBps / 100}%, комісія{' '}
-              {activePolicy.commissionBps / 100}%, пальне {activePolicy.fuelBps / 100}%.
-            </p>
-            {activePolicy.thresholdMinor !== null && (
-              <div className="mt-4">
-                <p className="renewal-muted">
-                  {taxi.grossMinor > activePolicy.thresholdMinor
-                    ? `${activePolicy.bonusFareBps / 100}% на касу за цими умовами; частки комісії й пального залишаються незмінними.`
-                    : `Для ${activePolicy.bonusFareBps / 100}% потрібно перевищити ${moneyLabel(activePolicy.thresholdMinor)} брудної каси.`}
-                </p>
-                <Progress
-                  percent={(taxi.grossMinor / Math.max(1, activePolicy.thresholdMinor)) * 100}
-                />
-              </div>
-            )}
-            {explanations && (
-              <p className="renewal-muted mt-3">
-                Заробіток є розрахунком, не другим надходженням на рахунок. Пальне з паливної картки
-                не списується з особистих коштів.
-              </p>
-            )}
-          </details>
-        </section>
+        <TaxiWorkCard
+          finance={f}
+          now={Math.max(nowMs, Date.parse(f.generatedAt) || nowMs)}
+          explanations={explanations}
+          onAction={setForm}
+          onHistory={setTaxiHistoryKey}
+        />
       )}
 
       <section

@@ -46,6 +46,25 @@ export function taxiEntryWeek(
   entry: TaxiEntry,
   policies?: TaxiPolicy[],
 ): { key: string; from: number; to: number };
+export function setTaxiPeriodTarget(
+  targets: Record<string, number>,
+  key: unknown,
+  amount: unknown,
+  policies: TaxiPolicy[],
+  nowMs: number,
+): Record<string, number>;
+export interface TaxiTotals {
+  grossMinor: number;
+  commissionMinor: number;
+  fuelMinor: number;
+  tipsMinor: number;
+  directMinor: number;
+}
+export function taxiEarnings(
+  totals: TaxiTotals,
+  policy: TaxiPolicy,
+  fareBps?: number,
+): { extrasMinor: number; earnedMinor: number };
 export function prepareTaxiTransition(
   entries: TaxiEntry[],
   policies: TaxiPolicy[],

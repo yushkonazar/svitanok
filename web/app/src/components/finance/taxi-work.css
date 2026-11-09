@@ -1,0 +1,249 @@
+.taxi-work {
+  --taxi-current: var(--finance-fact);
+  --taxi-previous: var(--finance-projection);
+  display: grid;
+  gap: 12px;
+  background:
+    radial-gradient(
+      ellipse at 95% 0%,
+      color-mix(in srgb, var(--taxi-current) 13%, transparent),
+      transparent 55%
+    ),
+    var(--color-bg2);
+}
+.taxi-work-chip {
+  padding: 6px 10px;
+  border: 1px solid var(--color-glassb);
+  border-radius: 999px;
+  color: var(--taxi-current);
+  font: 500 11px var(--font-amount);
+  white-space: nowrap;
+}
+.taxi-work > .renewal-section-head {
+  margin-bottom: 0;
+}
+.taxi-work-hero {
+  display: grid;
+  justify-items: start;
+  gap: 4px;
+}
+.taxi-work-hero .renewal-big {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  font-size: clamp(21px, 6.7vw, 37px);
+}
+.taxi-work-delta {
+  font-size: 12px;
+}
+.taxi-work-target,
+.taxi-chart {
+  padding: 12px;
+  border: 1px solid var(--color-glassb);
+  border-radius: 14px;
+  background: var(--color-glass);
+}
+.taxi-work-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px 10px;
+  font-size: 13px;
+}
+.taxi-work-target .renewal-link {
+  min-height: 36px;
+}
+.taxi-work-target .taxi-work-row > div {
+  display: grid;
+  gap: 3px;
+}
+.taxi-target-caption {
+  margin-top: 6px;
+  color: var(--color-tx2);
+  font-size: 12px;
+}
+.taxi-work-target .renewal-progress > span {
+  background: var(--taxi-current);
+}
+@media (prefers-reduced-motion: no-preference) {
+  html:not([data-finance-motion='off']):not([data-calm='true'])
+    .taxi-work-target
+    .renewal-progress
+    > span {
+    transition: width 400ms ease-out;
+  }
+}
+.taxi-next-target {
+  margin-top: 7px;
+  text-align: start;
+}
+.taxi-work-unpaid,
+.taxi-work-footer,
+.taxi-work-fold-body {
+  display: grid;
+  gap: 8px;
+}
+.taxi-work-unpaid {
+  border-inline-start: 2px solid var(--color-a2);
+}
+.taxi-chart .renewal-segments > button {
+  flex: 1 1 0;
+  min-height: 38px;
+  font-size: 12px;
+}
+.taxi-chart svg {
+  display: block;
+  width: 100%;
+  color: var(--taxi-current);
+  cursor: pointer;
+}
+.taxi-chart svg text {
+  fill: var(--color-tx2);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+.taxi-grid {
+  stroke: var(--color-glassb);
+  stroke-width: 1;
+}
+.taxi-chart-cursor,
+.taxi-line-previous {
+  stroke-dasharray: 4 4;
+}
+.taxi-line-current,
+.taxi-line-previous {
+  fill: none;
+  stroke: var(--taxi-current);
+  stroke-width: 2.5;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+.taxi-line-previous {
+  stroke: var(--taxi-previous);
+}
+.taxi-dot-current,
+.taxi-bar {
+  fill: var(--taxi-current);
+}
+.taxi-dot-previous {
+  fill: var(--taxi-previous);
+}
+.taxi-dot-current,
+.taxi-dot-previous {
+  stroke: var(--color-bg2);
+  stroke-width: 1.5;
+}
+.taxi-bar {
+  opacity: 0.63;
+}
+.taxi-bar-selected {
+  opacity: 1;
+}
+.taxi-chart-range {
+  width: 100%;
+  height: 24px;
+  accent-color: var(--taxi-current);
+}
+.taxi-chart-readout {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px 16px;
+  padding: 6px 0 0;
+}
+.taxi-chart-value {
+  display: grid;
+  gap: 2px;
+  color: var(--taxi-current);
+}
+.taxi-chart-value > span,
+.taxi-chart-empty,
+.taxi-shift-details {
+  color: var(--color-tx2);
+  font-size: 12px;
+}
+.taxi-chart-previous {
+  color: var(--taxi-previous);
+}
+.taxi-chart-empty {
+  padding-top: 12px;
+}
+.taxi-shift-details {
+  flex-basis: 100%;
+}
+.taxi-chart .renewal-chart-note {
+  margin-top: 8px;
+}
+.taxi-work-fold {
+  border-top: 1px solid var(--color-glassb);
+}
+.taxi-work-fold > summary {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 40px;
+  color: var(--color-tx);
+  font-size: 13px;
+  font-weight: 600;
+  list-style: none;
+  cursor: pointer;
+}
+.taxi-work-fold > summary::-webkit-details-marker {
+  display: none;
+}
+.taxi-work-fold > summary::after {
+  content: '›';
+  margin-inline-start: auto;
+  color: var(--color-a2);
+  font-size: 19px;
+}
+.taxi-work-fold[open] > summary::after {
+  transform: rotate(90deg);
+}
+.taxi-work-forecast summary > b {
+  margin-inline-start: auto;
+  color: var(--taxi-previous);
+  font-size: 13px;
+}
+.taxi-work-forecast summary::after {
+  margin-inline-start: 0;
+}
+.taxi-work-fold-body {
+  color: var(--color-tx2);
+  font-size: 13px;
+}
+.taxi-work-fold-body > .renewal-link {
+  justify-self: start;
+}
+.taxi-work-total {
+  border-top: 1px solid var(--color-glassb);
+  padding-top: 8px;
+  color: var(--color-tx);
+}
+.taxi-work-target b,
+.taxi-work-total b,
+.taxi-chart-value b,
+.taxi-work-forecast summary b {
+  font-family: var(--font-amount);
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+.taxi-work-ledger {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px 10px;
+}
+.taxi-work-ledger dd {
+  color: var(--color-tx);
+  text-align: end;
+  font-variant-numeric: tabular-nums;
+}
+.taxi-work-actions {
+  display: grid;
+  justify-items: start;
+  gap: 6px;
+}
+.taxi-work-actions > button {
+  min-height: 32px;
+  text-align: start;
+}
