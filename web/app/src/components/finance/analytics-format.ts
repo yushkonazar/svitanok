@@ -50,10 +50,11 @@ export const amountNumber = (minor: number) =>
     minimumFractionDigits: minor % 100 ? 2 : 0,
     maximumFractionDigits: 2,
   });
-export const compactAmount = (minor: number) =>
+export const compactAmount = (minor: number, maximumSignificantDigits?: number) =>
   ((minor === 0 ? 0 : minor) / 100).toLocaleString('uk-UA', {
     notation: 'compact',
     maximumFractionDigits: 1,
+    maximumSignificantDigits,
   });
 
 export const financeMonthShort = (date: string) => {

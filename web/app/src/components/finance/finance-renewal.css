@@ -21,9 +21,12 @@ html[data-theme='light'] .renewal-finance {
   padding: 0 0 8px;
 }
 .finance-balance-button .renewal-big {
-  font-size: clamp(27px, 7vw, 46px);
-  font-variant-numeric: tabular-nums;
-  overflow-wrap: anywhere;
+  font-size: clamp(24px, 7vw, 42px);
+}
+.renewal-finance .renewal-metric strong {
+  font-family: var(--font-amount);
+  font-weight: 500;
+  letter-spacing: -0.035em;
 }
 .finance-quick-actions {
   display: grid;
@@ -126,10 +129,7 @@ html[data-theme='light'] .renewal-finance {
   align-items: flex-end;
   flex-shrink: 0;
   min-inline-size: 0;
-  font-variant-numeric: tabular-nums;
   white-space: nowrap;
-  font-family: var(--font-mono, monospace);
-  font-weight: 700;
 }
 .finance-expense-tone,
 .finance-inflow-tone {
@@ -565,14 +565,25 @@ html[data-finance-motion='off'] .finance-rank-track > span {
 .finance-spark-day[aria-pressed='true'] {
   background: color-mix(in srgb, var(--finance-fact) 13%, transparent);
 }
-.finance-spark-day[aria-pressed='true']::before {
+.finance-spark-day[aria-pressed='true'] .finance-spark-track::before {
   content: '';
   position: absolute;
-  top: 2px;
-  bottom: 21px;
+  inset-block: 0;
   left: 50%;
   border-left: 1px solid var(--finance-fact);
   pointer-events: none;
+}
+.finance-spark-value {
+  display: grid;
+  align-content: end;
+  min-height: 2.3em;
+  font: 500 clamp(9px, 2.6vw, 11px) / 1.15 var(--font-amount);
+  letter-spacing: -0.04em;
+}
+.finance-spark-value small {
+  color: var(--color-tx2);
+  font-family: var(--font-sans);
+  font-size: inherit;
 }
 .finance-spark-track {
   position: relative;

@@ -2,9 +2,29 @@
 
 /* Шрифти макета — самохостом (@fontsource), не Google Fonts: CSP тримає
    font-src/style-src на 'self', а в Telegram-вебв'ю локальні вантажаться швидше
-   й без зовнішніх запитів. Manrope — текст, JetBrains Mono — числа/мітки. */
+   й без зовнішніх запитів. */
 @import '@fontsource-variable/manrope';
 @import '@fontsource-variable/jetbrains-mono';
+
+@font-face {
+  font-family: 'Unbounded';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('@fontsource/unbounded/files/unbounded-latin-500-normal.woff2') format('woff2');
+  unicode-range: U+0020, U+0024-0025, U+002B-002E, U+0030-0039, U+00A0, U+00A2-00A5, U+20AC, U+2212;
+}
+
+@font-face {
+  font-family: 'Unbounded';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  /* Serve ₴ as a file because font-src allows only the app's origin. */
+  src: url('@fontsource/unbounded/files/unbounded-cyrillic-ext-500-normal.woff2?no-inline')
+    format('woff2');
+  unicode-range: U+20B4;
+}
 
 /* Дизайн-система Svitanok v2 (Claude Design, Svitanok.dc.html).
    Темна — основна: глибоке фіолетово-нічне тло + «туман» (fog) із коралу/амбера.
@@ -63,6 +83,7 @@
 
   --font-sans: 'Manrope Variable', system-ui, -apple-system, sans-serif;
   --font-mono: 'JetBrains Mono Variable', ui-monospace, monospace;
+  --font-amount: 'Unbounded', var(--font-sans);
 }
 
 /* «Туман» — не токен Tailwind (лише для фонових плям), тому звичайні змінні.
