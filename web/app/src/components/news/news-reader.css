@@ -13,29 +13,6 @@
   outline: 2px solid var(--color-a2);
   outline-offset: 4px;
 }
-.news-reader-heading {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 0 2px 4px;
-}
-.renewal-shell .news-reader-heading {
-  margin-bottom: 0;
-}
-.news-reader-heading h1 {
-  margin: 0;
-  font-size: 28px;
-  font-weight: 750;
-  letter-spacing: -0.045em;
-  line-height: 1.15;
-}
-.news-reader-heading p {
-  margin: 7px 0 0;
-  color: var(--color-tx3);
-  font-size: 11px;
-  line-height: 1.5;
-}
 .news-refresh {
   display: grid;
   place-items: center;
