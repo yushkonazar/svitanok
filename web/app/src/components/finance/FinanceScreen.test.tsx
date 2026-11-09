@@ -140,6 +140,9 @@ it('opens the personal taxi income form from the balance even with the taxi sect
   finance.settings.taxiVisible = false;
   renderFinance('/finance', finance);
   const first = screen.getByRole('region', { name: 'Вільні кошти' });
+  const title = screen.getByRole('heading', { level: 1, name: 'Знати, що є. Планувати далі.' });
+  expect(title.compareDocumentPosition(first) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(screen.getByText('Малі кроки теж ведуть до цілей.')).toBeVisible();
   fireEvent.click(within(first).getByRole('button', { name: 'Особистий дохід' }));
   const dialog = screen.getByRole('dialog', { name: 'Особистий дохід таксі' });
   expect(within(dialog).getByRole('option', { name: 'Чайові готівкою' })).toBeInTheDocument();

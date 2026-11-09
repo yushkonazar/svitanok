@@ -377,7 +377,13 @@ export function FinanceScreen() {
         </div>
       )}
       <header className="finance-heading">
-        <h1>Фінанси</h1>
+        <div className="min-w-0">
+          <p className="renewal-eyebrow">Фінанси</p>
+          <h1>
+            <span>Знати, що є.</span> <em>Планувати далі.</em>
+          </h1>
+          <p className="finance-heading-intro">Малі кроки теж ведуть до цілей.</p>
+        </div>
         <div className="finance-heading-actions">
           <button
             className="renewal-secondary"
