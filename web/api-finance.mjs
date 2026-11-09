@@ -152,14 +152,15 @@ export async function handleFinance(request, env) {
     return response;
   } catch (error) {
     if (error instanceof MonoTooSoonError) {
+      const seconds = Math.ceil(error.retryAfterMs / 1000);
       const response = json(
         {
           ok: false,
-          error: 'Monobank дозволяє оновлення раз на хвилину. Спробуй через 60 секунд.',
+          error: `Monobank просить зачекати. Спробуй через ${seconds} с.`,
         },
         429,
       );
-      response.headers.set('Retry-After', '60');
+      response.headers.set('Retry-After', String(seconds));
       return response;
     }
     if (error instanceof FinanceConflict) return json({ ok: false, error: error.message }, 409);

@@ -1,11 +1,34 @@
 import { MONO_RECONCILE_DO_NAME } from './contract.mjs';
 
-/** @param {Env} env @returns {any|null} */
-function stub(env) {
+const INBOX_NAME = 'mono-webhook-inbox';
+
+/** @param {Env} env @param {string} [name] @returns {any|null} */
+function stub(env, name = MONO_RECONCILE_DO_NAME) {
   const ns = env.MONO_RECONCILE;
-  return typeof ns?.getByName === 'function'
-    ? /** @type {any} */ (ns.getByName(MONO_RECONCILE_DO_NAME))
-    : null;
+  return typeof ns?.getByName === 'function' ? /** @type {any} */ (ns.getByName(name)) : null;
+}
+
+/** @typedef {{ receipt: string, account: string, item: import('../adapters/mono.mjs').MonoStatementItem, receivedAt: number }} QueuedMonoWebhook */
+
+/** @param {Env} env @param {string} account @param {QueuedMonoWebhook['item']} item @param {number} receivedAt */
+export async function enqueueMonoWebhook(env, account, item, receivedAt) {
+  return Boolean(await stub(env, INBOX_NAME)?.enqueueWebhook(account, item, receivedAt));
+}
+
+/** @param {Env} env @param {number} nowMs @returns {Promise<QueuedMonoWebhook[]>} */
+export async function readMonoWebhookInbox(env, nowMs) {
+  const target = stub(env, INBOX_NAME);
+  return typeof target?.readWebhookInbox === 'function' ? await target.readWebhookInbox(nowMs) : [];
+}
+
+/** @param {Env} env @param {number} nowMs */
+export async function claimMonoWebhookCatalogRefresh(env, nowMs) {
+  return Boolean(await stub(env, INBOX_NAME)?.claimWebhookCatalogRefresh(nowMs));
+}
+
+/** @param {Env} env @param {string} receipt */
+export async function completeMonoWebhook(env, receipt) {
+  await stub(env, INBOX_NAME)?.completeWebhook(receipt);
 }
 
 /** @param {Env} env @param {unknown} legacyValue */

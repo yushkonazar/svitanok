@@ -8,6 +8,7 @@ import type { AnalyticsRequest } from '../../api/finance-analytics-schema.ts';
 import { kyivParts, shiftDate } from '../../../../core/finance/planning.mjs';
 import { analyticsSelection, matchesAnalytics } from '../../../../core/finance/analytics.mjs';
 import { financeCategoryLabel } from '../../../../core/finance/categories.mjs';
+import { needsBankHoldConfirmation } from '../../../../core/finance/payment-link.mjs';
 import { moneyLabel } from '../../lib/financeView.ts';
 import { useTick } from '../../lib/useTick.ts';
 import { SessionExpired } from '../ui/SessionExpired.tsx';
@@ -754,7 +755,7 @@ export function FinanceAnalytics({
                     (t.bankMissingFromStatement ||
                       t.amountUah == null ||
                       t.kind === 'unclassified' ||
-                      (t.bankHold && !t.bankVerifiedByOwner)) &&
+                      needsBankHoldConfirmation(t)) &&
                     matchesAnalytics(t, data.selection, finance.merchantAliases),
                 )
                 .map((t) => kyivParts(Date.parse(t.at)).date)}

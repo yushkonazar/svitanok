@@ -49,6 +49,7 @@ import {
   TRANSIENT_ALERT_AFTER_MS,
 } from '../web/core/finance/reconcile.mjs';
 import { workerEnv } from './helpers/env.js';
+import { MonoReconcileDO } from '../web/core/mono-reconcile/do.mjs';
 import { memoryKv } from './helpers/kv.js';
 import { d1FromSqlite } from './helpers/d1.js';
 
@@ -455,26 +456,26 @@ describe('вебхук: бар’єри', () => {
     ).toBe(400);
   });
 
-  it('невідомий рахунок - відкинути й алерт раз на добу (S-4-12)', async () => {
+  it('acknowledges delivery to an unknown account without importing it and alerts once daily', async () => {
     const { env, db } = setup();
-    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
     await seedAccounts(env);
     const res = await handleMonoWebhook(
-      webhookRequest(statementBody(item(), 'acc-чужий')),
+      webhookRequest(statementBody(item(), 'another-account')),
       env,
       undefined,
       NOON,
     );
-    expect(res.status).toBe(400);
-    expect(await res.json()).toMatchObject({ error: 'unknown-account' });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ ignored: 'unverified-account' });
     expect(db.prepare('SELECT COUNT(*) AS n FROM transactions').get()).toMatchObject({ n: 0 });
     const alerts = outboxTexts(db);
     expect(alerts).toHaveLength(1);
-    expect(alerts[0]!.text).toContain('невідомий рахунок');
+    expect(alerts[0]!.text).toContain('невідомого рахунку');
     expect(await env.BRIEFING.get(UNKNOWN_ALERT_KEY)).toBe(String(NOON));
     // Другий підроблений вебхук того ж дня алерту вже не додає.
     await handleMonoWebhook(
-      webhookRequest(statementBody(item(), 'acc-чужий')),
+      webhookRequest(statementBody(item(), 'another-account')),
       env,
       undefined,
       NOON,
@@ -482,16 +483,17 @@ describe('вебхук: бар’єри', () => {
     expect(outboxTexts(db)).toHaveLength(1);
   });
 
-  it('списку рахунків ще немає - теж відмова (звірка добере з виписки)', async () => {
+  it('acknowledges delivery before the initial catalog refresh without importing it', async () => {
     const { env, db } = setup();
-    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
     const res = await handleMonoWebhook(
       webhookRequest(statementBody(item())),
       env,
       undefined,
       NOON,
     );
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ ignored: 'unverified-account' });
     expect(db.prepare('SELECT COUNT(*) AS n FROM transactions').get()).toMatchObject({ n: 0 });
   });
 });
@@ -728,6 +730,200 @@ describe('звірка mono-reconcile', () => {
     accounts: [{ id: ACCOUNT, currencyCode: 980, type: 'black', maskedPan: ['44**11'] }],
   });
 
+  it('keeps authenticated unknown-account events out of the ledger until the catalog confirms ownership', async () => {
+    const { env, db } = setup();
+    await seedAccounts(env);
+    const objects = new Map<string, MonoReconcileDO>();
+    env.MONO_RECONCILE = {
+      getByName(name: string) {
+        const existing = objects.get(name);
+        if (existing) return existing;
+        const storage = new Map<string, unknown>();
+        const object = new MonoReconcileDO(
+          {
+            storage: {
+              get: async (key: string) => structuredClone(storage.get(key)),
+              put: async (key: string, value: unknown) => {
+                storage.set(key, structuredClone(value));
+              },
+              delete: async (key: string) => storage.delete(key),
+            },
+          } as never,
+          env,
+        );
+        objects.set(name, object);
+        return object;
+      },
+    } as never;
+    const jar = 'pending-jar';
+    const observed = item({ id: 'queued', hold: true });
+    const first = await handleMonoWebhook(
+      webhookRequest(statementBody(observed, jar)),
+      env,
+      undefined,
+      NOON,
+    );
+    expect(first.status).toBe(200);
+    expect(await first.json()).toMatchObject({ queued: 'unverified-account' });
+    const expected = monoWebhookUrl(env, 'https://svitanok.yushko.dev');
+    routeFetch([{ match: 'client-info', body: clientBody(expected) }]);
+    await monoReconcileTask(env, NOON);
+    expect(db.prepare('SELECT id FROM transactions').all()).toHaveLength(0);
+
+    await handleMonoWebhook(
+      webhookRequest(statementBody({ ...observed, hold: false }, jar)),
+      env,
+      undefined,
+      NOON + 60000,
+    );
+    await handleMonoWebhook(
+      webhookRequest(statementBody(observed, jar)),
+      env,
+      undefined,
+      NOON + 120000,
+    );
+    const fetcher = routeFetch([
+      {
+        match: 'client-info',
+        body: { ...clientBody(expected), jars: [{ id: jar, currencyCode: 980 }] },
+      },
+    ]);
+    expect(await monoReconcileTask(env, NOON + 3600000)).toMatchObject({
+      recoveredMonoWebhooks: 1,
+    });
+    const rows = db.prepare('SELECT raw_json FROM transactions').all();
+    expect(rows).toHaveLength(1);
+    expect(JSON.parse(String(rows[0]!.raw_json))).toMatchObject({
+      account: jar,
+      hold: false,
+      financeKind: 'unclassified',
+    });
+    await monoReconcileTask(env, NOON + 3900000);
+    expect(fetcher.calls).toHaveLength(1);
+  });
+
+  it('rechecks a hold older than a month using the original transaction window', async () => {
+    const { env, db } = setup();
+    await seedAccounts(env);
+    const old = NOON - 45 * 86400000;
+    const row = item({ id: 'old-hold', time: old / 1000, hold: true });
+    await handleMonoWebhook(webhookRequest(statementBody(row)), env, undefined, old);
+    const fetcher = routeFetch([
+      { match: `/statement/${ACCOUNT}/`, body: [{ ...row, hold: false }] },
+    ]);
+    expect(await monoReconcileTask(env, NOON)).toMatchObject({ pendingPosted: 1 });
+    const [from, to] = new URL(fetcher.calls[0]!.url).pathname.split('/').slice(-2).map(Number);
+    expect(from).toBe(old / 1000 - 1);
+    expect(to! - from!).toBe(31 * 86400);
+    expect(
+      JSON.parse(
+        String(db.prepare("SELECT raw_json FROM transactions WHERE id='old-hold'").get()!.raw_json),
+      ),
+    ).toMatchObject({ hold: false, bankCheckSource: 'statement' });
+  });
+
+  it('recognizes a jar from client-info, accepts its webhook and settles its record from its own statement', async () => {
+    const { env, db } = setup();
+    const jar = 'jar/+id=';
+    routeFetch([
+      {
+        match: 'client-info',
+        body: {
+          ...clientBody(monoWebhookUrl(env, 'https://svitanok.yushko.dev')),
+          jars: [
+            {
+              id: jar,
+              sendId: 'public-jar-link',
+              title: 'Резерв',
+              balance: 40000,
+              currencyCode: 980,
+            },
+          ],
+        },
+      },
+    ]);
+    expect(await monoReconcileTask(env, NIGHT)).toMatchObject({ accounts: 2 });
+    expect(await readMonoAccounts(env)).toContainEqual(
+      expect.objectContaining({ id: jar, bankKind: 'jar', name: 'Резерв' }),
+    );
+    const held = item({ id: 'jar-withdrawal', hold: true });
+    const response = await handleMonoWebhook(
+      webhookRequest(statementBody(held, jar)),
+      env,
+      undefined,
+      NIGHT + 1000,
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ ok: true });
+
+    routeFetch([{ match: `/statement/${ACCOUNT}/`, body: [] }]);
+    await monoReconcileTask(env, NIGHT + 300000);
+    const bank = routeFetch([
+      { match: `/statement/${encodeURIComponent(jar)}/`, body: [{ ...held, hold: false }] },
+    ]);
+    expect(await monoReconcileTask(env, NIGHT + 600000)).toMatchObject({ done: true });
+    expect(bank.calls).toHaveLength(1);
+    const rows = db.prepare('SELECT raw_json, flags_json FROM transactions').all();
+    expect(rows).toHaveLength(1);
+    expect(JSON.parse(String(rows[0]!.raw_json))).toMatchObject({
+      account: jar,
+      hold: false,
+      bankCheckSource: 'statement',
+      financeKind: 'unclassified',
+    });
+    expect(rows[0]!.flags_json).toBe('[]');
+    expect(outboxTexts(db)).toHaveLength(0);
+  });
+
+  it('rechecks recent holds by exact ID before night and leaves unobserved statuses pending', async () => {
+    const { env, db } = setup();
+    await seedAccounts(env);
+    const observedMs = NOON - 2 * 3600000;
+    const held = item({ time: observedMs / 1000, hold: true });
+    for (const id of ['posted', 'absent', 'unknown-status']) {
+      await handleMonoWebhook(
+        webhookRequest(statementBody({ ...held, id })),
+        env,
+        undefined,
+        observedMs,
+      );
+    }
+    db.prepare("UPDATE transactions SET note='Пояснення власника' WHERE id='posted'").run();
+    routeFetch([{ match: `/statement/${ACCOUNT}/`, status: 429, body: {} }]);
+    expect(await monoReconcileTask(env, NOON - 300000)).toEqual({ skipped: 'too-soon' });
+    const response = routeFetch([
+      {
+        match: `/statement/${ACCOUNT}/`,
+        body: [
+          { ...held, id: 'posted', hold: false, amount: -130000, operationAmount: -130000 },
+          { ...held, id: 'unknown-status', hold: undefined },
+          item({ id: 'unrelated' }),
+        ],
+      },
+    ]);
+    expect(await monoReconcileTask(env, NOON)).toEqual({ pendingChecked: 2, pendingPosted: 1 });
+    const rows = db
+      .prepare('SELECT id, amount, note, raw_json FROM transactions ORDER BY id')
+      .all();
+    expect(rows.map((row) => row.id)).toEqual(['absent', 'posted', 'unknown-status']);
+    expect(rows[1]).toMatchObject({ amount: -130000, note: 'Пояснення власника' });
+    expect(JSON.parse(String(rows[1]!.raw_json))).toMatchObject({
+      hold: false,
+      bankCheckSource: 'statement',
+    });
+    expect(JSON.parse(String(rows[2]!.raw_json))).toMatchObject({
+      hold: true,
+      bankCheckSource: 'statement',
+    });
+    expect(JSON.parse(String(rows[0]!.raw_json))).toMatchObject({
+      hold: true,
+      bankMissingFromStatement: false,
+      bankCheckedAt: new Date(observedMs).toISOString(),
+    });
+    expect(await monoReconcileTask(env, NOON + 300000)).toEqual({ skipped: 'not-due' });
+    expect(response.calls).toHaveLength(1);
+  });
+
   it('continues a full 500-row statement page on the same account and publishes freshness only after completion', async () => {
     const { env, db } = setup();
     const expected = monoWebhookUrl(env, 'https://svitanok.yushko.dev');
@@ -804,6 +1000,21 @@ describe('звірка mono-reconcile', () => {
       webHookUrl: `https://svitanok.yushko.dev${MONO_WEBHOOK_PREFIX}${SECRET}`,
     });
     expect(outboxTexts(db)[0]!.text).toContain('порожній');
+  });
+
+  it('preserves another registered webhook and continues statement reconciliation', async () => {
+    const { env, db } = setup();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const bank = routeFetch([
+      { match: 'client-info', body: clientBody('https://another-app.example/webhook') },
+    ]);
+    expect(await monoReconcileTask(env, NIGHT)).toMatchObject({ accounts: 1, rearmed: false });
+    expect(
+      bank.calls.filter((call) => new URL(call.url).hostname === 'api.monobank.ua'),
+    ).toHaveLength(1);
+    expect(outboxTexts(db)[0]!.text).toContain('іншу адресу');
+    routeFetch([{ match: '/statement/', body: [] }]);
+    expect(await monoReconcileTask(env, NIGHT + 300000)).toMatchObject({ done: true });
   });
 
   it('РІВНО один виклик Mono за тік (ліміт 1/60 с); виписка - наступним', async () => {

@@ -1,45 +1,37 @@
 // Звірка з Mono (07 §7 `mono-reconcile`, S-4-9, S-4-11, S-4-12, 01 §3.6).
 //
-// Щодня о 23:30 Києва: перевірити, що вебхук стоїть на нашій адресі, і
+// Щодня о 23:30 Києва: перевірити стан вебхука й
 // перечитати виписку за 31 добу - дедуп за id закриває все, що вебхук не доніс
 // (Mono знімає адресу після кількох невдач і не повторює доставку).
 //
 // ⚠️ Ліміт Mono - один запит на 60 секунд на КОЖЕН читальний ендпоїнт, тому
-// задача робить РІВНО ОДИН зовнішній виклик за тік планувальника (тік = 5 хв
-// > 60 с) і тримає крок у KV. Це ж дає безкоштовно S-4-11: первинне
+// задача читає одну сторінку виписки за тік планувальника (5 хв)
+// і зберігає крок у MonoReconcileDO. Первинне
 // завантаження за 31 добу йде рахунок за рахунком, по одному на тік.
 //
 // Список рахунків (`facts.setting.mono_accounts`) - ще й бар'єр вебхука
-// (S-4-12), тому фаза `client` вмикається САМА, у будь-яку годину, поки
-// списку немає: інакше перший день після встановлення секрету вебхук
-// відмовляв би всім транзакціям до 23:30.
+// (S-4-12), тому без каталогу задача запускає фазу `client` без очікування
+// вечора. Між сеансами опрацьовує відкладені події й холди.
 
 import { kyivDateKey, kyivHour, kyivMinuteOfDay } from '../../kyiv-time.mjs';
 import { sendSystemAlert } from '../tg/outbox.mjs';
-import {
-  MonoApiError,
-  MonoTooSoonError,
-  clientInfo,
-  setWebhook,
-  statement,
-  STATEMENT_PAGE,
-} from '../adapters/mono.mjs';
+import { MonoApiError, MonoTooSoonError, setWebhook, STATEMENT_PAGE } from '../adapters/mono.mjs';
 import { isLoud } from './rules.mjs';
 import { runFactsSet } from '../tools/facts.mjs';
 import { announceTransaction } from './notify.mjs';
-import { monoWebhookUrl } from './webhook.mjs';
+import { monoWebhookUrl, recoverMonoWebhooks } from './webhook.mjs';
 import {
   monoReconcileClaim,
   monoReconcileComplete,
   monoReconcileRelease,
 } from '../mono-reconcile/client.mjs';
-import { claimMonoStatementRefresh, claimMonoClientRefresh } from './bank-refresh.mjs';
+import { readMonoStatement, readMonoClientInfo, recheckMonoHolds } from './bank-refresh.mjs';
 import { MONO_RECONCILE_LEASE_MS } from '../mono-reconcile/contract.mjs';
 import {
   hasAnyTransaction,
   ingestTransaction,
   readMonoAccounts,
-  writeMonoAccounts,
+  writeMonoClientAccounts,
 } from './store.mjs';
 
 /** Година й хвилина звірки за Києвом (07 §7). */
@@ -57,10 +49,11 @@ export const SESSION_MAX_MS = 4 * 3_600_000;
 export const TRANSIENT_ALERT_AFTER_MS = 15 * 60_000;
 
 /**
+ * @typedef {Pick<import('./store.mjs').StoredAccount, 'id'|'currency'|'bankKind'>} ReconcileAccount
  * @typedef {{ date: string, phase: 'client' | 'statement' | 'done', idx: number,
  *   initial: boolean, fromS: number, toS: number, imported: number, loud: number,
  *   startedMs: number, alerted: boolean, transientSinceMs: number,
- *   transientAlerted: boolean, cursorToS?:number|null }} ReconcileState
+ *   transientAlerted: boolean, cursorToS?:number|null, statementAccounts?: ReconcileAccount[] }} ReconcileState
  */
 
 /** Стан сеансу з KV; null - сеансу ще не було. @param {Env} env
@@ -94,6 +87,7 @@ function normalizeState(saved) {
     transientSinceMs: Number.isFinite(raw.transientSinceMs) ? raw.transientSinceMs : 0,
     transientAlerted: raw.transientAlerted === true,
     cursorToS: Number.isFinite(raw.cursorToS) ? raw.cursorToS : null,
+    ...(Array.isArray(raw.statementAccounts) ? { statementAccounts: raw.statementAccounts } : {}),
   };
 }
 
@@ -153,8 +147,23 @@ export async function monoReconcileTask(env, nowMs = Date.now()) {
   // цієї умови фаза client-info крутилася б щопʼять хвилин разом з алертом.
   const startNow = !accounts.length && !running && state?.date !== today;
   if (!running && !startNew && !startNow) {
-    if (claim.canonical) await monoReconcileRelease(env, claim.token);
-    return { skipped: state?.date === today ? 'done' : 'not-due' };
+    try {
+      return (
+        (await recoverMonoWebhooks(env, accounts, nowMs)) ??
+        (await recheckMonoHolds(env, accounts, nowMs)) ?? {
+          skipped: state?.date === today ? 'done' : 'not-due',
+        }
+      );
+    } catch (error) {
+      if (error instanceof MonoTooSoonError) return { skipped: 'too-soon' };
+      console.error(
+        'mono-reconcile: повторна перевірка hold не вдалася',
+        error instanceof MonoApiError ? error.status : 'local-or-invalid-statement',
+      );
+      return { failed: 'pending' };
+    } finally {
+      if (claim.canonical) await monoReconcileRelease(env, claim.token);
+    }
   }
   const live = running ? /** @type {ReconcileState} */ (state) : freshState(today, nowMs);
   let completed = false;
@@ -181,10 +190,10 @@ export async function monoReconcileTask(env, nowMs = Date.now()) {
 
   try {
     if (live.phase === 'client') return await phaseClient(env, live, nowMs, writeState);
-    return await phaseStatement(env, live, accounts, nowMs, writeState);
+    return await phaseStatement(env, live, live.statementAccounts ?? accounts, nowMs, writeState);
   } catch (/** @type {any} */ e) {
     if (e instanceof MonoTooSoonError) {
-      // Не збій: наступний тік через 5 хв - Mono вже пустить.
+      // Наступні тіки поважатимуть проміжок, який повернув банк.
       console.log('mono-reconcile: Mono просить зачекати, спробую наступним тіком');
       return { skipped: 'too-soon' };
     }
@@ -229,37 +238,27 @@ export async function monoReconcileTask(env, nowMs = Date.now()) {
  * @param {(state: ReconcileState) => Promise<void>} writeState
  */
 async function phaseClient(env, state, nowMs, writeState) {
-  await claimMonoClientRefresh(env, nowMs);
-  const info = await clientInfo(env);
-  const accounts = info.accounts.map((a) => ({
-    id: a.id,
-    currency: a.currency,
-    maskedPan: a.maskedPan,
-    balanceMinor: a.balanceMinor,
-    creditLimitMinor: a.creditLimitMinor,
-    asOf: new Date(nowMs).toISOString(),
-  }));
+  const info = await readMonoClientInfo(env, nowMs);
+  const accounts = await writeMonoClientAccounts(env, info, nowMs);
   if (!accounts.length) {
     await sendSystemAlert(env, '⚠️ Mono не віддав жодного рахунку - звірка без цілі.', nowMs);
     await writeState({ ...state, phase: 'done' });
     return { skipped: 'no-accounts' };
   }
-  await writeMonoAccounts(env, accounts, nowMs);
-
   let rearmed = false;
   const origin = String(env.MINI_APP_URL ?? '').replace(/\/+$/, '');
   if (!origin) {
     console.error('mono-reconcile: MINI_APP_URL не заданий - адресу вебхука не перевірити');
   } else {
     const expected = monoWebhookUrl(env, origin);
-    if (info.webHookUrl !== expected) {
+    if (!info.webHookUrl) {
       await setWebhook(env, expected);
       rearmed = true;
+      await sendSystemAlert(env, '⚠️ Вебхук Mono був порожній - поставив заново.', nowMs);
+    } else if (info.webHookUrl !== expected) {
       await sendSystemAlert(
         env,
-        info.webHookUrl
-          ? '⚠️ Вебхук Mono вказував не на нас - поставив свою адресу заново.'
-          : '⚠️ Вебхук Mono був порожній - поставив заново.',
+        '⚠️ У Monobank налаштовано іншу адресу вебхука. Виписки Світанок звіряє за розкладом.',
         nowMs,
       );
     }
@@ -277,6 +276,7 @@ async function phaseClient(env, state, nowMs, writeState) {
     fromS,
     toS,
     cursorToS: null,
+    statementAccounts: accounts.map(({ id, currency, bankKind }) => ({ id, currency, bankKind })),
     transientSinceMs: 0,
   });
   return { accounts: accounts.length, rearmed, initial };
@@ -285,7 +285,7 @@ async function phaseClient(env, state, nowMs, writeState) {
 /**
  * Фаза 2: виписка одного рахунку за тік.
  * @param {Env} env @param {ReconcileState} state
- * @param {import('./store.mjs').StoredAccount[]} accounts @param {number} nowMs
+ * @param {ReconcileAccount[]} accounts @param {number} nowMs
  * @param {(state: ReconcileState) => Promise<void>} writeState
  */
 async function phaseStatement(env, state, accounts, nowMs, writeState) {
@@ -294,12 +294,15 @@ async function phaseStatement(env, state, accounts, nowMs, writeState) {
     await writeState({ ...state, phase: 'done' });
     return await finish(env, state, nowMs);
   }
-  await claimMonoStatementRefresh(env, nowMs);
-  const items = await statement(env, {
-    account: account.id,
-    fromS: state.fromS,
-    toS: state.cursorToS ?? state.toS,
-  });
+  const items = await readMonoStatement(
+    env,
+    {
+      account: account.id,
+      fromS: state.fromS,
+      toS: state.cursorToS ?? state.toS,
+    },
+    nowMs,
+  );
   const oldest = items.length ? Math.min(...items.map((item) => item.timeS)) : null;
   if (
     items.length >= STATEMENT_PAGE &&
@@ -317,6 +320,7 @@ async function phaseStatement(env, state, accounts, nowMs, writeState) {
       item,
       account: account.id,
       accountCurrency: account.currency,
+      bankKind: account.bankKind,
       silent: state.initial,
       checkedAt: new Date(nowMs).toISOString(),
       checkSource: 'statement',
@@ -367,7 +371,7 @@ async function finish(env, state, nowMs) {
       },
       nowMs,
     );
-  const messages = state.transientAlerted ? ['✅ Звірку Monobank відновлено й завершено.'] : [];
+  const messages = state.alerted ? ['✅ Звірку Monobank відновлено й завершено.'] : [];
   if (state.initial && state.imported) {
     messages.push(`Завантажив історію Mono за ${INITIAL_DAYS} діб: ${state.imported} транзакцій.`);
   } else if (state.loud > ANNOUNCE_MAX) {

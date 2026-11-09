@@ -44,10 +44,11 @@ const CURRENCY_ALPHA = {
 
 /** Mono відповів 429 «зарано» - задача мусить відкласти, а не рахувати збій. */
 export class MonoTooSoonError extends Error {
-  /** @param {string} what */
-  constructor(what) {
+  /** @param {string} what @param {number} [retryAfterMs] */
+  constructor(what, retryAfterMs = 60_000) {
     super(`${what}: Mono просить зачекати (429)`);
     this.name = 'MonoTooSoonError';
+    this.retryAfterMs = retryAfterMs;
   }
 }
 
@@ -82,6 +83,17 @@ export function numericToAlpha(code) {
   return CURRENCY_ALPHA[/** @type {keyof typeof CURRENCY_ALPHA} */ (n)] ?? `#${n}`;
 }
 
+/** Opaque bank identifiers may use standard or URL-safe base64.
+ * @param {unknown} value @returns {value is string} */
+export function isMonoAccountId(value) {
+  return typeof value === 'string' && /^[A-Za-z0-9_+=/-]{1,128}$/.test(value);
+}
+
+/** @param {unknown} value @returns {value is string} */
+export function isMonoSendId(value) {
+  return typeof value === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(value);
+}
+
 /**
  * Запит до Mono з таймаутом. Текст помилки - сервіс і статус, без URL і без
  * токена.
@@ -100,7 +112,14 @@ async function call(env, path, init, what) {
   } catch {
     throw new MonoApiError(what);
   }
-  if (res.status === 429) throw new MonoTooSoonError(what);
+  if (res.status === 429) {
+    const header = res.headers.get('retry-after')?.trim() ?? '';
+    const delay = /^\d+$/.test(header) ? Number(header) * 1000 : Date.parse(header) - Date.now();
+    throw new MonoTooSoonError(
+      what,
+      Number.isSafeInteger(delay) ? Math.max(60_000, delay) : 60_000,
+    );
+  }
   if (!res.ok) throw new MonoApiError(what, res.status);
   let text;
   try {
@@ -120,8 +139,9 @@ async function call(env, path, init, what) {
 /**
  * @typedef {{ id: string, currency: string, currencyCode: number, type: string,
  *   maskedPan: string | null, iban: string | null,
- *   balanceMinor: number | null, creditLimitMinor: number | null }} MonoAccount
- * @typedef {{ name: string, webHookUrl: string | null, accounts: MonoAccount[] }} MonoClientInfo
+ *   balanceMinor: number | null, creditLimitMinor: number | null, title?: string,
+ *   sendId?: string, goalMinor?: number }} MonoAccount
+ * @typedef {{ name: string, webHookUrl: string | null, accounts: MonoAccount[], jars: MonoAccount[], jarsReported: boolean }} MonoClientInfo
  */
 
 /**
@@ -132,11 +152,13 @@ async function call(env, path, init, what) {
 export async function clientInfo(env) {
   const raw = await call(env, '/personal/client-info', { method: 'GET' }, 'Mono client-info');
   const accounts = Array.isArray(raw?.accounts) ? raw.accounts : [];
+  const jars = Array.isArray(raw?.jars) ? raw.jars : [];
   return {
     name: typeof raw?.name === 'string' ? raw.name : '',
     webHookUrl: typeof raw?.webHookUrl === 'string' && raw.webHookUrl ? raw.webHookUrl : null,
+    jarsReported: Array.isArray(raw?.jars),
     accounts: accounts
-      .filter((/** @type {any} */ a) => typeof a?.id === 'string' && a.id)
+      .filter((/** @type {any} */ a) => isMonoAccountId(a?.id))
       .map((/** @type {any} */ a) => ({
         id: String(a.id),
         currency: numericToAlpha(a.currencyCode),
@@ -144,9 +166,26 @@ export async function clientInfo(env) {
         type: typeof a.type === 'string' ? a.type : '',
         maskedPan: Array.isArray(a.maskedPan) && a.maskedPan[0] ? String(a.maskedPan[0]) : null,
         iban: typeof a.iban === 'string' ? a.iban : null,
+        ...(isMonoSendId(a.sendId) ? { sendId: a.sendId } : {}),
         balanceMinor: Number.isSafeInteger(a.balance) ? a.balance : null,
         creditLimitMinor:
           Number.isSafeInteger(a.creditLimit) && a.creditLimit >= 0 ? a.creditLimit : null,
+      })),
+    jars: jars
+      .filter((/** @type {any} */ jar) => isMonoAccountId(jar?.id))
+      .map((/** @type {any} */ jar) => ({
+        id: String(jar.id),
+        currency: numericToAlpha(jar.currencyCode),
+        currencyCode: Number(jar.currencyCode) || 0,
+        type: 'jar',
+        title:
+          typeof jar.title === 'string' ? jar.title.replace(/\s+/g, ' ').trim().slice(0, 120) : '',
+        maskedPan: null,
+        iban: null,
+        ...(isMonoSendId(jar.sendId) ? { sendId: jar.sendId } : {}),
+        ...(Number.isSafeInteger(jar.goal) && jar.goal > 0 ? { goalMinor: jar.goal } : {}),
+        balanceMinor: Number.isSafeInteger(jar.balance) ? jar.balance : null,
+        creditLimitMinor: null,
       })),
   };
 }
@@ -189,11 +228,10 @@ export function parseStatementItem(raw) {
   const timeS = Number(raw?.time);
   const amount = Number(raw?.amount);
   if (!id || id.length > 64) return null;
-  if (!Number.isFinite(timeS) || timeS <= 0) return null;
-  if (!Number.isInteger(amount)) return null;
-  const opAmount = Number.isInteger(Number(raw?.operationAmount))
-    ? Number(raw.operationAmount)
-    : amount;
+  if (!Number.isSafeInteger(timeS) || timeS <= 0 || timeS > 8_640_000_000_000) return null;
+  if (raw?.amount == null || !Number.isSafeInteger(amount)) return null;
+  const operationAmount = Number(raw?.operationAmount ?? amount);
+  if (!Number.isSafeInteger(operationAmount)) return null;
   return {
     id,
     timeS,
@@ -205,10 +243,14 @@ export function parseStatementItem(raw) {
       .slice(0, 200),
     mcc: Number.isInteger(Number(raw?.mcc)) ? Number(raw.mcc) : 0,
     amount,
-    operationAmount: opAmount,
+    operationAmount,
     currency: numericToAlpha(raw?.currencyCode),
-    hold: raw?.hold === true,
-    balance: Number.isInteger(Number(raw?.balance)) ? Number(raw.balance) : null,
+    // Only an explicit final bank status can clear a pending authorization.
+    hold: raw?.hold !== false,
+    balance:
+      raw?.balance != null && Number.isSafeInteger(Number(raw.balance))
+        ? Number(raw.balance)
+        : null,
     comment:
       typeof raw?.comment === 'string' && raw.comment
         ? raw.comment.replace(/\s+/g, ' ').trim().slice(0, 200)
@@ -226,7 +268,7 @@ export function parseStatementItem(raw) {
  */
 export async function statement(env, win) {
   const account = String(win.account ?? '').trim();
-  if (!/^[A-Za-z0-9_-]{1,64}$/.test(account)) throw new Error('Mono statement: чужий id рахунку');
+  if (!isMonoAccountId(account)) throw new Error('Mono statement: чужий id рахунку');
   const fromS = Math.floor(win.fromS);
   const toS = Math.floor(win.toS);
   if (!Number.isFinite(fromS) || !Number.isFinite(toS) || toS <= fromS) {
@@ -242,7 +284,8 @@ export async function statement(env, win) {
     'Mono statement',
   );
   if (!Array.isArray(raw)) throw new Error('Mono statement: відповідь не список');
-  return raw
-    .map((r) => parseStatementItem(r))
-    .filter((/** @type {MonoStatementItem | null} */ x) => x != null);
+  const parsed = raw.map((row) => parseStatementItem(row));
+  if (parsed.some((row) => row == null))
+    throw new MonoApiError('Mono statement: неповна відповідь');
+  return /** @type {MonoStatementItem[]} */ (parsed);
 }

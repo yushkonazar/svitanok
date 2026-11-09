@@ -12,6 +12,7 @@ import { financeReviewContext } from '../web/core/finance/review.mjs';
 import {
   claimMonoClientRefresh,
   claimMonoStatementRefresh,
+  readMonoStatement,
 } from '../web/core/finance/bank-refresh.mjs';
 import { bankRefreshTasks } from '../web/core/finance/bank-sync.mjs';
 const NOW = Date.parse('2026-10-12T18:00:00Z');
@@ -325,26 +326,31 @@ describe('shared resumable Monobank refresh', () => {
       imported: 501,
     });
   });
-  it('does not mark unseen holds missing when a later page fails and allows a fresh retry', async () => {
+  it('preserves unseen holds through repeated later-page failures and allows a fresh retry', async () => {
     const { env, collector, seed } = await setup();
     await seed(row('unseen', NOW / 1000 - 10000, true));
     const items = Array.from({ length: 500 }, (_, i) => row(`page-${i}`, NOW / 1000 - i - 1));
     const fetch = vi
       .fn()
-      .mockResolvedValueOnce(Response.json(items))
-      .mockResolvedValueOnce(new Response('', { status: 500 }));
+      .mockResolvedValue(new Response('', { status: 500 }))
+      .mockResolvedValueOnce(Response.json(items));
     bankFetch(fetch);
     await collector.requestRefresh('mono:card', undefined, NOW);
     await advance(collector);
     for (let i = 0; i < 17; i++) await advance(collector);
     vi.advanceTimersByTime(61000);
     await advance(collector);
+    expect((await readFinanceWorkspace(env, NOW)).bankSync?.phase).toBe('fetch');
+    for (let retry = 0; retry < 3; retry++) {
+      vi.advanceTimersByTime(61000);
+      await advance(collector);
+    }
     expect(
       (await readFinanceWorkspace(env, NOW)).transactions.find((t) => t.id === 'unseen')!
         .bankMissingFromStatement,
     ).toBe(false);
     expect((await readFinanceWorkspace(env, NOW)).bankSync?.phase).toBe('error');
-    await collector.requestRefresh('mono:card', undefined, NOW + 61000);
+    await collector.requestRefresh('mono:card', undefined, Date.now());
     expect((await readFinanceWorkspace(env, NOW)).bankSync?.active).toBe(true);
   });
   it('supports all connected cards and rejects a target operation belonging to another card', async () => {
@@ -490,6 +496,93 @@ it('uses independent client-info and statement cooldowns, shared with nightly re
   await expect(claimMonoClientRefresh(env, NOW + 1000)).rejects.toThrow(/Mono/);
   await expect(claimMonoStatementRefresh(env, NOW + 1000)).rejects.toThrow(/Mono/);
   await expect(claimMonoClientRefresh(env, NOW + 60000)).resolves.toBeUndefined();
+});
+it('shares the provider Retry-After across manual and scheduled statement reads', async () => {
+  const { env } = await setup();
+  const fetcher = vi
+    .fn(async () => Response.json([]))
+    .mockResolvedValueOnce(new Response('', { status: 429, headers: { 'Retry-After': '180' } }));
+  bankFetch(fetcher);
+  const window = { account: 'card', fromS: NOW / 1000 - 3600, toS: NOW / 1000 };
+  await expect(readMonoStatement(env, window, NOW)).rejects.toMatchObject({ retryAfterMs: 180000 });
+  await expect(readMonoStatement(env, window, NOW + 61000)).rejects.toMatchObject({
+    retryAfterMs: 119000,
+  });
+  await expect(claimMonoClientRefresh(env, NOW + 61000)).resolves.toBeUndefined();
+  await expect(readMonoStatement(env, window, NOW + 180000)).resolves.toEqual([]);
+  expect(fetcher).toHaveBeenCalledTimes(2);
+});
+it('retries a temporary statement failure and imports the recovered row once', async () => {
+  const { env, collector } = await setup();
+  const statement = vi
+    .fn(async () => Response.json([row('recovered')]))
+    .mockResolvedValueOnce(new Response('', { status: 503 }));
+  bankFetch(statement);
+  await collector.requestRefresh('mono:card', undefined, NOW);
+  await advance(collector);
+  expect((await readFinanceWorkspace(env, NOW)).bankSync).toMatchObject({
+    active: true,
+    phase: 'fetch',
+  });
+  vi.advanceTimersByTime(61000);
+  await collector.alarm();
+  await collector.alarm();
+  await collector.alarm();
+  const workspace = await readFinanceWorkspace(env, NOW + 61000);
+  expect(statement).toHaveBeenCalledTimes(2);
+  expect(workspace.transactions.filter((t) => t.id === 'recovered')).toHaveLength(1);
+  expect(workspace.bankSync).toMatchObject({ active: false, phase: 'done' });
+});
+
+it('discovers jars and bank-hosted funding links without counting savings as available cash', async () => {
+  const { env, collector } = await setup();
+  const fetcher = vi.fn(async (url: string) =>
+    url.endsWith('/personal/client-info')
+      ? Response.json({
+          accounts: clientRows.map((card) => ({
+            ...card,
+            sendId: card.id === 'card' ? 'CardPublic1' : 'https://invalid.example/path',
+          })),
+          jars: [
+            {
+              id: 'jar',
+              sendId: 'JarPublic1',
+              title: 'Резерв',
+              currencyCode: 980,
+              balance: 200000,
+              goal: 900000,
+            },
+          ],
+        })
+      : Response.json([]),
+  );
+  vi.stubGlobal('fetch', fetcher);
+  await collector.requestRefresh('all', undefined, NOW);
+  await collector.alarm();
+  const workspace = await readFinanceWorkspace(env, NOW);
+  expect(workspace.accounts.map((account) => account.id)).not.toContain('mono:jar');
+  expect(workspace.accounts.find((account) => account.id === 'mono:card')).toMatchObject({
+    fundingUrl: 'https://send.monobank.ua/CardPublic1',
+  });
+  expect(workspace.accounts.find((account) => account.id === 'mono:second')).not.toHaveProperty(
+    'fundingUrl',
+  );
+  expect(workspace.bankCatalog).toMatchObject({ accounts: 2, jars: 1, jarListing: 'available' });
+  expect(workspace.bankJars).toEqual([
+    {
+      id: 'mono:jar',
+      name: 'Резерв',
+      currency: 'UAH',
+      balanceMinor: 200000,
+      asOf: new Date(NOW).toISOString(),
+      fundingUrl: 'https://send.monobank.ua/jar/JarPublic1',
+      goalMinor: 900000,
+    },
+  ]);
+  expect(
+    (await bankRefreshTasks(env, 'mono:jar', undefined, NOW)).map((task) => task.account.id),
+  ).toEqual(['jar']);
+  expect(workspace.bankSync?.statementAccounts).toContain('jar');
 });
 it('prioritizes recent operations of every card before older held windows', async () => {
   const { env, seed } = await setup();

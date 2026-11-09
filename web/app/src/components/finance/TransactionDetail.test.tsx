@@ -2,19 +2,22 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { TransactionDetail } from './TransactionDetail.tsx';
-import { postFinance } from '../../api/client.ts';
+import { postFinance, refreshFinanceBank } from '../../api/client.ts';
 import { readFinanceDemo } from '../../api/finance-demo.ts';
-vi.mock('../../api/client.ts', () => ({ postFinance: vi.fn() }));
+vi.mock('../../api/client.ts', () => ({ postFinance: vi.fn(), refreshFinanceBank: vi.fn() }));
 afterEach(() => {
   cleanup();
   vi.resetAllMocks();
 });
-function setup() {
+function setup(
+  overrides: Partial<ReturnType<typeof readFinanceDemo>['transactions'][number]> = {},
+) {
   const transaction = {
     ...readFinanceDemo().transactions[0]!,
     id: 'bank-1',
     duplicateSuspected: true,
     attention: null,
+    ...overrides,
   };
   const query = new QueryClient();
   const invalidate = vi.spyOn(query, 'invalidateQueries');
@@ -56,6 +59,44 @@ it('writes a metadata command with the current version, disables repeat taps and
     ).toBeInTheDocument(),
   );
   expect(invalidate).toHaveBeenCalledWith({ queryKey: ['finance'] });
+});
+it('requires an explicit amount review before recording a bank-app confirmation', async () => {
+  vi.mocked(postFinance).mockResolvedValue({ finance: readFinanceDemo(), demo: true });
+  setup({
+    bank: true,
+    bankHold: true,
+    bankVerifiedByOwner: false,
+    amountMinor: -12345,
+    amountUah: -12345,
+    currency: 'UAH',
+  });
+  fireEvent.click(screen.getByRole('button', { name: 'У Monobank операцію виконано' }));
+  expect(postFinance).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: 'Підтвердити за застосунком' }));
+  await waitFor(() =>
+    expect(postFinance).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'bank-hold-review',
+        version: 7,
+        payload: {
+          transactionId: 'bank-1',
+          confirmed: true,
+          amountMinor: -12345,
+          amountUah: -12345,
+          currency: 'UAH',
+        },
+      }),
+    ),
+  );
+});
+it('rechecks the original bank account after a ledger reassignment', async () => {
+  vi.mocked(refreshFinanceBank).mockResolvedValue({ finance: readFinanceDemo(), demo: true });
+  setup({ bank: true, bankHold: true, accountId: 'cash', bankAccountId: 'mono:original' });
+  fireEvent.click(screen.getByRole('button', { name: 'Звірити у виписці Monobank' }));
+  expect(refreshFinanceBank).toHaveBeenCalledWith('mono:original', 'bank-1');
+  await waitFor(() =>
+    expect(screen.getByRole('button', { name: 'Звірити у виписці Monobank' })).toBeEnabled(),
+  );
 });
 it('shows failure honestly and keeps retry actions available', async () => {
   vi.mocked(postFinance).mockRejectedValue(new Error('Не вдалося зберегти відповідь.'));
