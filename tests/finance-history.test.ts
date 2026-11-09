@@ -5,6 +5,7 @@ import { executeFinanceCommand, readFinanceWorkspace } from '../web/core/finance
 import { buildFinanceReport, validateReportRange } from '../web/core/finance/reporting.mjs';
 import { nextPaymentDate, calculateTaxiWeek } from '../web/core/finance/planning.mjs';
 import { ingestTransaction, writeMonoAccounts } from '../web/core/finance/store.mjs';
+import { savingsForecast } from '../web/core/finance/savings-forecast.mjs';
 const NOW = Date.parse('2026-10-08T15:00:00Z');
 function setup() {
   const d1 = d1FromSqlite([
@@ -17,6 +18,8 @@ function setup() {
     '0032_finance_interest_method.sql',
     '0033_finance_history_and_links.sql',
     '0035_finance_budget_planning.sql',
+    '0047_finance_analytics_renewal.sql',
+    '0048_finance_goal_removal.sql',
   ]);
   const env = workerEnv({ DB: d1.stub });
   let sequence = 0;
@@ -338,6 +341,57 @@ describe('finance history, actual settlements and linked transfers', () => {
     expect(
       (await readFinanceWorkspace(env, NOW)).accounts.find((a) => a.id === 'cash')!.balanceMinor,
     ).toBe(350000);
+  });
+  it('removes a returned goal once, preserves its history, and stops future planned contributions', async () => {
+    const { env, send, bank } = setup();
+    await send('account-balance', { accountId: 'cash', balanceMinor: 400000 });
+    await send('goal', {
+      name: 'Прага',
+      targetMinor: 1500000,
+      planAmountMinor: 50000,
+      planPeriod: 'week',
+    });
+    const goalId = (await readFinanceWorkspace(env, NOW)).goals[0]!.id;
+    await send('budget', {
+      category: 'На поїздку',
+      categories: [],
+      purpose: 'saving',
+      period: 'month',
+      limitMinor: 200000,
+      forecastEnabled: true,
+      goalId,
+    });
+    await send('goal-move', { goalId, accountId: 'cash', amountMinor: 50000 });
+    await expect(send('goal-remove', { goalId })).rejects.toThrow(/поверни залишок/);
+    await send('goal-move', { goalId, accountId: 'cash', amountMinor: -50000 });
+    await bank('prague-funding', -40000, '2026-10-08T10:00:00.000Z');
+    await bank('prague-return', 40000, '2026-10-08T11:00:00.000Z');
+    await send('goal-move', { goalId, transactionId: 'prague-funding', amountMinor: 40000 });
+    await send('goal-move', { goalId, transactionId: 'prague-return', amountMinor: -40000 });
+    const before = await readFinanceWorkspace(env, NOW);
+    expect(savingsForecast(before, 30, NOW)).toHaveLength(1);
+    const command = {
+      id: 'delete-prague-goal',
+      version: before.version,
+      type: 'goal-remove',
+      payload: { goalId },
+    };
+    await expect(executeFinanceCommand(env, command, NOW)).resolves.toMatchObject({
+      duplicate: false,
+    });
+    await expect(executeFinanceCommand(env, command, NOW + 1000)).resolves.toMatchObject({
+      duplicate: true,
+    });
+    const after = await readFinanceWorkspace(env, NOW);
+    expect(after.goals[0]).toMatchObject({ id: goalId, deletedAt: new Date(NOW).toISOString() });
+    expect(after.goalMoves).toEqual(before.goalMoves);
+    expect(after.transactions).toEqual(before.transactions);
+    expect(after.accounts).toEqual(before.accounts);
+    expect(after.budgets.find((b) => b.goalId === goalId)?.forecastEnabled).toBe(false);
+    expect(savingsForecast(after, 30, NOW)).toEqual([]);
+    await expect(
+      send('goal-move', { goalId, accountId: 'cash', amountMinor: 10000 }),
+    ).rejects.toThrow(/не знайдена/);
   });
   it('advances weekly and daily payments across months and DST without treating them as monthly', async () => {
     const { env, send } = setup();

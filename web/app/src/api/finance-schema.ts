@@ -100,6 +100,7 @@ export const financeGoalSchema = z.object({
   planAmountMinor: money.nullable().optional(),
   planPeriod: z.enum(['day', 'week', 'month']).nullable().optional(),
   planStartedAt: z.string().nullable().optional(),
+  deletedAt: z.string().nullable().optional(),
 });
 export const financeBudgetSchema = z.object({
   id: z.string(),
@@ -147,6 +148,8 @@ export const financeSchema = z.object({
   display: z
     .object({
       expenseThresholds: z.array(money),
+      inflowThresholds: z.array(money).optional(),
+      overviewMetric: z.enum(['payment', 'savings', 'taxi']).optional(),
       paletteVersion: z.literal(2).optional(),
       currencyCycle: z.boolean(),
       animations: z.boolean(),

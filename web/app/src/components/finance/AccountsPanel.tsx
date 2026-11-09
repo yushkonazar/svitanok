@@ -3,6 +3,7 @@ import { financeTime } from './analytics-format.ts';
 import type { Finance } from '../../api/finance-schema.ts';
 import type { FinanceFormRequest } from './FinanceForm.tsx';
 import { moneyLabel } from '../../lib/financeView.ts';
+import { usePresentation } from '../../lib/presentation.ts';
 export function AccountsPanel({
   finance: f,
   onAction,
@@ -15,15 +16,18 @@ export function AccountsPanel({
   bankBusy?: boolean;
 }) {
   const jars = f.bankJars ?? [];
+  const { explanations } = usePresentation();
   return (
     <details className="renewal-card renewal-disclosure">
       <summary className="renewal-section-head cursor-pointer">
         <h2 className="text-lg font-bold">Рахунки та інструменти</h2>
         <span className="renewal-pill">{f.accounts.length + jars.length}</span>
       </summary>
-      <p className="renewal-muted mb-4">
-        Власні залишки, кредитні кошти й способи перенесення грошей.
-      </p>
+      {explanations && (
+        <p className="renewal-muted mb-4">
+          Власні залишки, кредитні кошти й способи перенесення грошей.
+        </p>
+      )}
       <div className="finance-account-grid">
         <AccountCollection accounts={f.accounts}>
           {(a) => (
@@ -48,6 +52,12 @@ export function AccountsPanel({
                     ? 'Потрібен залишок'
                     : moneyLabel(a.balanceMinor, a.currency)}
               </p>
+              <small className="renewal-muted">
+                {accountFreshness(a)}
+                {a.kind !== 'mono' && a.lastMovementAt ? (
+                  <span className="block">Останній рух · {financeTime(a.lastMovementAt)}</span>
+                ) : null}
+              </small>
               {a.kind === 'mono' && (
                 <>
                   <p className="renewal-chart-note">
@@ -103,12 +113,6 @@ export function AccountsPanel({
                   Уточнити залишок
                 </button>
               )}
-              <small className="renewal-muted">
-                {accountFreshness(a)}
-                {a.kind !== 'mono' && a.lastMovementAt ? (
-                  <span className="block">Останній рух: {financeTime(a.lastMovementAt)}</span>
-                ) : null}
-              </small>
             </article>
           )}
         </AccountCollection>
@@ -124,9 +128,11 @@ export function AccountsPanel({
           {f.bankCatalog?.jarListing === 'available' && !jars.length && (
             <p className="renewal-muted">Monobank повернув порожній список банок.</p>
           )}
-          <p className="renewal-muted">
-            Створи банку в «Накопиченнях» Monobank, потім онови рахунки тут.
-          </p>
+          {explanations && (
+            <p className="renewal-muted">
+              Банки показані окремо від вільних коштів і цілей Світанку.
+            </p>
+          )}
           <div className="renewal-finance-actions">
             <a
               className="renewal-link"

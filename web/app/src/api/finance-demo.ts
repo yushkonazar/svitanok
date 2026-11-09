@@ -2,6 +2,7 @@ import { financeSchema, type Finance, type FinanceCommand } from './finance-sche
 import { financeCategories } from '../../../core/finance/categories.mjs';
 import { validateMerchantAliases } from '../../../core/finance/analytics.mjs';
 import { financeDisplay } from '../../../core/finance/display.mjs';
+import { goalBalances } from '../../../core/finance/savings-forecast.mjs';
 import {
   bankPaymentAmount,
   needsBankHoldConfirmation,
@@ -317,7 +318,11 @@ export function writeFinanceDemo(command: FinanceCommand) {
   };
   switch (command.type) {
     case 'display-settings':
-      f.display = financeDisplay(p);
+      f.display = financeDisplay({
+        ...p,
+        inflowThresholds: p.inflowThresholds ?? f.display?.inflowThresholds,
+        overviewMetric: p.overviewMetric ?? f.display?.overviewMetric,
+      });
       break;
     case 'event-seen': {
       const event = f.events?.find((e) => e.id === p.eventId);
@@ -625,6 +630,7 @@ export function writeFinanceDemo(command: FinanceCommand) {
     }
     case 'goal': {
       const old = f.goals.find((g) => g.id === p.goalId);
+      if (p.goalId && (!old || old.deletedAt)) throw new Error('Ціль не знайдена');
       const values = {
         id: old?.id ?? id,
         name: str('name'),
@@ -643,7 +649,28 @@ export function writeFinanceDemo(command: FinanceCommand) {
       else f.goals.push(values);
       break;
     }
+    case 'goal-remove': {
+      const goal = f.goals.find((g) => g.id === p.goalId && !g.deletedAt);
+      if (!goal) throw new Error('Ціль не знайдена');
+      if (goalBalances(f.goalMoves, goal.id).length)
+        throw new Error('Спочатку поверни залишок із цілі');
+      goal.deletedAt = now;
+      for (const budget of f.budgets.filter((b) => b.goalId === goal.id)) {
+        budget.forecastEnabled = false;
+        (f.budgetVersions ??= []).push({
+          id: `${id}:${budget.id}`,
+          budgetId: budget.id,
+          validFrom: now,
+          sequence: f.version + 1,
+          definition: { ...budget },
+          removed: false,
+        });
+      }
+      break;
+    }
     case 'goal-move': {
+      if (!f.goals.some((g) => g.id === p.goalId && !g.deletedAt))
+        throw new Error('Ціль не знайдена');
       const bank = p.transactionId ? f.transactions.find((t) => t.id === p.transactionId) : null;
       const kind = bank || p.movementKind === 'external' ? 'external' : 'reserve';
       const amount = num('amountMinor');

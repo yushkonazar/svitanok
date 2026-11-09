@@ -22,6 +22,20 @@ export function GoalInsights({
   return (
     <div ref={ref} className="flex flex-col gap-4">
       {f.goals.map((g) => {
+        if (g.deletedAt)
+          return f.goalMoves.some((m) => m.goalId === g.id) ? (
+            <button
+              key={g.id}
+              className="renewal-list-row text-left"
+              onClick={() => onHistory(g.id)}
+            >
+              <span>
+                {g.name}
+                <small>Видалена ціль</small>
+              </span>
+              <b>Історія ↗</b>
+            </button>
+          ) : null;
         const moves = f.goalMoves
             .filter((m) => m.goalId === g.id)
             .sort((a, b) => a.at.localeCompare(b.at)),

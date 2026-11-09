@@ -12,6 +12,7 @@ import { ProjectionChart } from './ProjectionChart.tsx';
 import { Sheet } from './FinanceSheet.tsx';
 import { ForecastSteps } from './ForecastSteps.tsx';
 import { taxiWeek } from '../../../../core/finance/planning.mjs';
+import { usePresentation } from '../../lib/presentation.ts';
 export function ForecastPlan({
   finance: f,
   nowMs,
@@ -88,12 +89,12 @@ export function ForecastPlan({
         : [];
     setComparison({ finance: f, days, baseline: result, changes });
   }
+  const { explanations } = usePresentation();
   const fmt = (date: string) =>
     new Date(date + 'T12:00:00Z').toLocaleDateString('uk-UA', { day: 'numeric', month: 'long' });
   return (
     <section className="renewal-card finance-forecast">
-      <p className="renewal-eyebrow mb-2">ПОГЛЯД НАПЕРЕД</p>
-      <h2 className="text-xl font-bold">Що залишиться після планів?</h2>
+      <h2 className="text-xl font-bold">Прогноз залишку</h2>
       <div className="renewal-segments mt-4">
         {[
           ...(f.policies.length ? [['handover', 'До перезмінки']] : []),
@@ -136,20 +137,22 @@ export function ForecastPlan({
       >
         {result.result == null ? 'Потрібне уточнення' : '≈ ' + moneyLabel(result.result)}
       </div>
-      <p className="renewal-muted">
-        Орієнтовні вільні кошти після майбутніх платежів, бюджетів і відкладань.
-      </p>
+      {explanations && (
+        <p className="renewal-muted">Вільні кошти після планових оплат, витрат і внесків.</p>
+      )}
       {result.result != null && result.saving > 0 && (
         <details className="renewal-inset mt-3">
           <summary className="renewal-link">Якщо внести на цілі пізніше</summary>
           <p className="mt-2">
             Наприкінці періоду: <b>{moneyLabel(result.result + result.saving)}</b>
           </p>
-          <p className="renewal-chart-note mt-2">
-            Окремий сценарій: ще не зроблені внески на {moneyLabel(result.saving)} перенесено за
-            межі обраного періоду. Надходження й решта витрат незмінні. План і фактичні гроші цей
-            перегляд не змінює; внески не мають прострочення.
-          </p>
+          {explanations && (
+            <p className="renewal-chart-note mt-2">
+              Окремий сценарій: ще не зроблені внески на {moneyLabel(result.saving)} перенесено за
+              межі обраного періоду. Надходження й решта витрат незмінні. План і фактичні гроші цей
+              перегляд не змінює; внески не мають прострочення.
+            </p>
+          )}
         </details>
       )}
       {result.minimum && (
@@ -158,15 +161,17 @@ export function ForecastPlan({
           {fmt(result.minimum.date)}
         </p>
       )}
-      <p className="renewal-chart-note mt-2">
-        Перераховано{' '}
-        {new Date(result.asOf).toLocaleString('uk-UA', {
-          timeZone: 'Europe/Kyiv',
-          dateStyle: 'short',
-          timeStyle: 'short',
-        })}
-        .{forecast.isFetching ? ' Оновлюю…' : ''}
-      </p>
+      {(explanations || forecast.isFetching) && (
+        <p className="renewal-chart-note mt-2">
+          Перераховано{' '}
+          {new Date(result.asOf).toLocaleString('uk-UA', {
+            timeZone: 'Europe/Kyiv',
+            dateStyle: 'short',
+            timeStyle: 'short',
+          })}
+          .{forecast.isFetching ? ' Оновлюю…' : ''}
+        </p>
+      )}
       {forecast.error && (
         <p role="status" className="renewal-chart-note">
           {forecast.error.message}
@@ -196,10 +201,11 @@ export function ForecastPlan({
           </button>
         </div>
       )}
-      <ForecastSteps result={result} finance={f} onPayment={onPayment} />
       {f.policies.length > 0 && (
-        <div className="renewal-inset mt-3 text-sm">
-          <strong>Таксі · на {fmt(result.taxi.date ?? result.until)}</strong>
+        <details className="renewal-inset mt-3 text-sm">
+          <summary className="renewal-link">
+            Таксі у прогнозі · {fmt(result.taxi.date ?? result.until)}
+          </summary>
           <p className="renewal-muted mt-2">{result.taxi.reason}</p>
           {result.taxi.status === 'estimated' && (
             <p className="renewal-muted mt-2">
@@ -215,11 +221,13 @@ export function ForecastPlan({
               дохід».
             </p>
           )}
-          <p className="renewal-muted mt-2">
-            Готівка, яка вже в тебе, повторно не додається. Очікувані гроші не змінюють сьогоднішній
-            залишок.
-          </p>
-        </div>
+          {explanations && (
+            <p className="renewal-muted mt-2">
+              Готівка, яка вже в тебе, повторно не додається. Очікувані гроші не змінюють
+              сьогоднішній залишок.
+            </p>
+          )}
+        </details>
       )}
       {!!result.overlaps.length && (
         <p className="renewal-inset text-sm mt-3">
@@ -247,7 +255,8 @@ export function ForecastPlan({
         </p>
       )}
       <details className="renewal-inset mt-4">
-        <summary className="font-semibold cursor-pointer">Звідки взялися майбутні суми?</summary>
+        <summary className="font-semibold cursor-pointer">Як пораховано прогноз</summary>
+        <ForecastSteps result={result} finance={f} onPayment={onPayment} />
         <div className="mt-3 flex flex-col gap-3">
           {result.plans.map((p) => (
             <p className="renewal-muted" key={p.id}>

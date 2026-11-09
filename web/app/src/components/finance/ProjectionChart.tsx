@@ -3,8 +3,10 @@ import { useChartWidth, axisMoney } from './useChartWidth.ts';
 import type { Projection } from '../../../../core/finance/projection.mjs';
 import { moneyLabel } from '../../lib/financeView.ts';
 import { financeDate, financeDay } from './analytics-format.ts';
+import { usePresentation } from '../../lib/presentation.ts';
 export function ProjectionChart({ projection: p }: { projection: Projection }) {
   const [selected, setSelected] = useState('');
+  const { explanations } = usePresentation();
   const { ref, width } = useChartWidth(!p.incomplete && p.daily.length > 0);
   if (p.incomplete || !p.daily.length) return null;
   const row = p.daily.find((d) => d.date === selected) ?? p.daily[0]!;
@@ -58,16 +60,21 @@ export function ProjectionChart({ projection: p }: { projection: Projection }) {
           strokeDasharray="4 4"
           opacity=".6"
         />
-        <path d={area} fill="var(--color-info)" opacity=".13" />
-        <path d={path('balance')} fill="none" stroke="var(--color-info)" strokeWidth="3" />
+        <path d={area} fill="var(--finance-projection, var(--color-info))" opacity=".16" />
+        <path
+          d={path('balance')}
+          fill="none"
+          stroke="var(--finance-projection, var(--color-info))"
+          strokeWidth="3"
+          strokeDasharray="6 4"
+        />
         <line
           x1={x(index)}
           x2={x(index)}
           y1="36"
           y2="204"
-          stroke="var(--color-info)"
-          strokeDasharray="3 3"
-          opacity=".5"
+          stroke="var(--finance-plan, var(--color-tx2))"
+          opacity=".65"
         />
         {p.daily.map((d, i) => (
           <g key={d.date}>
@@ -75,7 +82,9 @@ export function ProjectionChart({ projection: p }: { projection: Projection }) {
               cx={x(i)}
               cy={y(d.balance)}
               r={row.date === d.date ? 6 : 3}
-              fill={d.balance < 0 ? 'var(--color-neg)' : 'var(--color-info)'}
+              fill={
+                d.balance < 0 ? 'var(--color-neg)' : 'var(--finance-projection, var(--color-info))'
+              }
             />
             <g pointerEvents="none">
               <title>
@@ -90,10 +99,12 @@ export function ProjectionChart({ projection: p }: { projection: Projection }) {
           </g>
         ))}
       </svg>
-      <p className="renewal-chart-note">
-        Суцільна лінія — основний сценарій, зона — варіанти іншого темпу роботи, витрат і часу
-        внесків. Це не гарантований імовірнісний інтервал.
-      </p>
+      {explanations && (
+        <p className="renewal-chart-note">
+          Пунктир показує основний прогноз. Зона навколо нього показує інші сценарії роботи, витрат
+          і внесків.
+        </p>
+      )}
       <label className="renewal-field mt-3">
         Розрахунок дня
         <select value={row.date} onChange={(e) => setSelected(e.target.value)}>
@@ -113,7 +124,9 @@ export function ProjectionChart({ projection: p }: { projection: Projection }) {
         >
           ← День
         </button>
-        <strong aria-live="polite">{financeDay(row.date)}</strong>
+        <strong aria-live="polite">
+          {financeDay(row.date)} · {moneyLabel(row.balance)}
+        </strong>
         <button
           type="button"
           className="renewal-secondary"
@@ -123,34 +136,33 @@ export function ProjectionChart({ projection: p }: { projection: Projection }) {
           День →
         </button>
       </div>
-      <div className="finance-projection-day mt-3">
-        <div>
-          <span>Очікувані надходження</span>
-          <b>{moneyLabel(row.income)}</b>
+      <details className="mt-3">
+        <summary className="renewal-link">З чого складається день</summary>
+        <div className="finance-projection-day mt-2">
+          <div>
+            <span>Очікувані надходження</span>
+            <b>{moneyLabel(row.income)}</b>
+          </div>
+          <div>
+            <span>Відомі оплати</span>
+            <b>{moneyLabel(row.payment)}</b>
+          </div>
+          <div>
+            <span>Повсякденні витрати</span>
+            <b>{moneyLabel(row.expense)}</b>
+          </div>
+          <div>
+            <span>Гнучкі внески</span>
+            <b>{moneyLabel(row.saving)}</b>
+          </div>
+          <div>
+            <span>Сценарні межі на цю дату</span>
+            <b>
+              {moneyLabel(row.lower)} — {moneyLabel(row.upper)}
+            </b>
+          </div>
         </div>
-        <div>
-          <span>Відомі оплати</span>
-          <b>{moneyLabel(row.payment)}</b>
-        </div>
-        <div>
-          <span>Повсякденні витрати</span>
-          <b>{moneyLabel(row.expense)}</b>
-        </div>
-        <div>
-          <span>Гнучкі внески</span>
-          <b>{moneyLabel(row.saving)}</b>
-        </div>
-        <div>
-          <span>Вільно наприкінці дня</span>
-          <b>{moneyLabel(row.balance)}</b>
-        </div>
-        <div>
-          <span>Сценарні межі на цю дату</span>
-          <b>
-            {moneyLabel(row.lower)} — {moneyLabel(row.upper)}
-          </b>
-        </div>
-      </div>
+      </details>
       <details className="mt-3">
         <summary className="renewal-link">Усі дні таблицею</summary>
         <div className="finance-table-scroll">

@@ -7,6 +7,7 @@ import { Sheet } from './FinanceSheet.tsx';
 import { financeDate } from './analytics-format.ts';
 import { sumMoney } from '../../../../core/finance/planning.mjs';
 import { budgetPeriod } from '../../../../core/finance/budget-history.mjs';
+import { usePresentation } from '../../lib/presentation.ts';
 export function ForecastSteps({
   result,
   finance,
@@ -17,6 +18,7 @@ export function ForecastSteps({
   onPayment?: (id: string) => void;
 }) {
   const [detail, setDetail] = useState<number | null>(null);
+  const { explanations } = usePresentation();
   const past = result.payments.filter((p) => p.date < result.today),
     future = result.payments.filter((p) => p.date >= result.today);
   const labels = [
@@ -68,7 +70,7 @@ export function ForecastSteps({
                   style={{
                     left: `${((Math.min(step.from, step.total) - min) / span) * 100}%`,
                     width: `${(Math.abs(step.amount) / span) * 100}%`,
-                    background: step.amount < 0 ? 'var(--color-neg)' : 'var(--color-info)',
+                    background: i === 0 ? 'var(--finance-fact)' : 'var(--finance-projection)',
                   }}
                 />
               </span>
@@ -76,7 +78,7 @@ export function ForecastSteps({
           </button>
         ))}
       </div>
-      {!result.incomplete && (
+      {!result.incomplete && explanations && (
         <p className="renewal-chart-note">
           Смужки показують рух від залишку перед кроком до залишку після нього на спільній шкалі.
           Пунктир — нуль.

@@ -108,23 +108,35 @@ function provider(node: React.ReactNode) {
   );
 }
 
-it('keeps exact seven-day amounts and dates visible without hovering or selecting a bar', () => {
-  provider(<BudgetPlan finance={finance} nowMs={NOW} />);
-  const list = screen.getByRole('list', { name: 'Щоденні витрати за останні сім днів' });
-  expect(within(list).getAllByRole('listitem')).toHaveLength(7);
-  expect(within(list).getByText('1 234,56', { exact: false })).toBeVisible();
-  expect(within(list).getByText('30.10')).toBeVisible();
-  expect(
-    within(list).getByRole('listitem', { name: /01\.11.*сьогодні, день триває/ }),
-  ).toBeVisible();
+it('reveals cents on touch or keyboard selection, while the chart shows all seven dates', () => {
+  const { container } = provider(<BudgetPlan finance={finance} nowMs={NOW} />);
+  const chart = screen.getByRole('group', { name: 'Вибрати день витрат' });
+  expect(within(chart).getAllByRole('button')).toHaveLength(7);
+  expect(container.querySelector('.finance-spark-selection')).toBeNull();
+  expect(within(chart).getByText('30.10')).toBeVisible();
+  fireEvent.click(within(chart).getByRole('button', { name: /30 жовтня/ }));
+  expect(container.querySelector('.finance-spark-selection')).toHaveTextContent(/1\s234,56/);
+  expect(within(chart).getByRole('button', { name: /1 листопада.*День триває/ })).toBeVisible();
 });
 
 it('shows all seven exact daily amounts with cents and positive zero for empty known days', () => {
   const { container } = provider(<BudgetPlan finance={finance} nowMs={NOW} />);
-  const amounts = [...container.querySelectorAll('.finance-spark-exact dd')].map((node) =>
+  const list = container.querySelector('.finance-spark-exact')!;
+  expect(list.closest('details')).not.toHaveAttribute('open');
+  fireEvent.click(screen.getByText('Усі дні'));
+  expect(list.closest('details')).toHaveAttribute('open');
+  const amounts = [...list.querySelectorAll('dd')].map((node) =>
     node.textContent?.replace(/\s/g, ' '),
   );
-  expect(amounts).toEqual(['0', '0', '0', '0', '1 234,56', '0', '0']);
+  expect(amounts).toEqual([
+    '0,00 ₴',
+    '0,00 ₴',
+    '0,00 ₴',
+    '0,00 ₴',
+    '1 234,56 ₴',
+    '0,00 ₴',
+    '0,00 ₴',
+  ]);
   expect(container.querySelector('.finance-budget-mini')).not.toHaveTextContent('-0');
 });
 
