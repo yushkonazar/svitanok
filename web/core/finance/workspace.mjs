@@ -18,6 +18,7 @@ import {
   taxiEntryWeek,
   taxiPeriodStart,
   setTaxiPeriodTarget,
+  isTaxiWorkdays,
   prepareTaxiTransition,
   nextPaymentDate,
 } from './planning.mjs';
@@ -176,6 +177,7 @@ function taxiOf(row) {
  * @param {{omitTransactions?:boolean}} [options] */
 export async function readFinanceWorkspace(env, nowMs = Date.now(), range, options = {}) {
   const db = database(env);
+  const taxiIncomeMonth = kyivParts(nowMs).date.slice(0, 7);
   const result = await db.batch([
     db.prepare('SELECT * FROM finance_settings WHERE id = ?').bind('owner'),
     db
@@ -219,6 +221,19 @@ export async function readFinanceWorkspace(env, nowMs = Date.now(), range, optio
       )
       .bind(),
     db.prepare('SELECT * FROM finance_events ORDER BY at DESC LIMIT 100').bind(),
+    db
+      .prepare(
+        `SELECT COALESCE(SUM(CASE WHEN at >= ? THEN amount_uah ELSE 0 END), 0) AS month_minor,
+                COALESCE(SUM(amount_uah), 0) AS all_minor
+         FROM transactions
+         WHERE at <= ? AND ${NOT_TEST_SQL}
+           AND json_extract(raw_json, '$.financeKind') = 'income'
+           AND json_extract(raw_json, '$.financePersonalTaxiType') <> ''`,
+      )
+      .bind(
+        new Date(kyivInstant(`${taxiIncomeMonth}-01`, 0)).toISOString(),
+        new Date(nowMs).toISOString(),
+      ),
   ]);
   /** @type {(index: number) => KvBlob[]} */
   const rows = (index) => /** @type {KvBlob[]} */ (result[index]?.results ?? []);
@@ -234,6 +249,9 @@ export async function readFinanceWorkspace(env, nowMs = Date.now(), range, optio
         amount > 0 &&
         amount <= MAX_MINOR,
     ),
+  );
+  const taxiWorkdays = Object.fromEntries(
+    Object.entries(forecast.taxiWorkdays ?? {}).filter(([, value]) => isTaxiWorkdays(value)),
   );
   // Refuse misleading incomplete arithmetic instead of silently truncating it.
   if (
@@ -445,11 +463,17 @@ export async function readFinanceWorkspace(env, nowMs = Date.now(), range, optio
     policies,
     taxiEntries,
     taxiWeeks,
+    taxiPersonalIncome: {
+      month: taxiIncomeMonth,
+      monthMinor: Number(rows(14)[0]?.month_minor ?? 0),
+      allMinor: Number(rows(14)[0]?.all_minor ?? 0),
+    },
     settlements,
     reserveMinor,
     forecast: {
       incomes: Array.isArray(forecast.incomes) ? forecast.incomes : [],
       taxiTargets,
+      taxiWorkdays,
     },
     goals: rows(5).map((r) => ({
       id: String(r.id),
@@ -1487,8 +1511,13 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
         state.policies,
         nowMs,
       );
+      const workdays = { ...state.forecast.taxiWorkdays };
+      if (payload.workdays !== undefined) {
+        if (!isTaxiWorkdays(payload.workdays)) throw new Error('Обери 5, 6 або 7 робочих днів');
+        workdays[String(payload.periodKey)] = payload.workdays;
+      }
       update('UPDATE finance_settings SET forecast_json = ? WHERE id = ?', [
-        JSON.stringify({ ...state.forecast, taxiTargets: targets }),
+        JSON.stringify({ ...state.forecast, taxiTargets: targets, taxiWorkdays: workdays }),
         'owner',
       ]);
     } catch (error) {

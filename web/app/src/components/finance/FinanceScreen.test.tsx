@@ -10,6 +10,7 @@ import { useFinance } from '../../api/finance-hooks.ts';
 import type { Finance } from '../../api/finance-schema.ts';
 import {
   calculateTaxiWeek,
+  kyivInstant,
   taxiPeriodStart,
   taxiWeek,
 } from '../../../../core/finance/planning.mjs';
@@ -147,6 +148,7 @@ it('switches the taxi chart to a specific shift and edits the correct period tar
   };
   finance.taxiEntries.push(first, { ...first, id: 'current-two', at: '2026-10-16T10:30:00.000Z' });
   finance.forecast.taxiTargets = { [current.key]: 500000, [next.key]: 600000 };
+  finance.forecast.taxiWorkdays = { [current.key]: 5, [next.key]: 7 };
   renderFinance('/finance', finance);
 
   const card = within(screen.getByRole('region', { name: 'Робота · таксі' }));
@@ -154,6 +156,9 @@ it('switches the taxi chart to a specific shift and edits the correct period tar
   expect(card.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '60');
   expect(card.getByRole('img', { name: 'Заробіток від початку періоду' })).toBeVisible();
   fireEvent.click(card.getByRole('button', { name: 'По змінах' }));
+  const cashChart = card.getByRole('img', { name: 'Каса й отримана готівка по змінах' });
+  expect(cashChart.querySelectorAll('.taxi-bar-fee')).toHaveLength(2);
+  expect(cashChart.querySelectorAll('.taxi-bar-cash')).toHaveLength(2);
   fireEvent.change(card.getByRole('slider', { name: 'Обрати зміну' }), { target: { value: '0' } });
   fireEvent.click(card.getByRole('button', { name: 'Уточнити зміну' }));
   const shift = within(screen.getByRole('dialog', { name: 'Уточнити зміну таксі' }));
@@ -164,8 +169,42 @@ it('switches the taxi chart to a specific shift and edits the correct period tar
   const target = within(screen.getByRole('dialog', { name: 'Ціль заробітку' }));
   expect(target.getByLabelText('Робочий період')).toHaveValue(next.key);
   expect(target.getByLabelText('Бажаний заробіток за формулою парку, ₴')).toHaveValue('6000');
+  expect(target.getByLabelText('Робочих днів до дня перезмінки')).toHaveValue('7');
   fireEvent.change(target.getByLabelText('Робочий період'), { target: { value: current.key } });
   expect(target.getByLabelText('Бажаний заробіток за формулою парку, ₴')).toHaveValue('5000');
+  expect(target.getByLabelText('Робочих днів до дня перезмінки')).toHaveValue('5');
+});
+
+it('previews the cash plan as workdays change and carries the chosen count into saving', () => {
+  vi.spyOn(Date, 'now').mockReturnValue(kyivInstant('2026-11-04', 12));
+  const finance = readFinanceDemo();
+  finance.generatedAt = new Date(Date.now()).toISOString();
+  finance.policies = [
+    {
+      ...finance.policies[0]!,
+      effectiveAt: '2026-09-30T09:00:00.000Z',
+      periodStart: true,
+      weekDay: 2,
+      weekHour: 12,
+      weekMinute: 0,
+      vehicleName: 'Гібрид',
+      thresholdMinor: null,
+    },
+  ];
+  finance.taxiEntries = [];
+  finance.taxiWeeks = [];
+  finance.forecast.taxiTargets = { [taxiWeek(Date.now(), finance.policies).key]: 1_000_000 };
+  renderFinance('/finance', finance);
+  fireEvent.click(screen.getByText('План каси до цілі', { selector: 'summary' }));
+  const table = screen.getByRole('table', { name: 'Потрібна каса до цілі' });
+  const before = within(table).getByRole('row', { name: /Повний день/ }).textContent;
+  fireEvent.click(screen.getByRole('button', { name: '5 днів' }));
+  expect(screen.getAllByRole('group', { name: 'Графік заробітку таксі' })).toHaveLength(1);
+  expect(within(table).getByRole('row', { name: /Повний день/ }).textContent).not.toBe(before);
+  fireEvent.click(screen.getByRole('button', { name: 'Застосувати робочі дні' }));
+  const target = within(screen.getByRole('dialog', { name: 'Ціль заробітку' }));
+  expect(target.getByLabelText('Робочих днів до дня перезмінки')).toHaveValue('5');
+  expect(target.getByLabelText('Бажаний заробіток за формулою парку, ₴')).toHaveValue('10000');
 });
 it('opens the taxi entry form from a linked plan and closes the deep link cleanly', () => {
   renderFinance('/finance?action=taxi');

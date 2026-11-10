@@ -1,6 +1,13 @@
 // Deterministic accounting primitives shared by the dashboard and D1 service.
 // Money is integer minor units, shares are integer basis points (100% = 10000).
 export const MAX_MINOR = 9_000_000_000_000;
+export const TAXI_DEFAULT_WORKDAYS = 6;
+export const TAXI_COMMISSION_BPS = 2300;
+
+/** @param {unknown} value @returns {value is 5|6|7} */
+export function isTaxiWorkdays(value) {
+  return value === 5 || value === 6 || value === 7;
+}
 
 /** @param {unknown} value @param {boolean} [signed] @returns {number} */
 export function minor(value, signed = false) {
@@ -261,6 +268,11 @@ export function calculateTaxiWeek(entries, policies, nowMs) {
       ? e.periodKey === week.key
       : Date.parse(e.at) >= week.from && Date.parse(e.at) < week.to,
   );
+  return { ...week, ...calculateTaxiTotals(selected, policies), entries: selected };
+}
+/** Apply historical policy and rounding to entries already grouped into one period.
+ * @param {TaxiEntry[]} selected @param {TaxiPolicy[]} policies */
+export function calculateTaxiTotals(selected, policies) {
   const gross = sumMoney(
     selected.map((e) => sumMoney([minor(e.netCashMinor), minor(e.commissionMinor)])),
   );
@@ -299,12 +311,10 @@ export function calculateTaxiWeek(entries, policies, nowMs) {
   if (selected.some((e) => !policies.some((p) => p.id === e.policyId)))
     throw new Error('Немає історичних умов для запису таксі');
   return {
-    ...week,
     grossMinor: gross,
     netCashMinor: sumMoney(selected.map((e) => e.netCashMinor)),
     earnedMinor: sumMoney(groups.map((g) => g.earnedMinor)),
     groups,
-    entries: selected,
   };
 }
 /** @param {string} nextDate @param {number} anchorDay @param {'day'|'week'|'month'|'year'} period */

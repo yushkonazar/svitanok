@@ -1,6 +1,9 @@
 .taxi-work {
   --taxi-current: var(--finance-fact);
   --taxi-previous: var(--finance-projection);
+  --taxi-average: var(--finance-plan);
+  --taxi-fee: var(--color-a2);
+  --taxi-cash: var(--color-tx);
   display: grid;
   gap: 12px;
   background:
@@ -111,7 +114,8 @@
   stroke-dasharray: 4 4;
 }
 .taxi-line-current,
-.taxi-line-previous {
+.taxi-line-previous,
+.taxi-line-average {
   fill: none;
   stroke: var(--taxi-current);
   stroke-width: 2.5;
@@ -121,6 +125,10 @@
 .taxi-line-previous {
   stroke: var(--taxi-previous);
 }
+.taxi-line-average {
+  stroke: var(--taxi-average);
+  stroke-dasharray: 1 5;
+}
 .taxi-dot-current,
 .taxi-bar {
   fill: var(--taxi-current);
@@ -128,12 +136,24 @@
 .taxi-dot-previous {
   fill: var(--taxi-previous);
 }
+.taxi-dot-average {
+  fill: var(--taxi-average);
+}
 .taxi-dot-current,
-.taxi-dot-previous {
+.taxi-dot-previous,
+.taxi-dot-average {
   stroke: var(--color-bg2);
   stroke-width: 1.5;
 }
-.taxi-bar {
+.taxi-bar-fee {
+  fill: var(--taxi-fee);
+}
+.taxi-bar-cash {
+  stroke: var(--taxi-cash);
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+.taxi-bar-group {
   opacity: 0.63;
 }
 .taxi-bar-selected {
@@ -144,32 +164,54 @@
   height: 24px;
   accent-color: var(--taxi-current);
 }
-.taxi-chart-readout {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 8px 16px;
-  padding: 6px 0 0;
-}
-.taxi-chart-value {
+.taxi-pace-readout,
+.taxi-shift-readout {
   display: grid;
-  gap: 2px;
-  color: var(--taxi-current);
-}
-.taxi-chart-value > span,
-.taxi-chart-empty,
-.taxi-shift-details {
-  color: var(--color-tx2);
+  gap: 6px;
+  padding: 6px 0 0;
   font-size: 12px;
+  color: var(--color-tx2);
 }
-.taxi-chart-previous {
-  color: var(--taxi-previous);
+.taxi-swatch::before {
+  content: '';
+  display: inline-block;
+  width: 11px;
+  margin-inline-end: 5px;
+  border-block-start: 2px solid var(--taxi-current);
+  vertical-align: 3px;
+}
+.taxi-swatch-previous::before {
+  border-color: var(--taxi-previous);
+  border-style: dashed;
+  border-width: 2px 0 0;
+}
+.taxi-swatch-average::before {
+  border-color: var(--taxi-average);
+  border-style: dotted;
+  border-width: 2px 0 0;
+}
+.taxi-swatch-fee::before {
+  border-color: var(--taxi-fee);
+}
+.taxi-swatch-cash::before {
+  border-color: var(--taxi-cash);
+}
+.taxi-pace-help > summary {
+  color: var(--color-a2);
+  cursor: pointer;
+  min-height: 32px;
+  padding-block: 5px;
+}
+.taxi-pace-help > p + p {
+  margin-top: 5px;
 }
 .taxi-chart-empty {
+  color: var(--color-tx2);
+  font-size: 12px;
   padding-top: 12px;
 }
-.taxi-shift-details {
-  flex-basis: 100%;
+.taxi-shift-readout .renewal-link {
+  justify-self: start;
 }
 .taxi-chart .renewal-chart-note {
   margin-top: 8px;
@@ -201,9 +243,14 @@
   transform: rotate(90deg);
 }
 .taxi-work-forecast summary > b {
+  flex: 0 0 auto;
   margin-inline-start: auto;
   color: var(--taxi-previous);
   font-size: 13px;
+  white-space: nowrap;
+}
+.taxi-work-forecast summary > span {
+  min-width: 0;
 }
 .taxi-work-forecast summary::after {
   margin-inline-start: 0;
@@ -222,7 +269,6 @@
 }
 .taxi-work-target b,
 .taxi-work-total b,
-.taxi-chart-value b,
 .taxi-work-forecast summary b {
   font-family: var(--font-amount);
   font-weight: 500;
@@ -237,6 +283,53 @@
   color: var(--color-tx);
   text-align: end;
   font-variant-numeric: tabular-nums;
+}
+.taxi-work-ledger .taxi-net-cash {
+  justify-self: end;
+  border-radius: 9px;
+  padding: 2px 8px;
+  background: color-mix(in srgb, var(--taxi-current) 14%, transparent);
+  color: var(--taxi-current);
+  font-weight: 700;
+}
+.taxi-plan-options > button {
+  flex: 1 1 0;
+  min-height: 38px;
+}
+.taxi-plan-dates {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  font-size: 11px;
+}
+.taxi-plan-dates > span {
+  border: 1px solid var(--color-glassb);
+  border-radius: 6px;
+  padding: 2px 5px;
+}
+.taxi-data-table {
+  width: 100%;
+  table-layout: fixed;
+  text-align: end;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+.taxi-data-table th:first-child {
+  width: 41%;
+  text-align: start;
+}
+.taxi-data-table th,
+.taxi-data-table td {
+  border-bottom: 1px solid var(--color-glassb);
+  padding: 5px 2px;
+}
+.taxi-data-table td:nth-child(2) {
+  color: var(--taxi-current);
+  font-weight: 700;
+}
+.taxi-data-table td:nth-child(3) {
+  color: var(--color-tx);
 }
 .taxi-work-actions {
   display: grid;

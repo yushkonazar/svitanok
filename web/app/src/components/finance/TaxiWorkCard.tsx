@@ -1,19 +1,16 @@
+import { useMemo, useState } from 'react';
 import type { Finance } from '../../api/finance-schema.ts';
 import { sumMoney } from '../../../../core/finance/planning.mjs';
 import { moneyLabel } from '../../lib/financeView.ts';
 import { taxiPeriodLabel, taxiRangeLabel, taxiScheduleLabel } from '../../lib/taxiPeriods.ts';
 import { taxiWork } from '../../lib/taxiWork.ts';
+import { taxiCashPlan } from '../../lib/taxiCashPlan.ts';
 import { UpdatedValue } from '../ui/UpdatedValue.tsx';
-import { amountNumber, counted, percentLabel } from './analytics-format.ts';
+import { amountNumber, percentLabel } from './analytics-format.ts';
 import type { FinanceFormRequest } from './FinanceForm.tsx';
 import { TaxiWorkChart } from './TaxiWorkChart.tsx';
+import { TaxiNextShift, TaxiPlanDetails } from './TaxiCashPlanning.tsx';
 import './taxi-work.css';
-
-const models: Record<string, string> = {
-  median: 'типова зміна',
-  weighted: 'більша вага останніх змін',
-  last: 'результат останньої зміни',
-};
 
 export function TaxiWorkCard({
   finance,
@@ -28,15 +25,19 @@ export function TaxiWorkCard({
   onAction: (request: FinanceFormRequest) => void;
   onHistory: (key: string) => void;
 }) {
-  const work = taxiWork(finance, now);
-  const { current, active, targetMinor, remainingMinor, forecast } = work;
+  const work = useMemo(() => taxiWork(finance, now), [finance, now]);
+  const { current, active, targetMinor, remainingMinor, income } = work;
+  const [scenario, setScenario] = useState<{ key: string; saved: number; days: 5 | 6 | 7 } | null>(
+    null,
+  );
+  const workdays =
+    scenario?.key === current.key && scenario.saved === work.workdays
+      ? scenario.days
+      : work.workdays;
+  const plan = useMemo(() => taxiCashPlan(work, workdays), [work, workdays]);
   const week = finance.taxiWeeks.find((period) => period.key === current.key);
   const unpaid = finance.taxiWeeks.find((period) => period.closed && !period.settled);
   const progress = targetMinor === null ? 0 : (100 * current.earnedMinor) / targetMinor;
-  const nextGap =
-    targetMinor !== null && forecast
-      ? Math.max(0, targetMinor - current.earnedMinor - forecast.estimateMinor)
-      : null;
   const fixedHalf =
     active?.thresholdMinor === null &&
     [active.fareBps, active.commissionBps, active.fuelBps].every((rate) => rate === 5000);
@@ -138,6 +139,16 @@ export function TaxiWorkCard({
       >
         + Записати зміну
       </button>
+      <TaxiPlanDetails
+        work={work}
+        plan={plan}
+        workdays={workdays}
+        onWorkdays={(days) => setScenario({ key: current.key, saved: work.workdays, days })}
+        onSave={() => {
+          setScenario(null);
+          onAction({ kind: 'taxi-target', id: current.key, defaults: { taxiWorkdays: workdays } });
+        }}
+      />
       {unpaid && (
         <div
           className="renewal-inset taxi-work-unpaid"
@@ -169,44 +180,11 @@ export function TaxiWorkCard({
       )}
 
       <TaxiWorkChart
-        key={current.key}
+        key={`chart-${current.key}`}
         work={work}
         onEditShift={week?.settled ? undefined : (id) => onAction({ kind: 'taxi', id })}
       />
-      {forecast ? (
-        <details className="taxi-work-fold taxi-work-forecast">
-          <summary>
-            <span>Наступна зміна · прогноз</span>
-            <b>≈ {moneyLabel(forecast.estimateMinor)}</b>
-          </summary>
-          <div className="taxi-work-fold-body">
-            <p>
-              {forecast.lowerMinor === forecast.upperMinor
-                ? `У вибірці · ${moneyLabel(forecast.lowerMinor)}`
-                : `Діапазон минулих змін · ${moneyLabel(forecast.lowerMinor)} — ${moneyLabel(forecast.upperMinor)}`}
-            </p>
-            {nextGap !== null &&
-              remainingMinor !== null &&
-              remainingMinor > 0 &&
-              !work.provisional && (
-                <p className="text-a2">
-                  {nextGap
-                    ? `За прогнозом після зміни залишиться ${moneyLabel(nextGap)} до цілі`
-                    : 'За прогнозом наступної зміни вистачить для цілі'}
-                </p>
-              )}
-            <p className="renewal-chart-note">
-              {counted(forecast.samples, 'завершена зміна', 'завершені зміни', 'завершених змін')}{' '}
-              на цьому авто, перераховані за поточними умовами · {models[forecast.model]}
-            </p>
-          </div>
-        </details>
-      ) : (
-        <p className="renewal-chart-note taxi-forecast-empty">
-          Прогноз з’явиться після 4 завершених змін з відомою комісією на цьому авто
-          {work.comparableCount > 0 && ` · ${work.comparableCount}/4`}.
-        </p>
-      )}
+      <TaxiNextShift key={`forecast-${current.key}`} work={work} plan={plan} />
       <details className="taxi-work-fold">
         <summary>Увесь дохід</summary>
         <div className="taxi-work-fold-body">
@@ -216,11 +194,28 @@ export function TaxiWorkCard({
           </div>
           <div className="taxi-work-row">
             <span>Окремо записаний особистий дохід</span>
-            <b>{moneyLabel(work.personalMinor)}</b>
+            <b>{moneyLabel(income.period.personalMinor)}</b>
           </div>
           <div className="taxi-work-row taxi-work-total">
-            <span>Разом за період</span>
-            <b>{moneyLabel(work.totalMinor)}</b>
+            <span>Разом за перезмінку</span>
+            <b>
+              {income.period.provisional && '≈ '}
+              {moneyLabel(income.period.totalMinor)}
+            </b>
+          </div>
+          <div className="taxi-work-row taxi-work-total">
+            <span>Поточний місяць</span>
+            <b>
+              {income.month.provisional && '≈ '}
+              {moneyLabel(income.month.totalMinor)}
+            </b>
+          </div>
+          <div className="taxi-work-row taxi-work-total">
+            <span>За весь час</span>
+            <b>
+              {income.all.provisional && '≈ '}
+              {moneyLabel(income.all.totalMinor)}
+            </b>
           </div>
           <button
             type="button"
@@ -241,6 +236,8 @@ export function TaxiWorkCard({
             <dl className="taxi-work-ledger">
               <dt>Каса до комісії</dt>
               <dd>{moneyLabel(current.grossMinor)}</dd>
+              <dt>Чиста каса</dt>
+              <dd className="taxi-net-cash">{moneyLabel(current.netCashMinor)}</dd>
               <dt>Повна комісія</dt>
               <dd>{moneyLabel(sumMoney(current.groups.map((group) => group.commissionMinor)))}</dd>
               <dt>Пальне парку</dt>

@@ -1,34 +1,63 @@
 import type { Finance } from '../api/finance-schema.ts';
 import {
-  calculateTaxiWeek,
+  calculateTaxiTotals,
+  kyivInstant,
+  kyivParts,
+  shiftDate,
   sumMoney,
   taxiEarnings,
+  taxiEntryWeek,
   taxiWeek,
+  TAXI_DEFAULT_WORKDAYS,
+  type TaxiPolicy,
   type TaxiTotals,
 } from '../../../core/finance/planning.mjs';
-import { forecastNextTaxiShift } from '../../../core/finance/income-forecast.mjs';
 import { taxiVehicleName } from './taxiPeriods.ts';
 
 type Entry = Finance['taxiEntries'][number];
 type WorkPeriod = ReturnType<typeof taxiWeek>;
+export type TaxiRecord = { period: WorkPeriod; entries: Entry[] };
 
-const DAY = 86_400_000;
-
-function inPeriod(entry: Entry, period: WorkPeriod) {
-  if (entry.periodKey) return entry.periodKey === period.key;
-  const time = Date.parse(entry.at);
-  return time >= period.from && time < period.to;
+function shiftsFor(
+  entries: Entry[],
+  totals: ReturnType<typeof calculateTaxiTotals>,
+  policyById: Map<string, TaxiPolicy>,
+) {
+  // Allocate the rounded period earnings without introducing rounding drift.
+  const accumulated = new Map<string, TaxiTotals>();
+  const fareByPolicy = new Map(totals.groups.map((group) => [group.policyId, group.fareBps]));
+  return entries.map((entry) => {
+    const grossMinor = entry.netCashMinor + entry.commissionMinor;
+    const previous = accumulated.get(entry.policyId);
+    const total = {
+      grossMinor: (previous?.grossMinor ?? 0) + grossMinor,
+      commissionMinor: (previous?.commissionMinor ?? 0) + entry.commissionMinor,
+      fuelMinor: (previous?.fuelMinor ?? 0) + entry.fuelMinor,
+      tipsMinor: (previous?.tipsMinor ?? 0) + entry.tipsMinor,
+      directMinor: (previous?.directMinor ?? 0) + entry.directMinor,
+    };
+    const policy = policyById.get(entry.policyId)!;
+    const fareBps = fareByPolicy.get(entry.policyId);
+    const earnedMinor =
+      taxiEarnings(total, policy, fareBps).earnedMinor -
+      (previous ? taxiEarnings(previous, policy, fareBps).earnedMinor : 0);
+    accumulated.set(entry.policyId, total);
+    return { ...entry, grossMinor, earnedMinor };
+  });
 }
 
-function shiftTotals(entry: Entry): TaxiTotals {
-  return {
-    grossMinor: entry.netCashMinor + entry.commissionMinor,
-    commissionMinor: entry.commissionMinor,
-    fuelMinor: entry.fuelMinor,
-    tipsMinor: entry.tipsMinor,
-    directMinor: entry.directMinor,
-  };
-}
+const commissionKnown = (entry: Entry) => entry.commissionReported !== false;
+const comparableEntry = (entry: Entry) => commissionKnown(entry) && entry.dayComplete !== false;
+const within = (entry: Entry, period: WorkPeriod) => {
+  const at = Date.parse(entry.at);
+  return at >= period.from && at < period.to;
+};
+const incomeTotal = (earnedMinor: number, personalMinor: number, provisional: boolean) => ({
+  earnedMinor,
+  personalMinor,
+  totalMinor: earnedMinor + personalMinor,
+  provisional,
+});
 
 export function taxiWork(finance: Finance, now: number) {
   const { policies } = finance;
@@ -36,69 +65,82 @@ export function taxiWork(finance: Finance, now: number) {
     .filter((entry) => Date.parse(entry.at) <= now)
     .sort((a, b) => Date.parse(a.at) - Date.parse(b.at) || a.id.localeCompare(b.id));
   const period = taxiWeek(now, policies);
-  const entries = occurred.filter((entry) => inPeriod(entry, period));
-  const current = calculateTaxiWeek(entries, policies, now);
+  const records = new Map<string, TaxiRecord>();
+  let implicit = period;
+  for (const entry of occurred) {
+    const at = Date.parse(entry.at);
+    if (!entry.periodKey && (at < implicit.from || at >= implicit.to))
+      implicit = taxiWeek(at, policies);
+    const existing = records.get(entry.periodKey ?? implicit.key);
+    if (existing) existing.entries.push(entry);
+    else {
+      const owner = entry.periodKey ? taxiEntryWeek(entry, policies) : implicit;
+      records.set(owner.key, { period: owner, entries: [entry] });
+    }
+  }
+
+  const policyById = new Map<string, TaxiPolicy>(policies.map((policy) => [policy.id, policy]));
+  const totalsFor = (entries: Entry[]) => {
+    const ids = new Set(entries.map((entry) => entry.policyId));
+    return calculateTaxiTotals(
+      entries,
+      policies.filter((policy) => ids.has(policy.id)),
+    );
+  };
+  const entries = records.get(period.key)?.entries ?? [];
+  const current = { ...period, ...totalsFor(entries), entries };
+  const shifts = shiftsFor(entries, current, policyById);
   const active = policies.filter((policy) => Date.parse(policy.effectiveAt) <= now).at(-1);
-  const policyById = new Map(policies.map((policy) => [policy.id, policy]));
-  const hasCommission = entries.every((entry) => entry.commissionReported !== false);
-  const provisional = !hasCommission || entries.some((entry) => entry.dayComplete === false);
+  const hasCommission = entries.every(commissionKnown);
+  const provisional = entries.some((entry) => !comparableEntry(entry));
   const vehicle = taxiVehicleName(now, policies);
   const next = taxiWeek(period.to, policies);
 
-  // Allocate the rounded period total across shifts without introducing rounding drift.
-  const accumulated = new Map<string, TaxiTotals>();
-  const fareByPolicy = new Map(current.groups.map((group) => [group.policyId, group.fareBps]));
-  const shifts = entries.map((entry) => {
-    const totals = shiftTotals(entry);
-    const previous = accumulated.get(entry.policyId);
-    const total = previous
-      ? {
-          grossMinor: sumMoney([previous.grossMinor, totals.grossMinor]),
-          commissionMinor: sumMoney([previous.commissionMinor, totals.commissionMinor]),
-          fuelMinor: sumMoney([previous.fuelMinor, totals.fuelMinor]),
-          tipsMinor: sumMoney([previous.tipsMinor, totals.tipsMinor]),
-          directMinor: sumMoney([previous.directMinor, totals.directMinor]),
-        }
-      : totals;
-    const policy = policyById.get(entry.policyId)!;
-    const fareBps = fareByPolicy.get(entry.policyId);
-    const earnedMinor =
-      taxiEarnings(total, policy, fareBps).earnedMinor -
-      (previous ? taxiEarnings(previous, policy, fareBps).earnedMinor : 0);
-    accumulated.set(entry.policyId, total);
-    return { ...entry, grossMinor: totals.grossMinor, earnedMinor };
-  });
-
+  const history = [...records.values()]
+    .filter((record) => record.period.to <= period.from)
+    .sort((a, b) => a.period.from - b.period.from);
   const previousPeriod = taxiWeek(period.from - 1, policies);
-  const previousEntries = occurred.filter((entry) => inPeriod(entry, previousPeriod));
+  const previousEntries = records.get(previousPeriod.key)?.entries ?? [];
   const elapsed = now - period.from;
   const previousCutoff = previousPeriod.from + elapsed;
   const previousReady =
     previousEntries.length > 0 &&
     previousCutoff <= previousPeriod.to &&
-    previousEntries.every((entry) => Date.parse(entry.at) < previousPeriod.to) &&
+    previousEntries.every((entry) => within(entry, previousPeriod)) &&
     previousEntries.every(
-      (entry) =>
-        Date.parse(entry.at) > previousCutoff ||
-        (entry.commissionReported !== false && entry.dayComplete !== false),
+      (entry) => Date.parse(entry.at) > previousCutoff || comparableEntry(entry),
     );
-  const checkpoints = Math.max(3, Math.ceil(elapsed / DAY));
-  const earnedBy = (rows: Entry[], from: number, at: number) =>
-    calculateTaxiWeek(
-      rows.filter((entry) => Date.parse(entry.at) <= at),
-      policies,
-      from,
-    ).earnedMinor;
-  const pace = Array.from({ length: elapsed > 0 ? checkpoints + 1 : 1 }, (_, index) => {
-    const offset = Math.round((elapsed * index) / checkpoints);
-    const at = period.from + offset;
+  const benchmark = history.filter(
+    (record) =>
+      record.period.to - record.period.from >= elapsed &&
+      record.entries.every((entry) => comparableEntry(entry) && within(entry, record.period)),
+  );
+
+  const startDate = kyivParts(period.from).date;
+  const today = kyivParts(now).date;
+  const checkpoints = [period.from];
+  for (let day = startDate; day < today; day = shiftDate(day, 1)) {
+    checkpoints.push(kyivInstant(shiftDate(day, 1), 0) - 1);
+  }
+  if (checkpoints.at(-1) !== now) checkpoints.push(now);
+
+  const earnedBy = (rows: Entry[], at: number) =>
+    totalsFor(rows.filter((entry) => Date.parse(entry.at) <= at)).earnedMinor;
+  const pace = checkpoints.map((at) => {
+    const offset = at - period.from;
     const previousAt = previousPeriod.from + offset;
     return {
       at,
       previousAt,
-      earnedMinor: at === now ? current.earnedMinor : earnedBy(entries, period.from, at),
-      previousMinor: previousReady
-        ? earnedBy(previousEntries, previousPeriod.from, previousAt)
+      earnedMinor: at === now ? current.earnedMinor : earnedBy(entries, at),
+      previousMinor: previousReady ? earnedBy(previousEntries, previousAt) : null,
+      averageMinor: benchmark.length
+        ? Math.round(
+            benchmark.reduce(
+              (total, record) => total + earnedBy(record.entries, record.period.from + offset),
+              0,
+            ) / benchmark.length,
+          )
         : null,
     };
   });
@@ -107,11 +149,7 @@ export function taxiWork(finance: Finance, now: number) {
     previousMinor === null || !hasCommission || !entries.length
       ? null
       : current.earnedMinor - previousMinor;
-  const previousVehicle = taxiVehicleName(previousPeriod.from, policies);
-  const previousPolicy = policies
-    .filter((policy) => Date.parse(policy.effectiveAt) <= previousPeriod.from)
-    .at(-1);
-  const terms = (policy: typeof active) =>
+  const terms = (policy: TaxiPolicy | undefined) =>
     policy &&
     [
       policy.fareBps,
@@ -122,51 +160,60 @@ export function taxiWork(finance: Finance, now: number) {
       policy.bonusFareBps,
     ].join('/');
   const differentTerms =
-    previousVehicle !== vehicle ||
-    terms(previousPolicy) !== terms(active) ||
-    previousEntries.some((entry) => terms(policyById.get(entry.policyId)) !== terms(active)) ||
-    entries.some((entry) => terms(policyById.get(entry.policyId)) !== terms(active));
+    taxiVehicleName(previousPeriod.from, policies) !== vehicle ||
+    [...previousEntries, ...entries].some(
+      (entry) => terms(policyById.get(entry.policyId)) !== terms(active),
+    );
 
-  const personalMinor = sumMoney(
-    finance.transactions
-      .filter((tx) => {
-        const at = Date.parse(tx.at);
-        return tx.personalTaxiType && tx.kind === 'income' && at >= period.from && at <= now;
-      })
-      .map((tx) => tx.amountUah ?? 0),
+  const month = today.slice(0, 7);
+  const monthStart = kyivInstant(shiftDate(today, 1 - Number(today.slice(8))), 0);
+  const personal = finance.transactions.filter(
+    (tx) => tx.personalTaxiType && tx.kind === 'income' && Date.parse(tx.at) <= now,
   );
-  const fromFareMinor = current.earnedMinor - sumMoney(current.groups.map((g) => g.extrasMinor));
+  const personalSince = (from: number) =>
+    sumMoney(personal.filter((tx) => Date.parse(tx.at) >= from).map((tx) => tx.amountUah ?? 0));
+  const income = finance.taxiPersonalIncome;
+  let monthEarned = 0;
+  let allEarned = 0;
+  let monthIncomplete = false;
+  let allIncomplete = false;
+  for (const record of records.values()) {
+    const isCurrent = record.period.key === period.key;
+    const totals = isCurrent ? current : totalsFor(record.entries);
+    allEarned += totals.earnedMinor;
+    const incomplete = record.entries.some((entry) => !comparableEntry(entry));
+    allIncomplete ||= incomplete;
+    if (Date.parse(record.entries.at(-1)!.at) < monthStart) continue;
+    monthIncomplete ||= incomplete;
+    if (Date.parse(record.entries[0]!.at) >= monthStart) {
+      monthEarned += totals.earnedMinor;
+    } else {
+      const contributions = isCurrent ? shifts : shiftsFor(record.entries, totals, policyById);
+      const monthShifts = contributions.filter((entry) => Date.parse(entry.at) >= monthStart);
+      monthEarned += sumMoney(monthShifts.map((entry) => entry.earnedMinor));
+    }
+  }
+
+  const fromFareMinor =
+    current.earnedMinor - sumMoney(current.groups.map((group) => group.extrasMinor));
   const takeHomePer100 =
     hasCommission && current.grossMinor > 0 ? (100 * fromFareMinor) / current.grossMinor : null;
-  const sameVehiclePolicies = new Set(
+  const sameVehicle = new Set(
     policies
       .filter((policy) => taxiVehicleName(Date.parse(policy.effectiveAt), policies) === vehicle)
       .map((policy) => policy.id),
   );
-  const comparable = occurred
-    .filter(
-      (entry) =>
-        sameVehiclePolicies.has(entry.policyId) &&
-        entry.dayComplete !== false &&
-        entry.commissionReported !== false &&
-        (entry.netCashMinor > 0 || entry.commissionMinor > 0 || entry.directMinor > 0),
-    )
-    .slice(-16);
-  const forecastFare =
-    active && active.thresholdMinor !== null && current.grossMinor > active.thresholdMinor
-      ? active.bonusFareBps
-      : active?.fareBps;
-  const forecast = active
-    ? forecastNextTaxiShift(
-        comparable.map(
-          (entry) => taxiEarnings(shiftTotals(entry), active, forecastFare).earnedMinor,
-        ),
-      )
-    : null;
+  const comparable = history
+    .map((record) => ({
+      period: record.period,
+      entries: record.entries.filter(
+        (entry) => within(entry, record.period) && sameVehicle.has(entry.policyId),
+      ),
+    }))
+    .filter((record) => record.entries.length > 0);
   const targetMinor = finance.forecast.taxiTargets?.[period.key] ?? null;
-  const remainingMinor =
-    targetMinor === null ? null : Math.max(0, targetMinor - current.earnedMinor);
   return {
+    now,
     current,
     active,
     next,
@@ -177,16 +224,24 @@ export function taxiWork(finance: Finance, now: number) {
     pace,
     previousPeriod,
     previousReady,
+    averagePeriods: benchmark.length,
     differentTerms,
     deltaMinor,
-    personalMinor,
-    totalMinor: current.earnedMinor + personalMinor,
+    income: {
+      period: incomeTotal(current.earnedMinor, personalSince(period.from), provisional),
+      month: incomeTotal(
+        monthEarned,
+        income?.month === month ? income.monthMinor : personalSince(monthStart),
+        monthIncomplete,
+      ),
+      all: incomeTotal(allEarned, income?.allMinor ?? personalSince(-Infinity), allIncomplete),
+    },
     takeHomePer100,
-    forecast,
-    comparableCount: comparable.length,
+    comparable,
     targetMinor,
-    remainingMinor,
+    remainingMinor: targetMinor === null ? null : Math.max(0, targetMinor - current.earnedMinor),
     nextTargetMinor: finance.forecast.taxiTargets?.[next.key] ?? null,
+    workdays: finance.forecast.taxiWorkdays?.[period.key] ?? TAXI_DEFAULT_WORKDAYS,
   };
 }
 
