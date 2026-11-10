@@ -15,6 +15,7 @@ import {
   kyivParts,
   taxiWeek,
   taxiPeriodStart,
+  TAXI_DEFAULT_WORKDAYS,
 } from '../../../../core/finance/planning.mjs';
 import { haptic } from '../../telegram.ts';
 import { Sheet } from './FinanceSheet.tsx';
@@ -76,6 +77,7 @@ export interface FinanceFormRequest {
     description?: string;
     returnGoal?: { accountId: string; amountMinor: number; mode: 'reserve' | 'cash' | 'bank' };
     bankTransactionId?: string;
+    taxiWorkdays?: 5 | 6 | 7;
   };
 }
 const TITLES: Record<FinanceFormKind, string> = {
@@ -153,6 +155,8 @@ function FinanceFormBody({
     const amount = key ? f.forecast.taxiTargets?.[key] : undefined;
     return amount ? String(amount / 100) : '';
   };
+  const targetWorkdays = (key: string | undefined) =>
+    String((key && f.forecast.taxiWorkdays?.[key]) || TAXI_DEFAULT_WORKDAYS);
   const [v, setValues] = useState<Record<string, string>>({
     amount: returnGoal
       ? String(returnGoal.amountMinor / 100)
@@ -306,6 +310,9 @@ function FinanceFormBody({
     taxiPeriodKey: entry?.periodKey ?? '',
     taxiTargetPeriod: targetKey ?? '',
     taxiTargetAmount: targetText(targetKey),
+    taxiWorkdays: request.defaults?.taxiWorkdays
+      ? String(request.defaults.taxiWorkdays)
+      : targetWorkdays(targetKey),
     transactionKind:
       transaction?.amountMinor != null && transaction.amountMinor < 0 ? 'expense' : 'income',
   });
@@ -357,7 +364,10 @@ function FinanceFormBody({
   const set = (key: string, value: string) =>
     setValues((prev) => {
       const next = { ...prev, [key]: value };
-      if (key === 'taxiTargetPeriod') next.taxiTargetAmount = targetText(value);
+      if (key === 'taxiTargetPeriod') {
+        next.taxiTargetAmount = targetText(value);
+        next.taxiWorkdays = targetWorkdays(value);
+      }
       if (key === 'bankRefreshAccountId') {
         next.bankTransactionId = '';
         next.bankHoldConfirmed = 'false';
@@ -748,7 +758,11 @@ function FinanceFormBody({
       } else if (request.kind === 'taxi-target') {
         const targetMinor = clearTaxiTarget ? null : inputMoney('taxiTargetAmount');
         if (targetMinor === 0) throw new Error('Вкажи додатну суму цілі');
-        Object.assign(p, { periodKey: v.taxiTargetPeriod, targetMinor });
+        Object.assign(p, {
+          periodKey: v.taxiTargetPeriod,
+          targetMinor,
+          workdays: Number(v.taxiWorkdays),
+        });
       } else if (request.kind === 'policy') {
         type = 'taxi-policy';
         const fixed = v.policyPreset === 'hybrid';
@@ -1135,6 +1149,14 @@ function FinanceFormBody({
                   ],
                 ])}
                 {field('taxiTargetAmount', 'Бажаний заробіток за формулою парку, ₴')}
+                {select('taxiWorkdays', 'Робочих днів до дня перезмінки', [
+                  ['5', '5 днів'],
+                  ['6', '6 днів'],
+                  ['7', '7 днів'],
+                ])}
+                <p className="renewal-chart-note">
+                  Час роботи в день перезмінки враховується окремо.
+                </p>
                 {f.forecast.taxiTargets?.[v.taxiTargetPeriod] && (
                   <button type="button" className="renewal-link" onClick={() => void submit(true)}>
                     Прибрати ціль

@@ -45,7 +45,7 @@ it('keeps taxi targets attached to their exact periods and preserves them when u
     id: 'current-target',
     version: initial.version,
     type: 'taxi-target',
-    payload: { periodKey: current.key, targetMinor: 720000 },
+    payload: { periodKey: current.key, targetMinor: 720000, workdays: 5 },
   };
   await executeFinanceCommand(env, target, NOW);
   await executeFinanceCommand(env, target, NOW);
@@ -63,13 +63,25 @@ it('keeps taxi targets attached to their exact periods and preserves them when u
       current.to,
     ),
   ).rejects.toThrow(/поточну або наступну/);
+  await expect(
+    executeFinanceCommand(
+      env,
+      {
+        ...target,
+        id: 'invalid-workdays',
+        version: initial.version + 1,
+        payload: { periodKey: next.key, targetMinor: 800000, workdays: 4 },
+      },
+      NOW,
+    ),
+  ).rejects.toThrow(/5, 6 або 7/);
   await executeFinanceCommand(
     env,
     {
       ...target,
       id: 'next-target',
       version: initial.version + 1,
-      payload: { periodKey: next.key, targetMinor: 800000 },
+      payload: { periodKey: next.key, targetMinor: 800000, workdays: 7 },
     },
     NOW,
   );
@@ -91,6 +103,7 @@ it('keeps taxi targets attached to their exact periods and preserves them when u
   );
   const afterRollover = await readFinanceWorkspace(env, current.to);
   expect(afterRollover.forecast.taxiTargets).toEqual({ [current.key]: 720000, [next.key]: 800000 });
+  expect(afterRollover.forecast.taxiWorkdays).toEqual({ [current.key]: 5, [next.key]: 7 });
   await executeFinanceCommand(
     env,
     {
@@ -103,8 +116,41 @@ it('keeps taxi targets attached to their exact periods and preserves them when u
   );
   const result = await readFinanceWorkspace(env, current.to);
   expect(result.forecast.taxiTargets).toEqual({ [current.key]: 720000 });
+  expect(result.forecast.taxiWorkdays).toEqual({ [current.key]: 5, [next.key]: 7 });
   expect(result.forecast.incomes).toMatchObject([income]);
   expect(result.transactions).toEqual(initial.transactions);
+});
+
+it('aggregates personal taxi income outside the activity window and at the Kyiv month boundary', async () => {
+  const { env, d1 } = setup();
+  const insert = d1.db.prepare(
+    'INSERT INTO transactions(id,at,amount,currency,amount_uah,description,category,flags_json,raw_json) VALUES(?,?,?,?,?,?,?,?,?)',
+  );
+  const row = (id: string, at: string, amount: number, kind = 'income', test = false) =>
+    insert.run(
+      id,
+      at,
+      amount,
+      'UAH',
+      amount,
+      id,
+      'таксі · особисте',
+      '[]',
+      JSON.stringify({
+        financeKind: kind,
+        financePersonalTaxiType: 'cash-tip',
+        test,
+      }),
+    );
+  row('archived-tip', '2026-04-01T00:00:00.000Z', 4000);
+  row('before-month', '2026-09-30T20:59:59.999Z', 1000);
+  row('start-of-month', '2026-09-30T21:00:00.000Z', 2000);
+  row('test-tip', '2026-10-03T12:00:00.000Z', 50000, 'income', true);
+  row('park-settlement', '2026-10-06T12:00:00.000Z', 50000, 'taxi-settlement');
+  row('future-tip', '2026-10-09T10:00:00.000Z', 80000);
+  const state = await readFinanceWorkspace(env, NOW);
+  expect(state.transactions.some((tx) => tx.id === 'archived-tip')).toBe(false);
+  expect(state.taxiPersonalIncome).toEqual({ month: '2026-10', monthMinor: 2000, allMinor: 7000 });
 });
 
 it('links an international card subscription using the UAH debit, not the merchant currency; retry is idempotent', async () => {

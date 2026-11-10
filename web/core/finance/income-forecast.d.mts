@@ -4,7 +4,10 @@ export function chooseIncomeModel(values: number[]): {
   mae: number | null;
   scores: { name: string; mae: number | null }[];
 };
-export function forecastNextTaxiShift(values: number[]): {
+export function forecastMoneySample(
+  values: number[],
+  minimum?: number,
+): {
   estimateMinor: number;
   lowerMinor: number;
   upperMinor: number;

@@ -231,6 +231,9 @@ export const financeSchema = z.object({
   transactions: z.array(financeTxSchema),
   policies: z.array(taxiPolicySchema),
   taxiEntries: z.array(taxiEntrySchema),
+  taxiPersonalIncome: z
+    .object({ month: z.string(), monthMinor: money, allMinor: money })
+    .optional(),
   taxiWeeks: z.array(
     z.object({
       key: z.string(),
@@ -269,6 +272,9 @@ export const financeSchema = z.object({
   forecast: z
     .object({
       taxiTargets: z.record(z.string(), money.positive()).optional(),
+      taxiWorkdays: z
+        .record(z.string(), z.union([z.literal(5), z.literal(6), z.literal(7)]))
+        .optional(),
       incomes: z.array(
         z.object({
           id: z.string(),

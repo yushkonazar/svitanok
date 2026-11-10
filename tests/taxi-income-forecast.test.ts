@@ -8,7 +8,7 @@ import {
 import {
   taxiIncomeForecast,
   chooseIncomeModel,
-  forecastNextTaxiShift,
+  forecastMoneySample,
 } from '../web/core/finance/income-forecast.mjs';
 const DAY = 86400000,
   NOW = Date.parse('2026-10-08T10:00:00Z');
@@ -50,15 +50,15 @@ function fixture(policies = [policy]) {
   return { policies, taxiEntries, taxiWeeks, settlements: [] };
 }
 it('fits the next shift using chronological validation once there is enough history', () => {
-  expect(forecastNextTaxiShift([1000, 2000, 3000])).toBeNull();
-  expect(forecastNextTaxiShift([1000, 2000, 3000, 4000])).toEqual({
+  expect(forecastMoneySample([1000, 2000, 3000])).toBeNull();
+  expect(forecastMoneySample([1000, 2000, 3000, 4000])).toEqual({
     estimateMinor: 2500,
     lowerMinor: 1000,
     upperMinor: 4000,
     samples: 4,
     model: 'median',
   });
-  expect(forecastNextTaxiShift([1000, 2000, 3000, 4000, 5000, 6000])).toMatchObject({
+  expect(forecastMoneySample([1000, 2000, 3000, 4000, 5000, 6000])).toMatchObject({
     estimateMinor: 6000,
     model: 'last',
   });

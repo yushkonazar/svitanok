@@ -1,8 +1,9 @@
 import { expect, it } from 'vitest';
 import type { Finance } from '../api/finance-schema.ts';
 import { readFinanceDemo } from '../api/finance-demo.ts';
-import { kyivInstant, taxiWeek } from '../../../core/finance/planning.mjs';
+import { kyivInstant, share, taxiWeek } from '../../../core/finance/planning.mjs';
 import { taxiWork } from './taxiWork.ts';
+import { taxiCashPlan } from './taxiCashPlan.ts';
 
 const DAY = 86_400_000;
 const now = kyivInstant('2026-10-08', 13);
@@ -52,6 +53,7 @@ it('compares equal elapsed time without using a bonus earned later, and apportio
   const policies = [old, fixed];
   const current = taxiWeek(now, policies);
   const previous = taxiWeek(current.from - 1, policies);
+  const earlier = taxiWeek(previous.from - 1, policies);
   const base = readFinanceDemo();
   const work = taxiWork(
     {
@@ -60,6 +62,7 @@ it('compares equal elapsed time without using a bonus earned later, and apportio
       taxiEntries: [
         shift('before-cutoff', previous.from + DAY, old.id, 8000),
         shift('after-cutoff', previous.from + 5 * DAY, old.id, 10000),
+        shift('earlier', earlier.from + DAY, old.id, 10000),
         shift('one', current.from + DAY, fixed.id, 1),
         shift('two', current.from + 2 * DAY, fixed.id, 1),
         shift('future', now + 1000, fixed.id, 20000),
@@ -69,6 +72,9 @@ it('compares equal elapsed time without using a bonus earned later, and apportio
     now,
   );
   expect(work.pace.at(-1)).toMatchObject({ earnedMinor: 1, previousMinor: 4000 });
+  expect(work.pace.at(-2)?.previousMinor).toBe(4000);
+  expect(work.pace.at(-1)?.averageMinor).toBe(4500);
+  expect(work.averagePeriods).toBe(2);
   expect(work.deltaMinor).toBe(-3999);
   expect(work.differentTerms).toBe(true);
   expect(work.shifts.map((entry) => entry.earnedMinor)).toEqual([1, 0]);
@@ -122,10 +128,97 @@ it('reprices comparable completed shifts and totals only separate personal incom
     },
     now,
   );
-  expect(work.forecast).toMatchObject({ estimateMinor: 4000, samples: 4 });
+  const plan = taxiCashPlan(work, 6);
+  expect(plan.forecast).toMatchObject({ samples: 4, currentSamples: 0 });
+  expect(plan.fuelPeriods).toBe(1);
+  const firstFuel = Math.round(
+    (plan.fuelLeftMinor * plan.slots[0]!.units) / plan.slots.reduce((n, slot) => n + slot.units, 0),
+  );
+  expect(plan.forecast?.normal.nextMinor).toBe(6000 - 1380 - share(firstFuel, 5000));
   expect(work.current.earnedMinor).toBe(5000);
-  expect(work.totalMinor).toBe(8000);
+  expect(work.income.period.totalMinor).toBe(8000);
   expect(work.remainingMinor).toBe(15000);
   expect(work.provisional).toBe(true);
   expect(work.deltaMinor).toBeNull();
+});
+
+it('plans the required cash with 23% commission and fuel, reserving Wednesday morning', () => {
+  const policy = {
+    ...fixed,
+    effectiveAt: '2026-09-30T09:00:00.000Z',
+    periodStart: true,
+    weekDay: 2,
+    weekHour: 12,
+    weekMinute: 0,
+    vehicleName: 'Гібрид',
+  };
+  const policies = [policy];
+  const first = kyivInstant('2026-11-04', 12);
+  const period = taxiWeek(first, policies);
+  const previous = taxiWeek(first - 1, policies);
+  const history = [1, 2, 3, 4, 5].map((day) => ({
+    ...shift(`prior-${day}`, previous.from + day * DAY, policy.id, 154000),
+    commissionMinor: 46000,
+    fuelMinor: day === 2 ? 100000 : 0,
+  }));
+  const finance = {
+    ...readFinanceDemo(),
+    policies,
+    taxiEntries: history,
+    transactions: [],
+    forecast: { incomes: [], taxiTargets: { [period.key]: 1_000_000 } },
+  };
+  const start = taxiCashPlan(taxiWork(finance, first), 6);
+  expect(start.fuelMinor).toBe(120000);
+  expect(start.projectedCash).toEqual({ netMinor: 2120041, grossMinor: 2753300 });
+  const fewDays = taxiCashPlan(taxiWork(finance, first), 5);
+  expect(fewDays.fullDay!.grossMinor).toBeGreaterThan(start.fullDay!.grossMinor);
+
+  const today = kyivInstant('2026-11-10', 8);
+  const days = ['2026-11-04', '2026-11-05', '2026-11-06', '2026-11-07', '2026-11-09'];
+  const current = days.map((date, i) => ({
+    ...shift(`now-${i}`, kyivInstant(date, 18), policy.id, 308000),
+    commissionMinor: 92000,
+    fuelMinor: i === 1 ? 90000 : 0,
+  }));
+  const work = taxiWork({ ...finance, taxiEntries: [...history, ...current] }, today);
+  const end = taxiCashPlan(work, 6);
+  expect(end.slots.map(({ date, units, handover }) => [date, units, handover])).toEqual([
+    ['2026-11-10', 1, false],
+    ['2026-11-11', 0.5, true],
+  ]);
+  expect(end.fuelLeftMinor).toBe(30000);
+  expect(end.forecast!.currentSamples).toBe(5);
+  expect(end.forecast!.normal.nextMinor).toBeGreaterThan(120000);
+  expect(end.forecast!.strong.nextMinor).toBeGreaterThanOrEqual(end.forecast!.normal.nextMinor);
+  expect(end.handoverCash!.grossMinor).toBeLessThan(end.fullDay!.grossMinor);
+  const gross = end.plannedCash!.grossMinor;
+  const afterFuel =
+    work.current.earnedMinor +
+    share(gross, 5000) -
+    share(share(gross, 2300), 5000) -
+    share(end.fuelLeftMinor, 5000);
+  expect(afterFuel).toBeGreaterThanOrEqual(1_000_000);
+  expect(afterFuel).toBeLessThan(1_000_040);
+  expect(taxiCashPlan(work, 5).slots.map(({ date }) => date)).toEqual(['2026-11-11']);
+});
+
+it('allocates a period crossing a month exactly once and uses the all-time personal aggregate', () => {
+  const policy = { ...fixed, effectiveAt: '2026-01-01T00:00:00.000Z' };
+  const work = taxiWork(
+    {
+      ...readFinanceDemo(),
+      policies: [policy],
+      taxiEntries: [
+        shift('september', kyivInstant('2026-09-30', 23), policy.id, 1),
+        shift('october', kyivInstant('2026-10-01', 2), policy.id, 1),
+        shift('this-week', kyivInstant('2026-10-07', 19), policy.id, 4000),
+      ],
+      transactions: [],
+      taxiPersonalIncome: { month: '2026-10', monthMinor: 222, allMinor: 555 },
+    },
+    now,
+  );
+  expect(work.income.month).toMatchObject({ earnedMinor: 2000, totalMinor: 2222 });
+  expect(work.income.all).toMatchObject({ earnedMinor: 2001, totalMinor: 2556 });
 });

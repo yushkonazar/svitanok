@@ -30,6 +30,9 @@ export interface TaxiEntry {
   note?: string;
 }
 export const MAX_MINOR: number;
+export const TAXI_DEFAULT_WORKDAYS: 6;
+export const TAXI_COMMISSION_BPS: 2300;
+export function isTaxiWorkdays(value: unknown): value is 5 | 6 | 7;
 export function minor(value: unknown, signed?: boolean): number;
 export function parseMoney(raw: string, signed?: boolean): number;
 export function share(amount: number, bps: number): number;
@@ -101,6 +104,10 @@ export function calculateTaxiWeek(
     earnedMinor: number;
   }[];
 };
+export function calculateTaxiTotals(
+  entries: TaxiEntry[],
+  policies: TaxiPolicy[],
+): Omit<ReturnType<typeof calculateTaxiWeek>, 'key' | 'from' | 'to' | 'entries'>;
 export function nextPaymentDate(
   nextDate: string,
   anchorDay: number,
