@@ -3,85 +3,160 @@ import { TAXI_COMMISSION_BPS } from '../../../../core/finance/planning.mjs';
 import { moneyLabel } from '../../lib/financeView.ts';
 import type { TaxiCashPlan } from '../../lib/taxiCashPlan.ts';
 import type { TaxiWork } from '../../lib/taxiWork.ts';
-import { amountNumber, counted } from './analytics-format.ts';
+import { taxiDayLabel } from '../../lib/taxiPeriods.ts';
+import { UpdatedValue } from '../ui/UpdatedValue.tsx';
+import { amountNumber, counted, financeDay } from './analytics-format.ts';
 
-const dayLabel = new Intl.DateTimeFormat('uk-UA', {
-  weekday: 'short',
-  day: 'numeric',
-  month: 'numeric',
-  timeZone: 'Europe/Kyiv',
-});
-const timeLabel = new Intl.DateTimeFormat('uk-UA', {
-  hour: '2-digit',
-  minute: '2-digit',
-  hourCycle: 'h23',
-  timeZone: 'Europe/Kyiv',
-});
-const plannedDate = (slot: TaxiCashPlan['slots'][number]) =>
-  dayLabel.format(slot.from) + (slot.handover ? ` до ${timeLabel.format(slot.to)}` : '');
+type CalendarDay = TaxiCashPlan['calendar'][number];
+const weekday = new Intl.DateTimeFormat('uk-UA', { weekday: 'short', timeZone: 'Europe/Kyiv' });
+
+function dayState(day: CalendarDay, now: number, confirmed: boolean) {
+  if (day.worked || day.earnedMinor !== null) {
+    if (!day.planned) return 'Позапланова робота';
+    if (day.worked && day.complete && !day.commissionKnown) return 'Уточнити комісію';
+    if (day.worked && day.complete && day.commissionKnown) return 'Завершено';
+    return day.to > now ? 'У роботі' : 'За записами';
+  }
+  if (!day.planned) return confirmed ? 'Вихідний' : 'Поза планом';
+  if (day.to <= now) return 'Без запису';
+  return day.from <= now ? 'Робочий день' : 'Заплановано';
+}
+
+export function TaxiTodayPlan({
+  work,
+  plan,
+  animations,
+}: {
+  work: TaxiWork;
+  plan: TaxiCashPlan;
+  animations: boolean;
+}) {
+  const { today, daily } = plan;
+  if (!today || work.targetMinor === null) return null;
+  const next = plan.slots.find((day) => day.date !== today.date);
+  const confirmed = Boolean(work.planSettings.taxiSchedules?.[work.current.key]);
+  return (
+    <section className="taxi-day-focus" aria-label="План на сьогодні">
+      <div className="taxi-work-row">
+        <span className="renewal-eyebrow">СЬОГОДНІ · {taxiDayLabel(today)}</span>
+        <span className="taxi-day-state">{dayState(today, work.now, confirmed)}</span>
+      </div>
+      {daily ? (
+        <>
+          <div className="taxi-work-row taxi-day-amount">
+            <span>{daily.remainingMinor > 0 ? 'Ще сьогодні' : 'Денний план виконано'}</span>
+            {daily.remainingMinor > 0 && (
+              <strong>
+                <UpdatedValue
+                  value={daily.remainingMinor}
+                  identity={today.date}
+                  enabled={animations}
+                >
+                  {moneyLabel(daily.remainingMinor)}
+                </UpdatedValue>
+              </strong>
+            )}
+          </div>
+          {daily.cash && daily.cash.grossMinor > 0 && (
+            <div className="taxi-day-cash">
+              <span>
+                Чиста каса <b>{moneyLabel(daily.cash.netMinor)}</b>
+              </span>
+              <span>
+                До комісії <b>{moneyLabel(daily.cash.grossMinor)}</b>
+              </span>
+            </div>
+          )}
+          {daily.remainingMinor > 0 && (!work.hasCommission || !plan.fuelKnown) && (
+            <p className="renewal-chart-note">Орієнтир за доступними записами.</p>
+          )}
+        </>
+      ) : (
+        today.earnedMinor !== null && (
+          <div className="taxi-work-row taxi-day-amount">
+            <span>Заробіток сьогодні</span>
+            <strong>{moneyLabel(today.earnedMinor)}</strong>
+          </div>
+        )
+      )}
+      {next ? (
+        <p className="renewal-chart-note">Далі в роботі · {taxiDayLabel(next)}</p>
+      ) : !daily && work.remainingMinor !== null && work.remainingMinor > 0 ? (
+        <p className="renewal-chart-note">Робочі дати цього плану вичерпано.</p>
+      ) : null}
+    </section>
+  );
+}
 
 export function TaxiPlanDetails({
   work,
   plan,
-  workdays,
-  onWorkdays,
-  onSave,
+  onEdit,
 }: {
   work: TaxiWork;
   plan: TaxiCashPlan;
-  workdays: 5 | 6 | 7;
-  onWorkdays: (days: 5 | 6 | 7) => void;
-  onSave: () => void;
+  onEdit: (date?: string) => void;
 }) {
+  const [date, setDate] = useState<string | null>(null);
+  const selected = plan.calendar.find((day) => day.date === date) ?? plan.today;
+  const schedule = work.planSettings.taxiSchedules?.[work.current.key];
+  const confirmed = Boolean(schedule);
   const rows = [
     { label: 'Уся перезмінка', cash: plan.projectedCash },
-    {
-      label: 'Ще потрібно',
-      cash: work.current.grossMinor > 0 ? plan.plannedCash : null,
-    },
-    {
-      label: 'Повний день',
-      cash: plan.slots.some((slot) => !slot.handover) ? plan.fullDay : null,
-    },
-    {
-      label: `До ${timeLabel.format(work.current.to)} у день перезмінки`,
-      cash: plan.handoverCash,
-    },
+    { label: 'Ще потрібно за період', cash: work.current.grossMinor > 0 ? plan.plannedCash : null },
+    { label: 'День перезмінки', cash: plan.today?.handover ? null : plan.handoverCash },
   ];
   return (
     <details className="taxi-work-fold">
-      <summary>План каси до цілі</summary>
+      <summary>Календар і план каси</summary>
       <div className="taxi-work-fold-body taxi-cash-plan">
-        <p>Робочі дні до дня перезмінки</p>
-        <div
-          className="renewal-segments taxi-plan-options"
-          role="group"
-          aria-label="Робочі дні до дня перезмінки"
-        >
-          {([5, 6, 7] as const).map((days) => (
+        <div className="taxi-calendar" role="group" aria-label="Дати перезмінки">
+          {plan.calendar.map((day) => (
             <button
+              key={day.date}
               type="button"
-              key={days}
-              aria-pressed={workdays === days}
-              onClick={() => onWorkdays(days)}
+              aria-pressed={selected?.date === day.date}
+              aria-current={plan.today?.date === day.date ? 'date' : undefined}
+              aria-label={`${taxiDayLabel(day)} · ${dayState(day, work.now, confirmed)}`}
+              data-planned={day.planned}
+              data-worked={day.worked}
+              onClick={() => setDate(day.date)}
             >
-              {days} днів
+              <small>{weekday.format(day.from)}</small>
+              <b>{financeDay(day.date)}</b>
+              <span className="taxi-calendar-mark" aria-hidden="true">
+                {day.worked
+                  ? day.complete
+                    ? '✓'
+                    : '◐'
+                  : day.planned
+                    ? day.locked
+                      ? '!'
+                      : '•'
+                    : '–'}
+              </span>
             </button>
           ))}
         </div>
-        <p className="renewal-chart-note">
-          Комісія сервісу {TAXI_COMMISSION_BPS / 100}% · час у день перезмінки враховано окремо
-        </p>
-        {plan.slots.length > 0 && (
-          <div className="taxi-plan-dates" aria-label="Доступні дні в плані">
-            {plan.slots.map((slot) => (
-              <span key={slot.date}>{plannedDate(slot)}</span>
-            ))}
+        {selected && (
+          <div className="taxi-work-row taxi-calendar-detail" aria-live="polite">
+            <span>
+              {taxiDayLabel(selected)} · {dayState(selected, work.now, confirmed)}
+            </span>
+            {selected.earnedMinor !== null && <b>{moneyLabel(selected.earnedMinor)}</b>}
+            {schedule && schedule.originalDates.includes(selected.date) !== selected.planned && (
+              <small>Дату змінено після старту</small>
+            )}
           </div>
         )}
-        {work.targetMinor === null ? (
-          <p>Задай бажаний чистий заробіток, щоб побачити план каси.</p>
-        ) : plan.plannedCash ? (
+        <button
+          type="button"
+          className="renewal-link"
+          onClick={() => onEdit(selected && !selected.locked ? selected.date : undefined)}
+        >
+          {confirmed ? 'Змінити робочі дати ↗' : 'Підтвердити робочі дати ↗'}
+        </button>
+        {plan.plannedCash && (
           <>
             <table className="taxi-data-table" aria-label="Потрібна каса до цілі">
               <thead>
@@ -105,27 +180,12 @@ export function TaxiPlanDetails({
               </tbody>
             </table>
             <p className="renewal-chart-note">
+              Комісія сервісу {TAXI_COMMISSION_BPS / 100}% ·{' '}
               {plan.fuelKnown
-                ? `Пальне за період · ≈ ${moneyLabel(plan.fuelMinor)}${plan.fuelLeftMinor > 0 ? ` · ще ${moneyLabel(plan.fuelLeftMinor)}` : ''}`
-                : 'Мінімальна каса до уточнення прогнозу пального.'}
+                ? `пальне за період ≈ ${moneyLabel(plan.fuelMinor)}`
+                : 'пальне потребує оцінки'}
             </p>
-            {!work.hasCommission && (
-              <p className="renewal-chart-note">
-                Каса за період попередня · у записах бракує комісії.
-              </p>
-            )}
           </>
-        ) : (
-          <p>
-            {plan.slots.length
-              ? 'За чинними ставками потрібну касу для цієї цілі розрахувати не вдалося.'
-              : 'Доступні робочі дні за цим планом вичерпано.'}
-          </p>
-        )}
-        {(workdays !== work.workdays || work.targetMinor === null) && (
-          <button type="button" className="renewal-link" onClick={onSave}>
-            {work.targetMinor === null ? 'Задати ціль і дні' : 'Застосувати робочі дні'}
-          </button>
         )}
       </div>
     </details>
@@ -159,7 +219,7 @@ export function TaxiNextShift({ work, plan }: { work: TaxiWork; plan: TaxiCashPl
       </summary>
       <div className="taxi-work-fold-body">
         <p className="renewal-chart-note">
-          {plannedDate(next)} ·{' '}
+          {taxiDayLabel(next)} ·{' '}
           {counted(plan.slots.length, 'дата в плані', 'дати в плані', 'дат у плані')}
         </p>
         {hasStrong && (
@@ -176,7 +236,7 @@ export function TaxiNextShift({ work, plan }: { work: TaxiWork; plan: TaxiCashPl
             </button>
           </div>
         )}
-        {plan.firstTargetMinor !== null && plan.firstTargetMinor > 0 && (
+        {!plan.daily && plan.firstTargetMinor !== null && plan.firstTargetMinor > 0 && (
           <div className="taxi-work-row">
             <span>Потрібно за цю зміну для цілі</span>
             <b>{moneyLabel(plan.firstTargetMinor)}</b>

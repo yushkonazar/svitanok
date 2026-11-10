@@ -148,7 +148,18 @@ it('switches the taxi chart to a specific shift and edits the correct period tar
   };
   finance.taxiEntries.push(first, { ...first, id: 'current-two', at: '2026-10-16T10:30:00.000Z' });
   finance.forecast.taxiTargets = { [current.key]: 500000, [next.key]: 600000 };
-  finance.forecast.taxiWorkdays = { [current.key]: 5, [next.key]: 7 };
+  finance.forecast.taxiSchedules = {
+    [current.key]: {
+      dates: ['2026-10-16'],
+      originalDates: ['2026-10-16'],
+      initialTargetMinor: 500000,
+    },
+    [next.key]: {
+      dates: ['2026-10-22', '2026-10-23'],
+      originalDates: ['2026-10-22', '2026-10-23'],
+      initialTargetMinor: 600000,
+    },
+  };
   renderFinance('/finance', finance);
 
   const card = within(screen.getByRole('region', { name: 'Робота · таксі' }));
@@ -166,16 +177,16 @@ it('switches the taxi chart to a specific shift and edits the correct period tar
   fireEvent.click(shift.getByRole('button', { name: 'Закрити' }));
 
   fireEvent.click(card.getByRole('button', { name: /Наступна перезмінка/ }));
-  const target = within(screen.getByRole('dialog', { name: 'Ціль заробітку' }));
+  const target = within(screen.getByRole('dialog', { name: 'Ціль і робочі дати' }));
   expect(target.getByLabelText('Робочий період')).toHaveValue(next.key);
   expect(target.getByLabelText('Бажаний заробіток за формулою парку, ₴')).toHaveValue('6000');
-  expect(target.getByLabelText('Робочих днів до дня перезмінки')).toHaveValue('7');
+  expect(target.getAllByRole('checkbox', { checked: true })).toHaveLength(2);
   fireEvent.change(target.getByLabelText('Робочий період'), { target: { value: current.key } });
   expect(target.getByLabelText('Бажаний заробіток за формулою парку, ₴')).toHaveValue('5000');
-  expect(target.getByLabelText('Робочих днів до дня перезмінки')).toHaveValue('5');
+  expect(target.getByRole('checkbox', { name: /16\.10/ })).toBeDisabled();
 });
 
-it('previews the cash plan as workdays change and carries the chosen count into saving', () => {
+it('opens the calendar on today and lets a future shift move to a specific date', () => {
   vi.spyOn(Date, 'now').mockReturnValue(kyivInstant('2026-11-04', 12));
   const finance = readFinanceDemo();
   finance.generatedAt = new Date(Date.now()).toISOString();
@@ -193,18 +204,74 @@ it('previews the cash plan as workdays change and carries the chosen count into 
   ];
   finance.taxiEntries = [];
   finance.taxiWeeks = [];
-  finance.forecast.taxiTargets = { [taxiWeek(Date.now(), finance.policies).key]: 1_000_000 };
+  const key = taxiWeek(Date.now(), finance.policies).key;
+  const dates = ['2026-11-04', '2026-11-09', '2026-11-11'];
+  finance.forecast.taxiTargets = { [key]: 1_000_000 };
+  finance.forecast.taxiSchedules = {
+    [key]: { dates, originalDates: dates, initialTargetMinor: 1_000_000 },
+  };
   renderFinance('/finance', finance);
-  fireEvent.click(screen.getByText('План каси до цілі', { selector: 'summary' }));
-  const table = screen.getByRole('table', { name: 'Потрібна каса до цілі' });
-  const before = within(table).getByRole('row', { name: /Повний день/ }).textContent;
-  fireEvent.click(screen.getByRole('button', { name: '5 днів' }));
-  expect(screen.getAllByRole('group', { name: 'Графік заробітку таксі' })).toHaveLength(1);
-  expect(within(table).getByRole('row', { name: /Повний день/ }).textContent).not.toBe(before);
-  fireEvent.click(screen.getByRole('button', { name: 'Застосувати робочі дні' }));
-  const target = within(screen.getByRole('dialog', { name: 'Ціль заробітку' }));
-  expect(target.getByLabelText('Робочих днів до дня перезмінки')).toHaveValue('5');
+  expect(
+    within(screen.getByRole('region', { name: 'План на сьогодні' })).getByText('Ще сьогодні'),
+  ).toBeVisible();
+  fireEvent.click(screen.getByText('Календар і план каси', { selector: 'summary' }));
+  const calendar = within(screen.getByRole('group', { name: 'Дати перезмінки' }));
+  expect(calendar.getByRole('button', { name: /04\.11/ })).toHaveAttribute('aria-current', 'date');
+  fireEvent.click(calendar.getByRole('button', { name: /09\.11.*Заплановано/ }));
+  fireEvent.click(screen.getByRole('button', { name: 'Змінити робочі дати ↗' }));
+  const target = within(screen.getByRole('dialog', { name: 'Ціль і робочі дати' }));
+  fireEvent.change(target.getByLabelText('Перенести зміну'), { target: { value: '2026-11-08' } });
+  expect(target.getByRole('checkbox', { name: /08\.11/ })).toBeChecked();
+  expect(target.getByRole('checkbox', { name: /09\.11/ })).not.toBeChecked();
   expect(target.getByLabelText('Бажаний заробіток за формулою парку, ₴')).toHaveValue('10000');
+});
+
+it('switches to the closing report at the actual handover and reveals the next saved plan', () => {
+  vi.useFakeTimers();
+  try {
+    const cutoff = kyivInstant('2026-11-11', 12);
+    vi.setSystemTime(cutoff - 2000);
+    const finance = readFinanceDemo();
+    finance.generatedAt = new Date().toISOString();
+    finance.policies = [
+      {
+        ...finance.policies[0]!,
+        id: 'hybrid',
+        effectiveAt: '2026-09-30T09:00:00.000Z',
+        periodStart: true,
+        weekDay: 2,
+        weekHour: 12,
+        weekMinute: 0,
+        vehicleName: 'Гібрид',
+        thresholdMinor: null,
+      },
+    ];
+    finance.taxiEntries = [
+      {
+        ...finance.taxiEntries[0]!,
+        policyId: 'hybrid',
+        at: new Date(kyivInstant('2026-11-10', 18)).toISOString(),
+        commissionReported: true,
+        cashReported: true,
+        dayComplete: true,
+      },
+    ];
+    finance.taxiWeeks = [];
+    const current = taxiWeek(cutoff - 1, finance.policies);
+    const next = taxiWeek(cutoff, finance.policies);
+    finance.forecast.taxiTargets = { [current.key]: 100000, [next.key]: 700000 };
+    renderFinance('/finance', finance);
+    expect(screen.queryByRole('region', { name: 'Підсумок перезмінки' })).not.toBeInTheDocument();
+    act(() => vi.advanceTimersByTime(2000));
+    const report = within(screen.getByRole('region', { name: 'Підсумок перезмінки' }));
+    expect(report.getByRole('group', { name: 'Заробіток за датами' })).toBeVisible();
+    expect(report.getByRole('button', { name: 'Підтвердити оплату перезмінки' })).toBeVisible();
+    expect(screen.getByText('Ціль нової перезмінки')).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: 'До нового плану ↗' }));
+    expect(screen.getByRole('region', { name: 'План на сьогодні' })).toBeVisible();
+  } finally {
+    vi.useRealTimers();
+  }
 });
 it('opens the taxi entry form from a linked plan and closes the deep link cleanly', () => {
   renderFinance('/finance?action=taxi');
@@ -342,7 +409,7 @@ it('opens all taxi periods directly, selects the unpaid period and preserves it 
   renderFinance('/finance', f);
   fireEvent.click(screen.getByRole('button', { name: 'Історія перезмінок' }));
   const history = screen.getByRole('dialog', { name: 'Історія перезмінок' });
-  expect(within(history).getByText(/Усі періоди: 4/)).toBeInTheDocument();
+  expect(within(history).getByText('Періодів в історії · 4')).toBeInTheDocument();
   expect(within(history).getByLabelText('Робочий період')).toHaveValue('2026-10-12');
   expect(within(history).getByRole('option', { name: /28\.09/ })).toBeInTheDocument();
   expect(screen.queryByRole('heading', { name: 'Аналітика та звіти' })).not.toBeInTheDocument();

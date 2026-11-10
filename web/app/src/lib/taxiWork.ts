@@ -10,6 +10,7 @@ import {
   taxiWeek,
   TAXI_DEFAULT_WORKDAYS,
   type TaxiPolicy,
+  type TaxiEntry,
   type TaxiTotals,
 } from '../../../core/finance/planning.mjs';
 import { taxiVehicleName } from './taxiPeriods.ts';
@@ -18,8 +19,8 @@ type Entry = Finance['taxiEntries'][number];
 type WorkPeriod = ReturnType<typeof taxiWeek>;
 export type TaxiRecord = { period: WorkPeriod; entries: Entry[] };
 
-function shiftsFor(
-  entries: Entry[],
+export function taxiShiftEarnings<T extends TaxiEntry>(
+  entries: T[],
   totals: ReturnType<typeof calculateTaxiTotals>,
   policyById: Map<string, TaxiPolicy>,
 ) {
@@ -89,7 +90,7 @@ export function taxiWork(finance: Finance, now: number) {
   };
   const entries = records.get(period.key)?.entries ?? [];
   const current = { ...period, ...totalsFor(entries), entries };
-  const shifts = shiftsFor(entries, current, policyById);
+  const shifts = taxiShiftEarnings(entries, current, policyById);
   const active = policies.filter((policy) => Date.parse(policy.effectiveAt) <= now).at(-1);
   const hasCommission = entries.every(commissionKnown);
   const provisional = entries.some((entry) => !comparableEntry(entry));
@@ -188,7 +189,9 @@ export function taxiWork(finance: Finance, now: number) {
     if (Date.parse(record.entries[0]!.at) >= monthStart) {
       monthEarned += totals.earnedMinor;
     } else {
-      const contributions = isCurrent ? shifts : shiftsFor(record.entries, totals, policyById);
+      const contributions = isCurrent
+        ? shifts
+        : taxiShiftEarnings(record.entries, totals, policyById);
       const monthShifts = contributions.filter((entry) => Date.parse(entry.at) >= monthStart);
       monthEarned += sumMoney(monthShifts.map((entry) => entry.earnedMinor));
     }
@@ -214,6 +217,8 @@ export function taxiWork(finance: Finance, now: number) {
   const targetMinor = finance.forecast.taxiTargets?.[period.key] ?? null;
   return {
     now,
+    policies,
+    planSettings: finance.forecast,
     current,
     active,
     next,

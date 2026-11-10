@@ -7,10 +7,14 @@ import {
   kyivParts,
   sumMoney,
   share,
+  taxiWeek,
 } from '../../../../core/finance/planning.mjs';
 import { moneyLabel } from '../../lib/financeView.ts';
 import { taxiPeriodLabel, taxiVehicleName } from '../../lib/taxiPeriods.ts';
+import { taxiHandover } from '../../lib/taxiHandover.ts';
+import { useTick } from '../../lib/useTick.ts';
 import { Sheet } from './FinanceSheet.tsx';
+import { TaxiHandoverReport } from './TaxiHandoverReport.tsx';
 import type { FinanceFormRequest } from './FinanceForm.tsx';
 export function TaxiHistory({
   finance: f,
@@ -25,12 +29,46 @@ export function TaxiHistory({
   initialKey?: string;
   onSelect?: (key: string) => void;
 }) {
+  const now = Math.max(useTick(30_000), Date.parse(f.generatedAt) || 0);
+  const known = new Set(f.taxiWeeks.map((week) => week.key));
+  const plans = new Set([
+    ...Object.keys(f.forecast.taxiTargets ?? {}),
+    ...Object.keys(f.forecast.taxiSchedules ?? {}),
+  ]);
+  const planOnly = [...plans].flatMap((key) => {
+    if (known.has(key)) return [];
+    try {
+      const period = taxiWeek(taxiPeriodStart(key, f.policies), f.policies);
+      return period.to <= now
+        ? [
+            {
+              ...period,
+              closed: true,
+              complete: false,
+              settled: false,
+              grossMinor: 0,
+              earnedMinor: 0,
+              heldMinor: 0,
+              settlementMinor: 0,
+            },
+          ]
+        : [];
+    } catch {
+      // A schedule change can remove a future period that had been planned.
+      return [];
+    }
+  });
+  const weeks = [...f.taxiWeeks, ...planOnly].sort(
+    (a, b) => taxiPeriodStart(b.key, f.policies) - taxiPeriodStart(a.key, f.policies),
+  );
+  const closed = (week: Finance['taxiWeeks'][number]) =>
+    week.closed || (week.to !== undefined && week.to <= now);
   const preferred =
-    f.taxiWeeks.find((w) => w.closed && !w.settled) ??
-    f.taxiWeeks.find((w) => w.closed) ??
-    f.taxiWeeks[0];
+    weeks.find((w) => known.has(w.key) && closed(w) && !w.settled) ??
+    weeks.find(closed) ??
+    weeks[0];
   const [selectedKey, setKey] = useState(initialKey ?? preferred?.key ?? '');
-  const week = f.taxiWeeks.find((w) => w.key === selectedKey) ?? preferred;
+  const week = weeks.find((w) => w.key === selectedKey) ?? preferred;
   const key = week?.key ?? '';
   const act = (request: FinanceFormRequest) => {
     onSelect?.(key);
@@ -40,23 +78,8 @@ export function TaxiHistory({
     ? calculateTaxiWeek(f.taxiEntries, f.policies, taxiPeriodStart(key, f.policies))
     : null;
   const settlement = f.settlements.find((s) => s.weekKey === key);
-  const previousWeek = week
-    ? f.taxiWeeks
-        .filter(
-          (w) =>
-            w.closed &&
-            w.complete &&
-            taxiPeriodStart(w.key, f.policies) < taxiPeriodStart(week.key, f.policies),
-        )
-        .sort((a, b) => taxiPeriodStart(b.key, f.policies) - taxiPeriodStart(a.key, f.policies))[0]
-    : null;
-  const previous = previousWeek
-    ? calculateTaxiWeek(f.taxiEntries, f.policies, taxiPeriodStart(previousWeek.key, f.policies))
-    : null;
-  const workdays = (entries: { at: string }[]) =>
-    new Set(entries.map((e) => kyivParts(Date.parse(e.at)).date)).size;
-  const days = workdays(calculated?.entries ?? []),
-    previousDays = workdays(previous?.entries ?? []);
+  const report = week && closed(week) ? taxiHandover(f, key, now) : null;
+  const hasEntries = Boolean(calculated?.entries.length);
   const expected = settlement?.expectedMinor ?? week?.settlementMinor ?? 0;
   const target = f.forecast.taxiTargets?.[key];
   const total = (field: 'commissionMinor' | 'fuelMinor' | 'tipsMinor') =>
@@ -77,7 +100,7 @@ export function TaxiHistory({
     <Sheet
       label="Історія перезмінок"
       onClose={onClose}
-      resetKey={f.taxiWeeks.findIndex((w) => w.key === key)}
+      resetKey={weeks.findIndex((w) => w.key === key)}
     >
       <div className="renewal-finance flex flex-col gap-4">
         <div className="renewal-section-head">
@@ -90,9 +113,7 @@ export function TaxiHistory({
           <p className="renewal-muted">Історія з’явиться після першої записаної зміни.</p>
         ) : (
           <>
-            <p className="renewal-chart-note">
-              Усі періоди: {f.taxiWeeks.length}. Історія не обмежена датами аналітики.
-            </p>
+            <p className="renewal-chart-note">Періодів в історії · {weeks.length}</p>
             <label className="renewal-field">
               Робочий період
               <select
@@ -102,7 +123,7 @@ export function TaxiHistory({
                   onSelect?.(e.target.value);
                 }}
               >
-                {f.taxiWeeks.map((w) => (
+                {weeks.map((w) => (
                   <option key={w.key} value={w.key}>
                     {financeDay(kyivParts(taxiPeriodStart(w.key, f.policies)).date)}{' '}
                     {new Date(taxiPeriodStart(w.key, f.policies)).toLocaleTimeString('uk-UA', {
@@ -111,145 +132,98 @@ export function TaxiHistory({
                       minute: '2-digit',
                     })}
                     {w.to ? ` → ${financeDay(kyivParts(w.to).date)}` : ''} ·{' '}
-                    {w.settled ? 'розраховано' : w.closed ? 'очікує розрахунку' : 'триває'}
+                    {w.settled
+                      ? 'розраховано'
+                      : closed(w)
+                        ? known.has(w.key)
+                          ? 'завершено'
+                          : 'план'
+                        : 'триває'}
                   </option>
                 ))}
               </select>
             </label>
-            <p className="renewal-chart-note">
-              {taxiVehicleName(calculated?.from ?? Date.parse(f.generatedAt), f.policies)} ·{' '}
-              {taxiPeriodLabel(key, f.policies)}, Київ. Історія зберігається після переходу на інше
-              авто й нової перезмінки.
-            </p>
-            {!week.complete && (
+            {report ? (
+              <TaxiHandoverReport key={`history-${key}`} report={report} />
+            ) : (
+              <p className="renewal-chart-note">
+                {taxiVehicleName(calculated?.from ?? Date.parse(f.generatedAt), f.policies)} ·{' '}
+                {taxiPeriodLabel(key, f.policies)}, Київ.
+              </p>
+            )}
+            {hasEntries && !week.complete && (
               <p className="renewal-inset text-neg">
                 Розрахунок попередній: у змінах бракує комісії або отриманої готівки.
               </p>
             )}
-            <div className="renewal-inset flex flex-col gap-3">
-              <b>
-                {expected < 0 ? 'За формулою повернути парку' : 'За формулою отримати від парку'}:{' '}
-                {moneyLabel(Math.abs(expected))}
-              </b>
-              {settlement ? (
-                <>
-                  <b>
-                    Фактично {settlement.amountMinor < 0 ? 'віддав' : 'отримав'}:{' '}
-                    {moneyLabel(Math.abs(settlement.amountMinor))}
-                  </b>
-                  <span
-                    className={
-                      settlement.amountMinor - expected < 0
-                        ? 'finance-context-note text-neg'
-                        : 'finance-context-note text-pos'
-                    }
-                  >
-                    Різниця для твоїх коштів: {moneyLabel(settlement.amountMinor - expected)}. Мінус
-                    — сплатив більше або отримав менше.
-                  </span>
-                  <span className="renewal-chart-note">
-                    Розраховано {financeTime(settlement.at)}
-                    {settlement.note ? ` · ${settlement.note}` : ''}
-                  </span>
-                  {!settlement.transactionId && (
-                    <button
-                      className="renewal-secondary"
-                      onClick={() => act({ kind: 'taxi-settlement-edit', id: key })}
+            {hasEntries && (
+              <div className="renewal-inset flex flex-col gap-3">
+                <b>
+                  {expected < 0 ? 'За формулою повернути парку' : 'За формулою отримати від парку'}:{' '}
+                  {moneyLabel(Math.abs(expected))}
+                </b>
+                {settlement ? (
+                  <>
+                    <b>
+                      Фактично {settlement.amountMinor < 0 ? 'віддав' : 'отримав'}:{' '}
+                      {moneyLabel(Math.abs(settlement.amountMinor))}
+                    </b>
+                    <span
+                      className={
+                        settlement.amountMinor - expected < 0
+                          ? 'finance-context-note text-neg'
+                          : 'finance-context-note text-pos'
+                      }
                     >
-                      Уточнити фактичну сплату
-                    </button>
-                  )}
-                </>
-              ) : week.closed && week.complete ? (
-                <button
-                  className="renewal-button"
-                  onClick={() => act({ kind: 'taxi-settle', id: key })}
-                >
-                  Розрахуватись
-                </button>
-              ) : (
-                <p className="renewal-muted">
-                  {week.closed
-                    ? 'Доповни зміни перед розрахунком.'
-                    : 'Розрахунок відкриється після закінчення робочого періоду.'}
-                </p>
-              )}
-            </div>
-            <div className="renewal-metrics">
-              {metrics.map(([label, value]) => (
-                <div className="renewal-metric" key={label}>
-                  <span className="renewal-muted">{label}</span>
-                  <strong>{moneyLabel(value)}</strong>
-                </div>
-              ))}
-            </div>
-            {target && (
+                      Різниця для твоїх коштів: {moneyLabel(settlement.amountMinor - expected)}.
+                      Мінус — сплатив більше або отримав менше.
+                    </span>
+                    <span className="renewal-chart-note">
+                      Розраховано {financeTime(settlement.at)}
+                      {settlement.note ? ` · ${settlement.note}` : ''}
+                    </span>
+                    {!settlement.transactionId && (
+                      <button
+                        className="renewal-secondary"
+                        onClick={() => act({ kind: 'taxi-settlement-edit', id: key })}
+                      >
+                        Уточнити фактичну сплату
+                      </button>
+                    )}
+                  </>
+                ) : closed(week) && week.complete ? (
+                  <button
+                    className="renewal-button"
+                    onClick={() => act({ kind: 'taxi-settle', id: key })}
+                  >
+                    Розрахуватись
+                  </button>
+                ) : (
+                  <p className="renewal-muted">
+                    {closed(week)
+                      ? 'Доповни зміни перед розрахунком.'
+                      : 'Розрахунок відкриється після закінчення робочого періоду.'}
+                  </p>
+                )}
+              </div>
+            )}
+            {!report && (
+              <div className="renewal-metrics">
+                {metrics.map(([label, value]) => (
+                  <div className="renewal-metric" key={label}>
+                    <span className="renewal-muted">{label}</span>
+                    <strong>{moneyLabel(value)}</strong>
+                  </div>
+                ))}
+              </div>
+            )}
+            {!report && target && (
               <p className="renewal-inset">
                 Ціль перезмінки · <b>{moneyLabel(target)}</b>
                 {calculated?.entries.every((entry) => entry.commissionReported !== false) && (
                   <> · {percentLabel(((calculated?.earnedMinor ?? 0) / target) * 100)} виконано</>
                 )}
               </p>
-            )}
-            {previous && calculated && week.complete && days > 0 && previousDays > 0 && (
-              <section className="renewal-inset">
-                <h3 className="font-bold">Порівняння з попередньою перезмінкою</h3>
-                <p className="renewal-chart-note mt-2">
-                  {taxiPeriodLabel(previousWeek!.key, f.policies)} · {days} проти {previousDays}{' '}
-                  записаних робочих днів. Порівнюємо на один робочий день, щоб довжина періоду не
-                  спотворювала результат.
-                </p>
-                <div className="renewal-metrics mt-3">
-                  {(
-                    [
-                      [
-                        'Чиста каса за робочий день',
-                        calculated.netCashMinor,
-                        previous.netCashMinor,
-                      ],
-                      ['Заробіток за робочий день', calculated.earnedMinor, previous.earnedMinor],
-                    ] as const
-                  ).map(([label, current, past]) => {
-                    const value = Math.round(current / days),
-                      base = Math.round(past / previousDays),
-                      delta = value - base,
-                      pct = base ? (delta / Math.abs(base)) * 100 : null;
-                    return (
-                      <div className="renewal-metric" key={label}>
-                        <span className="renewal-muted">{label}</span>
-                        <strong>{moneyLabel(value)}</strong>
-                        <span
-                          className={`finance-metric-change ${
-                            delta === 0
-                              ? 'renewal-muted'
-                              : delta > 0
-                                ? 'finance-compare-up'
-                                : 'finance-compare-down'
-                          }`}
-                          data-intensity={Math.abs(pct ?? 0) >= 20 ? 'high' : 'soft'}
-                        >
-                          <span>
-                            {delta > 0 ? '↑ +' : delta < 0 ? '↓ ' : ''}
-                            {moneyLabel(delta)}
-                          </span>
-                          {pct != null && (
-                            <span className="finance-change-percent">
-                              {pct > 0 ? '+' : ''}
-                              {percentLabel(pct)}
-                            </span>
-                          )}
-                        </span>
-                      </div>
-                    );
-                  })}
-                </div>
-                {taxiVehicleName(previous.from, f.policies) !==
-                  taxiVehicleName(calculated.from, f.policies) && (
-                  <p className="renewal-chart-note mt-3">
-                    Авто змінилося: результат також залежить від різних умов роботи.
-                  </p>
-                )}
-              </section>
             )}
             <details className="renewal-inset">
               <summary className="renewal-link cursor-pointer">Як пораховано заробіток</summary>

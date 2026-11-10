@@ -28,6 +28,7 @@ export interface TaxiEntry {
   commissionReported?: boolean;
   cashReported?: boolean;
   note?: string;
+  dayComplete?: boolean;
 }
 export const MAX_MINOR: number;
 export const TAXI_DEFAULT_WORKDAYS: 6;
@@ -56,6 +57,39 @@ export function setTaxiPeriodTarget(
   policies: TaxiPolicy[],
   nowMs: number,
 ): Record<string, number>;
+export interface TaxiPlanDay {
+  date: string;
+  from: number;
+  to: number;
+  units: number;
+  handover: boolean;
+}
+export interface TaxiSchedule {
+  originalDates: string[];
+  dates: string[];
+  initialTargetMinor: number | null;
+}
+export function taxiPlanDays(period: { from: number; to: number }): TaxiPlanDay[];
+export function taxiWorked(entry: TaxiEntry): boolean;
+export function taxiPlanDayLocked(day: TaxiPlanDay, entries: TaxiEntry[], nowMs: number): boolean;
+export function isTaxiSchedule(value: unknown): value is TaxiSchedule;
+export function updateTaxiPlan<
+  T extends {
+    taxiTargets?: Record<string, number>;
+    taxiWorkdays?: Record<string, 5 | 6 | 7>;
+    taxiSchedules?: Record<string, TaxiSchedule>;
+  },
+>(
+  forecast: T,
+  payload: Record<string, unknown>,
+  policies: TaxiPolicy[],
+  entries: TaxiEntry[],
+  nowMs: number,
+): T & {
+  taxiTargets: Record<string, number>;
+  taxiWorkdays: Record<string, 5 | 6 | 7>;
+  taxiSchedules: Record<string, TaxiSchedule>;
+};
 export interface TaxiTotals {
   grossMinor: number;
   commissionMinor: number;

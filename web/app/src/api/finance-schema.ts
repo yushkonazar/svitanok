@@ -272,6 +272,16 @@ export const financeSchema = z.object({
   forecast: z
     .object({
       taxiTargets: z.record(z.string(), money.positive()).optional(),
+      taxiSchedules: z
+        .record(
+          z.string(),
+          z.object({
+            dates: z.array(z.string()).max(8),
+            originalDates: z.array(z.string()).max(8),
+            initialTargetMinor: money.positive().nullable(),
+          }),
+        )
+        .optional(),
       taxiWorkdays: z
         .record(z.string(), z.union([z.literal(5), z.literal(6), z.literal(7)]))
         .optional(),

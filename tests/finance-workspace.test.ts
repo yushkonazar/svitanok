@@ -7,7 +7,7 @@ import { applyRule, RETENTION } from '../web/core/retention/cleanup.mjs';
 import { runFinanceQuery } from '../web/core/tools/finance.mjs';
 import { queueMiniAppNotice, miniAppPaymentRemindTask } from '../web/core/finance/reminders.mjs';
 import { interestDebtPayment } from '../web/core/finance/payments.mjs';
-import { taxiWeek } from '../web/core/finance/planning.mjs';
+import { taxiPlanDays, taxiWeek } from '../web/core/finance/planning.mjs';
 
 const NOW = Date.parse('2026-10-08T15:00:00Z');
 function setup() {
@@ -118,6 +118,62 @@ it('keeps taxi targets attached to their exact periods and preserves them when u
   expect(result.forecast.taxiTargets).toEqual({ [current.key]: 720000 });
   expect(result.forecast.taxiWorkdays).toEqual({ [current.key]: 5, [next.key]: 7 });
   expect(result.forecast.incomes).toMatchObject([income]);
+  expect(result.transactions).toEqual(initial.transactions);
+});
+
+it('keeps the initial taxi calendar while moving future work and rejecting elapsed dates', async () => {
+  const { env } = setup();
+  const initial = await readFinanceWorkspace(env, NOW);
+  const period = taxiWeek(NOW, initial.policies);
+  const days = taxiPlanDays(period);
+  const elapsed = days.find((day) => day.to <= NOW)!;
+  const upcoming = days.filter((day) => day.from > NOW);
+  const original = [elapsed.date, upcoming[0]!.date];
+  const start = {
+    id: 'taxi-calendar-start',
+    type: 'taxi-target',
+    version: initial.version,
+    payload: { periodKey: period.key, targetMinor: 1_000_000, dates: original },
+  };
+  await executeFinanceCommand(env, start, NOW);
+  const moved = [elapsed.date, upcoming[1]!.date];
+  const change = {
+    ...start,
+    id: 'taxi-calendar-move',
+    version: initial.version + 1,
+    payload: { ...start.payload, targetMinor: 1_200_000, dates: moved },
+  };
+  await expect(
+    executeFinanceCommand(
+      env,
+      {
+        ...change,
+        id: 'taxi-calendar-invalid',
+        payload: { ...change.payload, dates: moved.slice(1) },
+      },
+      NOW,
+    ),
+  ).rejects.toThrow(/Завершені дати/);
+  await expect(
+    executeFinanceCommand(
+      env,
+      {
+        ...change,
+        id: 'taxi-calendar-outside',
+        payload: { ...change.payload, dates: [...moved, '2026-12-01'] },
+      },
+      NOW,
+    ),
+  ).rejects.toThrow(/в межах цієї перезмінки/);
+  await executeFinanceCommand(env, change, NOW);
+  await executeFinanceCommand(env, change, NOW);
+  const result = await readFinanceWorkspace(env, period.to);
+  expect(result.forecast.taxiSchedules[period.key]).toEqual({
+    dates: moved,
+    originalDates: original,
+    initialTargetMinor: 1_000_000,
+  });
+  expect(result.forecast.taxiTargets[period.key]).toBe(1_200_000);
   expect(result.transactions).toEqual(initial.transactions);
 });
 

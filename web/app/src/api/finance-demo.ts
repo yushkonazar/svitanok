@@ -18,8 +18,7 @@ import {
   taxiEntryWeek,
   taxiPeriodStart,
   prepareTaxiTransition,
-  setTaxiPeriodTarget,
-  isTaxiWorkdays,
+  updateTaxiPlan,
   sumMoney,
 } from '../../../core/finance/planning.mjs';
 
@@ -755,17 +754,7 @@ export function writeFinanceDemo(command: FinanceCommand) {
       f.forecast = { ...f.forecast, incomes: p.incomes as Finance['forecast']['incomes'] };
       break;
     case 'taxi-target':
-      if (p.workdays !== undefined && !isTaxiWorkdays(p.workdays))
-        throw new Error('Обери 5, 6 або 7 робочих днів');
-      f.forecast.taxiTargets = setTaxiPeriodTarget(
-        f.forecast.taxiTargets ?? {},
-        p.periodKey,
-        p.targetMinor,
-        f.policies,
-        Date.parse(now),
-      );
-      if (isTaxiWorkdays(p.workdays))
-        f.forecast.taxiWorkdays = { ...f.forecast.taxiWorkdays, [String(p.periodKey)]: p.workdays };
+      f.forecast = updateTaxiPlan(f.forecast, p, f.policies, f.taxiEntries, Date.parse(now));
       break;
     case 'budget': {
       const b = {

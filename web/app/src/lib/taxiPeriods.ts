@@ -1,4 +1,30 @@
-import { taxiPeriodStart, taxiWeek, type TaxiPolicy } from '../../../core/finance/planning.mjs';
+import {
+  taxiPeriodStart,
+  taxiWeek,
+  type TaxiPlanDay,
+  type TaxiPolicy,
+} from '../../../core/finance/planning.mjs';
+
+const taxiDate = new Intl.DateTimeFormat('uk-UA', {
+  weekday: 'short',
+  day: 'numeric',
+  month: 'numeric',
+  timeZone: 'Europe/Kyiv',
+});
+const taxiTime = new Intl.DateTimeFormat('uk-UA', {
+  hour: '2-digit',
+  minute: '2-digit',
+  hourCycle: 'h23',
+  timeZone: 'Europe/Kyiv',
+});
+export function taxiDayTime(day: TaxiPlanDay) {
+  if (day.handover) return `до ${taxiTime.format(day.to)}`;
+  return day.units < 1 ? `від ${taxiTime.format(day.from)}` : '';
+}
+export function taxiDayLabel(day: TaxiPlanDay) {
+  const time = taxiDayTime(day);
+  return [taxiDate.format(day.from), time].filter(Boolean).join(' · ');
+}
 
 export function taxiPeriodLabel(key: string, policies: TaxiPolicy[]) {
   const period = taxiWeek(taxiPeriodStart(key, policies), policies);

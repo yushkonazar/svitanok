@@ -17,8 +17,9 @@ import {
   taxiWeek,
   taxiEntryWeek,
   taxiPeriodStart,
-  setTaxiPeriodTarget,
+  updateTaxiPlan,
   isTaxiWorkdays,
+  isTaxiSchedule,
   prepareTaxiTransition,
   nextPaymentDate,
 } from './planning.mjs';
@@ -253,6 +254,9 @@ export async function readFinanceWorkspace(env, nowMs = Date.now(), range, optio
   const taxiWorkdays = Object.fromEntries(
     Object.entries(forecast.taxiWorkdays ?? {}).filter(([, value]) => isTaxiWorkdays(value)),
   );
+  const taxiSchedules = Object.fromEntries(
+    Object.entries(forecast.taxiSchedules ?? {}).filter(([, value]) => isTaxiSchedule(value)),
+  );
   // Refuse misleading incomplete arithmetic instead of silently truncating it.
   if (
     rows(3).length > 5000 ||
@@ -474,6 +478,7 @@ export async function readFinanceWorkspace(env, nowMs = Date.now(), range, optio
       incomes: Array.isArray(forecast.incomes) ? forecast.incomes : [],
       taxiTargets,
       taxiWorkdays,
+      taxiSchedules,
     },
     goals: rows(5).map((r) => ({
       id: String(r.id),
@@ -1504,20 +1509,15 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
     ]);
   } else if (type === 'taxi-target') {
     try {
-      const targets = setTaxiPeriodTarget(
-        state.forecast.taxiTargets,
-        payload.periodKey,
-        payload.targetMinor,
+      const forecast = updateTaxiPlan(
+        state.forecast,
+        payload,
         state.policies,
+        state.taxiEntries,
         nowMs,
       );
-      const workdays = { ...state.forecast.taxiWorkdays };
-      if (payload.workdays !== undefined) {
-        if (!isTaxiWorkdays(payload.workdays)) throw new Error('Обери 5, 6 або 7 робочих днів');
-        workdays[String(payload.periodKey)] = payload.workdays;
-      }
       update('UPDATE finance_settings SET forecast_json = ? WHERE id = ?', [
-        JSON.stringify({ ...state.forecast, taxiTargets: targets, taxiWorkdays: workdays }),
+        JSON.stringify(forecast),
         'owner',
       ]);
     } catch (error) {
