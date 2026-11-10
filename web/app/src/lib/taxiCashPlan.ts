@@ -1,57 +1,14 @@
 import { forecastMoneySample } from '../../../core/finance/income-forecast.mjs';
 import {
-  kyivInstant,
+  calculateTaxiTotals,
   kyivParts,
   MAX_MINOR,
   share,
-  shiftDate,
   sumMoney,
   TAXI_COMMISSION_BPS,
 } from '../../../core/finance/planning.mjs';
-import type { TaxiRecord, TaxiWork } from './taxiWork.ts';
-
-type Period = TaxiRecord['period'];
-
-function workSlots(period: Period) {
-  const last = kyivParts(period.to - 1).date;
-  const slots = [];
-  for (let date = kyivParts(period.from).date; date <= last; date = shiftDate(date, 1)) {
-    const midnight = kyivInstant(date, 0);
-    const tomorrow = kyivInstant(shiftDate(date, 1), 0);
-    const from = Math.max(midnight, period.from);
-    const to = Math.min(tomorrow, period.to);
-    slots.push({
-      date,
-      from,
-      to,
-      units: (to - from) / (tomorrow - midnight),
-      handover: to < tomorrow,
-    });
-  }
-  return slots;
-}
-
-function recordedWorkdays(record: TaxiRecord) {
-  const slots = workSlots(record.period);
-  const days = new Map(
-    slots.map((slot) => [
-      slot.date,
-      { ...slot, worked: false, complete: true, commissionKnown: true, grossMinor: 0 },
-    ]),
-  );
-  for (const entry of record.entries) {
-    const at = Date.parse(entry.at);
-    if (at < record.period.from || at >= record.period.to) continue;
-    const gross = entry.netCashMinor + entry.commissionMinor;
-    if (!gross && !entry.tipsMinor && !entry.directMinor) continue;
-    const day = days.get(kyivParts(at).date)!;
-    day.worked = true;
-    day.grossMinor += gross;
-    day.complete &&= entry.dayComplete !== false;
-    day.commissionKnown &&= entry.commissionReported !== false;
-  }
-  return [...days.values()];
-}
+import type { TaxiWork } from './taxiWork.ts';
+import { recordedWorkdays, suggestTaxiDates } from './taxiCalendar.ts';
 
 const grossRate = (days: ReturnType<typeof recordedWorkdays>) =>
   days
@@ -62,17 +19,27 @@ const cashFor = (grossMinor: number) => ({
   netMinor: grossMinor - share(grossMinor, TAXI_COMMISSION_BPS),
 });
 
-export function taxiCashPlan(work: TaxiWork, workdays: 5 | 6 | 7) {
+export function taxiCashPlan(work: TaxiWork, workdays = work.workdays) {
   const { current, active, now, targetMinor, comparable } = work;
-  const days = recordedWorkdays({ period: current, entries: current.entries });
-  const today = kyivParts(now).date;
-  const worked = days.filter((day) => day.worked && (day.date < today || day.complete));
-  const workedRegular = worked.filter((day) => !day.handover).length;
-  const available = days.filter((day) => day.to > now && !worked.includes(day));
-  const regular = available.filter((day) => !day.handover);
-  const handover = available.find((day) => day.handover);
-  const regularCount = Math.max(workdays - workedRegular, regular[0]?.worked ? 1 : 0);
-  const slots = [...regular.slice(0, regularCount), ...(handover ? [handover] : [])];
+  const days = recordedWorkdays(current, current.entries);
+  const selectedDates = new Set(
+    suggestTaxiDates(work.planSettings, work.policies, current, current.entries, now, workdays),
+  );
+  const earnings = new Map<string, number>();
+  for (const shift of work.shifts) {
+    const date = kyivParts(Date.parse(shift.at)).date;
+    earnings.set(date, (earnings.get(date) ?? 0) + shift.earnedMinor);
+  }
+  const calendar = days.map((day) => ({
+    ...day,
+    planned: selectedDates.has(day.date),
+    locked: day.to <= now || (day.worked && day.complete),
+    earnedMinor: earnings.get(day.date) ?? null,
+  }));
+  const today = calendar.find((day) => day.from <= now && day.to > now);
+  const worked = calendar.filter((day) => day.worked && day.locked);
+  const slots = calendar.filter((day) => day.planned && !day.locked);
+  const handover = slots.find((day) => day.handover);
   const leftUnits = slots.reduce((total, slot) => total + slot.units, 0);
   const doneUnits = worked.reduce((total, slot) => total + slot.units, 0);
   const actualFuel = sumMoney(current.groups.map((group) => group.fuelMinor));
@@ -80,7 +47,7 @@ export function taxiCashPlan(work: TaxiWork, workdays: 5 | 6 | 7) {
   // Use entire handovers for fuel so a day without a refill is still represented.
   const pastDays = comparable.slice(-16).map((record) => ({
     record,
-    days: recordedWorkdays(record),
+    days: recordedWorkdays(record.period, record.entries),
   }));
   const fuelRates = pastDays.flatMap(({ record, days: past }) => {
     const work = past.filter((day) => day.worked);
@@ -126,26 +93,25 @@ export function taxiCashPlan(work: TaxiWork, workdays: 5 | 6 | 7) {
   };
 
   // Solve against the same cent-rounded shares as the ledger. Plans round cash up to hryvnias.
-  let requiredGross: number | null = null;
-  if (targetMinor !== null && active) {
-    const gap = targetMinor - current.earnedMinor;
-    if (futureEarned(0, fuelLeftMinor) >= gap) requiredGross = 0;
-    else if (leftUnits > 0 && retainedRate > 0) {
-      let low = 0;
-      let high = Math.min(
-        Math.floor(maxFutureGross / 100),
-        Math.ceil((gap + share(fuelLeftMinor, active.fuelBps) + 3) / retainedRate / 100),
-      );
-      if (high > 0 && futureEarned(high * 100, fuelLeftMinor) >= gap) {
-        while (low < high) {
-          const mid = Math.floor((low + high) / 2);
-          if (futureEarned(mid * 100, fuelLeftMinor) >= gap) high = mid;
-          else low = mid + 1;
-        }
-        requiredGross = high * 100;
-      }
+  const requiredFor = (gap: number, fuel: number) => {
+    if (!active) return null;
+    if (futureEarned(0, fuel) >= gap) return 0;
+    if (leftUnits === 0 || retainedRate <= 0) return null;
+    let low = 0;
+    let high = Math.min(
+      Math.floor(maxFutureGross / 100),
+      Math.ceil((gap + share(fuel, active.fuelBps) + 3) / retainedRate / 100),
+    );
+    if (high <= 0 || futureEarned(high * 100, fuel) < gap) return null;
+    while (low < high) {
+      const mid = Math.floor((low + high) / 2);
+      if (futureEarned(mid * 100, fuel) >= gap) high = mid;
+      else low = mid + 1;
     }
-  }
+    return high * 100;
+  };
+  const requiredGross =
+    targetMinor === null ? null : requiredFor(targetMinor - current.earnedMinor, fuelLeftMinor);
 
   const plannedCash = requiredGross === null ? null : cashFor(requiredGross);
   const projectedCash = plannedCash && {
@@ -167,7 +133,26 @@ export function taxiCashPlan(work: TaxiWork, workdays: 5 | 6 | 7) {
       : null;
   const firstFuel =
     first && leftUnits > 0 ? Math.round((fuelLeftMinor * first.units) / leftUnits) : 0;
-  const firstTargetMinor = firstCash === null ? null : futureEarned(firstCash, firstFuel);
+  let daily = null;
+  if (today?.planned && !today.locked && targetMinor !== null && leftUnits > 0) {
+    const before = calculateTaxiTotals(
+      current.entries.filter((entry) => Date.parse(entry.at) < today.from),
+      work.policies,
+    ).earnedMinor;
+    // Keep today's target anchored to the opening balance until the date closes.
+    const goalMinor = Math.round((Math.max(0, targetMinor - before) * today.units) / leftUnits);
+    const earnedMinor = current.earnedMinor - before;
+    const remainingMinor = Math.max(0, goalMinor - earnedMinor);
+    const gross = remainingMinor > 0 ? requiredFor(remainingMinor, firstFuel) : 0;
+    daily = {
+      goalMinor,
+      earnedMinor,
+      remainingMinor,
+      cash: gross === null ? null : cashFor(gross),
+    };
+  }
+  const firstTargetMinor =
+    daily?.remainingMinor ?? (firstCash === null ? null : futureEarned(firstCash, firstFuel));
 
   const earlierRates = pastDays.flatMap(({ days: past }) => grossRate(past)).slice(-16);
   const currentRates = grossRate(days);
@@ -211,7 +196,9 @@ export function taxiCashPlan(work: TaxiWork, workdays: 5 | 6 | 7) {
   }
   return {
     slots,
-    workedRegular,
+    calendar,
+    today,
+    daily,
     projectedCash,
     plannedCash,
     fullDay,

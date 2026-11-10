@@ -4,6 +4,7 @@ import { readFinanceDemo } from '../api/finance-demo.ts';
 import { kyivInstant, share, taxiWeek } from '../../../core/finance/planning.mjs';
 import { taxiWork } from './taxiWork.ts';
 import { taxiCashPlan } from './taxiCashPlan.ts';
+import { taxiHandover } from './taxiHandover.ts';
 
 const DAY = 86_400_000;
 const now = kyivInstant('2026-10-08', 13);
@@ -201,6 +202,66 @@ it('plans the required cash with 23% commission and fuel, reserving Wednesday mo
   expect(afterFuel).toBeGreaterThanOrEqual(1_000_000);
   expect(afterFuel).toBeLessThan(1_000_040);
   expect(taxiCashPlan(work, 5).slots.map(({ date }) => date)).toEqual(['2026-11-11']);
+});
+
+it('keeps the daily goal anchored while recording a partial day and carries the gap to handover morning', () => {
+  const policy = {
+    ...fixed,
+    effectiveAt: '2026-09-30T09:00:00.000Z',
+    periodStart: true,
+    weekDay: 2,
+    weekHour: 12,
+    weekMinute: 0,
+    vehicleName: 'Гібрид',
+  };
+  const policies = [policy];
+  const tuesday = kyivInstant('2026-11-10', 14);
+  const period = taxiWeek(tuesday, policies);
+  const dates = ['2026-11-09', '2026-11-10', '2026-11-11'];
+  const initial = shift('monday', kyivInstant(dates[0]!, 19), policy.id, 1_560_000);
+  const today = {
+    ...shift('tuesday', kyivInstant(dates[1]!, 13), policy.id, 120000),
+    dayComplete: false,
+  };
+  const finance = {
+    ...readFinanceDemo(),
+    policies,
+    taxiEntries: [initial],
+    taxiWeeks: [],
+    forecast: {
+      incomes: [],
+      taxiTargets: { [period.key]: 1_000_000 },
+      taxiSchedules: {
+        [period.key]: { dates, originalDates: dates, initialTargetMinor: 1_000_000 },
+      },
+    },
+  };
+  const opening = taxiCashPlan(taxiWork(finance, tuesday));
+  const progress = taxiCashPlan(taxiWork({ ...finance, taxiEntries: [initial, today] }, tuesday));
+  expect(opening.daily).toMatchObject({ goalMinor: 146667, remainingMinor: 146667 });
+  expect(progress.daily).toMatchObject({
+    goalMinor: 146667,
+    earnedMinor: 60000,
+    remainingMinor: 86667,
+  });
+  expect(progress.daily!.cash!.netMinor).toBeLessThan(opening.daily!.cash!.netMinor);
+
+  finance.taxiEntries.push({ ...today, dayComplete: true });
+  const done = taxiCashPlan(taxiWork(finance, tuesday));
+  expect(done.daily).toBeNull();
+  expect(done.slots.map(({ date }) => date)).toEqual(['2026-11-11']);
+  const morning = taxiCashPlan(taxiWork(finance, period.to - 1));
+  expect(morning.today).toMatchObject({ date: '2026-11-11', handover: true });
+  expect(morning.daily?.remainingMinor).toBe(160000);
+  expect(taxiHandover(finance, period.key, period.to - 1)).toBeNull();
+  const report = taxiHandover(finance, period.key, period.to);
+  expect(report).toMatchObject({
+    earnedMinor: 840000,
+    targetMinor: 1_000_000,
+    workedDays: 2,
+    missingDays: 1,
+  });
+  expect(report?.days.reduce((total, day) => total + (day.planMinor ?? 0), 0)).toBe(1_000_000);
 });
 
 it('allocates a period crossing a month exactly once and uses the all-time personal aggregate', () => {

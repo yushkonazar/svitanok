@@ -164,8 +164,106 @@ export function setTaxiPeriodTarget(targets, key, amount, policies, nowMs) {
   }
   return updated;
 }
+/** @typedef {{date:string,from:number,to:number,units:number,handover:boolean}} TaxiPlanDay */
+/** @typedef {{originalDates:string[],dates:string[],initialTargetMinor:number|null}} TaxiSchedule */
+/** Civil dates clipped to the real period, including short opening and handover days.
+ * @param {{from:number,to:number}} period @returns {TaxiPlanDay[]} */
+export function taxiPlanDays(period) {
+  const days = [];
+  const last = kyivParts(period.to - 1).date;
+  for (let date = kyivParts(period.from).date; date <= last; date = shiftDate(date, 1)) {
+    const start = kyivInstant(date, 0);
+    const end = kyivInstant(shiftDate(date, 1), 0);
+    const from = Math.max(start, period.from);
+    const to = Math.min(end, period.to);
+    days.push({ date, from, to, units: (to - from) / (end - start), handover: to < end });
+  }
+  return days;
+}
+/** @param {TaxiEntry} entry */
+export function taxiWorked(entry) {
+  return Boolean(
+    entry.netCashMinor || entry.commissionMinor || entry.tipsMinor || entry.directMinor,
+  );
+}
+/** @param {TaxiPlanDay} day @param {TaxiEntry[]} entries @param {number} nowMs */
+export function taxiPlanDayLocked(day, entries, nowMs) {
+  if (day.to <= nowMs) return true;
+  if (day.from > nowMs) return false;
+  const worked = entries.filter((entry) => {
+    const at = Date.parse(entry.at);
+    return at >= day.from && at < day.to && at <= nowMs && taxiWorked(entry);
+  });
+  return worked.length > 0 && worked.every((entry) => entry.dayComplete !== false);
+}
+/** @param {unknown} value @returns {value is string[]} */
+function taxiDateList(value) {
+  return (
+    Array.isArray(value) &&
+    value.length <= 8 &&
+    new Set(value).size === value.length &&
+    value.every((date) => typeof date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(date))
+  );
+}
+/** @param {any} value @returns {value is TaxiSchedule} */
+export function isTaxiSchedule(value) {
+  return Boolean(
+    value &&
+    taxiDateList(value.dates) &&
+    taxiDateList(value.originalDates) &&
+    (value.initialTargetMinor === null ||
+      (Number.isSafeInteger(value.initialTargetMinor) &&
+        value.initialTargetMinor > 0 &&
+        value.initialTargetMinor <= MAX_MINOR)),
+  );
+}
+/** Save calendar and target as one versioned change. A confirmed schedule keeps its original dates.
+ * @template {{taxiTargets?:Record<string,number>,taxiWorkdays?:Record<string,5|6|7>,taxiSchedules?:Record<string,TaxiSchedule>}} T
+ * @param {T} forecast @param {Record<string,unknown>} payload @param {TaxiPolicy[]} policies
+ * @param {TaxiEntry[]} entries @param {number} nowMs */
+export function updateTaxiPlan(forecast, payload, policies, entries, nowMs) {
+  const taxiTargets = setTaxiPeriodTarget(
+    forecast.taxiTargets ?? {},
+    payload.periodKey,
+    payload.targetMinor,
+    policies,
+    nowMs,
+  );
+  const key = String(payload.periodKey);
+  const taxiWorkdays = { ...forecast.taxiWorkdays };
+  const taxiSchedules = { ...forecast.taxiSchedules };
+  if (payload.workdays !== undefined) {
+    if (!isTaxiWorkdays(payload.workdays)) throw new Error('Обери 5, 6 або 7 робочих днів');
+    taxiWorkdays[key] = payload.workdays;
+  }
+  if (payload.dates !== undefined) {
+    const period = taxiWeek(taxiPeriodStart(key, policies), policies);
+    const days = taxiPlanDays(period);
+    const allowed = new Set(days.map((day) => day.date));
+    if (!taxiDateList(payload.dates) || payload.dates.some((date) => !allowed.has(date)))
+      throw new Error('Обери дати в межах цієї перезмінки');
+    const dates = [...payload.dates].sort();
+    const previous = taxiSchedules[key];
+    const owned = entries.filter((entry) => !entry.periodKey || entry.periodKey === key);
+    if (
+      previous &&
+      days.some(
+        (day) =>
+          taxiPlanDayLocked(day, owned, nowMs) &&
+          previous.dates.includes(day.date) !== dates.includes(day.date),
+      )
+    )
+      throw new Error('Завершені дати вже зафіксовано. Обери майбутню або відкриту дату.');
+    taxiSchedules[key] = {
+      dates,
+      originalDates: previous?.originalDates ?? dates,
+      initialTargetMinor: previous?.initialTargetMinor ?? taxiTargets[key] ?? null,
+    };
+  }
+  return { ...forecast, taxiTargets, taxiWorkdays, taxiSchedules };
+}
 /** @typedef {{ id: string, effectiveAt: string, fareBps: number, commissionBps: number, fuelBps: number, tipsBps?: number, thresholdMinor: number|null, bonusFareBps: number, periodStart?: boolean, weekDay?:number, weekHour?:number, weekMinute?:number, vehicleName?:string }} TaxiPolicy */
-/** @typedef {{ id: string, at: string, policyId: string, periodKey?: string|null, netCashMinor: number, commissionMinor: number, fuelMinor: number, tipsMinor: number, directMinor: number, receivedCashMinor?: number, paidWorkMinor?: number, commissionReported?: boolean, cashReported?: boolean, note?: string }} TaxiEntry */
+/** @typedef {{ id: string, at: string, policyId: string, periodKey?: string|null, netCashMinor: number, commissionMinor: number, fuelMinor: number, tipsMinor: number, directMinor: number, receivedCashMinor?: number, paidWorkMinor?: number, commissionReported?: boolean, cashReported?: boolean, note?: string, dayComplete?:boolean }} TaxiEntry */
 /** @param {TaxiPolicy} policy */
 export function validatePolicy(policy) {
   for (const bps of [policy.fareBps, policy.commissionBps, policy.fuelBps, policy.bonusFareBps])

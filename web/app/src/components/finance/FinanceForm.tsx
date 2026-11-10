@@ -15,7 +15,8 @@ import {
   kyivParts,
   taxiWeek,
   taxiPeriodStart,
-  TAXI_DEFAULT_WORKDAYS,
+  taxiPlanDays,
+  taxiPlanDayLocked,
 } from '../../../../core/finance/planning.mjs';
 import { haptic } from '../../telegram.ts';
 import { Sheet } from './FinanceSheet.tsx';
@@ -23,7 +24,9 @@ import { FinanceDisplaySettings } from './FinanceDisplaySettings.tsx';
 import { moneyLabel } from '../../lib/financeView.ts';
 import { isBankPayment } from '../../lib/todayPayment.ts';
 import { goalBalances } from '../../../../core/finance/savings-forecast.mjs';
-import { taxiPeriodLabel } from '../../lib/taxiPeriods.ts';
+import { taxiDayLabel, taxiPeriodLabel } from '../../lib/taxiPeriods.ts';
+import { suggestTaxiDates } from '../../lib/taxiCalendar.ts';
+import { useTick } from '../../lib/useTick.ts';
 import { TaxiTransition } from './TaxiTransition.tsx';
 import { DebtSetup } from './DebtSetup.tsx';
 import { debtSetup } from '../../lib/debtSetup.ts';
@@ -77,7 +80,7 @@ export interface FinanceFormRequest {
     description?: string;
     returnGoal?: { accountId: string; amountMinor: number; mode: 'reserve' | 'cash' | 'bank' };
     bankTransactionId?: string;
-    taxiWorkdays?: 5 | 6 | 7;
+    taxiFocusDate?: string;
   };
 }
 const TITLES: Record<FinanceFormKind, string> = {
@@ -90,7 +93,7 @@ const TITLES: Record<FinanceFormKind, string> = {
   'taxi-personal': 'Особистий дохід таксі',
   account: 'Додати рахунок',
   taxi: 'Записати зміну таксі',
-  'taxi-target': 'Ціль заробітку',
+  'taxi-target': 'Ціль і робочі дати',
   policy: 'Умови роботи таксі',
   'taxi-transition': 'Зміна авто й перезмінки',
   goal: 'Нова фінансова ціль',
@@ -147,7 +150,8 @@ function FinanceFormBody({
   const policy = f.policies.filter((p) => Date.parse(p.effectiveAt) <= Date.now()).at(-1)!;
   const settlement = f.settlements.find((w) => w.weekKey === request.id);
   const settleWeek = f.taxiWeeks.find((w) => w.key === request.id);
-  const targetPeriod = request.kind === 'taxi-target' ? taxiWeek(Date.now(), f.policies) : null;
+  const targetNow = Math.max(useTick(30_000), Date.parse(f.generatedAt) || 0);
+  const targetPeriod = request.kind === 'taxi-target' ? taxiWeek(targetNow, f.policies) : null;
   const nextTargetPeriod = targetPeriod ? taxiWeek(targetPeriod.to, f.policies) : null;
   const targetKey =
     request.id === nextTargetPeriod?.key ? nextTargetPeriod?.key : targetPeriod?.key;
@@ -155,8 +159,12 @@ function FinanceFormBody({
     const amount = key ? f.forecast.taxiTargets?.[key] : undefined;
     return amount ? String(amount / 100) : '';
   };
-  const targetWorkdays = (key: string | undefined) =>
-    String((key && f.forecast.taxiWorkdays?.[key]) || TAXI_DEFAULT_WORKDAYS);
+  const targetDates = (key: string | undefined) => {
+    const period = key === targetPeriod?.key ? targetPeriod : nextTargetPeriod;
+    return period
+      ? suggestTaxiDates(f.forecast, f.policies, period, f.taxiEntries, targetNow).join('|')
+      : '';
+  };
   const [v, setValues] = useState<Record<string, string>>({
     amount: returnGoal
       ? String(returnGoal.amountMinor / 100)
@@ -310,9 +318,7 @@ function FinanceFormBody({
     taxiPeriodKey: entry?.periodKey ?? '',
     taxiTargetPeriod: targetKey ?? '',
     taxiTargetAmount: targetText(targetKey),
-    taxiWorkdays: request.defaults?.taxiWorkdays
-      ? String(request.defaults.taxiWorkdays)
-      : targetWorkdays(targetKey),
+    taxiDates: targetDates(targetKey),
     transactionKind:
       transaction?.amountMinor != null && transaction.amountMinor < 0 ? 'expense' : 'income',
   });
@@ -366,7 +372,7 @@ function FinanceFormBody({
       const next = { ...prev, [key]: value };
       if (key === 'taxiTargetPeriod') {
         next.taxiTargetAmount = targetText(value);
-        next.taxiWorkdays = targetWorkdays(value);
+        next.taxiDates = targetDates(value);
       }
       if (key === 'bankRefreshAccountId') {
         next.bankTransactionId = '';
@@ -761,7 +767,7 @@ function FinanceFormBody({
         Object.assign(p, {
           periodKey: v.taxiTargetPeriod,
           targetMinor,
-          workdays: Number(v.taxiWorkdays),
+          dates: v.taxiDates.split('|').filter(Boolean),
         });
       } else if (request.kind === 'policy') {
         type = 'taxi-policy';
@@ -912,6 +918,36 @@ function FinanceFormBody({
     }
   };
   const kind = request.kind;
+  const calendarPeriod = [targetPeriod, nextTargetPeriod].find(
+    (period) => period?.key === v.taxiTargetPeriod,
+  );
+  const savedCalendar = f.forecast.taxiSchedules?.[v.taxiTargetPeriod];
+  const selectedDates = new Set(v.taxiDates.split('|').filter(Boolean));
+  const calendarDays = calendarPeriod
+    ? taxiPlanDays(calendarPeriod).map((day) => ({
+        ...day,
+        locked: Boolean(
+          savedCalendar &&
+          taxiPlanDayLocked(
+            day,
+            f.taxiEntries.filter(
+              (entry) => !entry.periodKey || entry.periodKey === calendarPeriod.key,
+            ),
+            targetNow,
+          ),
+        ),
+      }))
+    : [];
+  const focusedDay =
+    v.taxiTargetPeriod === targetKey
+      ? calendarDays.find((day) => day.date === request.defaults?.taxiFocusDate && !day.locked)
+      : undefined;
+  const changeDates = (remove: string, add?: string) => {
+    const dates = new Set(selectedDates);
+    dates.delete(remove);
+    if (add) dates.add(add);
+    set('taxiDates', [...dates].sort().join('|'));
+  };
   const close = () => {
     if (!pending && !displayLocked) onClose();
   };
@@ -1142,6 +1178,9 @@ function FinanceFormBody({
             {targetPeriod && nextTargetPeriod && (
               <>
                 {select('taxiTargetPeriod', 'Робочий період', [
+                  ...(!calendarPeriod
+                    ? [[v.taxiTargetPeriod, 'Період завершився · обери інший'] as [string, string]]
+                    : []),
                   [targetPeriod.key, `Поточний · ${taxiPeriodLabel(targetPeriod.key, f.policies)}`],
                   [
                     nextTargetPeriod.key,
@@ -1149,14 +1188,63 @@ function FinanceFormBody({
                   ],
                 ])}
                 {field('taxiTargetAmount', 'Бажаний заробіток за формулою парку, ₴')}
-                {select('taxiWorkdays', 'Робочих днів до дня перезмінки', [
-                  ['5', '5 днів'],
-                  ['6', '6 днів'],
-                  ['7', '7 днів'],
-                ])}
-                <p className="renewal-chart-note">
-                  Час роботи в день перезмінки враховується окремо.
-                </p>
+                {calendarPeriod && (
+                  <fieldset className="taxi-date-editor">
+                    <legend>Робочі дати</legend>
+                    <div className="taxi-date-options">
+                      {calendarDays.map((day) => (
+                        <label key={day.date} data-highlight={focusedDay?.date === day.date}>
+                          <input
+                            type="checkbox"
+                            checked={selectedDates.has(day.date)}
+                            disabled={day.locked}
+                            onChange={(event) =>
+                              changeDates(day.date, event.target.checked ? day.date : undefined)
+                            }
+                          />
+                          <span>{taxiDayLabel(day)}</span>
+                        </label>
+                      ))}
+                    </div>
+                    {focusedDay && selectedDates.has(focusedDay.date) && (
+                      <div className="taxi-date-actions">
+                        <button
+                          type="button"
+                          className="renewal-link"
+                          onClick={() => changeDates(focusedDay.date)}
+                        >
+                          Позначити вихідним
+                        </button>
+                        {calendarDays.some(
+                          (day) => !day.locked && !selectedDates.has(day.date),
+                        ) && (
+                          <label className="renewal-field">
+                            Перенести зміну
+                            <select
+                              value=""
+                              onChange={(event) => {
+                                if (event.target.value)
+                                  changeDates(focusedDay.date, event.target.value);
+                              }}
+                            >
+                              <option value="">Обрати нову дату</option>
+                              {calendarDays
+                                .filter((day) => !day.locked && !selectedDates.has(day.date))
+                                .map((day) => (
+                                  <option key={day.date} value={day.date}>
+                                    {taxiDayLabel(day)}
+                                  </option>
+                                ))}
+                            </select>
+                          </label>
+                        )}
+                      </div>
+                    )}
+                    <p className="renewal-chart-note">
+                      Обрано {selectedDates.size} · короткі дні враховано за часом до перезмінки.
+                    </p>
+                  </fieldset>
+                )}
                 {f.forecast.taxiTargets?.[v.taxiTargetPeriod] && (
                   <button type="button" className="renewal-link" onClick={() => void submit(true)}>
                     Прибрати ціль
@@ -1882,7 +1970,7 @@ function FinanceFormBody({
                         : kind === 'goal-remove'
                           ? 'Видалити ціль'
                           : kind === 'taxi-target'
-                            ? 'Зберегти ціль'
+                            ? 'Зберегти план'
                             : 'Підтвердити й зберегти'}
             </button>
           )}
