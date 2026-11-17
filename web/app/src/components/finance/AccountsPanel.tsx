@@ -3,207 +3,328 @@ import { financeTime } from './analytics-format.ts';
 import type { Finance } from '../../api/finance-schema.ts';
 import type { FinanceFormRequest } from './FinanceForm.tsx';
 import { moneyLabel } from '../../lib/financeView.ts';
-import { usePresentation } from '../../lib/presentation.ts';
+
+type Account = Finance['accounts'][number];
+export type AccountVerification = { accountId: string; message: string; error?: boolean };
+
+const bankTypes = new Map([
+  ['black', 'Чорна картка'],
+  ['white', 'Біла картка'],
+  ['platinum', 'Platinum'],
+  ['iron', 'Iron Bank'],
+  ['fop', 'Рахунок ФОП'],
+  ['yellow', 'Дитяча картка'],
+]);
+
+function accountMetadata(account: Account) {
+  const type =
+    account.kind === 'mono'
+      ? (bankTypes.get(account.bankType ?? '') ??
+        (account.name.includes('Monobank') ? '' : 'Monobank'))
+      : account.kind === 'bank'
+        ? 'Ручний облік'
+        : '';
+  return type ? `${type} · ${account.currency}` : account.currency;
+}
+
 export function AccountsPanel({
   finance: f,
   onAction,
   onRefreshBank,
+  onVerifyBank,
+  checking,
+  checkResult,
   bankBusy = false,
 }: {
   finance: Finance;
   onAction: (r: FinanceFormRequest) => void;
-  onRefreshBank?: (accountId: string) => void;
+  onRefreshBank: (accountId: string) => void;
+  onVerifyBank: (accountId: string) => void;
+  checking: string | null;
+  checkResult: AccountVerification | null;
   bankBusy?: boolean;
 }) {
   const jars = f.bankJars ?? [];
-  const { explanations } = usePresentation();
+  const needsReview = f.inactiveAccounts?.filter((a) => !a.archivedAt) ?? [];
+  const archived = f.inactiveAccounts?.filter((a) => a.archivedAt) ?? [];
+  const lastCheck = f.bankCatalog?.checkedAt;
+  const sync = f.bankSync?.balancesOnly ? f.bankSync : null;
+  const checkedAll =
+    lastCheck &&
+    !checking &&
+    !checkResult &&
+    sync?.phase === 'done' &&
+    sync.verificationAccountId === 'all';
+  const verification: AccountVerification | null = checking
+    ? { accountId: checking, message: 'Запитуємо список рахунків у Monobank…' }
+    : (checkResult ??
+      (sync
+        ? {
+            accountId: sync.verificationAccountId ?? 'all',
+            message: sync.message ?? 'Запитуємо список рахунків у Monobank…',
+            error: sync.phase === 'error',
+          }
+        : null));
+  const feedback = (id: string) =>
+    verification?.accountId === id ? (
+      <p
+        className={verification.error ? 'text-neg text-sm' : 'renewal-muted'}
+        role={verification.error ? 'alert' : 'status'}
+      >
+        {verification.message}
+      </p>
+    ) : null;
+  const verify = (a: { id: string; name: string }) => (
+    <button
+      type="button"
+      className="renewal-link"
+      disabled={bankBusy}
+      aria-label={`Перевірити ${a.name} в Monobank`}
+      onClick={() => onVerifyBank(a.id)}
+    >
+      Перевірити
+    </button>
+  );
+  const remove = (a: Account) => (
+    <button
+      type="button"
+      className="renewal-link"
+      aria-label={`Видалити рахунок ${a.name}`}
+      onClick={() => onAction({ kind: 'account-remove', id: a.id })}
+    >
+      Видалити
+    </button>
+  );
+  const statement = (id: string) => (
+    <button
+      type="button"
+      className="renewal-link"
+      disabled={bankBusy}
+      onClick={() => onRefreshBank(id)}
+    >
+      Оновити виписку
+    </button>
+  );
+  const funding = (url?: string) =>
+    url && (
+      <a className="renewal-link" href={url} target="_blank" rel="noreferrer">
+        Поповнити ↗
+      </a>
+    );
+
   return (
-    <details className="renewal-card renewal-disclosure">
+    <details className="renewal-card renewal-disclosure finance-accounts">
       <summary className="renewal-section-head cursor-pointer">
         <h2 className="text-lg font-bold">Рахунки та інструменти</h2>
         <span className="renewal-pill">{f.accounts.length + jars.length}</span>
       </summary>
-      {explanations && (
-        <p className="renewal-muted mb-4">
-          Власні залишки, кредитні кошти й способи перенесення грошей.
-        </p>
+      <div className="finance-accounts-actions">
+        <button
+          type="button"
+          className="renewal-secondary"
+          onClick={() => onAction({ kind: 'account' })}
+        >
+          + Додати рахунок
+        </button>
+        <button
+          type="button"
+          className="renewal-secondary"
+          onClick={() => onAction({ kind: 'transfer' })}
+        >
+          ⇄ Переказати
+        </button>
+      </div>
+      <div className="finance-accounts-bank">
+        <div className="renewal-section-head">
+          <div>
+            <h3 className="font-semibold">Звірка Monobank</h3>
+            <p className="renewal-muted" aria-live="polite">
+              {lastCheck ? `Звірено ${financeTime(lastCheck)}` : 'Список ще не звірено'}
+            </p>
+          </div>
+          <button
+            type="button"
+            className="renewal-link"
+            disabled={bankBusy}
+            onClick={() => onVerifyBank('all')}
+          >
+            Перевірити всі
+          </button>
+        </div>
+        {!checkedAll && feedback('all')}
+        {verification &&
+          verification.accountId !== 'all' &&
+          ![...f.accounts, ...jars, ...needsReview].some((a) => a.id === verification.accountId) &&
+          feedback(verification.accountId)}
+      </div>
+
+      {!!needsReview.length && (
+        <section className="finance-accounts-review">
+          <h3 className="font-semibold">Потребують уваги · {needsReview.length}</h3>
+          {needsReview.map((a) => (
+            <article className="finance-account-exception" key={a.id}>
+              <div>
+                <p className="font-medium break-words">{a.name}</p>
+                <p className="renewal-muted">
+                  {a.bankStatus === 'duplicate'
+                    ? 'Дубль зв’язку з Monobank'
+                    : a.bankStatus === 'missing'
+                      ? 'Поза списком Monobank'
+                      : 'Потрібна звірка з Monobank'}
+                </p>
+              </div>
+              <div className="finance-account-actions">
+                {a.monoId && a.bankStatus !== 'duplicate' && verify(a)}
+                {remove(a)}
+              </div>
+              {feedback(a.id)}
+            </article>
+          ))}
+        </section>
       )}
-      <div className="finance-account-grid">
+
+      <div className="finance-accounts-list">
+        {!f.accounts.length && <p className="renewal-muted">Активних рахунків поки немає.</p>}
         <AccountCollection accounts={f.accounts}>
           {(a) => (
-            <article key={a.id} className="finance-account">
-              <div className="renewal-section-head">
-                <span className="finance-account-icon" aria-hidden="true">
-                  {a.kind === 'cash' ? '₴' : '▤'}
+            <details key={a.id} className="finance-account-row">
+              <summary>
+                <span className="finance-account-label">
+                  <strong>{a.name}</strong>
+                  <small>{accountMetadata(a)}</small>
                 </span>
-                <span className="renewal-pill">
-                  {a.kind === 'mono' ? 'Monobank' : a.kind === 'cash' ? 'Готівка' : 'Ручний облік'}
-                </span>
-              </div>
-              <h3 className="font-semibold break-words">{a.name}</h3>
-              <p
-                className={`finance-account-balance ${a.balanceMinor != null && a.balanceMinor < 0 ? 'text-neg' : ''}`}
-              >
-                {a.balancePending
-                  ? bankBusy
-                    ? 'Оновлюємо баланс'
-                    : 'Онови дані Monobank'
-                  : a.balanceMinor == null
-                    ? 'Потрібен залишок'
+                <span
+                  className={`finance-account-value ${a.balanceMinor != null && a.balanceMinor < 0 ? 'text-neg' : ''}`}
+                >
+                  {a.balanceMinor == null
+                    ? a.kind === 'mono'
+                      ? 'Потрібна звірка'
+                      : 'Без залишку'
                     : moneyLabel(a.balanceMinor, a.currency)}
-              </p>
-              <small className="renewal-muted">
-                {accountFreshness(a)}
-                {a.kind !== 'mono' && a.lastMovementAt ? (
-                  <span className="block">Останній рух · {financeTime(a.lastMovementAt)}</span>
-                ) : null}
-              </small>
-              {a.kind === 'mono' && (
-                <>
-                  <p className="renewal-chart-note">
-                    Доступно в банку:{' '}
-                    {a.availableMinor == null ? '—' : moneyLabel(a.availableMinor, a.currency)}
-                    <br />
-                    Кредитний ліміт:{' '}
-                    {a.creditLimitMinor == null
-                      ? 'невідомий'
-                      : moneyLabel(a.creditLimitMinor, a.currency)}
-                  </p>
-                  {onRefreshBank && (
+                </span>
+              </summary>
+              <div className="finance-account-details">
+                <p className="renewal-muted">{accountFreshness(a)}</p>
+                {a.kind === 'mono' && (
+                  <>
+                    <dl className="finance-account-breakdown">
+                      <div>
+                        <dt>Доступно в банку</dt>
+                        <dd>
+                          {a.availableMinor == null
+                            ? '—'
+                            : moneyLabel(a.availableMinor, a.currency)}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt>Кредитний ліміт</dt>
+                        <dd>
+                          {a.creditLimitMinor == null
+                            ? '—'
+                            : moneyLabel(a.creditLimitMinor, a.currency)}
+                        </dd>
+                      </div>
+                    </dl>
+                    {a.creditLimitSource === 'manual' &&
+                      a.bankCreditLimitMinor != null &&
+                      a.bankCreditLimitMinor !== a.creditLimitMinor && (
+                        <p className="renewal-muted">
+                          Діє ручний ліміт. Ліміт Monobank{' '}
+                          {moneyLabel(a.bankCreditLimitMinor, a.currency)}.
+                        </p>
+                      )}
+                  </>
+                )}
+                <div className="finance-account-actions">
+                  {a.kind === 'mono' ? (
+                    <>
+                      {verify(a)}
+                      {statement(a.id)}
+                      <button
+                        type="button"
+                        className="renewal-link"
+                        onClick={() => onAction({ kind: 'credit-limit', id: a.id })}
+                      >
+                        Змінити ліміт
+                      </button>
+                      {funding(a.fundingUrl)}
+                    </>
+                  ) : (
                     <button
+                      type="button"
                       className="renewal-link"
-                      disabled={bankBusy}
-                      aria-busy={bankBusy}
-                      onClick={() => onRefreshBank(a.id)}
+                      onClick={() => onAction({ kind: 'account-balance', id: a.id })}
                     >
-                      Оновити виписку ↻
+                      Звірити залишок
                     </button>
                   )}
-                  {a.fundingUrl && (
-                    <a
-                      className="renewal-link"
-                      href={a.fundingUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      Поповнити в Monobank ↗
-                    </a>
-                  )}
-                  {a.creditLimitSource === 'manual' &&
-                    a.bankCreditLimitMinor != null &&
-                    a.bankCreditLimitMinor !== a.creditLimitMinor && (
-                      <p className="renewal-chart-note">
-                        У Monobank ліміт {moneyLabel(a.bankCreditLimitMinor, a.currency)}; тут
-                        використовується твій ручний ліміт. Перевір налаштування.
-                      </p>
-                    )}
-                  <button
-                    className="renewal-link"
-                    onClick={() => onAction({ kind: 'credit-limit', id: a.id })}
-                  >
-                    Налаштувати ліміт
-                  </button>
-                </>
-              )}
-              {a.kind !== 'mono' && (
-                <button
-                  className="renewal-link"
-                  onClick={() => onAction({ kind: 'account-balance', id: a.id })}
-                >
-                  Уточнити залишок
-                </button>
-              )}
-            </article>
+                  {remove(a)}
+                </div>
+                {feedback(a.id)}
+              </div>
+            </details>
           )}
         </AccountCollection>
       </div>
-      {(f.bankCatalog ||
-        f.accounts.some((account) => account.kind === 'mono') ||
-        jars.length > 0) && (
-        <section className="mt-4 space-y-2">
-          <h3 className="font-semibold">Банки Monobank</h3>
+
+      {(jars.length > 0 || f.bankCatalog?.jarListing === 'omitted') && (
+        <details className="finance-account-group">
+          <summary className="renewal-link">Банки Monobank · {jars.length}</summary>
           {f.bankCatalog?.jarListing === 'omitted' && (
-            <p className="renewal-muted">У відповіді Monobank відсутній список банок.</p>
+            <p className="renewal-muted">Monobank не передав список банок.</p>
           )}
-          {f.bankCatalog?.jarListing === 'available' && !jars.length && (
-            <p className="renewal-muted">Monobank повернув порожній список банок.</p>
-          )}
-          {explanations && (
-            <p className="renewal-muted">
-              Банки показані окремо від вільних коштів і цілей Світанку.
-            </p>
-          )}
-          <div className="renewal-finance-actions">
-            <a
-              className="renewal-link"
-              href="https://monobank.ua/banka"
-              target="_blank"
-              rel="noreferrer"
-            >
-              Як відкрити банку ↗
-            </a>
-            {onRefreshBank && (
-              <button
-                className="renewal-link"
-                disabled={bankBusy}
-                onClick={() => onRefreshBank('all')}
-              >
-                Оновити рахунки й банки ↻
-              </button>
-            )}
-          </div>
-          <div className="finance-account-grid">
-            {jars.map((jar) => (
-              <article key={jar.id} className="finance-account">
-                <h4 className="font-semibold break-words">{jar.name}</h4>
-                <p className="finance-account-balance">
-                  {jar.balanceMinor == null
-                    ? 'Залишок невідомий'
-                    : moneyLabel(jar.balanceMinor, jar.currency)}
-                </p>
-                {jar.goalMinor != null && (
-                  <small className="renewal-muted">
-                    Ціль {moneyLabel(jar.goalMinor, jar.currency)}
+          {jars.map((jar) => (
+            <details key={jar.id} className="finance-account-row">
+              <summary>
+                <span className="finance-account-label">
+                  <strong>{jar.name}</strong>
+                  <small>
+                    {jar.goalMinor == null
+                      ? jar.currency
+                      : `Ціль ${moneyLabel(jar.goalMinor, jar.currency)}`}
                   </small>
-                )}
-                {jar.asOf && (
-                  <small className="renewal-muted">Дані за {financeTime(jar.asOf)}</small>
-                )}
-                {jar.fundingUrl && (
-                  <a
-                    className="renewal-link"
-                    href={jar.fundingUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    Поповнити банку в Monobank ↗
-                  </a>
-                )}
-                {onRefreshBank && (
-                  <button
-                    className="renewal-link"
-                    disabled={bankBusy}
-                    onClick={() => onRefreshBank(jar.id)}
-                  >
-                    Оновити виписку ↻
-                  </button>
-                )}
-              </article>
-            ))}
-          </div>
-        </section>
+                </span>
+                <span className="finance-account-value">
+                  {jar.balanceMinor == null
+                    ? 'Без залишку'
+                    : moneyLabel(jar.balanceMinor, jar.currency)}
+                </span>
+              </summary>
+              <div className="finance-account-details">
+                {jar.asOf && <p className="renewal-muted">Залишок за {financeTime(jar.asOf)}</p>}
+                <div className="finance-account-actions">
+                  {verify(jar)}
+                  {statement(jar.id)}
+                  {funding(jar.fundingUrl)}
+                </div>
+                {feedback(jar.id)}
+              </div>
+            </details>
+          ))}
+        </details>
       )}
-      <div className="finance-tool-grid mt-4">
-        <button className="renewal-secondary" onClick={() => onAction({ kind: 'transfer' })}>
-          ⇄ Переказ між рахунками
-        </button>
-        <button className="renewal-secondary" onClick={() => onAction({ kind: 'account-balance' })}>
-          Вказати поточний залишок
-        </button>
-        <button className="renewal-secondary" onClick={() => onAction({ kind: 'account' })}>
-          Додати рахунок +
-        </button>
-      </div>
+
+      {archived.length > 0 && (
+        <details className="finance-account-group">
+          <summary className="renewal-link">Архів рахунків · {archived.length}</summary>
+          {archived.map((a) => (
+            <div className="finance-account-exception" key={a.id}>
+              <div>
+                <p className="font-medium break-words">{a.name}</p>
+                <p className="renewal-muted">{accountMetadata(a)}</p>
+              </div>
+              <button
+                type="button"
+                className="renewal-link"
+                aria-label={`Відновити рахунок ${a.name}`}
+                onClick={() => onAction({ kind: 'account-restore', id: a.id })}
+              >
+                Відновити
+              </button>
+            </div>
+          ))}
+        </details>
+      )}
     </details>
   );
 }

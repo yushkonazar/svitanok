@@ -89,7 +89,9 @@ export function GoalHistory({
               <small>
                 {new Date(m.at).toLocaleString('uk-UA', { timeZone: 'Europe/Kyiv' })} ·{' '}
                 {m.movementKind === 'external' ? 'Переказано' : 'Резерв'} ·{' '}
-                {finance.accounts.find((a) => a.id === m.accountId)?.name ?? 'Рахунок'}
+                {[...finance.accounts, ...(finance.inactiveAccounts ?? [])].find(
+                  (a) => a.id === m.accountId,
+                )?.name ?? 'Рахунок'}
               </small>
               {m.transactionId ? (
                 <button

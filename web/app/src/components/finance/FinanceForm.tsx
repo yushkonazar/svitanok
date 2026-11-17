@@ -54,6 +54,8 @@ export type FinanceFormKind =
   | 'credit-limit'
   | 'taxi-personal'
   | 'account'
+  | 'account-remove'
+  | 'account-restore'
   | 'taxi'
   | 'taxi-target'
   | 'policy'
@@ -92,6 +94,8 @@ const TITLES: Record<FinanceFormKind, string> = {
   'credit-limit': 'Кредитний ліміт картки',
   'taxi-personal': 'Особистий дохід таксі',
   account: 'Додати рахунок',
+  'account-remove': 'Видалити рахунок',
+  'account-restore': 'Відновити рахунок',
   taxi: 'Записати зміну таксі',
   'taxi-target': 'Ціль і робочі дати',
   policy: 'Умови роботи таксі',
@@ -143,7 +147,9 @@ function FinanceFormBody({
   const balancesOnGoal = goalToRemove ? goalBalances(f.goalMoves, goalToRemove.id) : [];
   const returnGoal = request.defaults?.returnGoal;
   const transaction = f.transactions.find((t) => t.id === request.id);
-  const selectedAccount = f.accounts.find((a) => a.id === request.id);
+  const selectedAccount =
+    f.accounts.find((a) => a.id === request.id) ??
+    f.inactiveAccounts?.find((a) => a.id === request.id);
   const entry =
     request.kind === 'taxi' ? f.taxiEntries.find((e) => e.id === request.id) : undefined;
   const entryTime = entry ? kyivParts(Date.parse(entry.at)) : today;
@@ -537,6 +543,14 @@ function FinanceFormBody({
   const accountOptions = f.accounts
     .filter((a) => a.currency === 'UAH' && (request.kind === 'goal-move' || a.kind !== 'mono'))
     .map((a): [string, string] => [a.id, a.name]);
+  const savedTaxiAccount = f.inactiveAccounts?.find(
+    (a) => a.id === entry?.accountId && a.kind !== 'mono',
+  );
+  if (savedTaxiAccount) accountOptions.push([savedTaxiAccount.id, savedTaxiAccount.name]);
+  const savedReserveAccount =
+    returnGoal?.mode === 'reserve'
+      ? f.inactiveAccounts?.find((a) => a.id === returnGoal.accountId)
+      : undefined;
   const category = () =>
     select(
       'category',
@@ -744,6 +758,8 @@ function FinanceFormBody({
           kind: v.accountKind,
           openingMinor: inputMoney('opening', false, true),
         });
+      else if (request.kind === 'account-remove' || request.kind === 'account-restore')
+        p.accountId = request.id;
       else if (request.kind === 'taxi') {
         type = entry ? 'taxi-edit' : 'taxi-entry';
         Object.assign(p, {
@@ -1175,6 +1191,22 @@ function FinanceFormBody({
                 </p>
               </>
             )}
+            {(kind === 'account-remove' || kind === 'account-restore') && (
+              <div className="renewal-inset space-y-2">
+                <p className="font-bold">{selectedAccount?.name}</p>
+                {kind === 'account-remove' ? (
+                  <p className="renewal-muted">
+                    Рахунок перейде до архіву й перестане враховуватися у вільних коштах. Операції
+                    залишаться в історії. Рахунок можна відновити.
+                  </p>
+                ) : (
+                  <p className="renewal-muted">
+                    Рахунок повернеться з архіву. Картка з’явиться серед активних, якщо її
+                    підтверджує Monobank.
+                  </p>
+                )}
+              </div>
+            )}
             {targetPeriod && nextTargetPeriod && (
               <>
                 {select('taxiTargetPeriod', 'Робочий період', [
@@ -1424,7 +1456,11 @@ function FinanceFormBody({
                       <>
                         <p>Перед видаленням поверни залишки з цілі.</p>
                         {balancesOnGoal.map(({ accountId, amountMinor, movementKind }) => {
-                          const source = f.accounts.find((a) => a.id === accountId);
+                          const source =
+                            f.accounts.find((a) => a.id === accountId) ??
+                            (movementKind === 'reserve'
+                              ? f.inactiveAccounts?.find((a) => a.id === accountId)
+                              : undefined);
                           const mode =
                             movementKind === 'reserve'
                               ? 'reserve'
@@ -1516,7 +1552,16 @@ function FinanceFormBody({
                   <>
                     {field('amount', 'Сума, ₴')}
                     {v.goalMoveMode === 'reserve'
-                      ? account()
+                      ? select(
+                          'accountId',
+                          'Рахунок',
+                          savedReserveAccount
+                            ? [
+                                ...accountOptions,
+                                [savedReserveAccount.id, savedReserveAccount.name],
+                              ]
+                            : accountOptions,
+                        )
                       : select(
                           'accountId',
                           'З якого ручного рахунку',
@@ -1971,7 +2016,9 @@ function FinanceFormBody({
                           ? 'Видалити ціль'
                           : kind === 'taxi-target'
                             ? 'Зберегти план'
-                            : 'Підтвердити й зберегти'}
+                            : kind === 'account-remove' || kind === 'account-restore'
+                              ? TITLES[kind]
+                              : 'Підтвердити й зберегти'}
             </button>
           )}
         </form>

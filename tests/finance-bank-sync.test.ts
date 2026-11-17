@@ -659,3 +659,130 @@ it('waits on the bank client-info limit before importing statements and retains 
   expect(client).toHaveBeenCalledTimes(2);
   expect((await readFinanceWorkspace(env, NOW)).bankSync?.active).toBe(false);
 });
+
+it('reconciles an obsolete card with the same mask and archives it without losing operations', async () => {
+  const { env, db, collector } = await setup();
+  const stamp = new Date(NOW - 2 * 86400000).toISOString();
+  const name = 'Monobank 537541******1111';
+  db.prepare(
+    "INSERT INTO finance_accounts(id,name,kind,currency,opening_minor,opening_at,mono_id,created_at) VALUES(?,?,'mono','UAH',500000,?,?,?)",
+  ).run('mono:previous', name, stamp, 'previous', stamp);
+  await ingestTransaction(env, {
+    item: parseStatementItem(row('historical'))!,
+    account: 'previous',
+    accountCurrency: 'UAH',
+    silent: true,
+  });
+  const statement = vi.fn(async () => Response.json([]));
+  const client = bankFetch(statement);
+  // A request from an older view of the app still obtains the current catalog.
+  await collector.requestRefresh('mono:previous', undefined, NOW);
+  await collector.alarm();
+  let workspace = await readFinanceWorkspace(env, NOW);
+  expect(workspace.bankSync).toMatchObject({ active: false, phase: 'error' });
+  expect(workspace.bankSync?.message).toContain('Monobank не повернув цей рахунок');
+  expect(statement).not.toHaveBeenCalled();
+  expect(workspace.accounts.filter((a) => a.name === name)).toEqual([
+    expect.objectContaining({ id: 'mono:card', balanceMinor: 105000 }),
+  ]);
+  expect(workspace.inactiveAccounts).toEqual([
+    expect.objectContaining({
+      id: 'mono:previous',
+      bankStatus: 'missing',
+      balanceMinor: null,
+      archivedAt: null,
+    }),
+  ]);
+
+  vi.advanceTimersByTime(61000);
+  await collector.requestRefresh('mono:previous', undefined, Date.now(), true);
+  await advance(collector);
+  workspace = await readFinanceWorkspace(env, Date.now());
+  expect(client).toHaveBeenCalledTimes(2);
+  expect(statement).not.toHaveBeenCalled();
+  expect(workspace.bankSync).toMatchObject({
+    balancesOnly: true,
+    active: false,
+    phase: 'done',
+    verificationAccountId: 'mono:previous',
+    message: 'Цього рахунку немає у списку Monobank.',
+  });
+  await executeFinanceCommand(
+    env,
+    {
+      type: 'account-remove',
+      id: 'archive-previous',
+      version: workspace.version,
+      payload: { accountId: 'mono:previous' },
+    },
+    Date.now(),
+  );
+  workspace = await readFinanceWorkspace(env, Date.now());
+  expect(workspace.inactiveAccounts[0]).toMatchObject({ archivedAt: new Date().toISOString() });
+  expect(workspace.transactions).toContainEqual(
+    expect.objectContaining({ id: 'historical', accountId: 'mono:previous' }),
+  );
+});
+
+it('keeps separate bank IDs with the same mask and remembers a hidden card across verification', async () => {
+  const { env, collector } = await setup();
+  const [card, second] = clientRows;
+  const statement = vi.fn(async () => Response.json([]));
+  const client = bankFetch(statement, [card!, { ...second!, maskedPan: card!.maskedPan }]);
+  await collector.requestRefresh('all', undefined, NOW, true);
+  await advance(collector);
+  let workspace = await readFinanceWorkspace(env, NOW);
+  expect(workspace.accounts.map((a) => a.id)).toEqual(['cash', 'mono:card', 'mono:second']);
+  await executeFinanceCommand(
+    env,
+    {
+      type: 'account-remove',
+      id: 'archive-active-card',
+      version: workspace.version,
+      payload: { accountId: 'mono:card' },
+    },
+    NOW,
+  );
+
+  vi.advanceTimersByTime(61000);
+  await collector.requestRefresh('all', undefined, Date.now(), true);
+  await advance(collector);
+  workspace = await readFinanceWorkspace(env, Date.now());
+  expect(workspace.accounts.map((a) => a.id)).toEqual(['cash', 'mono:second']);
+  expect(workspace.inactiveAccounts[0]).toMatchObject({ id: 'mono:card', bankStatus: 'verified' });
+  expect(client).toHaveBeenCalledTimes(2);
+  expect(statement).not.toHaveBeenCalled();
+  await executeFinanceCommand(
+    env,
+    {
+      type: 'account-restore',
+      id: 'restore-active-card',
+      version: workspace.version,
+      payload: { accountId: 'mono:card' },
+    },
+    Date.now(),
+  );
+  expect((await readFinanceWorkspace(env, Date.now())).accounts).toContainEqual(
+    expect.objectContaining({ id: 'mono:card', balanceMinor: 105000 }),
+  );
+});
+
+it('updates the roster only after a complete bank response and supports a verified empty roster', async () => {
+  const { env, collector } = await setup();
+  const statement = vi.fn(async () => Response.json([]));
+  const client = bankFetch(statement, []);
+  client.mockResolvedValueOnce(Response.json({ jars: [] }));
+  await collector.requestRefresh('all', undefined, NOW, true);
+  await collector.alarm();
+  let workspace = await readFinanceWorkspace(env, NOW);
+  expect(workspace.bankCatalog?.accounts).toBe(2);
+  expect(workspace.bankSync).toMatchObject({ active: true, phase: 'accounts' });
+
+  vi.advanceTimersByTime(61000);
+  await advance(collector);
+  workspace = await readFinanceWorkspace(env, Date.now());
+  expect(workspace.bankCatalog).toMatchObject({ accounts: 0, checkedAt: new Date().toISOString() });
+  expect(workspace.accounts).toHaveLength(1);
+  expect(workspace.bankSync).toMatchObject({ active: false, phase: 'done' });
+  expect(statement).not.toHaveBeenCalled();
+});

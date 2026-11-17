@@ -169,8 +169,9 @@ export function AnalyticsOperations({
               {options.day ? financeDate(options.day) : financeRange(effective.from, effective.to)}
               {' · '}
               {effective.account && effective.account !== 'all'
-                ? (finance.accounts.find((a) => a.id === effective.account)?.name ??
-                  effective.account)
+                ? ([...finance.accounts, ...(finance.inactiveAccounts ?? [])].find(
+                    (a) => a.id === effective.account,
+                  )?.name ?? effective.account)
                 : 'Усі рахунки'}
               {effective.source && effective.source !== 'all'
                 ? effective.source === 'mono'

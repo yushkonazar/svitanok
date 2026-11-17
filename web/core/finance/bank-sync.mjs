@@ -1,21 +1,43 @@
 import { STATEMENT_PAGE, MonoApiError, MonoTooSoonError } from '../adapters/mono.mjs';
-import { readMonoAccounts, writeMonoClientAccounts, ingestTransaction } from './store.mjs';
+import {
+  ledgerMonoId,
+  readMonoAccounts,
+  writeMonoClientAccounts,
+  ingestTransaction,
+} from './store.mjs';
 import { readMonoStatement, readMonoClientInfo } from './bank-refresh.mjs';
 export const BANK_SYNC_KEY = 'mono_bank_refresh';
 const WINDOW = 31 * 86400;
+export class BankAccountUnlisted extends Error {
+  constructor() {
+    super('Monobank не повернув цей рахунок у списку доступних рахунків.');
+  }
+}
+
+/** Resolve a saved reference independently of the cached bank roster.
+ * @param {Env} env @param {unknown} accountId */
+export async function bankRefreshTarget(env, accountId) {
+  if (!env.DB) throw new Error('Finance DB unavailable');
+  if (accountId === 'all') return null;
+  if (typeof accountId !== 'string' || accountId.length > 150)
+    throw new Error('Некоректний рахунок Monobank');
+  const row = await env.DB.prepare(
+    "SELECT mono_id FROM finance_accounts WHERE id=? AND kind='mono'",
+  )
+    .bind(accountId)
+    .first();
+  const id = ledgerMonoId(accountId, row?.mono_id);
+  if (!id) throw new Error('Некоректний рахунок Monobank');
+  return id;
+}
+
 /** @param {Env} env @param {unknown} accountId @param {unknown} transactionId @param {number} nowMs */
 export async function bankRefreshTasks(env, accountId, transactionId, nowMs) {
   if (!env.DB) throw new Error('Finance DB unavailable');
+  const targetId = await bankRefreshTarget(env, accountId);
   const accounts = await readMonoAccounts(env);
-  let selected = accounts.filter((a) => accountId === 'all' || `mono:${a.id}` === accountId);
-  if (!selected.length && typeof accountId === 'string') {
-    const row = await env.DB.prepare('SELECT mono_id FROM finance_accounts WHERE id=?')
-      .bind(accountId)
-      .first();
-    selected = accounts.filter((a) => row?.mono_id === a.id);
-  }
-  if (!selected.length && accountId === 'all' && !transactionId) return [];
-  if (!selected.length) throw new Error('Некоректний рахунок Monobank');
+  const selected = targetId === null ? accounts : accounts.filter((a) => a.id === targetId);
+  if (!selected.length && targetId !== null) throw new BankAccountUnlisted();
   const toS = Math.floor(nowMs / 1000);
   const target = transactionId
     ? await env.DB.prepare('SELECT at,raw_json FROM transactions WHERE id=?')
@@ -53,6 +75,7 @@ export async function publishBankSync(env, job) {
     accountId: job.tasks[job.index]?.account.id ?? null,
     statementAccounts: [...new Set(job.tasks.map((/** @type {any} */ task) => task.account.id))],
     balancesOnly: Boolean(job.balancesOnly),
+    verificationAccountId: job.verificationAccountId ?? null,
     imported: job.imported,
     updated: job.updated,
     requestedAt: job.requestedAt,
@@ -81,7 +104,19 @@ export async function advanceBankSync(ctx, env, job, nowMs) {
       const info = await readMonoClientInfo(env, nowMs);
       const observedMs = Date.now();
       const accounts = await writeMonoClientAccounts(env, info, observedMs);
-      if (!accounts.length) throw new Error('Monobank did not return accounts or jars');
+      job.accountsDone = true;
+      job.balanceUpdatedAt = new Date(observedMs).toISOString();
+      if (job.verificationAccountId) {
+        const target = job.verificationTarget;
+        job.verificationMessage =
+          target == null
+            ? 'Список Monobank звірено.'
+            : accounts.some((a) => a.id === target)
+              ? 'Monobank підтвердив цей рахунок.'
+              : job.verificationIsJar && !info.jarsReported
+                ? 'Monobank не передав список банок.'
+                : 'Цього рахунку немає у списку Monobank.';
+      }
       if (!job.balancesOnly && job.index === 0 && !job.chunks && job.accountId) {
         job.tasks = await bankRefreshTasks(env, job.accountId, job.transactionId, nowMs);
       } else
@@ -89,13 +124,21 @@ export async function advanceBankSync(ctx, env, job, nowMs) {
           const fresh = accounts.find((a) => a.id === task.account.id);
           if (fresh) task.account = fresh;
         }
-      job.accountsDone = true;
-      job.balanceUpdatedAt = new Date(observedMs).toISOString();
       job.phase = job.resumePhase ?? 'fetch';
       delete job.resumePhase;
       job.message = null;
       job.failures = 0;
     } catch (error) {
+      if (error instanceof BankAccountUnlisted) {
+        job.tasks = [];
+        job.active = false;
+        job.phase = 'error';
+        job.message = error.message;
+        job.completedAt = new Date(nowMs).toISOString();
+        await ctx.storage.put('bank-refresh', job);
+        await publishBankSync(env, job);
+        return;
+      }
       if (error instanceof MonoTooSoonError) {
         job.message = 'Чекаємо дозволеного банком проміжку для оновлення залишків рахунків.';
         await ctx.storage.put('bank-refresh', job);
@@ -115,7 +158,11 @@ export async function advanceBankSync(ctx, env, job, nowMs) {
     job.active = false;
     job.phase = 'done';
     job.completedAt = new Date(nowMs).toISOString();
-    job.message = 'Дані Monobank оновлено.';
+    job.message = job.balancesOnly
+      ? (job.verificationMessage ?? 'Список Monobank звірено.')
+      : job.skippedUnlisted
+        ? 'Доступні виписки оновлено. Частини рахунків уже немає у списку Monobank.'
+        : 'Дані Monobank оновлено.';
     await ctx.storage.put('bank-refresh', job);
     await publishBankSync(env, job);
     return;
@@ -175,6 +222,15 @@ export async function advanceBankSync(ctx, env, job, nowMs) {
     return;
   }
   try {
+    if (!(await readMonoAccounts(env)).some((account) => account.id === task.account.id)) {
+      job.skippedUnlisted = true;
+      job.index++;
+      delete job.windowStartedAt;
+      await ctx.storage.put('bank-refresh', job);
+      await ctx.storage.setAlarm(Date.now() + 50);
+      await publishBankSync(env, job);
+      return;
+    }
     const end = task.cursor ?? task.toS;
     if (!job.windowStartedAt) job.windowStartedAt = new Date(nowMs).toISOString();
     const items = await readMonoStatement(

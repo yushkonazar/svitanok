@@ -151,26 +151,29 @@ async function call(env, path, init, what) {
  */
 export async function clientInfo(env) {
   const raw = await call(env, '/personal/client-info', { method: 'GET' }, 'Mono client-info');
-  const accounts = Array.isArray(raw?.accounts) ? raw.accounts : [];
+  if (
+    !Array.isArray(raw?.accounts) ||
+    raw.accounts.some((/** @type {any} */ a) => !isMonoAccountId(a?.id))
+  )
+    throw new Error('Mono client-info: некоректний список рахунків');
+  const accounts = raw.accounts;
   const jars = Array.isArray(raw?.jars) ? raw.jars : [];
   return {
     name: typeof raw?.name === 'string' ? raw.name : '',
     webHookUrl: typeof raw?.webHookUrl === 'string' && raw.webHookUrl ? raw.webHookUrl : null,
     jarsReported: Array.isArray(raw?.jars),
-    accounts: accounts
-      .filter((/** @type {any} */ a) => isMonoAccountId(a?.id))
-      .map((/** @type {any} */ a) => ({
-        id: String(a.id),
-        currency: numericToAlpha(a.currencyCode),
-        currencyCode: Number(a.currencyCode) || 0,
-        type: typeof a.type === 'string' ? a.type : '',
-        maskedPan: Array.isArray(a.maskedPan) && a.maskedPan[0] ? String(a.maskedPan[0]) : null,
-        iban: typeof a.iban === 'string' ? a.iban : null,
-        ...(isMonoSendId(a.sendId) ? { sendId: a.sendId } : {}),
-        balanceMinor: Number.isSafeInteger(a.balance) ? a.balance : null,
-        creditLimitMinor:
-          Number.isSafeInteger(a.creditLimit) && a.creditLimit >= 0 ? a.creditLimit : null,
-      })),
+    accounts: accounts.map((/** @type {any} */ a) => ({
+      id: String(a.id),
+      currency: numericToAlpha(a.currencyCode),
+      currencyCode: Number(a.currencyCode) || 0,
+      type: typeof a.type === 'string' ? a.type : '',
+      maskedPan: Array.isArray(a.maskedPan) && a.maskedPan[0] ? String(a.maskedPan[0]) : null,
+      iban: typeof a.iban === 'string' ? a.iban : null,
+      ...(isMonoSendId(a.sendId) ? { sendId: a.sendId } : {}),
+      balanceMinor: Number.isSafeInteger(a.balance) ? a.balance : null,
+      creditLimitMinor:
+        Number.isSafeInteger(a.creditLimit) && a.creditLimit >= 0 ? a.creditLimit : null,
+    })),
     jars: jars
       .filter((/** @type {any} */ jar) => isMonoAccountId(jar?.id))
       .map((/** @type {any} */ jar) => ({

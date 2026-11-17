@@ -1014,6 +1014,8 @@ describe('authenticated shared Mini App workspace', () => {
     expect(fetch).not.toHaveBeenCalled();
   });
   it('starts one companion and safely acknowledges a retry with the original draft revision', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(NOW);
     const { env, db } = setup();
     const create = vi.fn(async () => ({}));
     env.TRIP_CHAIN = { create } as never;
