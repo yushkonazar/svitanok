@@ -464,6 +464,28 @@ export function writeFinanceDemo(command: FinanceCommand) {
         source: 'demo',
       });
       break;
+    case 'account-remove': {
+      if (!account) throw new Error('Рахунок не знайдено');
+      const moves = f.goalMoves.filter((move) => move.accountId === account.id);
+      if (f.goals.some((goal) => goalBalances(moves, goal.id).length))
+        throw new Error(
+          'Спочатку поверни або перенеси кошти, прив’язані до цілей на цьому рахунку',
+        );
+      (f.inactiveAccounts ??= []).push({
+        ...account,
+        archivedAt: now,
+        bankStatus: account.kind === 'mono' ? 'verified' : null,
+      });
+      f.accounts = f.accounts.filter((candidate) => candidate.id !== account.id);
+      break;
+    }
+    case 'account-restore': {
+      const archived = f.inactiveAccounts?.find((a) => a.id === p.accountId);
+      if (!archived?.archivedAt) throw new Error('Рахунку немає в архіві');
+      f.accounts.push(archived);
+      f.inactiveAccounts = f.inactiveAccounts?.filter((a) => a.id !== archived.id);
+      break;
+    }
     case 'settings':
       f.settings = {
         incomePeriod: str('incomePeriod') as 'week' | 'month',

@@ -339,6 +339,15 @@ export function FinanceAnalytics({
                     {a.name}
                   </option>
                 ))}
+                {!!finance.inactiveAccounts?.length && (
+                  <optgroup label="Історія неактивних рахунків">
+                    {finance.inactiveAccounts.map((a) => (
+                      <option key={a.id} value={a.id}>
+                        {a.name} · {a.archivedAt ? 'архів' : 'попередній запис'}
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
               </select>
             </label>
             <button className="renewal-secondary" onClick={() => setFilterOpen(true)}>
@@ -405,7 +414,7 @@ export function FinanceAnalytics({
         {currentState ? 'Поточний стан' : expensesScope ? 'Вибраний облік' : 'Усі рахунки'}
         {!currentState ? ` · ${financeDay(range.from)}–${financeDay(range.to)}` : ''}
         {expensesScope && filters.account !== 'all'
-          ? ` · ${finance.accounts.find((a) => a.id === filters.account)?.name ?? filters.account}`
+          ? ` · ${[...finance.accounts, ...(finance.inactiveAccounts ?? [])].find((a) => a.id === filters.account)?.name ?? filters.account}`
           : ''}
         {expensesScope
           ? ` · ${filters.source === 'all' ? 'банк і ручні' : filters.source === 'mono' ? 'Monobank' : 'ручні записи'} · ${filters.status === 'all' ? 'усі статуси' : filters.status === 'confirmed' ? 'підтверджені' : 'очікують підтвердження'}`

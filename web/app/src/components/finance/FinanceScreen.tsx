@@ -6,7 +6,7 @@ import { useSearchParams } from 'react-router-dom';
 import { useFinance, FINANCE_QUERY } from '../../api/finance-hooks.ts';
 import { useQueryClient } from '@tanstack/react-query';
 import { BankRefreshPanel } from './BankRefreshPanel.tsx';
-import { isSessionExpired, refreshFinanceBank } from '../../api/client.ts';
+import { isSessionExpired, refreshFinanceBank, verifyFinanceBank } from '../../api/client.ts';
 import { financeView, moneyLabel } from '../../lib/financeView.ts';
 import { usePresentation } from '../../lib/presentation.ts';
 import { isDuePayment, isOpenPayment, possibleBankPayment } from '../../lib/todayPayment.ts';
@@ -16,7 +16,7 @@ import { LoadingSkeleton, ErrorState } from '../ui/states.tsx';
 import { SessionExpired } from '../ui/SessionExpired.tsx';
 import { BudgetPlan } from './BudgetPlan.tsx';
 import { ForecastPlan } from './ForecastPlan.tsx';
-import { AccountsPanel } from './AccountsPanel.tsx';
+import { AccountsPanel, type AccountVerification } from './AccountsPanel.tsx';
 import { FinanceForm, type FinanceFormRequest } from './FinanceForm.tsx';
 import { FinanceOverview } from './FinanceOverview.tsx';
 import { PageHeading } from '../ui/PageHeading.tsx';
@@ -78,21 +78,50 @@ export function FinanceScreen() {
   const query = useQueryClient();
   const [bankAccount, setBankAccount] = useState('all');
   const [bankOpen, setBankOpen] = useState(false);
-  const [bankBusy, setBankBusy] = useState(false);
+  const bankLock = useRef(false);
+  const [bankRequest, setBankRequest] = useState<{ accountId: string; verify: boolean } | null>(
+    null,
+  );
+  const bankBusy = bankRequest !== null;
   const [bankError, setBankError] = useState('');
+  const [bankCheckResult, setBankCheckResult] = useState<AccountVerification | null>(null);
   const [operationsSource, setOperationsSource] = useState<'all' | 'mono' | 'manual'>('all');
-  const refreshBank = async (accountId = bankAccount) => {
-    if (bankBusy || data?.finance.bankSync?.active) return;
-    setBankOpen(true);
-    setOperationsSource('mono');
-    setBankBusy(true);
-    setBankError('');
+  const selectedBankAccount =
+    data?.finance.accounts.some((a) => a.kind === 'mono' && a.id === bankAccount) ||
+    data?.finance.bankJars?.some((jar) => jar.id === bankAccount)
+      ? bankAccount
+      : 'all';
+  const statementBusy =
+    (bankBusy && !bankRequest?.verify) ||
+    (data?.finance.bankSync?.active && !data.finance.bankSync.balancesOnly);
+  const refreshBank = async (accountId = selectedBankAccount, verify = false) => {
+    if (bankLock.current || data?.finance.bankSync?.active) return;
+    bankLock.current = true;
+    setBankRequest({ accountId, verify });
+    setBankCheckResult(null);
+    if (!verify) {
+      setBankOpen(true);
+      setOperationsSource('mono');
+      setBankError('');
+    }
     try {
-      query.setQueryData(FINANCE_QUERY, await refreshFinanceBank(accountId));
+      const next = await (verify ? verifyFinanceBank(accountId) : refreshFinanceBank(accountId));
+      query.setQueryData(FINANCE_QUERY, next);
+      if (verify && !next.finance.bankSync?.balancesOnly) {
+        setBankCheckResult({
+          accountId,
+          message: next.demo
+            ? 'У деморежимі показано зразок рахунків.'
+            : 'Список Monobank звірено.',
+        });
+      }
     } catch (e) {
-      setBankError(e instanceof Error ? e.message : 'Не вдалося запустити оновлення.');
+      const message = e instanceof Error ? e.message : 'Не вдалося зв’язатися з Monobank.';
+      if (verify) setBankCheckResult({ accountId, message, error: true });
+      else setBankError(message);
     } finally {
-      setBankBusy(false);
+      bankLock.current = false;
+      setBankRequest(null);
     }
   };
 
@@ -550,25 +579,23 @@ export function FinanceScreen() {
           <button
             className="renewal-link"
             disabled={bankBusy || !!f.bankSync?.active}
-            aria-busy={bankBusy || !!f.bankSync?.active}
+            aria-busy={!!statementBusy}
             onClick={() => void refreshBank()}
           >
-            {bankBusy || f.bankSync?.active ? 'Оновлюю…' : 'Оновити Monobank'}{' '}
-            <span
-              aria-hidden="true"
-              className={bankBusy || f.bankSync?.active ? 'inline-block animate-spin' : ''}
-            >
+            {statementBusy ? 'Оновлюю…' : 'Оновити Monobank'}{' '}
+            <span aria-hidden="true" className={statementBusy ? 'inline-block animate-spin' : ''}>
               ↻
             </span>
           </button>
         </div>
-        {(bankOpen || f.bankSync?.active || f.bankSync?.phase === 'error') && (
+        {(bankOpen ||
+          (!f.bankSync?.balancesOnly && (f.bankSync?.active || f.bankSync?.phase === 'error'))) && (
           <BankRefreshPanel
             finance={f}
-            accountId={bankAccount}
+            accountId={selectedBankAccount}
             onAccountChange={setBankAccount}
             onRefresh={() => void refreshBank()}
-            busy={bankBusy}
+            busy={!!statementBusy}
             error={bankError}
           />
         )}
@@ -836,6 +863,9 @@ export function FinanceScreen() {
         finance={f}
         onAction={setForm}
         bankBusy={bankBusy || !!f.bankSync?.active}
+        checking={bankRequest?.verify ? bankRequest.accountId : null}
+        checkResult={bankCheckResult}
+        onVerifyBank={(id) => void refreshBank(id, true)}
         onRefreshBank={(id) => {
           setBankAccount(id);
           void refreshBank(id);

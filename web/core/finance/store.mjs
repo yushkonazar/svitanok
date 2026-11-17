@@ -13,7 +13,7 @@
 // курсу з памʼяті моделі.
 
 import { runFactsGet, runFactsSet } from '../tools/facts.mjs';
-import { isMonoSendId } from '../adapters/mono.mjs';
+import { isMonoAccountId, isMonoSendId } from '../adapters/mono.mjs';
 import {
   DUPLICATE_WINDOW_MS,
   HISTORY_MONTHS,
@@ -47,27 +47,28 @@ function db(env) {
 /**
  * @typedef {{ id: string, currency: string, maskedPan: string | null,
  * balanceMinor?: number|null, creditLimitMinor?: number|null, asOf?: string,
- * bankKind?: 'jar', name?: string, sendId?: string, goalMinor?: number,
+ * bankKind?: 'jar', bankType?: string, name?: string, sendId?: string, goalMinor?: number,
  * jarsReported?: boolean }} StoredAccount
  */
 
 /**
- * Рахунки власника з `facts.setting.mono_accounts`. Порожній список означає
- * «ще не питали client-info», і це НЕ те саме, що «рахунків немає»: вебхук на
- * такому стані відмовляє гучно, а `mono-reconcile` заповнює список сам.
- * @param {Env} env @returns {Promise<StoredAccount[]>}
+ * Read the latest confirmed catalog, including an explicitly empty bank response.
+ * @param {Env} env @returns {Promise<{accounts: StoredAccount[], checkedAt: string | null}>}
  */
-export async function readMonoAccounts(env) {
+export async function readMonoCatalog(env) {
   const { result } = await runFactsGet(env, { kind: 'setting', key: ACCOUNTS_FACT_KEY });
-  const value = /** @type {any} */ (result)?.[0]?.value;
-  if (!Array.isArray(value)) return [];
-  return value
-    .filter((a) => a && typeof a.id === 'string' && a.id)
-    .map((a) => ({
-      id: String(a.id),
+  const fact = result[0];
+  if (!Array.isArray(fact?.value)) return { accounts: [], checkedAt: null };
+  /** @type {Map<string, StoredAccount>} */
+  const accounts = new Map();
+  for (const a of fact.value) {
+    if (!isMonoAccountId(a?.id) || accounts.has(a.id)) continue;
+    accounts.set(a.id, {
+      id: a.id,
       currency: String(a.currency ?? 'UAH'),
       maskedPan: a.maskedPan ? String(a.maskedPan) : null,
       ...(a.bankKind === 'jar' ? { bankKind: 'jar', name: String(a.name ?? '') } : {}),
+      ...(typeof a.bankType === 'string' ? { bankType: a.bankType } : {}),
       ...(isMonoSendId(a.sendId) ? { sendId: a.sendId } : {}),
       ...(Number.isSafeInteger(a.goalMinor) && a.goalMinor > 0 ? { goalMinor: a.goalMinor } : {}),
       ...(typeof a.jarsReported === 'boolean' ? { jarsReported: a.jarsReported } : {}),
@@ -78,7 +79,24 @@ export async function readMonoAccounts(env) {
       ...(typeof a.asOf === 'string' && Number.isFinite(Date.parse(a.asOf))
         ? { asOf: a.asOf }
         : {}),
-    }));
+    });
+  }
+  const entries = [...accounts.values()];
+  const checkedAt = typeof fact.observed_at === 'string' ? fact.observed_at : entries[0]?.asOf;
+  return { accounts: entries, checkedAt: checkedAt ?? null };
+}
+
+/** @param {Env} env */
+export async function readMonoAccounts(env) {
+  return (await readMonoCatalog(env)).accounts;
+}
+
+/** For ledger rows created before the Monobank ID was saved separately.
+ * @param {string} id @param {unknown} monoId */
+export function ledgerMonoId(id, monoId) {
+  if (isMonoAccountId(monoId)) return monoId;
+  const externalId = id.startsWith('mono:') ? id.slice(5) : '';
+  return isMonoAccountId(externalId) ? externalId : null;
 }
 
 /**
@@ -119,11 +137,11 @@ export async function writeMonoClientAccounts(env, info, nowMs) {
       ...(account.sendId ? { sendId: account.sendId } : {}),
       ...(account.type === 'jar'
         ? { bankKind: 'jar', name: account.title, goalMinor: account.goalMinor }
-        : {}),
+        : { bankType: account.type }),
     });
   }
   const snapshot = [...accounts.values()];
-  if (snapshot.length) await writeMonoAccounts(env, snapshot, nowMs);
+  await writeMonoAccounts(env, snapshot, nowMs);
   return snapshot;
 }
 

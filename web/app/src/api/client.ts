@@ -304,12 +304,22 @@ async function readFinanceSnapshot(signal?: AbortSignal) {
   if (!res.ok) throw new Error('Не вдалося завантажити фінанси. Спробуй знову.');
   return { finance: financeSchema.parse(await res.json()), demo: false };
 }
-export async function refreshFinanceBank(accountId: string, transactionId?: string) {
+export function refreshFinanceBank(accountId: string, transactionId?: string) {
+  return requestFinanceBank('bank-refresh', accountId, transactionId);
+}
+export function verifyFinanceBank(accountId: string) {
+  return requestFinanceBank('bank-verify', accountId);
+}
+async function requestFinanceBank(
+  type: 'bank-refresh' | 'bank-verify',
+  accountId: string,
+  transactionId?: string,
+) {
   if (!inTelegram()) return fetchFinance();
   const res = await fetch('/api/finance', {
     method: 'POST',
     headers: { ...authHeaders(), 'Content-Type': 'application/json', 'X-Finance-Sync': '2' },
-    body: JSON.stringify({ type: 'bank-refresh', payload: { accountId, transactionId } }),
+    body: JSON.stringify({ type, payload: { accountId, transactionId } }),
   });
   throwIfSessionExpired(res);
   if (!res.ok) {
@@ -317,7 +327,9 @@ export async function refreshFinanceBank(accountId: string, transactionId?: stri
     throw new Error(
       typeof body?.error === 'string'
         ? body.error
-        : 'Не вдалося звірити операції з Monobank. Спробуй ще раз.',
+        : type === 'bank-verify'
+          ? 'Не вдалося перевірити рахунки в Monobank. Спробуй ще раз.'
+          : 'Не вдалося звірити операції з Monobank. Спробуй ще раз.',
     );
   }
   return { finance: financeSchema.parse(await res.json()), demo: false };

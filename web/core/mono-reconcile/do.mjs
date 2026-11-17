@@ -1,4 +1,11 @@
-import { bankRefreshTasks, publishBankSync, advanceBankSync } from '../finance/bank-sync.mjs';
+import {
+  BankAccountUnlisted,
+  bankRefreshTarget,
+  bankRefreshTasks,
+  publishBankSync,
+  advanceBankSync,
+} from '../finance/bank-sync.mjs';
+import { readMonoAccounts } from '../finance/store.mjs';
 import { DurableObject } from 'cloudflare:workers';
 import { MONO_RECONCILE_KEY } from './contract.mjs';
 
@@ -79,18 +86,40 @@ export class MonoReconcileDO extends DurableObject {
   /** @param {unknown} accountId @param {unknown} [transactionId] @param {number} [nowMs] @param {boolean} [balancesOnly] */
   async requestRefresh(accountId, transactionId, nowMs = Date.now(), balancesOnly = false) {
     return this.#serial(async () => {
-      const env = /** @type {Env} */ (this.env),
-        tasks = await bankRefreshTasks(env, accountId, transactionId, nowMs);
+      const env = /** @type {Env} */ (this.env);
+      const verification = balancesOnly
+        ? await bankRefreshTarget(env, accountId).then(async (target) => ({
+            verificationAccountId: accountId,
+            verificationTarget: target,
+            verificationIsJar:
+              target !== null &&
+              (await readMonoAccounts(env)).some((a) => a.id === target && a.bankKind === 'jar'),
+          }))
+        : {};
+      // A stale catalog must not prevent a fresh check before a requested statement.
+      const tasks = balancesOnly
+        ? []
+        : await bankRefreshTasks(env, accountId, transactionId, nowMs).catch((error) => {
+            if (error instanceof BankAccountUnlisted) return [];
+            throw error;
+          });
       const active = /** @type {any} */ (await this.ctx.storage.get('bank-refresh'));
       if (active?.active) {
-        if ((balancesOnly || !active.accountsDone) && active.phase !== 'accounts') {
+        if (
+          (balancesOnly || !tasks.length || !active.accountsDone) &&
+          active.phase !== 'accounts'
+        ) {
           active.resumePhase = active.phase;
           active.phase = 'accounts';
           active.accountsDone = false;
         }
-        if (!active.accountId) active.accountId = accountId;
-        else if (active.accountId !== accountId) active.accountId = 'all';
-        if (!balancesOnly)
+        if (balancesOnly) Object.assign(active, verification);
+        else {
+          if (active.balancesOnly || !active.accountId) {
+            active.accountId = accountId;
+            active.transactionId = transactionId;
+          } else if (active.accountId !== accountId) active.accountId = 'all';
+          active.balancesOnly = false;
           for (const task of tasks)
             if (
               !active.tasks.some(
@@ -101,6 +130,7 @@ export class MonoReconcileDO extends DurableObject {
               )
             )
               active.tasks.push(task);
+        }
         await this.ctx.storage.put('bank-refresh', active);
         await this.ctx.storage.setAlarm(Date.now() + 50);
         await publishBankSync(env, active);
@@ -111,10 +141,11 @@ export class MonoReconcileDO extends DurableObject {
         active: true,
         phase: 'accounts',
         index: 0,
-        tasks: balancesOnly ? [] : tasks,
+        tasks,
         accountId,
         transactionId,
         balancesOnly,
+        ...verification,
         imported: 0,
         updated: 0,
         requestedAt: new Date(nowMs).toISOString(),

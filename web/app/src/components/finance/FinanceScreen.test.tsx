@@ -1,4 +1,4 @@
-import { refreshFinanceBank } from '../../api/client.ts';
+import { refreshFinanceBank, verifyFinanceBank } from '../../api/client.ts';
 import { afterEach, expect, it, vi } from 'vitest';
 import { cleanup, render, screen, fireEvent, waitFor, act, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -17,6 +17,7 @@ import {
 vi.mock('../../api/client.ts', async (original) => ({
   ...(await original<typeof import('../../api/client.ts')>()),
   refreshFinanceBank: vi.fn(),
+  verifyFinanceBank: vi.fn(),
 }));
 vi.mock('../../api/finance-hooks.ts', () => ({ FINANCE_QUERY: ['finance'], useFinance: vi.fn() }));
 vi.mock('../../telegram.ts', async (original) => ({
@@ -35,6 +36,7 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   vi.mocked(refreshFinanceBank).mockReset();
+  vi.mocked(verifyFinanceBank).mockReset();
 });
 
 function renderFinance(path: string, finance = readFinanceDemo()) {
@@ -53,6 +55,34 @@ function renderFinance(path: string, finance = readFinanceDemo()) {
     </MemoryRouter>,
   );
 }
+it('verifies all or one bank account without opening statements and offers archival for a stale link', async () => {
+  const finance = readFinanceDemo();
+  const bank = finance.accounts.find((a) => a.kind === 'mono')!;
+  const obsolete = { ...bank, id: 'mono:old', name: 'Стара картка', balanceMinor: null };
+  finance.inactiveAccounts = [{ ...obsolete, archivedAt: null, bankStatus: 'missing' }];
+  vi.mocked(verifyFinanceBank).mockResolvedValue({ finance, demo: false });
+  renderFinance('/finance', finance);
+  const accounts = screen.getByText('Рахунки та інструменти').closest('details')!;
+  accounts.setAttribute('open', '');
+  fireEvent.click(within(accounts).getByRole('button', { name: 'Перевірити всі' }));
+  await waitFor(() => expect(verifyFinanceBank).toHaveBeenCalledWith('all'));
+  await within(accounts).findByText('Список Monobank звірено.');
+
+  expect(within(accounts).getByText('Поза списком Monobank')).toBeVisible();
+  fireEvent.click(
+    within(accounts).getByRole('button', { name: 'Перевірити Стара картка в Monobank' }),
+  );
+  await waitFor(() => expect(verifyFinanceBank).toHaveBeenCalledWith(obsolete.id));
+  await within(accounts).findByText('Список Monobank звірено.');
+  expect(refreshFinanceBank).not.toHaveBeenCalled();
+  expect(screen.queryByLabelText('Рахунок для оновлення виписки')).not.toBeInTheDocument();
+
+  fireEvent.click(within(accounts).getByRole('button', { name: 'Видалити рахунок Стара картка' }));
+  const dialog = screen.getByRole('dialog', { name: 'Видалити рахунок' });
+  expect(within(dialog).getByText(/Операції залишаться в історії/)).toBeVisible();
+  expect(within(dialog).getByRole('button', { name: 'Видалити рахунок' })).toBeEnabled();
+});
+
 function taxiHistoryFixture() {
   vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-10-16T11:00:00Z'));
   const f = readFinanceDemo(),

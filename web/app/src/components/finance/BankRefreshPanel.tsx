@@ -17,7 +17,8 @@ export function BankRefreshPanel({
   message?: string;
   error?: string;
 }) {
-  const status = finance.bankSync;
+  const status = finance.bankSync?.balancesOnly ? null : finance.bankSync;
+  const locked = busy || !!finance.bankSync?.active;
   const { explanations } = usePresentation();
   const sources = [
     ...finance.accounts.filter((a) => a.kind === 'mono'),
@@ -30,7 +31,7 @@ export function BankRefreshPanel({
         <select
           value={accountId}
           onChange={(e) => onAccountChange(e.target.value)}
-          disabled={busy || !!status?.active}
+          disabled={locked}
         >
           <option value="all">Усі рахунки й банки Monobank</option>
           {sources.map((a) => (
@@ -43,7 +44,7 @@ export function BankRefreshPanel({
       <button
         type="button"
         className="renewal-secondary"
-        disabled={busy || !!status?.active || !accountId}
+        disabled={locked || !accountId}
         onClick={onRefresh}
         aria-busy={busy || !!status?.active}
       >
@@ -64,6 +65,7 @@ export function BankRefreshPanel({
             ? 'Залишки, ліміти й виписки оновлено.'
             : 'Виписки оновлено; залишки можна звірити кнопкою вище.'}{' '}
           Нових: {status.imported}, оновлених: {status.updated}.
+          {status.message?.startsWith('Доступні виписки') && ` ${status.message}`}
           {status.balanceUpdatedAt && (
             <>
               {' '}

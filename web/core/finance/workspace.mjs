@@ -4,7 +4,7 @@ import { financeDisplay } from './display.mjs';
 import { goalBalances } from './savings-forecast.mjs';
 import { bankPaymentAmount, needsBankHoldConfirmation } from './payment-link.mjs';
 import { fixedDebtPayment, isDebtKind, interestDebtPayment, interestQuote } from './payments.mjs';
-import { NOT_TEST_SQL, readMonoAccounts } from './store.mjs';
+import { ledgerMonoId, NOT_TEST_SQL, readMonoCatalog } from './store.mjs';
 import {
   minor,
   MAX_MINOR,
@@ -26,6 +26,7 @@ import {
 
 export class FinanceConflict extends Error {}
 export class FinanceValidation extends Error {}
+const ARCHIVED_ACCOUNTS_KEY = 'finance_archived_accounts';
 /** Canonical bank/manual transaction interpretation shared by reports and analytics.
  * @param {KvBlob} row */
 export function financeTransactionOf(row) {
@@ -235,6 +236,9 @@ export async function readFinanceWorkspace(env, nowMs = Date.now(), range, optio
         new Date(kyivInstant(`${taxiIncomeMonth}-01`, 0)).toISOString(),
         new Date(nowMs).toISOString(),
       ),
+    db
+      .prepare("SELECT value_json FROM facts WHERE kind='setting' AND key=?")
+      .bind(ARCHIVED_ACCOUNTS_KEY),
   ]);
   /** @type {(index: number) => KvBlob[]} */
   const rows = (index) => /** @type {KvBlob[]} */ (result[index]?.results ?? []);
@@ -329,11 +333,13 @@ export async function readFinanceWorkspace(env, nowMs = Date.now(), range, optio
     // asOf remains the ledger boundary used by command validation.
     balanceConfirmedAt: r.balance_confirmed_at == null ? null : String(r.balance_confirmed_at),
     lastMovementAt: r.last_movement_at == null ? null : String(r.last_movement_at),
-    monoId: r.mono_id == null ? null : String(r.mono_id),
+    monoId: r.kind === 'mono' ? ledgerMonoId(String(r.id), r.mono_id) : null,
     source: 'ledger',
   }));
   // Reads only cached metadata and our D1; never calls Monobank on Mini App open.
-  const bankSources = await readMonoAccounts(env);
+  const { accounts: bankSources, checkedAt: bankCheckedAt } = await readMonoCatalog(env);
+  const archived = jsonObject(rows(15)[0]?.value_json);
+  const matched = new Set();
   const bankJars = [];
   for (const bank of bankSources) {
     const latest = await db
@@ -373,8 +379,12 @@ export async function readFinanceWorkspace(env, nowMs = Date.now(), range, optio
       });
       continue;
     }
-    const row = accounts.find((a) => a.monoId === bank.id);
+    const linked = rows(1).find((r) => r.kind === 'mono' && r.mono_id === bank.id);
+    const row = linked
+      ? accounts.find((a) => a.id === linked.id)
+      : accounts.find((a) => a.monoId === bank.id);
     const accountId = row?.id ?? `mono:${bank.id}`;
+    matched.add(accountId);
     const storedOverride = creditLimits[accountId];
     const override =
       storedOverride && typeof storedOverride === 'object' ? storedOverride.minor : storedOverride;
@@ -401,11 +411,32 @@ export async function readFinanceWorkspace(env, nowMs = Date.now(), range, optio
       asOf,
       monoId: bank.id,
       source: latest ? 'monobank' : 'opening',
+      bankType: bank.bankType,
       ...funding,
     };
     if (row) Object.assign(row, account);
     else accounts.push(/** @type {any} */ (account));
   }
+  const activeAccounts = accounts.filter(
+    (a) => typeof archived[a.id] !== 'string' && (a.kind !== 'mono' || matched.has(a.id)),
+  );
+  const inactiveAccounts = accounts
+    .filter((a) => !activeAccounts.includes(a))
+    .map((a) => ({
+      ...a,
+      archivedAt: typeof archived[a.id] === 'string' ? archived[a.id] : null,
+      bankStatus:
+        a.kind !== 'mono'
+          ? null
+          : matched.has(a.id)
+            ? 'verified'
+            : bankSources.some((bank) => bank.bankKind !== 'jar' && bank.id === a.monoId)
+              ? 'duplicate'
+              : bankCheckedAt
+                ? 'missing'
+                : 'unverified',
+      balanceMinor: a.kind === 'mono' && !matched.has(a.id) ? null : a.balanceMinor,
+    }));
   const transactions = rows(9).map(financeTransactionOf);
   /** @type {string[]} */ let custom = [];
   try {
@@ -448,21 +479,23 @@ export async function readFinanceWorkspace(env, nowMs = Date.now(), range, optio
       ...rows(7).flatMap((b) => categoryArray(b.categories_json)),
       ...rows(8).map((p) => String(p.category)),
     ]),
-    accounts,
+    accounts: activeAccounts,
+    inactiveAccounts,
     bankJars,
-    bankCatalog: bankSources.length
-      ? {
-          checkedAt: bankSources[0]?.asOf ?? null,
-          accounts: bankSources.length - bankJars.length,
-          jars: bankJars.length,
-          jarListing:
-            bankSources[0]?.jarsReported === true
-              ? 'available'
-              : bankSources[0]?.jarsReported === false
-                ? 'omitted'
-                : 'unknown',
-        }
-      : null,
+    bankCatalog:
+      bankSources.length || bankCheckedAt
+        ? {
+            checkedAt: bankCheckedAt,
+            accounts: bankSources.length - bankJars.length,
+            jars: bankJars.length,
+            jarListing:
+              bankSources[0]?.jarsReported === true
+                ? 'available'
+                : bankSources[0]?.jarsReported === false
+                  ? 'omitted'
+                  : 'unknown',
+          }
+        : null,
     transactions,
     policies,
     taxiEntries,
@@ -619,12 +652,14 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
   /** @param {string} sql @param {unknown[]} values */
   const update = (sql, values) =>
     statements.push(db.prepare(`${sql} AND ${guard}`).bind(...values, id, hash, now, version));
-  /** @param {unknown} accountId @param {boolean} [manualOnly] */
-  const account = (accountId, manualOnly = false) => {
-    const found = state.accounts.find((a) => a.id === accountId);
+  /** @param {unknown} accountId @param {boolean} [manualOnly] @param {boolean} [historical] */
+  const account = (accountId, manualOnly = false, historical = false) => {
+    const active = state.accounts.find((a) => a.id === accountId);
+    const found =
+      active ?? (historical ? state.inactiveAccounts.find((a) => a.id === accountId) : undefined);
     if (!found || found.currency !== 'UAH' || (manualOnly && found.kind === 'mono'))
       throw new FinanceValidation('Обери гривневий рахунок ручного обліку');
-    if (found.kind === 'mono') {
+    if (active && found.kind === 'mono') {
       if (found.balanceMinor == null)
         throw new FinanceValidation('Для цього рахунку ще немає підтвердженого залишку');
       insert('finance_accounts', {
@@ -989,7 +1024,7 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
       !['expense', 'income'].includes(transaction.kind)
     )
       throw new FinanceValidation('Можна редагувати лише власні ручні витрати й надходження');
-    account(transaction.accountId, true);
+    account(transaction.accountId, true, true);
     const amount = minor(payload.amountMinor),
       kind = choice(payload.kind, ['expense', 'income']);
     if (!amount) throw new FinanceValidation('Сума має бути більшою за нуль');
@@ -1030,6 +1065,61 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
       opening_at: now,
       created_at: now,
     });
+  } else if (type === 'account-remove' || type === 'account-restore') {
+    const inactive = state.inactiveAccounts.find((a) => a.id === payload.accountId);
+    const found = inactive ?? state.accounts.find((a) => a.id === payload.accountId);
+    if (!found) throw new FinanceValidation('Рахунок не знайдено');
+    const archived = jsonObject(
+      (
+        await db
+          .prepare("SELECT value_json FROM facts WHERE kind='setting' AND key=?")
+          .bind(ARCHIVED_ACCOUNTS_KEY)
+          .first()
+      )?.value_json,
+    );
+    if (type === 'account-restore') {
+      if (!inactive?.archivedAt) throw new FinanceValidation('Рахунок уже в списку');
+      delete archived[found.id];
+    } else {
+      if (inactive?.archivedAt) throw new FinanceValidation('Рахунок уже в архіві');
+      const moves = state.goalMoves.filter((move) => move.accountId === found.id);
+      if (!inactive && state.goals.some((goal) => goalBalances(moves, goal.id).length))
+        throw new FinanceValidation(
+          'Спочатку поверни або перенеси кошти, прив’язані до цілей на цьому рахунку',
+        );
+      if (found.kind === 'mono' && !inactive) {
+        insert('finance_accounts', {
+          id: found.id,
+          name: found.name,
+          kind: 'mono',
+          currency: found.currency,
+          opening_minor: 0,
+          opening_at: now,
+          mono_id: found.monoId,
+          created_at: now,
+        });
+      }
+      archived[found.id] = now;
+    }
+    statements.push(
+      db
+        .prepare(
+          `INSERT INTO facts(id,kind,key,value_json,source,confidence,created_at,updated_at)
+         SELECT ?,'setting',?,?,'observed_event',1,?,? WHERE ${guard}
+         ON CONFLICT(kind,key) DO UPDATE SET value_json=excluded.value_json,updated_at=excluded.updated_at`,
+        )
+        .bind(
+          'finance-archived-accounts',
+          ARCHIVED_ACCOUNTS_KEY,
+          JSON.stringify(archived),
+          now,
+          now,
+          id,
+          hash,
+          now,
+          version,
+        ),
+    );
   } else if (type === 'settings') {
     const incomePeriod = choice(payload.incomePeriod, ['week', 'month']);
     if (typeof payload.taxiVisible !== 'boolean')
@@ -1163,7 +1253,7 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
     if (!policy) throw new FinanceValidation('Немає умов для дати зміни');
     if (state.settlements.some((s) => s.weekKey === period.key))
       throw new FinanceValidation('Цей тиждень уже розраховано з парком');
-    const src = account(payload.accountId, true);
+    const src = account(payload.accountId, true, previous?.accountId === payload.accountId);
     if (Date.parse(at) < Date.parse(src.asOf))
       throw new FinanceValidation('Дата зміни має бути після початкового залишку рахунку');
     const received = minor(payload.receivedCashMinor ?? 0),
@@ -1251,7 +1341,7 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
       throw new FinanceValidation(
         'Обери завершену непов’язану банківську операцію після закриття тижня з точною сумою розрахунку',
       );
-    const src = account(bankTx ? bankTx.accountId : payload.accountId, !bankTx);
+    const src = account(bankTx ? bankTx.accountId : payload.accountId, !bankTx, Boolean(bankTx));
     insert('finance_taxi_settlements', {
       id,
       week_key: key,
@@ -1296,7 +1386,7 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
         'Банківський розрахунок уже містить фактичну суму операції; його не можна змінювати вручну',
       );
     const actual = minor(payload.amountMinor, true);
-    const src = account(previous.accountId, true);
+    const src = account(previous.accountId, true, true);
     const note =
       typeof payload.note === 'string' ? payload.note.trim().slice(0, 500) : previous.note;
     update(
@@ -1410,6 +1500,7 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
     const src = account(
       bankTx ? bankTx.accountId : payload.accountId,
       movementKind === 'external' && !bankTx,
+      Boolean(bankTx) || (amount < 0 && movementKind === 'reserve'),
     );
     const allocated = sumMoney(
       state.goalMoves

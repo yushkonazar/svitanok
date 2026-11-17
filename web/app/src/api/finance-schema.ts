@@ -18,6 +18,7 @@ export const financeAccountSchema = z.object({
   balancePending: z.boolean().optional(),
   creditLimitSource: z.string().optional(),
   asOf: z.string().nullable(),
+  bankType: z.string().optional(),
   balanceConfirmedAt: z.string().nullable().optional(),
   lastMovementAt: z.string().nullable().optional(),
   monoId: z.string().nullable(),
@@ -192,6 +193,8 @@ export const financeSchema = z.object({
       updated: z.number(),
       requestedAt: z.string(),
       balanceUpdatedAt: z.string().nullable().optional(),
+      balancesOnly: z.boolean().optional(),
+      verificationAccountId: z.string().nullable().optional(),
       completedAt: z.string().nullable(),
       message: z.string().nullable(),
     })
@@ -206,6 +209,14 @@ export const financeSchema = z.object({
   categories: z.array(z.string()),
   merchantAliases: z.record(z.string(), z.string()).optional(),
   accounts: z.array(financeAccountSchema),
+  inactiveAccounts: z
+    .array(
+      financeAccountSchema.extend({
+        archivedAt: z.string().nullable(),
+        bankStatus: z.enum(['verified', 'duplicate', 'missing', 'unverified']).nullable(),
+      }),
+    )
+    .optional(),
   bankCatalog: z
     .object({
       checkedAt: z.string().nullable(),
